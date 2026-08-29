@@ -26,12 +26,18 @@ export interface WorkBuddyWebCreditAccount {
   size: number
   /** How many upstream entries were merged into this row. */
   count: number
+  /** Earliest expiry across the merged upstream entries, in ms. */
+  earliestExpiryMs?: number
 }
 
 /** Aggregated credit answer rendered by the plugin card. */
 export interface WorkBuddyWebCredits {
   total: number
   accounts: readonly WorkBuddyWebCreditAccount[]
+  /** Credits expiring within 3 days across every package. */
+  expiringSoon: number
+  /** When the nearest package expires, in ms. */
+  nearestExpiryMs?: number
 }
 
 /** Editable WorkBuddy model row rendered by the plugin-owned settings card. */

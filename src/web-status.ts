@@ -21,7 +21,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyUpstreamClient } from './upstream.ts'
+import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
@@ -73,7 +73,7 @@ function loopbackOrigin(req: IncomingMessage): boolean {
 }
 
 /** Map the credit answer to the card's compact document. */
-function toCredits(answer: { total: number; accounts: readonly { packageName: string; remain: number; size: number; count: number }[] }): WorkBuddyWebCredits {
+function toCredits(answer: WorkBuddyCredits): WorkBuddyWebCredits {
   return {
     total: answer.total,
     accounts: answer.accounts.map(account => ({
@@ -81,7 +81,10 @@ function toCredits(answer: { total: number; accounts: readonly { packageName: st
       remain: account.remain,
       size: account.size,
       count: account.count,
+      ...account.earliestExpiryMs === undefined ? {} : { earliestExpiryMs: account.earliestExpiryMs },
     })),
+    expiringSoon: answer.expiringSoon,
+    ...answer.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: answer.nearestExpiryMs },
   }
 }
 

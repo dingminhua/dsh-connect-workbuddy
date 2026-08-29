@@ -51,7 +51,9 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     client: {
       fetchCredits: async () => ({
         total: 1875,
-        accounts: [{ packageName: '体验版', remain: 75, size: 500, count: 1 }],
+        accounts: [{ packageName: '体验版', remain: 75, size: 500, count: 1, earliestExpiryMs: 1_800_000_000_000 }],
+        expiringSoon: 75,
+        nearestExpiryMs: 1_800_000_000_000,
       }),
     },
     displayModels: () => FALLBACK_WORKBUDDY_MODELS,
@@ -105,7 +107,12 @@ describe('workBuddyWebStatus', () => {
     const glm = status.models.find(model => model.id === 'glm-5.3')
     expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 200_000 })
     expect(status.enabledModelIds).toEqual(['glm-5.3'])
-    expect(status.credits?.total).toBe(1875)
+    expect(status.credits).toMatchObject({
+      total: 1875,
+      expiringSoon: 75,
+      nearestExpiryMs: 1_800_000_000_000,
+      accounts: [{ earliestExpiryMs: 1_800_000_000_000 }],
+    })
   })
 
   it('degrades a credit failure to creditsError instead of failing the document', async () => {

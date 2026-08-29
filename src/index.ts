@@ -284,7 +284,11 @@ export function apply(ctx: Context, config: Config): void {
 
         ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request) => {
           if (request.provider !== WORKBUDDY_PROVIDER) return []
-          const next = deriveCatalog(await discoverModels(request.signal), new Set(), current().contextBudgets ?? {})
+          const next = deriveCatalog(
+            await discoverModels(request.signal),
+            enabledSet(current()),
+            current().contextBudgets ?? {},
+          )
           return next.map(model => ({
             id: model.id,
             name: model.name,
@@ -312,7 +316,7 @@ export function apply(ctx: Context, config: Config): void {
           if (stopped) return
           const models = await client.fetchModels(credential)
           if (stopped) return
-          catalog.set([...models])
+          catalog.set(deriveCatalog(models, enabledSet(current()), current().contextBudgets ?? {}))
           invalidate?.()
           // `lastCatalog` is deliberately NOT seeded here: it belongs to the
           // user's saved selection, written only by the card's explicit save

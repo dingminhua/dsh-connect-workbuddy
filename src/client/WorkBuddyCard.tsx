@@ -332,45 +332,52 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                 : null}
               {status.status === 'signed-in'
                 ? <>
-                    {status.credits === undefined ? null : (
-                      <div className="dsm-workbuddy-credits">
-                        <div className="dsm-workbuddy-credits-head">
-                          <span className="dsm-workbuddy-credits-total">{formatNumber(status.credits.total)}</span>
-                          <span className="dsm-workbuddy-usage-text">{t('row.creditsTotalLabel')}</span>
-                        </div>
-                        {status.credits.accounts.length === 0
-                          ? <p className="dsm-workbuddy-usage-text">{t('row.creditsEmpty')}</p>
-                          : <ul className="dsm-workbuddy-credits-list">
-                              {status.credits.accounts.map((account, index) => {
-                                const percent = account.size > 0 ? (account.remain / account.size) * 100 : 100
-                                return (
-                                  <li className="dsm-workbuddy-credit" key={`${account.packageName}-${String(index)}`}>
-                                    <div className="dsm-workbuddy-credit-label">
+                    {status.credits === undefined ? null : (() => {
+                      const nearest = status.credits.accounts
+                        .filter(account => account.earliestExpiryMs === status.credits?.nearestExpiryMs)
+                        .sort((left, right) => right.remain - left.remain)[0]
+                      return (
+                        <div className="dsm-workbuddy-credits-panels">
+                          <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-nearest">
+                            <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsNearest')}</span>
+                            {nearest === undefined
+                              ? <span className="dsm-workbuddy-credit-panel-empty">—</span>
+                              : <>
+                                  <strong className="dsm-workbuddy-credit-panel-value">{nearest.packageName}</strong>
+                                  <span className="dsm-workbuddy-credit-panel-meta">
+                                    {t('row.creditsExpiryTime', { expiresAt: formatDateTime(nearest.earliestExpiryMs!) })}
+                                  </span>
+                                  <span className="dsm-workbuddy-credit-panel-meta">
+                                    {t('row.creditsPackageTotal', { total: formatNumber(nearest.size) })}
+                                    {' · '}
+                                    {t('row.creditsPackageRemain', { remain: formatNumber(nearest.remain) })}
+                                  </span>
+                                </>}
+                          </section>
+                          <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-activities">
+                            <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsActivities')}</span>
+                            {status.credits.accounts.length === 0
+                              ? <span className="dsm-workbuddy-credit-panel-empty">{t('row.creditsEmpty')}</span>
+                              : <ul className="dsm-workbuddy-credit-packages">
+                                  {status.credits.accounts.map((account, index) => (
+                                    <li key={`${account.packageName}-${String(index)}`}>
                                       <span>{account.packageName}</span>
-                                      <span className="dsm-workbuddy-credit-count">
-                                        {formatNumber(account.remain)}
-                                        {account.count > 1 ? ` · ${t('row.packageCount', { count: account.count })}` : ''}
-                                      </span>
-                                    </div>
-                                    <div
-                                      className="dsm-workbuddy-credit-track"
-                                      role="progressbar"
-                                      aria-label={account.packageName}
-                                      aria-valuemin={0}
-                                      aria-valuemax={100}
-                                      aria-valuenow={percent}
-                                    >
-                                      <div
-                                        className="dsm-workbuddy-credit-fill"
-                                        style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
-                                      />
-                                    </div>
-                                  </li>
-                                )
-                              })}
-                            </ul>}
-                      </div>
-                    )}
+                                      <span>{formatNumber(account.remain)} · {t('row.packageCount', { count: account.count })}</span>
+                                    </li>
+                                  ))}
+                                </ul>}
+                            <div className="dsm-workbuddy-credit-soon">
+                              <span>{t('row.creditsExpiringSoon')}</span>
+                              <strong>{formatNumber(status.credits.expiringSoon)}</strong>
+                            </div>
+                          </section>
+                          <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-total">
+                            <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsTotalLabel')}</span>
+                            <strong className="dsm-workbuddy-credit-total-value">{formatNumber(status.credits.total)}</strong>
+                          </section>
+                        </div>
+                      )
+                    })()}
                     {status.creditsError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     <section className="dsm-workbuddy-models" aria-label={t('row.modelsTitle')}>

@@ -63,12 +63,18 @@ export interface WorkBuddyCreditAccount {
   size: number
   /** How many upstream entries were merged into this row. */
   count: number
+  /** Earliest expiry across the merged upstream entries, in ms. */
+  earliestExpiryMs?: number
 }
 
 /** Aggregated credit answer for one credential. */
 export interface WorkBuddyCredits {
   total: number
   accounts: readonly WorkBuddyCreditAccount[]
+  /** Credits expiring within 3 days across every package. */
+  expiringSoon: number
+  /** When the nearest package expires, in ms. */
+  nearestExpiryMs?: number
 }
 
 /** Token refresh answer; fields the upstream omits stay absent. */
@@ -210,6 +216,16 @@ export function prepareChatBody(source: string): string {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return source
   const obj = body as Record<string, unknown>
   obj['stream'] = true
+  // DSH sends its system prompt using OpenAI's newer `developer` role.
+  // WorkBuddy's CLI channel accepts the equivalent `system` role but rejects
+  // `developer` with business code 11128 (unapproved channel).
+  if (Array.isArray(obj['messages'])) {
+    for (const value of obj['messages']) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+      const message = value as Record<string, unknown>
+      if (message['role'] === 'developer') message['role'] = 'system'
+    }
+  }
   normalizeToolChoice(obj)
   return JSON.stringify(obj)
 }
@@ -493,8 +509,19 @@ export class WorkBuddyUpstreamClient {
       : {}
     const rawAccounts = Array.isArray(inner['Accounts']) ? inner['Accounts'] : []
 
-    const aggregated = new Map<string, { remain: number; size: number; count: number }>()
+    const aggregated = new Map<string, { remain: number; size: number; count: number; earliestExpiryMs: number | undefined }>()
     let total = 0
+    let nearestExpiryMs: number | undefined
+    let expiringSoon = 0
+    const SOON_MS = 3 * 24 * 60 * 60 * 1000
+    const parseExpiry = (raw: unknown): number | undefined => {
+      if (typeof raw === 'number' && raw > 1000000000000) return raw
+      if (typeof raw === 'string' && raw !== '') {
+        const parsed = Date.parse(raw)
+        if (!Number.isNaN(parsed)) return parsed
+      }
+      return undefined
+    }
     for (const raw of rawAccounts) {
       if (typeof raw !== 'object' || raw === null) continue
       const account = raw as Record<string, unknown>
@@ -510,18 +537,37 @@ export class WorkBuddyUpstreamClient {
       if (remain < 0) remain = 0
       total += remain
       const packageName = typeof account['PackageName'] === 'string' ? account['PackageName'] : '(unnamed)'
+      const expiryMs = parseExpiry(account['ExpiredTime'] ?? account['CycleEndTime'])
+      if (expiryMs !== undefined) {
+        if (nearestExpiryMs === undefined || expiryMs < nearestExpiryMs) nearestExpiryMs = expiryMs
+        if (expiryMs - Date.now() <= SOON_MS) expiringSoon += remain
+      }
       const existing = aggregated.get(packageName)
       if (existing === undefined) {
-        aggregated.set(packageName, { remain, size: size > 0 ? size : numberField('CapacitySize'), count: 1 })
+        aggregated.set(packageName, { remain, size: size > 0 ? size : numberField('CapacitySize'), count: 1, earliestExpiryMs: expiryMs })
       } else {
         existing.remain += remain
         existing.size += size > 0 ? size : numberField('CapacitySize')
         existing.count += 1
+        if (expiryMs !== undefined && (existing.earliestExpiryMs === undefined || expiryMs < existing.earliestExpiryMs)) {
+          existing.earliestExpiryMs = expiryMs
+        }
       }
     }
     const accounts: WorkBuddyCreditAccount[] = [...aggregated.entries()]
-      .map(([packageName, value]) => ({ packageName, ...value }))
+      .map(([packageName, value]) => ({
+        packageName,
+        remain: value.remain,
+        size: value.size,
+        count: value.count,
+        ...value.earliestExpiryMs === undefined ? {} : { earliestExpiryMs: value.earliestExpiryMs },
+      }))
       .sort((a, b) => b.remain - a.remain)
-    return { total, accounts }
+    return {
+      total,
+      accounts,
+      expiringSoon,
+      ...nearestExpiryMs === undefined ? {} : { nearestExpiryMs },
+    }
   }
 }
