@@ -82,8 +82,27 @@ export interface WorkBuddyAdapter {
   invalidate: () => void
 }
 
+const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+
+type WorkBuddyThinkingLevel = typeof THINKING_LEVELS[number]
+type WorkBuddyThinkingLevelMap = Partial<Record<'off' | WorkBuddyThinkingLevel, string | null>>
+
+/** Map only levels advertised by WorkBuddy; undeclared DSH levels stay unavailable. */
+export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyThinkingLevelMap | undefined {
+  const supported = info.reasoning?.supportedEfforts?.filter((effort): effort is WorkBuddyThinkingLevel =>
+    (THINKING_LEVELS as readonly string[]).includes(effort),
+  )
+  if (supported === undefined || supported.length === 0) return undefined
+  const map: WorkBuddyThinkingLevelMap = Object.fromEntries(
+    THINKING_LEVELS.map(level => [level, supported.includes(level) ? level : null]),
+  )
+  if (info.reasoning?.canDisableThinking !== true) map.off = null
+  return map
+}
+
 /** Build one pi-ai model descriptor pointing at the loopback shim. */
 function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
+  const thinkingLevelMap = workBuddyThinkingLevelMap(info)
   return {
     id: info.id,
     name: info.name,
@@ -94,7 +113,9 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
     cost: NO_COST,
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,
-    ...info.reasoning === undefined ? {} : { reasoning: info.reasoning.defaultEffort === undefined ? true : info.reasoning.defaultEffort },
+    reasoning: thinkingLevelMap !== undefined,
+    ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
+    compat: { supportsReasoningEffort: thinkingLevelMap !== undefined },
   } as unknown as Model<Api>
 }
 
