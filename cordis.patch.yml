@@ -2,5 +2,5 @@
 # model. The plugin reuses the WorkBuddy desktop app's sign-in; no separate
 # OAuth flow is started.
 - insert:
-    - id: llm-workbuddy
+    - id: dsh-connect-workbuddy
       name: dsh-connect-workbuddy

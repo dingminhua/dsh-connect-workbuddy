@@ -38,7 +38,10 @@ export interface WorkBuddyWebCredits {
 export interface WorkBuddyWebModel {
   id: string
   name: string
+  /** Effective DSH context after applying the saved local budget. */
   contextWindow: number
+  /** Native maximum advertised by WorkBuddy; models above 200K expose 200K/max. */
+  nativeContextWindow: number
   maxTokens: number
   creditMultiplier?: number
   multimodal?: boolean

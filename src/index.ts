@@ -26,7 +26,7 @@ import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
-import type { WorkBuddyModelInfo } from './catalog.ts'
+import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
 import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
@@ -100,7 +100,7 @@ export {
 } from './status-paths.ts'
 
 /** Stable Cordis plugin name. */
-export const name = 'llm-workbuddy'
+export const name = 'dsh-connect-workbuddy'
 
 /** The model registry required before the provider can register. */
 export const inject = ['llm']
@@ -118,6 +118,8 @@ export interface Config {
   lastCatalog?: WorkBuddyModelInfo[]
   /** The user's selection, as model ids. */
   enabledModelIds?: string[]
+  /** Local DSH context budget per model; models above 200K default to 200K. */
+  contextBudgets?: Record<string, WorkBuddyContextBudget>
 }
 
 const modelConfig = z.object({
@@ -132,6 +134,7 @@ export const Config: z<Config> = z.object({
   accountId: z.string().description('Selected local WorkBuddy account id (never a token)'),
   lastCatalog: z.array(modelConfig).description('Last refreshed WorkBuddy model directory shown by the plugin card') as z<WorkBuddyModelInfo[]>,
   enabledModelIds: z.array(z.string()).default([]).description('WorkBuddy model ids the user enabled'),
+  contextBudgets: z.dict(z.number().step(1).min(1)).default({}).description('Local DSH context budget per WorkBuddy model'),
 })
 
 /**
@@ -155,7 +158,11 @@ export function apply(ctx: Context, config: Config): void {
   // selection; an empty selection serves the whole directory so a never-
   // configured plugin still exposes models.
   const configuredModels = (value: Config): readonly WorkBuddyModelInfo[] =>
-    value.lastCatalog?.length ? deriveCatalog(value.lastCatalog, enabledSet(value)) : FALLBACK_WORKBUDDY_MODELS
+    deriveCatalog(
+      value.lastCatalog?.length ? value.lastCatalog : FALLBACK_WORKBUDDY_MODELS,
+      enabledSet(value),
+      value.contextBudgets ?? {},
+    )
   // What the card displays: the last-refreshed directory, so the user re-reads
   // the current catalog rather than a stale saved snapshot.
   const displayModels = (value: Config): readonly WorkBuddyModelInfo[] =>
@@ -167,16 +174,17 @@ export function apply(ctx: Context, config: Config): void {
     return client.fetchModels(credential, signal)
   }
 
-  // Same-origin routes backing the Plugin-configuration card. The function
-  // returns early when no webServer service exists (a headless profile), so
-  // the host provider still registers without a browser.
-  registerWorkBuddyStatusRoute(ctx, {
+  // Same-origin routes backing the Plugin-configuration card. `webServer`
+  // can mount after this row, so wait reactively for it instead of sampling
+  // ctx.get() once during apply (which silently loses all routes on Desktop).
+  ctx.inject(['webServer'], (webCtx) => registerWorkBuddyStatusRoute(webCtx, {
     store,
     client,
     displayModels: () => displayModels(current()),
     enabledModelIds: () => current().enabledModelIds ?? [],
+    contextBudgets: () => current().contextBudgets ?? {},
     discoverModels,
-  })
+  }))
 
   installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
     setSource(source) { current = source },
@@ -276,7 +284,7 @@ export function apply(ctx: Context, config: Config): void {
 
         ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request) => {
           if (request.provider !== WORKBUDDY_PROVIDER) return []
-          const next = await discoverModels(request.signal)
+          const next = deriveCatalog(await discoverModels(request.signal), new Set(), current().contextBudgets ?? {})
           return next.map(model => ({
             id: model.id,
             name: model.name,

@@ -40,6 +40,8 @@ export interface WorkBuddyStatusRouteOptions {
   displayModels(): readonly WorkBuddyModelInfo[]
   /** The user's selection, stored as model ids. */
   enabledModelIds(): readonly string[]
+  /** Saved local DSH context budgets by model id. */
+  contextBudgets(): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog from the upstream. */
   discoverModels?(signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
 }
@@ -84,11 +86,15 @@ function toCredits(answer: { total: number; accounts: readonly { packageName: st
 }
 
 /** Project a model into the card's row, dropping empty optional fields. */
-function toWebModel(model: WorkBuddyModelInfo): WorkBuddyWebModelFromInfo {
+function toWebModel(
+  model: WorkBuddyModelInfo,
+  budgets: Readonly<Record<string, number | undefined>>,
+): WorkBuddyWebModelFromInfo {
   return {
     id: model.id,
     name: model.name,
-    contextWindow: model.contextWindow,
+    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000) : model.contextWindow,
+    nativeContextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
     ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
@@ -157,7 +163,7 @@ export async function workBuddyWebStatus(
     source: credential.source,
     tokenExpiresAtMs: credential.expiresAtMs,
     accounts: accounts.map(toWebAccount),
-    models: deps.displayModels().map(toWebModel),
+    models: deps.displayModels().map(model => toWebModel(model, deps.contextBudgets())),
     enabledModelIds: [...deps.enabledModelIds()],
   }
   try {
@@ -169,18 +175,13 @@ export async function workBuddyWebStatus(
 }
 
 /**
- * Mount the read-only routes on an optional webServer context.
- *
- * `webServer` is optional by design: a headless profile (TUI) serves no
- * browser, and the host provider must still register. `ctx.effect` runs its
- * body synchronously, so the `webServer` access is guarded before any
- * registration rather than relying on `ctx.inject` to defer it.
+ * Mount the read-only routes on a context where `webServer` is available.
+ * The caller uses `ctx.inject(['webServer'], ...)`, so Desktop startup order
+ * cannot make this registration disappear.
  */
 export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatusRouteOptions): void {
-  const webServer = ctx.get('webServer')
-  if (webServer === undefined) return
   ctx.effect(() => {
-    const disposeUsage = webServer.register({
+    const disposeUsage = ctx.webServer.register({
       kind: 'exact',
       path: WORKBUDDY_USAGE_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -199,7 +200,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeAccounts = webServer.register({
+    const disposeAccounts = ctx.webServer.register({
       kind: 'exact',
       path: WORKBUDDY_ACCOUNTS_REFRESH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -212,7 +213,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeRefresh = webServer.register({
+    const disposeRefresh = ctx.webServer.register({
       kind: 'exact',
       path: WORKBUDDY_MODELS_REFRESH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -221,7 +222,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         if (deps.discoverModels === undefined) return json(res, 503, { error: 'model refresh unavailable' })
         try {
           const models = await deps.discoverModels()
-          json(res, 200, { models: models.map(toWebModel) })
+          json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets())) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })
         }

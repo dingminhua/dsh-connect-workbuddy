@@ -135,7 +135,7 @@ uin <B> (<账号乙>): catalog HTTP 200, 28 models, 16 cli, credits total=0
 ```
 dsh-connect-workbuddy/
 ├── package.json            # trae 的元数据形态 + workbuddy 的 bin 字段
-├── cordis.patch.yml        # - insert: [{ id: llm-workbuddy, name: dsh-connect-workbuddy }]
+├── cordis.patch.yml        # - insert: [{ id: dsh-connect-workbuddy, name: dsh-connect-workbuddy }]
 ├── tsdown.config.ts        # 双入口（node ESM + browser CJS） + version define
 ├── tsconfig.json / .client.json
 ├── vitest.config.ts

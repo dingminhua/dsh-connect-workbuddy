@@ -8,7 +8,8 @@
  *     并让上游刷新成为草稿操作（用户点保存才生效）。
  *   静态 fallback 目录的做法来自
  *     corrinehu/dsh-workbuddy-connect（MIT）：上游不可用时 provider 不为空。
- * 改动：trae 的模型带 1M 变体（`@1m`）与本项目的上游无关，未移植；
+ * 改动：WorkBuddy 直接用各模型的 `maxInputTokens` 声明实际上下文窗口；
+ *   上游没有独立的长上下文开关或第二个模型 id，因此不会虚构 `@1m` 变体。
  *   本目录额外承载上游给出的积分倍率、多模态与推理档位。
  *
  * @module dsh-connect-workbuddy/catalog
@@ -47,14 +48,28 @@ export const FALLBACK_WORKBUDDY_MODELS: readonly WorkBuddyModelInfo[] = [
  * An empty selection falls back to the whole directory: a plugin that has
  * never been configured must still serve models rather than nothing.
  */
+export type WorkBuddyContextBudget = number
+
+/** Apply the saved local DSH budget; models above 200K default to 200K. */
+export function applyContextBudgets(
+  catalog: readonly WorkBuddyModelInfo[],
+  budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
+): WorkBuddyModelInfo[] {
+  return catalog.map(model => ({
+    ...model,
+    contextWindow: model.contextWindow > 200_000
+      ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000)
+      : model.contextWindow,
+  }))
+}
+
 export function deriveCatalog(
   catalog: readonly WorkBuddyModelInfo[],
   enabled: ReadonlySet<string>,
+  budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
 ): WorkBuddyModelInfo[] {
-  if (enabled.size === 0) return catalog.map(model => ({ ...model }))
-  return catalog
-    .filter(model => enabled.has(model.id))
-    .map(model => ({ ...model }))
+  const selected = enabled.size === 0 ? catalog : catalog.filter(model => enabled.has(model.id))
+  return applyContextBudgets(selected, budgets)
 }
 
 /** Mutable catalog shared by the shim's `/v1/models` and the adapter. */

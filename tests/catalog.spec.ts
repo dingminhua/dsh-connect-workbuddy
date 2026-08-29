@@ -14,9 +14,25 @@ describe('deriveCatalog', () => {
     expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])
   })
 
-  it('keeps only the selected models, in directory order', () => {
-    const derived = deriveCatalog(MODELS, new Set(['deepseek-v4-pro', 'glm-5.3']))
-    expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'deepseek-v4-pro'])
+  it('defaults every model above 200K to 200K and preserves smaller maxima', () => {
+    const derived = deriveCatalog([
+      ...MODELS,
+      { id: 'kimi', name: 'Kimi', contextWindow: 256_000, maxTokens: 32_000 },
+      { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
+    ], new Set())
+    expect(derived.map(model => model.contextWindow)).toEqual([200_000, 200_000, 200_000, 200_000, 192_000])
+  })
+
+  it('keeps only selected models and applies explicit 1M budgets', () => {
+    const derived = deriveCatalog(
+      MODELS,
+      new Set(['deepseek-v4-pro', 'glm-5.3']),
+      { 'deepseek-v4-pro': 1_000_000 },
+    )
+    expect(derived.map(model => [model.id, model.contextWindow])).toEqual([
+      ['glm-5.3', 200_000],
+      ['deepseek-v4-pro', 1_000_000],
+    ])
   })
 
   it('ignores selections for models no longer in the directory', () => {

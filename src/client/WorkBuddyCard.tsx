@@ -101,6 +101,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const [settingsRevision, setSettingsRevision] = useState(0)
   const [draftModels, setDraftModels] = useState<WorkBuddyWebModel[] | undefined>(undefined)
   const [draftEnabledIds, setDraftEnabledIds] = useState<Set<string> | undefined>(undefined)
+  const [draftContextBudgets, setDraftContextBudgets] = useState<Record<string, number> | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [switchingAccount, setSwitchingAccount] = useState(false)
   const mounted = useRef(true)
@@ -213,7 +214,12 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const visibleModels = draftModels ?? (status.status === 'signed-in' ? status.models : [])
   const savedEnabledIds = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
   const activeEnabledIds = draftEnabledIds ?? savedEnabledIds
-  const dirty = draftModels !== undefined || draftEnabledIds !== undefined
+  const configured = settingsScope?.getSnapshot().value
+  const savedContextBudgets = typeof configured === 'object' && configured !== null && typeof (configured as { contextBudgets?: unknown }).contextBudgets === 'object'
+    ? (configured as { contextBudgets: Record<string, number> }).contextBudgets
+    : {}
+  const activeContextBudgets = draftContextBudgets ?? savedContextBudgets
+  const dirty = draftModels !== undefined || draftEnabledIds !== undefined || draftContextBudgets !== undefined
 
   const toggleModel = (modelId: string): void => {
     const next = new Set(activeEnabledIds)
@@ -222,9 +228,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     setDraftModels([...visibleModels])
   }
 
+  const setContextBudget = (modelId: string, budget: number): void => {
+    setDraftContextBudgets({ ...activeContextBudgets, [modelId]: budget })
+    setDraftModels([...visibleModels])
+  }
+
   const discardModels = (): void => {
     setDraftModels(undefined)
     setDraftEnabledIds(undefined)
+    setDraftContextBudgets(undefined)
   }
 
   const saveModels = async (): Promise<void> => {
@@ -234,8 +246,13 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       // Save the raw directory plus the pure selection. The Host derives the
       // runtime catalog from these two on save/restart, so re-opening the card
       // re-reads WorkBuddy's current catalog instead of a stale snapshot.
-      await settingsScope.set('lastCatalog', visibleModels)
+      await settingsScope.set('lastCatalog', visibleModels.map(model => ({
+        ...model,
+        contextWindow: model.nativeContextWindow,
+        nativeContextWindow: undefined,
+      })))
       await settingsScope.set('enabledModelIds', [...activeEnabledIds])
+      await settingsScope.set('contextBudgets', activeContextBudgets)
       discardModels()
       await refreshUsage()
     } finally {
@@ -388,17 +405,42 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                     {model.creditMultiplier === undefined ? null
                                       : <span className="dsm-workbuddy-model-name-rate">({model.creditMultiplier.toFixed(2)}x)</span>}
                                   </span>
-                                  <span className="dsm-workbuddy-model-id">{model.id}</span>
                                 </span>
                               </label>
+                              <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
+                                {model.nativeContextWindow > 200_000
+                                  ? <label>
+                                      <input
+                                        type="radio"
+                                        name={`context-${model.id}`}
+                                        checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}
+                                        disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                        onChange={() => { setContextBudget(model.id, 200_000) }}
+                                      />
+                                      <span>200K</span>
+                                    </label>
+                                  : null}
+                                <label>
+                                  <input
+                                    type="radio"
+                                    name={`context-${model.id}`}
+                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow}
+                                    disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
+                                    onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
+                                  />
+                                  <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
+                                </label>
+                              </fieldset>
                             </div>
-                            <div className="dsm-workbuddy-model-meta">
-                              <span>{t('row.modelContext', { context: formatCapacity(model.contextWindow, t('row.modelUnknown')) })}</span>
-                              <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens, t('row.modelUnknown')) })}</span>
-                              {model.multimodal !== true ? null
-                                : <span className="dsm-workbuddy-model-meta-tag">{t('row.modelMultimodal')}</span>}
-                              {model.reasoning === undefined || model.reasoning.supportedEfforts === undefined ? null
-                                : <span>{t('row.modelReasoning', { efforts: model.reasoning.supportedEfforts.join(' / ') })}</span>}
+                            <div className="dsm-workbuddy-model-details">
+                              <div className="dsm-workbuddy-model-meta">
+                                <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
+                                <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens, t('row.modelUnknown')) })}</span>
+                                {model.multimodal !== true ? null
+                                  : <span className="dsm-workbuddy-model-meta-tag">{t('row.modelMultimodal')}</span>}
+                                {model.reasoning === undefined || model.reasoning.supportedEfforts === undefined ? null
+                                  : <span>{t('row.modelReasoning', { efforts: model.reasoning.supportedEfforts.join(' / ') })}</span>}
+                              </div>
                             </div>
                           </div>
                         ))}

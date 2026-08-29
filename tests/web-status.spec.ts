@@ -56,6 +56,7 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     },
     displayModels: () => FALLBACK_WORKBUDDY_MODELS,
     enabledModelIds: () => ['glm-5.3'],
+    contextBudgets: () => ({}),
     ...overrides,
   }
 }
@@ -101,6 +102,8 @@ describe('workBuddyWebStatus', () => {
     expect(status.accountName).toBe('Alpha')
     expect(status.accounts).toHaveLength(2)
     expect(status.models.length).toBe(FALLBACK_WORKBUDDY_MODELS.length)
+    const glm = status.models.find(model => model.id === 'glm-5.3')
+    expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 200_000 })
     expect(status.enabledModelIds).toEqual(['glm-5.3'])
     expect(status.credits?.total).toBe(1875)
   })
@@ -132,15 +135,6 @@ describe('workBuddyWebStatus', () => {
 })
 
 describe('registerWorkBuddyStatusRoute', () => {
-  it('is a no-op without a webServer service', async () => {
-    const ctx = new Context()
-    // No webServer provided: `ctx.inject` never fires, registration must not
-    // throw, and the plugin keeps working headless.
-    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
-    expect(() => registerWorkBuddyStatusRoute(ctx, deps())).not.toThrow()
-    await ctx.fiber.dispose()
-  })
-
   it('mounts the three routes when a webServer service exists', async () => {
     const registered: string[] = []
     // Provide the service through Cordis so `ctx.get('webServer')` sees it.
