@@ -1,16 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { workBuddyThinkingLevelMap } from '../src/adapter.ts'
+import { workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
 import type { WorkBuddyModelInfo } from '../src/catalog.ts'
 
-function model(reasoning?: WorkBuddyModelInfo['reasoning']): WorkBuddyModelInfo {
+function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean): WorkBuddyModelInfo {
   return {
     id: 'test',
     name: 'Test',
     contextWindow: 200_000,
     maxTokens: 32_000,
+    ...multimodal === undefined ? {} : { multimodal },
     ...reasoning === undefined ? {} : { reasoning },
   }
 }
+
+describe('workBuddyModelInput', () => {
+  it('offers images only when WorkBuddy advertises them', () => {
+    expect(workBuddyModelInput(model(undefined, true))).toEqual(['text', 'image'])
+    expect(workBuddyModelInput(model(undefined, false))).toEqual(['text'])
+    expect(workBuddyModelInput(model())).toEqual(['text'])
+  })
+})
 
 describe('workBuddyThinkingLevelMap', () => {
   it('maps only upstream-advertised levels to identical wire values', () => {

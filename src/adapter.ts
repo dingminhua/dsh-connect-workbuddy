@@ -87,6 +87,11 @@ const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as 
 type WorkBuddyThinkingLevel = typeof THINKING_LEVELS[number]
 type WorkBuddyThinkingLevelMap = Partial<Record<'off' | WorkBuddyThinkingLevel, string | null>>
 
+/** pi-ai input modalities: images only when WorkBuddy advertises them. */
+export function workBuddyModelInput(info: WorkBuddyModelInfo): ('text' | 'image')[] {
+  return info.multimodal === true ? ['text', 'image'] : ['text']
+}
+
 /** Map only levels advertised by WorkBuddy; undeclared DSH levels stay unavailable. */
 export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyThinkingLevelMap | undefined {
   const supported = info.reasoning?.supportedEfforts?.filter((effort): effort is WorkBuddyThinkingLevel =>
@@ -109,7 +114,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
     api: 'openai-completions',
     provider: WORKBUDDY_PROVIDER,
     baseUrl,
-    input: info.multimodal === true ? ['text', 'image'] : ['text'],
+    input: workBuddyModelInput(info),
     cost: NO_COST,
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,

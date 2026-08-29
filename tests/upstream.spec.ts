@@ -19,6 +19,16 @@ describe('prepareChatBody', () => {
     expect(prepared['tool_choice']).toBe('read')
   })
 
+  it('normalizes DSH developer messages to WorkBuddy system messages', () => {
+    const prepared = JSON.parse(prepareChatBody(JSON.stringify({
+      messages: [
+        { role: 'developer', content: 'system prompt' },
+        { role: 'user', content: 'hello' },
+      ],
+    }))) as { messages: { role: string; content: string }[] }
+    expect(prepared.messages.map(message => message.role)).toEqual(['system', 'user'])
+  })
+
   it('drops tools when tool_choice is none', () => {
     const prepared = JSON.parse(prepareChatBody(JSON.stringify({
       tool_choice: 'none',
@@ -107,6 +117,32 @@ describe('parseUpstreamModel', () => {
       descriptionZh: '能力均衡',
     })
     expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
+  })
+
+  it('treats multimodal as text-only unless WorkBuddy advertises images', () => {
+    expect(parseUpstreamModel({
+      id: 'a',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+      supportsImages: true,
+    })?.multimodal).toBe(true)
+    expect(parseUpstreamModel({
+      id: 'b',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+      supportsImages: false,
+    })?.multimodal).toBe(false)
+    expect(parseUpstreamModel({
+      id: 'c',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+      supportsImages: 'yes',
+    })?.multimodal).toBeUndefined()
+    expect(parseUpstreamModel({
+      id: 'd',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+    })?.multimodal).toBeUndefined()
   })
 
   it('rejects disabled models and models without token limits', () => {
