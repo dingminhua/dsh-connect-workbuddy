@@ -113,30 +113,32 @@ describe('parseUpstreamModel', () => {
       contextWindow: 1_000_000,
       maxTokens: 48_000,
       creditMultiplier: 0.79,
-      multimodal: true,
       descriptionZh: '能力均衡',
     })
     expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
   })
 
-  it('treats multimodal as text-only unless WorkBuddy advertises images', () => {
+  it('never infers multimodal from the upstream image flags', () => {
+    // The upstream `supportsImages`/`disabledMultimodal` flags are not reliable,
+    // so image input is decided by the user's explicit opt-in (imageModelIds).
     expect(parseUpstreamModel({
       id: 'a',
       maxInputTokens: 1,
       maxOutputTokens: 1,
       supportsImages: true,
-    })?.multimodal).toBe(true)
+    })?.multimodal).toBeUndefined()
     expect(parseUpstreamModel({
       id: 'b',
       maxInputTokens: 1,
       maxOutputTokens: 1,
       supportsImages: false,
-    })?.multimodal).toBe(false)
+    })?.multimodal).toBeUndefined()
     expect(parseUpstreamModel({
       id: 'c',
       maxInputTokens: 1,
       maxOutputTokens: 1,
-      supportsImages: 'yes',
+      supportsImages: true,
+      disabledMultimodal: true,
     })?.multimodal).toBeUndefined()
     expect(parseUpstreamModel({
       id: 'd',

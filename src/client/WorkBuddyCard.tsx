@@ -112,6 +112,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const [settingsRevision, setSettingsRevision] = useState(0)
   const [draftModels, setDraftModels] = useState<WorkBuddyWebModel[] | undefined>(undefined)
   const [draftEnabledIds, setDraftEnabledIds] = useState<Set<string> | undefined>(undefined)
+  const [draftImageIds, setDraftImageIds] = useState<Set<string> | undefined>(undefined)
   const [draftContextBudgets, setDraftContextBudgets] = useState<Record<string, number> | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [switchingAccount, setSwitchingAccount] = useState(false)
@@ -225,13 +226,21 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       const body = await response.json() as { models?: WorkBuddyWebModel[] }
       if (!response.ok || !Array.isArray(body.models)) throw new Error(`HTTP ${response.status}`)
       const fresh = body.models
-      // Map the old SAVED selection onto the fresh catalog by model id, so
-      // renames and additions never silently lose choices.
-      const oldEnabled = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
       const freshIds = new Set(fresh.map(model => model.id))
-      const stillEnabled = [...oldEnabled].filter(id => freshIds.has(id))
+      // Re-map the user's CURRENT selections (draft first, then saved) onto the
+      // fresh catalog by model id, so renames and additions never silently lose
+      // enabled choices, image opt-ins, or context budgets.
+      const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
+      const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
+      const stillBudgets: Record<string, number> = {}
+      for (const id of freshIds) {
+        const budget = activeContextBudgets[id]
+        if (typeof budget === 'number') stillBudgets[id] = budget
+      }
       setDraftModels(fresh)
       setDraftEnabledIds(new Set(stillEnabled))
+      setDraftImageIds(new Set(stillImages))
+      setDraftContextBudgets(stillBudgets)
     } catch (error: unknown) {
       if (mounted.current) setStatus({ status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') })
     } finally {
@@ -246,17 +255,26 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const visibleModels = draftModels ?? (status.status === 'signed-in' ? status.models : [])
   const savedEnabledIds = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
   const activeEnabledIds = draftEnabledIds ?? savedEnabledIds
+  const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
+  const activeImageIds = draftImageIds ?? savedImageIds
   const configured = settingsScope?.getSnapshot().value
   const savedContextBudgets = typeof configured === 'object' && configured !== null && typeof (configured as { contextBudgets?: unknown }).contextBudgets === 'object'
     ? (configured as { contextBudgets: Record<string, number> }).contextBudgets
     : {}
   const activeContextBudgets = draftContextBudgets ?? savedContextBudgets
-  const dirty = draftModels !== undefined || draftEnabledIds !== undefined || draftContextBudgets !== undefined
+  const dirty = draftModels !== undefined || draftEnabledIds !== undefined || draftImageIds !== undefined || draftContextBudgets !== undefined
 
   const toggleModel = (modelId: string): void => {
     const next = new Set(activeEnabledIds)
     if (!next.delete(modelId)) next.add(modelId)
     setDraftEnabledIds(next)
+    setDraftModels([...visibleModels])
+  }
+
+  const toggleImage = (modelId: string): void => {
+    const next = new Set(activeImageIds)
+    if (!next.delete(modelId)) next.add(modelId)
+    setDraftImageIds(next)
     setDraftModels([...visibleModels])
   }
 
@@ -268,6 +286,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const discardModels = (): void => {
     setDraftModels(undefined)
     setDraftEnabledIds(undefined)
+    setDraftImageIds(undefined)
     setDraftContextBudgets(undefined)
   }
 
@@ -282,8 +301,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
         ...model,
         contextWindow: model.nativeContextWindow,
         nativeContextWindow: undefined,
+        multimodal: undefined,
       })))
       await settingsScope.set('enabledModelIds', [...activeEnabledIds])
+      await settingsScope.set('imageModelIds', [...activeImageIds])
       await settingsScope.set('contextBudgets', activeContextBudgets)
       discardModels()
       await refreshUsage()
@@ -482,6 +503,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                   </span>
                                 </span>
                               </label>
+                              <label className="dsm-workbuddy-model-image" title={t('row.modelImage')}>
+                                <input
+                                  type="checkbox"
+                                  checked={activeImageIds.has(model.id)}
+                                  disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                  onChange={() => { toggleImage(model.id) }}
+                                />
+                                <span>{t('row.modelImage')}</span>
+                              </label>
                               <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
                                 {model.nativeContextWindow > 200_000
                                   ? <label>
@@ -511,8 +541,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                               <div className="dsm-workbuddy-model-meta">
                                 <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
                                 <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens, t('row.modelUnknown')) })}</span>
-                                {model.multimodal !== true ? null
-                                  : <span className="dsm-workbuddy-model-meta-tag">{t('row.modelMultimodal')}</span>}
                                 {model.reasoning === undefined || model.reasoning.supportedEfforts === undefined ? null
                                   : <span>{t('row.modelReasoning', { efforts: model.reasoning.supportedEfforts.join(' / ') })}</span>}
                               </div>

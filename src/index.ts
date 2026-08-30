@@ -121,6 +121,8 @@ export interface Config {
   lastCatalog?: WorkBuddyModelInfo[]
   /** The user's selection, as model ids. */
   enabledModelIds?: string[]
+  /** Model ids the user explicitly opted into image input. */
+  imageModelIds?: string[]
   /** Local DSH context budget per model; models above 200K default to 200K. */
   contextBudgets?: Record<string, WorkBuddyContextBudget>
 }
@@ -137,6 +139,7 @@ export const Config: z<Config> = z.object({
   accountId: z.string().description('Selected local WorkBuddy account id (never a token)'),
   lastCatalog: z.array(modelConfig).description('Last refreshed WorkBuddy model directory shown by the plugin card') as z<WorkBuddyModelInfo[]>,
   enabledModelIds: z.array(z.string()).default([]).description('WorkBuddy model ids the user enabled'),
+  imageModelIds: z.array(z.string()).default([]).description('WorkBuddy model ids the user opted into image input'),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}).description('Local DSH context budget per WorkBuddy model'),
 })
 
@@ -157,14 +160,31 @@ export function apply(ctx: Context, config: Config): void {
   const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
 
   const enabledSet = (value: Config): ReadonlySet<string> => new Set(value.enabledModelIds ?? [])
+  const imageSet = (value: Config): ReadonlySet<string> => new Set(value.imageModelIds ?? [])
+  // Stamp the user's explicit image opt-in onto a model list. This is the ONLY
+  // source of `multimodal`; upstream capability flags are never trusted. Applied
+  // to every runtime catalog path (save, discovery, startup seed) so a model's
+  // image capability is consistent across them.
+  const withImageSelection = (
+    models: readonly WorkBuddyModelInfo[],
+    images: ReadonlySet<string>,
+  ): readonly WorkBuddyModelInfo[] =>
+    models.map(model => ({
+      ...model,
+      ...images.has(model.id) ? { multimodal: true } : { multimodal: false },
+    }))
   // Runtime catalog derives from the last-refreshed directory plus the user's
   // selection; an empty selection serves the whole directory so a never-
-  // configured plugin still exposes models.
+  // configured plugin still exposes models. Image input is the user's explicit
+  // opt-in (`imageModelIds`) and never inferred from upstream capability flags.
   const configuredModels = (value: Config): readonly WorkBuddyModelInfo[] =>
-    deriveCatalog(
-      value.lastCatalog?.length ? value.lastCatalog : FALLBACK_WORKBUDDY_MODELS,
-      enabledSet(value),
-      value.contextBudgets ?? {},
+    withImageSelection(
+      deriveCatalog(
+        value.lastCatalog?.length ? value.lastCatalog : FALLBACK_WORKBUDDY_MODELS,
+        enabledSet(value),
+        value.contextBudgets ?? {},
+      ),
+      imageSet(value),
     )
   // What the card displays: the last-refreshed directory, so the user re-reads
   // the current catalog rather than a stale saved snapshot.
@@ -185,6 +205,7 @@ export function apply(ctx: Context, config: Config): void {
     client,
     displayModels: () => displayModels(current()),
     enabledModelIds: () => current().enabledModelIds ?? [],
+    imageModelIds: () => current().imageModelIds ?? [],
     contextBudgets: () => current().contextBudgets ?? {},
     discoverModels,
   }))
@@ -287,10 +308,13 @@ export function apply(ctx: Context, config: Config): void {
 
         ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request) => {
           if (request.provider !== WORKBUDDY_PROVIDER) return []
-          const next = deriveCatalog(
-            await discoverModels(request.signal),
-            enabledSet(current()),
-            current().contextBudgets ?? {},
+          const next = withImageSelection(
+            deriveCatalog(
+              await discoverModels(request.signal),
+              enabledSet(current()),
+              current().contextBudgets ?? {},
+            ),
+            imageSet(current()),
           )
           return next.map(model => ({
             id: model.id,
@@ -320,7 +344,10 @@ export function apply(ctx: Context, config: Config): void {
           if (stopped) return
           const models = await client.fetchModels(credential)
           if (stopped) return
-          catalog.set(deriveCatalog(models, enabledSet(current()), current().contextBudgets ?? {}))
+          catalog.set(withImageSelection(
+            deriveCatalog(models, enabledSet(current()), current().contextBudgets ?? {}),
+            imageSet(current()),
+          ))
           invalidate?.()
           // `lastCatalog` is deliberately NOT seeded here: it belongs to the
           // user's saved selection, written only by the card's explicit save

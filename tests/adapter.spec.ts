@@ -14,7 +14,7 @@ function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean
 }
 
 describe('workBuddyModelInput', () => {
-  it('offers images only when WorkBuddy advertises them', () => {
+  it('offers images only for models the user opted into image input', () => {
     expect(workBuddyModelInput(model(undefined, true))).toEqual(['text', 'image'])
     expect(workBuddyModelInput(model(undefined, false))).toEqual(['text'])
     expect(workBuddyModelInput(model())).toEqual(['text'])

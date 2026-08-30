@@ -9,8 +9,8 @@ const MODELS: readonly WorkBuddyModelInfo[] = [
 ]
 
 describe('deriveCatalog', () => {
-  it('marks the known fallback vision model as image-capable', () => {
-    expect(FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5v-turbo')?.multimodal).toBe(true)
+  it('does not pre-mark any fallback model as image-capable', () => {
+    expect(FALLBACK_WORKBUDDY_MODELS.every(model => model.multimodal !== true)).toBe(true)
   })
 
   it('serves the whole directory when nothing is enabled yet', () => {

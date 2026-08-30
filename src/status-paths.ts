@@ -103,6 +103,7 @@ export type WorkBuddyWebUsage =
     accounts: readonly WorkBuddyWebAccount[]
     models: readonly WorkBuddyWebModel[]
     enabledModelIds: readonly string[]
+    imageModelIds: readonly string[]
     credits?: WorkBuddyWebCredits
     creditsError?: string
     checkin?: WorkBuddyWebCheckin

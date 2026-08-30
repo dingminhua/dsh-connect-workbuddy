@@ -48,7 +48,11 @@ export interface WorkBuddyUpstreamModel {
   maxTokens: number
   /** Credit multiplier parsed from the upstream `credits` string. */
   creditMultiplier?: number
-  /** Upstream advertises image input for this model. */
+  /**
+   * Image-input support decided by the user's explicit selection (imageModelIds),
+   * not inferred from the upstream `supportsImages`/`disabledMultimodal` flags,
+   * which proved insufficiently reliable. See `catalog.ts` / `index.ts`.
+   */
   multimodal?: boolean
   reasoning?: WorkBuddyReasoning
   descriptionZh?: string
@@ -375,7 +379,6 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
   const descriptionEn = typeof raw['descriptionEn'] === 'string' && raw['descriptionEn'] !== '' ? raw['descriptionEn'] : undefined
   const creditMultiplier = parseCreditMultiplier(raw['credits'])
   const reasoning = parseReasoning(raw['reasoning'])
-  const multimodal = typeof raw['supportsImages'] === 'boolean' ? raw['supportsImages'] : undefined
   const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
   return {
     id,
@@ -383,7 +386,6 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
     contextWindow: input,
     maxTokens: output,
     ...creditMultiplier === undefined ? {} : { creditMultiplier },
-    ...multimodal === undefined ? {} : { multimodal },
     ...reasoning === undefined ? {} : { reasoning },
     ...descriptionZh === undefined ? {} : { descriptionZh },
     ...descriptionEn === undefined ? {} : { descriptionEn },

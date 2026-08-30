@@ -73,6 +73,7 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     },
     displayModels: () => FALLBACK_WORKBUDDY_MODELS,
     enabledModelIds: () => ['glm-5.3'],
+    imageModelIds: () => ['glm-5.3'],
     contextBudgets: () => ({}),
     ...overrides,
   }
@@ -124,6 +125,7 @@ describe('workBuddyWebStatus', () => {
     const glm = status.models.find(model => model.id === 'glm-5.3')
     expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 200_000 })
     expect(status.enabledModelIds).toEqual(['glm-5.3'])
+    expect(status.imageModelIds).toEqual(['glm-5.3'])
     expect(status.checkin).toMatchObject({ todayCheckedIn: true, todayCredit: 100, streakDays: 9 })
     expect(status.credits).toMatchObject({
       total: 1875,

@@ -41,6 +41,8 @@ export interface WorkBuddyStatusRouteOptions {
   displayModels(): readonly WorkBuddyModelInfo[]
   /** The user's selection, stored as model ids. */
   enabledModelIds(): readonly string[]
+  /** Model ids the user opted into image input. */
+  imageModelIds(): readonly string[]
   /** Saved local DSH context budgets by model id. */
   contextBudgets(): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog from the upstream. */
@@ -170,6 +172,7 @@ export async function workBuddyWebStatus(
     accounts: accounts.map(toWebAccount),
     models: deps.displayModels().map(model => toWebModel(model, deps.contextBudgets())),
     enabledModelIds: [...deps.enabledModelIds()],
+    imageModelIds: [...deps.imageModelIds()],
   }
   const [creditsResult, checkinResult] = await Promise.allSettled([
     deps.client.fetchCredits(credential),

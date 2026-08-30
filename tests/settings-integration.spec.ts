@@ -48,6 +48,31 @@ describe('WorkBuddy provider registration', () => {
     expect(models.length).toBeGreaterThan(0)
   })
 
+  it('applies the image opt-in to the runtime catalog on settings update', async () => {
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+
+    // Default: no model is image-capable until the user opts in.
+    const before = await ctx.llm.listModels('workbuddy')
+    const glmBefore = before.find(model => model.id === 'glm-5.3')
+    expect(glmBefore?.inputModalities ?? []).not.toContain('image')
+
+    // The card's save writes `imageModelIds`; the same change via the settings
+    // seam must reach the adapter input modalities (locks H-1/M-1: the image
+    // opt-in is injected on every catalog path, not just the save-onChange one).
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { imageModelIds: ['glm-5.3'] })
+
+    const after = await ctx.llm.listModels('workbuddy')
+    const glmAfter = after.find(model => model.id === 'glm-5.3')
+    const otherAfter = after.find(model => model.id === 'deepseek-v4-pro')
+    expect(glmAfter?.inputModalities).toContain('image')
+    expect(otherAfter?.inputModalities ?? []).not.toContain('image')
+  })
+
   it('stops serving on the shim port after disposal', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
