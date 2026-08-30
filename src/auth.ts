@@ -106,23 +106,41 @@ export function workbuddyOwnAuthPath(): string {
 
 /**
  * Platform-default directories holding the WorkBuddy desktop app's auth file.
- * Derived from platform conventions; unverified on Windows and Linux.
+ *
+ * Windows and Linux prefer the OS-issued env location and fall back to the
+ * home-derived convention when it is unset, so a redirected profile (OneDrive
+ * folder backup, enterprise policy) still resolves. macOS has no equivalent
+ * env variable; the single Application Support path is used as-is.
+ *
+ * `platform`, `home`, and `env` are injectable so the platform branches are
+ * testable on any host without touching a real machine.
  */
-export function defaultDesktopAuthDirs(): string[] {
-  const home = homedir()
-  if (process.platform === 'darwin') {
+export function defaultDesktopAuthDirs(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (platform === 'darwin') {
     return [join(home, 'Library', 'Application Support', 'CodeBuddyExtension', 'Data', 'Public', 'auth')]
   }
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
+    const local = nonEmptyEnv(env['LOCALAPPDATA']) ?? join(home, 'AppData', 'Local')
+    const roaming = nonEmptyEnv(env['APPDATA']) ?? join(home, 'AppData', 'Roaming')
     return [
-      join(home, 'AppData', 'Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
-      join(home, 'AppData', 'Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join(local, 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join(roaming, 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
     ]
   }
-  if (process.platform === 'linux') {
-    return [join(home, '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth')]
+  if (platform === 'linux') {
+    const config = nonEmptyEnv(env['XDG_CONFIG_HOME']) ?? join(home, '.config')
+    return [join(config, 'CodeBuddyExtension', 'Data', 'Public', 'auth')]
   }
   return []
+}
+
+/** A non-empty, trimmed env value, or undefined when unset/blank. */
+function nonEmptyEnv(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 }
 
 /** The live auth file's platform candidates, in probe order. */
@@ -207,7 +225,17 @@ export function parseWorkBuddyAuth(
  * backups, never the primary ordering.
  */
 function fileRank(path: string): number {
-  return path.slice(path.lastIndexOf('/') + 1) === WORKBUDDY_LIVE_FILENAME ? 0 : 1
+  return authFileName(path) === WORKBUDDY_LIVE_FILENAME ? 0 : 1
+}
+
+/**
+ * Filename of a path regardless of the host separator: Windows paths use `\`
+ * and this helper must keep working when a Windows path is compared on a
+ * POSIX host (e.g. tests injecting a Windows-style auth dir).
+ */
+export function authFileName(path: string): string {
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return separator === -1 ? path : path.slice(separator + 1)
 }
 
 /**

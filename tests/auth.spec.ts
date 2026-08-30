@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  authFileName,
+  defaultDesktopAuthDirs,
   expiryToMs,
   parseWorkBuddyAuth,
   workbuddyAccountId,
@@ -95,6 +97,89 @@ describe('workbuddyAccountId', () => {
   it('falls back to uid when uin is absent', () => {
     expect(workbuddyAccountId({ uid: 'uid-x' })).toBe(workbuddyAccountId({ uid: 'uid-x' }))
     expect(workbuddyAccountId({ uid: 'uid-x' })).not.toBe(workbuddyAccountId({ uid: 'uid-y' }))
+  })
+})
+
+describe('authFileName', () => {
+  it('extracts the basename from POSIX paths', () => {
+    expect(authFileName('/home/user/auth/workbuddy-desktop.info')).toBe('workbuddy-desktop.info')
+    expect(authFileName('workbuddy-desktop.info')).toBe('workbuddy-desktop.info')
+  })
+
+  it('extracts the basename from Windows backslash paths without a host POSIX assumption', () => {
+    expect(authFileName('C:\\Users\\user\\AppData\\Roaming\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info'))
+      .toBe('workbuddy-desktop.info')
+    expect(authFileName('D:\\auth\\workbuddy-desktop.2026-08-01T00-00-00-000Z.info'))
+      .toBe('workbuddy-desktop.2026-08-01T00-00-00-000Z.info')
+  })
+
+  it('tolerates mixed separators in one path', () => {
+    expect(authFileName('C:\\Users/user\\auth/workbuddy-desktop.info')).toBe('workbuddy-desktop.info')
+  })
+
+  it('handles empty and separator-only paths without throwing', () => {
+    // Never a live filename, but must not crash the ranking logic.
+    expect(authFileName('')).toBe('')
+    expect(authFileName('/')).toBe('')
+    expect(authFileName('auth\\')).toBe('')
+    expect(authFileName('\\')).toBe('')
+  })
+})
+
+describe('defaultDesktopAuthDirs', () => {
+  it('uses LOCALAPPDATA and APPDATA on Windows when set', () => {
+    const dirs = defaultDesktopAuthDirs('win32', 'C:/Users/test', {
+      LOCALAPPDATA: 'D:/Local',
+      APPDATA: 'D:/Roaming',
+    })
+    expect(dirs).toEqual([
+      join('D:/Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join('D:/Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ])
+  })
+
+  it('falls back to <home>\\AppData on Windows when env vars are unset', () => {
+    const dirs = defaultDesktopAuthDirs('win32', 'C:/Users/test', {})
+    expect(dirs).toEqual([
+      join('C:/Users/test', 'AppData', 'Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join('C:/Users/test', 'AppData', 'Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ])
+  })
+
+  it('falls back to <home>\\AppData on Windows when env vars are blank whitespace', () => {
+    // nonEmptyEnv trims; a whitespace-only value counts as unset.
+    const dirs = defaultDesktopAuthDirs('win32', 'C:/Users/test', {
+      LOCALAPPDATA: '   ',
+      APPDATA: '  ',
+    })
+    expect(dirs).toEqual([
+      join('C:/Users/test', 'AppData', 'Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join('C:/Users/test', 'AppData', 'Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ])
+  })
+
+  it('uses XDG_CONFIG_HOME on Linux when set', () => {
+    const dirs = defaultDesktopAuthDirs('linux', '/home/test', { XDG_CONFIG_HOME: '/cfg' })
+    expect(dirs).toEqual([join('/cfg', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+  })
+
+  it('falls back to ~/.config on Linux when XDG_CONFIG_HOME is unset', () => {
+    const dirs = defaultDesktopAuthDirs('linux', '/home/test', {})
+    expect(dirs).toEqual([join('/home/test', '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+  })
+
+  it('falls back to ~/.config on Linux when XDG_CONFIG_HOME is blank whitespace', () => {
+    const dirs = defaultDesktopAuthDirs('linux', '/home/test', { XDG_CONFIG_HOME: ' \t ' })
+    expect(dirs).toEqual([join('/home/test', '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+  })
+
+  it('uses the single Application Support path on macOS', () => {
+    const dirs = defaultDesktopAuthDirs('darwin', '/Users/test', {})
+    expect(dirs).toEqual([join('/Users/test', 'Library', 'Application Support', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+  })
+
+  it('returns no candidates on unknown platforms', () => {
+    expect(defaultDesktopAuthDirs('freebsd', '/home/test', {})).toEqual([])
   })
 })
 

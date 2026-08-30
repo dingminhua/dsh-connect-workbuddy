@@ -42,6 +42,7 @@ export {
   type WorkBuddyModelInfo,
 } from './catalog.ts'
 export {
+  authFileName,
   defaultDesktopAuthCandidates,
   defaultDesktopAuthDirs,
   defaultDesktopAuthPath,

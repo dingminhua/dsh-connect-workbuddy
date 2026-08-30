@@ -40,10 +40,22 @@ export function workbuddyHostHeartbeatPath(): string {
   return join(resolveDshHome(), WORKBUDDY_HOST_HEARTBEAT_FILENAME)
 }
 
-/** Process start time in epoch milliseconds; undefined when unavailable. */
+/**
+ * Process start time in epoch milliseconds; undefined when unavailable.
+ *
+ * POSIX reads `ps -o lstart=`; Windows has no such command, so the creation
+ * time is taken from PowerShell's `Get-Process` StartTime, emitted as UTC ISO
+ * 8601 so `Date.parse` understands it without locale assumptions. Absent or
+ * unqueryable processes (other users' processes) degrade to undefined.
+ */
 export function processStartTimeMs(pid: number): number | undefined {
   try {
-    const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' })
+    const output = process.platform === 'win32'
+      ? execFileSync('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().ToString('o')`,
+      ], { encoding: 'utf8' })
+      : execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' })
     const parsed = Date.parse(output.trim())
     return Number.isFinite(parsed) ? parsed : undefined
   } catch {
