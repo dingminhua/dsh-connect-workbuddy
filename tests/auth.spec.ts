@@ -264,7 +264,7 @@ describe('WorkBuddyCredentialStore multi-account discovery', () => {
     expect((await store.current())?.nickname).toBe('Beta')
   })
 
-  it('prefers an account with usable credit when nothing is selected', async () => {
+  it('defaults to the live sign-in, not credit-seeking, when nothing is selected', async () => {
     await writeAuth(LIVE, accountDoc({
       account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
       auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
@@ -277,13 +277,13 @@ describe('WorkBuddyCredentialStore multi-account discovery', () => {
       authDirs: [join(root, AUTH_DIR)],
       refresh: async () => ({ accessToken: 'never' }),
     })
-    const betaId = workbuddyAccountId({ uid: '', uin: '100000000002' })
-    store.setPreferAccountIds([betaId])
+    // No explicit selection: the LIVE sign-in (Alpha) wins. The plugin must
+    // NOT hunt for the account with remaining credit (Beta).
     const credential = await store.current()
-    expect(credential?.nickname).toBe('Beta')
+    expect(credential?.nickname).toBe('Alpha')
   })
 
-  it('honours an explicit selection and falls back when it disappears', async () => {
+  it('does not fall back when an explicit selection disappears', async () => {
     await writeAuth(LIVE, accountDoc({
       account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
       auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
@@ -293,8 +293,10 @@ describe('WorkBuddyCredentialStore multi-account discovery', () => {
       refresh: async () => ({ accessToken: 'never' }),
     })
     store.selectAccount('does-not-exist')
+    // The selected account is gone. The plugin must NOT silently switch to the
+    // remaining account; it surfaces undefined so the user can re-select.
     const credential = await store.current()
-    expect(credential?.nickname).toBe('Alpha')
+    expect(credential).toBeUndefined()
   })
 
   it('skips corrupt files instead of hiding the other accounts', async () => {

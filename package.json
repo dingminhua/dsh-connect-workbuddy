@@ -2,7 +2,7 @@
   "name": "dsh-connect-workbuddy",
   "displayName": "DSH Connect WorkBuddy",
   "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
   "license": "MIT",

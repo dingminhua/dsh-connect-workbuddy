@@ -7,10 +7,10 @@
  *     未过期则继续沿用旧 token。这些机制已在该项目验证，此处沿用。
  * 改动：原版只解析单个 `workbuddy-desktop.info`。WorkBuddy 桌面端在
  *   同一 auth 目录留下带时间戳的备份文件（`workbuddy-desktop.<stamp>.info`），
- *   实测这些文件各自持有不同账号的可用凭据（本机 6 个文件 → 2 个账号，
- *   均能通过上游鉴权，但积分分别为 1875 与 0）。本实现改为扫描整个
- *   auth 目录，按 uin 去重为多个可选账号，并默认优先有可用积分的账号。
- *   跟随 App 当前登录仍是默认行为，切换账号是显式选项。
+ *   实测这些文件各自持有不同账号的可用凭据（本机 6 个文件 → 2 个账号）。
+ *   本实现改为扫描整个 auth 目录，按 uin 去重为多个可选账号。跟随 App
+ *   当前登录（live 文件）仍是默认行为；用户显式选择的账号被严格绑定，
+ *   不因积分多少而切换，失效时也不会静默改选其他账号。
  *
  * @module dsh-connect-workbuddy/auth
  */
@@ -307,8 +307,6 @@ export class WorkBuddyCredentialStore {
   private readonly authDirs: readonly string[] | undefined
   private desktopPathOverride: string | undefined
   private accountId: string | undefined
-  /** Account ids with usable credit, tried first when nothing is selected. */
-  private preferIds: string[] = []
   private inflight: Promise<WorkBuddyCredential> | undefined
 
   constructor(options: WorkBuddyStoreOptions) {
@@ -334,16 +332,6 @@ export class WorkBuddyCredentialStore {
   /** Selected account id, for diagnostics and route assembly. */
   selectedAccountId(): string | undefined {
     return this.accountId
-  }
-
-  /**
-   * Preferred account ordering used when no account is explicitly selected.
-   * An account with zero credit fails every chat request, so accounts with
-   * usable credit must win the default.
-   */
-  setPreferAccountIds(ids: readonly string[]): void {
-    this.preferIds = [...ids]
-    this.inflight = undefined
   }
 
   /** The auth-file path candidates, in probe order. */
@@ -450,16 +438,14 @@ export class WorkBuddyCredentialStore {
   }
 
   /**
-   * Preferred account first, else the live sign-in, else the freshest
-   * credential. Following the app's current sign-in is the documented default
-   * behaviour; the backups exist so the user can switch explicitly.
+   * Default when no account is explicitly selected: the live sign-in, else the
+   * freshest credential. Following the app's current sign-in is the documented
+   * default behaviour; the backups exist so the user can switch explicitly.
+   * This is NOT credit-seeking — it never reorders accounts to find one with
+   * remaining credit.
    */
   private preferred(credentials: readonly WorkBuddyCredential[]): WorkBuddyCredential | undefined {
     if (credentials.length === 0) return undefined
-    for (const id of this.preferIds) {
-      const match = credentials.find(credential => workbuddyAccountId(credential) === id)
-      if (match !== undefined) return match
-    }
     return credentials.reduce((best, credential) => {
       if (fileRank(credential.filePath) < fileRank(best.filePath)) return credential
       if (fileRank(credential.filePath) === fileRank(best.filePath)
@@ -495,10 +481,11 @@ export class WorkBuddyCredentialStore {
     const credentials = await this.readAll()
     if (this.accountId === undefined) return this.preferred(credentials)
     // A saved account can disappear when WorkBuddy replaces its login or
-    // cleans up backups; fall back instead of trapping the user behind an
-    // unrecoverable selection.
+    // cleans up backups. Do NOT silently fall back to a different account: that
+    // would bill a different account than the one the user selected. Return
+    // undefined so the caller surfaces "no signed-in account" and the user can
+    // re-select instead of the plugin quietly switching accounts.
     return credentials.find(credential => workbuddyAccountId(credential) === this.accountId)
-      ?? this.preferred(credentials)
   }
 
   /** The credential to send upstream: {@link current}, refreshed on demand. */

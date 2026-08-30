@@ -11,9 +11,9 @@
  * 参考：dingminhua/dsh-connect-trae（MIT，Copyright (c) 2026 LaoDing）
  *   — 配置 schema 的字段划分（lastCatalog 目录 + enabledModelIds 勾选分离）、
  *     `displayModels` 与 `configuredModels` 的区分、
- *     `registerModelDiscovery` 与 `discoverModels` 返回草稿目录的做法、
- *     以及「优先选择有可用积分的账号」的启动探测，均来自该项目。
- * 改动：账号优选改为按 WorkBuddy 的积分接口判断（trae 用其用量接口），
+ *     `registerModelDiscovery` 与 `discoverModels` 返回草稿目录的做法，
+ *     均来自该项目。
+ * 改动：账号选择严格绑定用户显式选择的账号（不按积分自动切换），
  *   并移除与本项目上游无关的 1M 变体逻辑。
  *
  * @module dsh-connect-workbuddy
@@ -229,36 +229,6 @@ export function apply(ctx: Context, config: Config): void {
     void clearHostHeartbeat()
   })
 
-  /**
-   * Prefer an account with usable credit. Every account yields the same
-   * catalog, but an account at zero credit fails each chat request, so the
-   * default must not land there.
-   */
-  const selectPreferredCreditAccount = async (): Promise<void> => {
-    try {
-      const accounts = await store.accounts()
-      const scored: { id: string; credits: number }[] = []
-      for (const account of accounts) {
-        try {
-          store.selectAccount(account.id)
-          const credential = await store.resolve()
-          const credits = await client.fetchCredits(credential)
-          scored.push({ id: account.id, credits: credits.total })
-        } catch (error: unknown) {
-          // One account whose token or billing query fails must not block
-          // choosing a usable default from the others.
-          ctx.logger.warn(`dsh-connect-workbuddy: account ${account.id} unavailable for default selection`, error)
-        }
-      }
-      scored.sort((a, b) => b.credits - a.credits)
-      store.setPreferAccountIds(scored.filter(item => item.credits > 0).map(item => item.id))
-      // Restore the user's explicit selection (if any) before first use.
-      store.selectAccount(current().accountId)
-    } catch (error: unknown) {
-      ctx.logger.warn('dsh-connect-workbuddy: default account selection failed; continuing', error)
-    }
-  }
-
   void shim.ready
     .then(async () => {
       if (stopped) return
@@ -334,8 +304,8 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
 
-      // Pick a default account with usable credit, then seed the catalog.
-      await selectPreferredCreditAccount()
+      // Seed the catalog from the currently selected account (or the live
+      // sign-in default when nothing is selected yet).
       if (stopped) return
 
       void (async () => {

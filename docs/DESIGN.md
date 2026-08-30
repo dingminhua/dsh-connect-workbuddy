@@ -111,7 +111,7 @@ uin <B> (<账号乙>): catalog HTTP 200, 28 models, 16 cli, credits total=0
 - 按 `uin` 去重（实测 6 个文件 → 2 个账号）
 - 每个账号一项：`{ id: sha256(uin), accountName: nickname, uin, domain, source, tokenExpiresAtMs, selected }`
 - 优先用最新文件（按文件名时间戳倒序）
-- 默认选中**有可用积分**的账号（trae 的 `setPreferAccountIds` 思路，实测直接适用：0 积分账号选了会失败）
+- 默认跟随 App 当前登录（live 文件）；用户显式选择的账号被严格绑定，不按积分切换，失效时也不静默改选
 - `accountId` 存进配置，**token 不进配置**（与 trae 一致）
 
 > 注意：历史文件是 WorkBuddy 的**备份产物**，不是官方多账号 API。需在 README 明确标注，并把"跟随 App 当前登录"作为默认行为，账号切换作为显式选择。
