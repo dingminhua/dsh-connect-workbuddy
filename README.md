@@ -100,12 +100,19 @@ dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 
 ## 市场收录与展示
 
-插件已包含可安装的 `dsh.bundle` manifest，并发布到 npm。社区市场通常从 [Awesome DSH Plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 注册表同步条目；仓库内的提交草稿位于 [`awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml`](awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml)。
+插件已包含可安装的 `dsh.bundle` manifest，并发布到 npm。社区市场通常从 [Awesome DSH Plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 注册表同步条目；仓库内的提交草稿位于 [`awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml`](awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml)，正式提交为 PR [#3812](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/3812)（`data/plugins/dingminhua__dsh-connect-workbuddy.yml`，已通过 CI 与 Submission gate，等待维护者合并）。
+
+**收录目录规范**（依据 [contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)）：
+
+- 每个插件一个 YAML：`data/plugins/<owner>__<repo>.yml`，字段为 `url`（与仓库地址完全一致）、`name`（`owner/repo`）、`category`（有效值之一，本项目为 `model`）、`description.en`（必填，以句号结尾）/ `description.zh`（可选）；描述中含 `: ` 必须加引号。
+- 仓库必须声明 `dsh.bundle` manifest（本项目 `dsh.bundle.patch: ./cordis.patch.yml`），且被 `dsh-plugin` topic 标记；提交数 ≥ 10、仓库满 1 天由 CI 自动检查。
+- 两个 README（`README.md` / `README.zh.md`）由脚本生成，不得手工编辑；修改 YAML 后执行 `node scripts/generate-readme.mjs` 重新生成。
+- 一个 PR 最多收录 3 条；只改自己的条目，不动其他插件。
 
 市场卡片中的截图与 GitHub README 徽章是两套机制：
 
 - **GitHub 徽章**由本 README 顶部的 Shields/dshfind 图片链接生成。
-- **市场截图**由注册表 `data/screenshots.json` 控制；未配置时，市场会尝试从 README 提取图片。
+- **市场截图**按当前约定由**插件自己仓库根目录的 `screenshots.json`** 声明（本项目声明了 [screenshots.json](screenshots.json)，含使用界面截图），注册表 `data/screenshots.json` 是旧约定下的回退，**不再添加新键**（本项目已在提交前撤销该文件的改动）。
 - **市场图标/占位图**由具体市场的展示规则决定，并不是 npm `package.json` 的通用字段，也不是 README 徽章。
 
 ## 已知限制
