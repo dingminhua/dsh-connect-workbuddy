@@ -6,6 +6,15 @@
 
 <p align="center"><b>Connect locally signed-in WorkBuddy models to DeepSeek Harness, with a read-only credits overview and model management.</b></p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-connect-workbuddy"><img src="https://img.shields.io/npm/v/dsh-connect-workbuddy?style=flat-square&label=npm&color=cb3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-connect-workbuddy"><img src="https://img.shields.io/npm/dm/dsh-connect-workbuddy?style=flat-square&label=downloads" alt="npm downloads"></a>
+  <a href="https://github.com/dingminhua/dsh-connect-workbuddy/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dingminhua/dsh-connect-workbuddy/ci.yml?branch=main&style=flat-square&label=tests" alt="test status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dingminhua/dsh-connect-workbuddy?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/dingminhua/dsh-connect-workbuddy/stargazers"><img src="https://img.shields.io/github/stars/dingminhua/dsh-connect-workbuddy?style=flat-square" alt="GitHub stars"></a>
+  <a href="https://dshfind.com/plugins/dingminhua/dsh-connect-workbuddy"><img src="https://dshfind.com/api/badge/dingminhua/dsh-connect-workbuddy" alt="dshfind plugin"></a>
+</p>
+
 [English](README.en.md) | 中文
 
 A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle plugin that connects locally signed-in WorkBuddy CN models to the DSH model picker, with a read-only credits overview and selectable model management.
@@ -80,6 +89,16 @@ Local dev via a `link:` install to the desktop profile (restart DSH Desktop afte
 ```sh
 dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 ```
+
+## Marketplace listing
+
+The plugin ships an installable `dsh.bundle` manifest and is published to npm. Community marketplaces generally sync entries from the [Awesome DSH Plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) registry; the submission draft lives at [`awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml`](awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml).
+
+Marketplace screenshots and GitHub README badges are two separate mechanisms:
+
+- **GitHub badges** are produced by the Shields/dshfind image links at the top of this README.
+- **Marketplace screenshots** are controlled by the registry's `data/screenshots.json`; when unset, the marketplace falls back to extracting images from the README.
+- **Marketplace icons/placeholders** follow each marketplace's own display rules; they are not a generic npm `package.json` field nor a README badge.
 
 ## Known limitations
 

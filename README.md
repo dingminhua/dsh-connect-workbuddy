@@ -16,7 +16,11 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-connect-workbuddy"><img src="https://img.shields.io/npm/v/dsh-connect-workbuddy?style=flat-square&label=npm&color=cb3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-connect-workbuddy"><img src="https://img.shields.io/npm/dm/dsh-connect-workbuddy?style=flat-square&label=downloads" alt="npm downloads"></a>
+  <a href="https://github.com/dingminhua/dsh-connect-workbuddy/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dingminhua/dsh-connect-workbuddy/ci.yml?branch=main&style=flat-square&label=tests" alt="test status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/dingminhua/dsh-connect-workbuddy?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/dingminhua/dsh-connect-workbuddy/stargazers"><img src="https://img.shields.io/github/stars/dingminhua/dsh-connect-workbuddy?style=flat-square" alt="GitHub stars"></a>
+  <a href="https://dshfind.com/plugins/dingminhua/dsh-connect-workbuddy"><img src="https://dshfind.com/api/badge/dingminhua/dsh-connect-workbuddy" alt="dshfind plugin"></a>
 </p>
 
 一个独立的 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle 插件。它把本机已登录的 WorkBuddy 中国区账号接到 DSH 的模型选择器，同时提供**只读**的积分概览与可勾选的模型管理界面。
@@ -93,6 +97,16 @@ pnpm run check   # typecheck + test + build
 ```sh
 dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 ```
+
+## 市场收录与展示
+
+插件已包含可安装的 `dsh.bundle` manifest，并发布到 npm。社区市场通常从 [Awesome DSH Plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 注册表同步条目；仓库内的提交草稿位于 [`awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml`](awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml)。
+
+市场卡片中的截图与 GitHub README 徽章是两套机制：
+
+- **GitHub 徽章**由本 README 顶部的 Shields/dshfind 图片链接生成。
+- **市场截图**由注册表 `data/screenshots.json` 控制；未配置时，市场会尝试从 README 提取图片。
+- **市场图标/占位图**由具体市场的展示规则决定，并不是 npm `package.json` 的通用字段，也不是 README 徽章。
 
 ## 已知限制
 
