@@ -63,11 +63,12 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-credit-soon strong{color:var(--dsw-alias-label-primary,#e6e6e6);font-size:15px;font-variant-numeric:tabular-nums}
 .dsm-workbuddy-credit-panel-total{position:relative;align-items:center;text-align:center;overflow:hidden}
 .dsm-workbuddy-credit-panel-total::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;opacity:.9;background:#4d9b6d}
+.dsm-workbuddy-credit-total-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;width:100%}
 .dsm-workbuddy-credit-total-value{color:#3f8d60;font-size:32px;line-height:36px;font-weight:700;letter-spacing:-.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.dsm-workbuddy-checkin{display:flex;flex-direction:column;align-items:center;width:100%;margin-top:auto;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+.dsm-workbuddy-checkin{display:flex;flex-direction:column;align-items:center;width:100%;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-workbuddy-checkin-button{width:100%;padding:4px 10px;font-size:12px}
 .dsm-workbuddy-checkin-error{color:var(--dsw-alias-state-error-primary,#ef4444);font-size:11px;line-height:16px;text-align:center}
-@media (max-width:760px){.dsm-workbuddy-credits-panels{grid-template-columns:1fr}.dsm-workbuddy-credit-panel-total{align-items:flex-start;text-align:left}}
+@media (max-width:760px){.dsm-workbuddy-credits-panels{grid-template-columns:1fr}.dsm-workbuddy-credit-panel-total{align-items:flex-start;text-align:left}.dsm-workbuddy-credit-total-body{align-items:flex-start}}
 .dsm-workbuddy-models{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
 .dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}

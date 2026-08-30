@@ -421,8 +421,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                             </div>
                           </section>
                           <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-total">
-                            <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsTotalLabel')}</span>
-                            <strong className="dsm-workbuddy-credit-total-value">{formatNumber(status.credits.total)}</strong>
+                            <div className="dsm-workbuddy-credit-total-body">
+                              <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsTotalLabel')}</span>
+                              <strong className="dsm-workbuddy-credit-total-value">{formatNumber(status.credits.total)}</strong>
+                            </div>
                             {status.checkin === undefined ? null
                               : <div className="dsm-workbuddy-checkin">
                                   <button
