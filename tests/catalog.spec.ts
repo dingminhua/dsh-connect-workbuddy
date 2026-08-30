@@ -9,6 +9,10 @@ const MODELS: readonly WorkBuddyModelInfo[] = [
 ]
 
 describe('deriveCatalog', () => {
+  it('marks the known fallback vision model as image-capable', () => {
+    expect(FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5v-turbo')?.multimodal).toBe(true)
+  })
+
   it('serves the whole directory when nothing is enabled yet', () => {
     const derived = deriveCatalog(MODELS, new Set())
     expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])

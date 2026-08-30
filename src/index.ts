@@ -27,13 +27,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
-import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
+import { createWorkBuddyAdapter, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
-export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
+export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyModelInput, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
   deriveCatalog,
@@ -66,7 +66,7 @@ export {
   WorkBuddyUpstreamClient,
   type UpstreamErrorKind,
   type WorkBuddyChatResult,
-  type WorkBuddyCreditAccount,
+  type WorkBuddyCreditPackage,
   type WorkBuddyCredits,
   type WorkBuddyReasoning,
   type WorkBuddyRefreshOutcome,
@@ -90,12 +90,14 @@ export {
 } from './web-status.ts'
 export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
   type WorkBuddyWebAccount,
-  type WorkBuddyWebCreditAccount,
+  type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
   type WorkBuddyWebModel,
+  type WorkBuddyWebPackage,
   type WorkBuddyWebUsage,
 } from './status-paths.ts'
 
@@ -294,6 +296,7 @@ export function apply(ctx: Context, config: Config): void {
             name: model.name,
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
+            inputModalities: workBuddyModelInput(model),
           }))
         })
 

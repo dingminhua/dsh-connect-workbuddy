@@ -57,24 +57,48 @@ export interface WorkBuddyUpstreamModel {
 }
 
 /** One billing package and its remaining credit, already aggregated. */
-export interface WorkBuddyCreditAccount {
+/** One billing package as the upstream returns it, dates already parsed. */
+export interface WorkBuddyCreditPackage {
   packageName: string
   remain: number
   size: number
-  /** How many upstream entries were merged into this row. */
-  count: number
-  /** Earliest expiry across the merged upstream entries, in ms. */
-  earliestExpiryMs?: number
+  /** CapacityType 4: refreshed every cycle and never expires. */
+  monthly: boolean
+  /** Next cycle start (the monthly refresh point); only on monthly packages. */
+  refreshAtMs?: number
+  /** One-off expiry; the package disappears from the account at this time. */
+  expiresAtMs?: number
 }
 
 /** Aggregated credit answer for one credential. */
 export interface WorkBuddyCredits {
   total: number
-  accounts: readonly WorkBuddyCreditAccount[]
+  packages: readonly WorkBuddyCreditPackage[]
   /** Credits expiring within 3 days across every package. */
   expiringSoon: number
   /** When the nearest package expires, in ms. */
   nearestExpiryMs?: number
+}
+
+/** Daily check-in activity state. */
+export interface WorkBuddyCheckinStatus {
+  active: boolean
+  todayCheckedIn: boolean
+  streakDays: number
+  dailyCredit: number
+  todayCredit: number
+  isStreakDay: boolean
+  nextStreakDay: number
+  streakBonusDays: number
+  streakBonusCredit: number
+  claimButtonText?: string
+}
+
+/** Daily check-in claim result. */
+export interface WorkBuddyCheckinClaim {
+  credit: number
+  streakDays: number
+  isStreakDay: boolean
 }
 
 /** Token refresh answer; fields the upstream omits stay absent. */
@@ -467,10 +491,62 @@ export class WorkBuddyUpstreamClient {
     return models
   }
 
+  /** Query today's check-in status without changing account state. */
+  async fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus> {
+    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/checkin-activity-status`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const numberField = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      active: data['active'] === true,
+      todayCheckedIn: data['today_checked_in'] === true,
+      streakDays: numberField('streak_days'),
+      dailyCredit: numberField('daily_credit'),
+      todayCredit: numberField('today_credit'),
+      isStreakDay: data['is_streak_day'] === true,
+      nextStreakDay: numberField('next_streak_day'),
+      streakBonusDays: numberField('streak_bonus_days'),
+      streakBonusCredit: numberField('streak_bonus_credit'),
+      ...typeof data['claim_button_text'] === 'string' && data['claim_button_text'] !== ''
+        ? { claimButtonText: data['claim_button_text'] }
+        : {},
+    }
+  }
+
+  /** Claim today's check-in reward. The browser route guards this mutation. */
+  async claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim> {
+    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/daily-checkin`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const numberField = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      credit: numberField('credit'),
+      streakDays: numberField('streak_days'),
+      isStreakDay: data['is_streak_day'] === true,
+    }
+  }
+
   /**
-   * POST the billing endpoint for the remaining credit, aggregated per
-   * package name. One account can carry ~19 identically named packages;
-   * rendering each separately would bury the card.
+   * POST the billing endpoint for the remaining credit, keeping every package
+   * separate: the card groups monthly-cycle packages itself and lists the
+   * nearest-expiring one-off packages, so aggregation here would lose the
+   * dates it needs.
    */
   async fetchCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits> {
     const now = new Date()
@@ -509,12 +585,11 @@ export class WorkBuddyUpstreamClient {
       : {}
     const rawAccounts = Array.isArray(inner['Accounts']) ? inner['Accounts'] : []
 
-    const aggregated = new Map<string, { remain: number; size: number; count: number; earliestExpiryMs: number | undefined }>()
     let total = 0
     let nearestExpiryMs: number | undefined
     let expiringSoon = 0
     const SOON_MS = 3 * 24 * 60 * 60 * 1000
-    const parseExpiry = (raw: unknown): number | undefined => {
+    const parseDate = (raw: unknown): number | undefined => {
       if (typeof raw === 'number' && raw > 1000000000000) return raw
       if (typeof raw === 'string' && raw !== '') {
         const parsed = Date.parse(raw)
@@ -522,50 +597,51 @@ export class WorkBuddyUpstreamClient {
       }
       return undefined
     }
+    const packages: WorkBuddyCreditPackage[] = []
     for (const raw of rawAccounts) {
       if (typeof raw !== 'object' || raw === null) continue
       const account = raw as Record<string, unknown>
       const numberField = (key: string): number => (typeof account[key] === 'number' ? account[key] as number : 0)
-      const size = numberField('CycleCapacitySize')
-      const cycleRemain = numberField('CycleCapacityRemain')
-      const cycleUsed = numberField('CycleCapacityUsed')
-      const capacityRemain = numberField('CapacityRemain')
-      let remain: number
-      if (size > 0) remain = cycleRemain
-      else if (cycleRemain > 0 || cycleUsed > 0) remain = cycleRemain
-      else remain = capacityRemain
-      if (remain < 0) remain = 0
-      total += remain
-      const packageName = typeof account['PackageName'] === 'string' ? account['PackageName'] : '(unnamed)'
-      const expiryMs = parseExpiry(account['ExpiredTime'] ?? account['CycleEndTime'])
+      // CapacityType 4 = monthly capacity resource (refreshed every cycle, never
+      // expires: empty ExpiredTime, DeductionEndTime years out). CapacityType 1 =
+      // deduction-based gift (CapacityRemain drains to 0, ExpiredTime set).
+      // CycleEndTime exists on both, so it alone cannot tell them apart.
+      const monthly = numberField('CapacityType') === 4
+      const size = monthly ? numberField('CycleCapacitySize') : numberField('CapacitySize')
+      const remain = monthly ? numberField('CycleCapacityRemain') : numberField('CapacityRemain')
+      const cappedRemain = remain < 0 ? 0 : remain
+      // For the monthly resource the cycle end is the refresh point; display the
+      // next cycle's start (end + 1s) since "refreshes on 08/31 23:59:59" reads
+      // like the package dies then. For a gift, ExpiredTime is when it vanishes.
+      const cycleEndMs = parseDate(account['CycleEndTime'])
+      const expiresAtMs = monthly ? undefined : parseDate(account['ExpiredTime']) ?? cycleEndMs
+      const refreshAtMs = monthly
+        ? cycleEndMs === undefined ? undefined : cycleEndMs + 1_000
+        : undefined
+      // Drop one-off gifts that are exhausted or already expired: they carry
+      // no usable credits and would clutter the nearest-expiry list. Monthly
+      // resources (CapacityType 4) are always kept.
+      if (!monthly && (cappedRemain <= 0 || (expiresAtMs !== undefined && expiresAtMs <= Date.now()))) {
+        continue
+      }
+      total += cappedRemain
+      const expiryMs = expiresAtMs
       if (expiryMs !== undefined) {
         if (nearestExpiryMs === undefined || expiryMs < nearestExpiryMs) nearestExpiryMs = expiryMs
-        if (expiryMs - Date.now() <= SOON_MS) expiringSoon += remain
+        if (expiryMs - Date.now() <= SOON_MS) expiringSoon += cappedRemain
       }
-      const existing = aggregated.get(packageName)
-      if (existing === undefined) {
-        aggregated.set(packageName, { remain, size: size > 0 ? size : numberField('CapacitySize'), count: 1, earliestExpiryMs: expiryMs })
-      } else {
-        existing.remain += remain
-        existing.size += size > 0 ? size : numberField('CapacitySize')
-        existing.count += 1
-        if (expiryMs !== undefined && (existing.earliestExpiryMs === undefined || expiryMs < existing.earliestExpiryMs)) {
-          existing.earliestExpiryMs = expiryMs
-        }
-      }
+      packages.push({
+        packageName: typeof account['PackageName'] === 'string' ? account['PackageName'] : '(unnamed)',
+        remain: cappedRemain,
+        size,
+        monthly,
+        ...refreshAtMs === undefined ? {} : { refreshAtMs },
+        ...expiresAtMs === undefined ? {} : { expiresAtMs },
+      })
     }
-    const accounts: WorkBuddyCreditAccount[] = [...aggregated.entries()]
-      .map(([packageName, value]) => ({
-        packageName,
-        remain: value.remain,
-        size: value.size,
-        count: value.count,
-        ...value.earliestExpiryMs === undefined ? {} : { earliestExpiryMs: value.earliestExpiryMs },
-      }))
-      .sort((a, b) => b.remain - a.remain)
     return {
       total,
-      accounts,
+      packages,
       expiringSoon,
       ...nearestExpiryMs === undefined ? {} : { nearestExpiryMs },
     }

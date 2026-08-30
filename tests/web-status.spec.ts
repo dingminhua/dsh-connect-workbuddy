@@ -51,10 +51,25 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     client: {
       fetchCredits: async () => ({
         total: 1875,
-        accounts: [{ packageName: '体验版', remain: 75, size: 500, count: 1, earliestExpiryMs: 1_800_000_000_000 }],
+        packages: [
+          { packageName: 'CodeBuddy个人体验版', remain: 41, size: 500, monthly: true, refreshAtMs: 1_799_999_999_000 },
+          { packageName: 'CodeBuddy个人版国内运营裂变包', remain: 1806, size: 2000, monthly: false, expiresAtMs: 1_800_000_000_000 },
+        ],
         expiringSoon: 75,
         nearestExpiryMs: 1_800_000_000_000,
       }),
+      fetchCheckinStatus: async () => ({
+        active: true,
+        todayCheckedIn: true,
+        streakDays: 9,
+        dailyCredit: 100,
+        todayCredit: 100,
+        isStreakDay: false,
+        nextStreakDay: 0,
+        streakBonusDays: 0,
+        streakBonusCredit: 0,
+      }),
+      claimDailyCheckin: async () => ({ credit: 100, streakDays: 9, isStreakDay: false }),
     },
     displayModels: () => FALLBACK_WORKBUDDY_MODELS,
     enabledModelIds: () => ['glm-5.3'],
@@ -94,8 +109,10 @@ describe('workBuddyWebStatus', () => {
     const status = await workBuddyWebStatus(deps())
     expect(status.status).toBe('signed-in')
     const serialized = JSON.stringify(status)
+    // Field names are the contract; leak detection is about token-shaped values.
+    expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]+\./u)
+    expect(serialized).not.toMatch(/"(accessToken|refreshToken)"/u)
     expect(serialized).not.toContain('access')
-    expect(serialized).not.toContain('refresh')
   })
 
   it('carries accounts, models, selection, and credits', async () => {
@@ -107,17 +124,25 @@ describe('workBuddyWebStatus', () => {
     const glm = status.models.find(model => model.id === 'glm-5.3')
     expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 200_000 })
     expect(status.enabledModelIds).toEqual(['glm-5.3'])
+    expect(status.checkin).toMatchObject({ todayCheckedIn: true, todayCredit: 100, streakDays: 9 })
     expect(status.credits).toMatchObject({
       total: 1875,
       expiringSoon: 75,
       nearestExpiryMs: 1_800_000_000_000,
-      accounts: [{ earliestExpiryMs: 1_800_000_000_000 }],
+      packages: [
+        { packageName: 'CodeBuddy个人体验版', monthly: true, cycleRefreshMs: 1_799_999_999_000 },
+        { packageName: 'CodeBuddy个人版国内运营裂变包', monthly: false, expiresAtMs: 1_800_000_000_000 },
+      ],
     })
   })
 
   it('degrades a credit failure to creditsError instead of failing the document', async () => {
     const status = await workBuddyWebStatus(deps({
-      client: { fetchCredits: async () => { throw new Error('billing unavailable') } },
+      client: {
+        fetchCredits: async () => { throw new Error('billing unavailable') },
+        fetchCheckinStatus: async () => ({ active: true, todayCheckedIn: false, streakDays: 0, dailyCredit: 100, todayCredit: 0, isStreakDay: false, nextStreakDay: 0, streakBonusDays: 0, streakBonusCredit: 0 }),
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
+      },
     }))
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
     expect(status.credits).toBeUndefined()
@@ -132,6 +157,8 @@ describe('workBuddyWebStatus', () => {
         fetchCredits: async () => {
           throw new Error('failed with eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig and refresh_token=supersecret')
         },
+        fetchCheckinStatus: async () => ({ active: true, todayCheckedIn: false, streakDays: 0, dailyCredit: 100, todayCredit: 0, isStreakDay: false, nextStreakDay: 0, streakBonusDays: 0, streakBonusCredit: 0 }),
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
       },
     }))
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
@@ -142,7 +169,7 @@ describe('workBuddyWebStatus', () => {
 })
 
 describe('registerWorkBuddyStatusRoute', () => {
-  it('mounts the three routes when a webServer service exists', async () => {
+  it('mounts the usage, account, check-in, and model routes', async () => {
     const registered: string[] = []
     // Provide the service through Cordis so `ctx.get('webServer')` sees it.
     const FakeWebServer = {
@@ -164,6 +191,7 @@ describe('registerWorkBuddyStatusRoute', () => {
     expect(registered).toEqual([
       '/plugins/dsh-connect-workbuddy/usage',
       '/plugins/dsh-connect-workbuddy/accounts/refresh',
+      '/plugins/dsh-connect-workbuddy/checkin',
       '/plugins/dsh-connect-workbuddy/models/refresh',
     ])
     await ctx.fiber.dispose()

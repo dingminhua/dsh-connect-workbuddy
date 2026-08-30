@@ -24,18 +24,19 @@ import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
 import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebUsage } from './status-paths.ts'
 
-export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
+export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
 export type { WorkBuddyWebUsage }
 
 /** Constructor dependencies. */
 export interface WorkBuddyStatusRouteOptions {
   store: WorkBuddyCredentialStore
-  client: Pick<WorkBuddyUpstreamClient, 'fetchCredits'>
+  client: Pick<WorkBuddyUpstreamClient, 'fetchCredits' | 'fetchCheckinStatus' | 'claimDailyCheckin'>
   /** The last-refreshed model directory (unfiltered) for card display. */
   displayModels(): readonly WorkBuddyModelInfo[]
   /** The user's selection, stored as model ids. */
@@ -76,12 +77,13 @@ function loopbackOrigin(req: IncomingMessage): boolean {
 function toCredits(answer: WorkBuddyCredits): WorkBuddyWebCredits {
   return {
     total: answer.total,
-    accounts: answer.accounts.map(account => ({
-      packageName: account.packageName,
-      remain: account.remain,
-      size: account.size,
-      count: account.count,
-      ...account.earliestExpiryMs === undefined ? {} : { earliestExpiryMs: account.earliestExpiryMs },
+    packages: answer.packages.map(pack => ({
+      packageName: pack.packageName,
+      remain: pack.remain,
+      size: pack.size,
+      monthly: pack.monthly,
+      ...pack.refreshAtMs === undefined ? {} : { cycleRefreshMs: pack.refreshAtMs },
+      ...pack.expiresAtMs === undefined ? {} : { expiresAtMs: pack.expiresAtMs },
     })),
     expiringSoon: answer.expiringSoon,
     ...answer.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: answer.nearestExpiryMs },
@@ -169,11 +171,19 @@ export async function workBuddyWebStatus(
     models: deps.displayModels().map(model => toWebModel(model, deps.contextBudgets())),
     enabledModelIds: [...deps.enabledModelIds()],
   }
-  try {
-    const credits = await deps.client.fetchCredits(credential)
-    return { status: 'signed-in', ...account, credits: toCredits(credits) }
-  } catch (error: unknown) {
-    return { status: 'signed-in', ...account, creditsError: safeMessage(error) }
+  const [creditsResult, checkinResult] = await Promise.allSettled([
+    deps.client.fetchCredits(credential),
+    deps.client.fetchCheckinStatus(credential),
+  ])
+  return {
+    status: 'signed-in',
+    ...account,
+    ...creditsResult.status === 'fulfilled'
+      ? { credits: toCredits(creditsResult.value) }
+      : { creditsError: safeMessage(creditsResult.reason) },
+    ...checkinResult.status === 'fulfilled'
+      ? { checkin: checkinResult.value }
+      : { checkinError: safeMessage(checkinResult.reason) },
   }
 }
 
@@ -216,7 +226,26 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeRefresh = ctx.webServer.register({
+    const disposeCheckin = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_CHECKIN_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        try {
+          const credential = await deps.store.resolve()
+          const current = await deps.client.fetchCheckinStatus(credential)
+          if (!current.active) return json(res, 409, { error: 'check-in activity is not active' })
+          if (current.todayCheckedIn) return json(res, 200, { alreadyCheckedIn: true, checkin: current })
+          const claim = await deps.client.claimDailyCheckin(credential)
+          const checkin = await deps.client.fetchCheckinStatus(credential)
+          json(res, 200, { alreadyCheckedIn: false, claim, checkin })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    const disposeRefresh = ctx.webServer.register({ 
       kind: 'exact',
       path: WORKBUDDY_MODELS_REFRESH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -233,6 +262,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
     })
     return () => {
       disposeRefresh()
+      disposeCheckin()
       disposeAccounts()
       disposeUsage()
     }

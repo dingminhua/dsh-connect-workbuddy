@@ -18,26 +18,44 @@ export const WORKBUDDY_USAGE_PATH = '/plugins/dsh-connect-workbuddy/usage'
 export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/models/refresh'
 /** Plugin-owned local account rescan endpoint. */
 export const WORKBUDDY_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/accounts/refresh'
+/** Plugin-owned daily check-in action endpoint. */
+export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
 
-/** One credit package and its remaining credit. */
-export interface WorkBuddyWebCreditAccount {
+/** One credit package as the upstream returns it, node-free. */
+export interface WorkBuddyWebCreditPackage {
   packageName: string
   remain: number
   size: number
-  /** How many upstream entries were merged into this row. */
-  count: number
-  /** Earliest expiry across the merged upstream entries, in ms. */
-  earliestExpiryMs?: number
+  /** CapacityType 4: refreshed every cycle and never expires. */
+  monthly: boolean
+  /** Next cycle start (the monthly refresh point) in ms; only on monthly packages. */
+  cycleRefreshMs?: number
+  /** One-off expiry in ms; the package disappears from the account then. */
+  expiresAtMs?: number
 }
 
 /** Aggregated credit answer rendered by the plugin card. */
 export interface WorkBuddyWebCredits {
   total: number
-  accounts: readonly WorkBuddyWebCreditAccount[]
+  packages: readonly WorkBuddyWebCreditPackage[]
   /** Credits expiring within 3 days across every package. */
   expiringSoon: number
   /** When the nearest package expires, in ms. */
   nearestExpiryMs?: number
+}
+
+/** Daily check-in state rendered below total remaining credits. */
+export interface WorkBuddyWebCheckin {
+  active: boolean
+  todayCheckedIn: boolean
+  streakDays: number
+  dailyCredit: number
+  todayCredit: number
+  isStreakDay: boolean
+  nextStreakDay: number
+  streakBonusDays: number
+  streakBonusCredit: number
+  claimButtonText?: string
 }
 
 /** Editable WorkBuddy model row rendered by the plugin-owned settings card. */
@@ -69,6 +87,8 @@ export interface WorkBuddyWebAccount {
   selected: boolean
 }
 
+export type WorkBuddyWebPackage = WorkBuddyWebCreditPackage
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebUsage =
   | { status: 'signed-out'; accounts: readonly WorkBuddyWebAccount[]; message?: string }
@@ -85,5 +105,7 @@ export type WorkBuddyWebUsage =
     enabledModelIds: readonly string[]
     credits?: WorkBuddyWebCredits
     creditsError?: string
+    checkin?: WorkBuddyWebCheckin
+    checkinError?: string
   }
   | { status: 'error'; message: string }

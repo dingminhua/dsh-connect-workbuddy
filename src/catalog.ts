@@ -28,7 +28,7 @@ export type WorkBuddyModelInfo = WorkBuddyUpstreamModel
 export const FALLBACK_WORKBUDDY_MODELS: readonly WorkBuddyModelInfo[] = [
   { id: 'auto', name: 'Auto', contextWindow: 168_000, maxTokens: 32_000 },
   { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
-  { id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', contextWindow: 200_000, maxTokens: 64_000 },
+  { id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', contextWindow: 200_000, maxTokens: 64_000, multimodal: true },
   { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 },
   { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, maxTokens: 48_000 },
   { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, maxTokens: 48_000 },

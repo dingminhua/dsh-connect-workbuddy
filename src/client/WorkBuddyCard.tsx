@@ -25,6 +25,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
 } from '../status-paths.ts'
@@ -51,10 +52,13 @@ export type WorkBuddyCardProps =
 const POLL_INTERVAL_MS = 60_000
 const WORKBUDDY_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-workbuddy'
 
-/** Inject the shared card CSS once. */
+/** Inject or refresh the shared card CSS for the current client bundle. */
 if (typeof document !== 'undefined') {
   const cssId = 'dsh-connect-workbuddy/client.css'
-  if (!document.querySelector(`style[data-plugin-css="${cssId}"]`)) {
+  const existing = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${cssId}"]`)
+  if (existing !== null) {
+    existing.textContent = WORKBUDDY_CARD_CSS
+  } else {
     const styleTag = document.createElement('style')
     styleTag.dataset.plugin = 'dsh-connect-workbuddy'
     styleTag.dataset.pluginCss = cssId
@@ -73,6 +77,13 @@ function formatNumber(value: number): string {
 function formatDateTime(value: number): string {
   return new Intl.DateTimeFormat(undefined, {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(new Date(value))
+}
+
+/** Compact package-date rendering with time, e.g. 08/25 14:44. */
+function formatDate(value: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   }).format(new Date(value))
 }
 
@@ -104,6 +115,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const [draftContextBudgets, setDraftContextBudgets] = useState<Record<string, number> | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [switchingAccount, setSwitchingAccount] = useState(false)
+  const [checkingIn, setCheckingIn] = useState(false)
+  const [checkinActionError, setCheckinActionError] = useState<string | undefined>(undefined)
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -179,6 +192,25 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       await refreshUsage()
     } finally {
       if (mounted.current) setSwitchingAccount(false)
+    }
+  }
+
+  const claimDailyCheckin = async (): Promise<void> => {
+    setCheckingIn(true)
+    setCheckinActionError(undefined)
+    try {
+      const response = await fetch(WORKBUDDY_CHECKIN_PATH, {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+        credentials: 'same-origin',
+      })
+      const body = await response.json().catch(() => undefined) as { error?: string } | undefined
+      if (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`)
+      await refreshUsage()
+    } catch (error: unknown) {
+      if (mounted.current) setCheckinActionError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setCheckingIn(false)
     }
   }
 
@@ -333,38 +365,55 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
               {status.status === 'signed-in'
                 ? <>
                     {status.credits === undefined ? null : (() => {
-                      const nearest = status.credits.accounts
-                        .filter(account => account.earliestExpiryMs === status.credits?.nearestExpiryMs)
-                        .sort((left, right) => right.remain - left.remain)[0]
+                      // The monthly resource (CapacityType 4, never expires,
+                      // refreshes every cycle) leads the panel as a distinctive
+                      // row — its "remaining" is the current-cycle quota, so 0
+                      // still means "used up this month, resets at the shown
+                      // refresh time". Below it, "nearest expiry" lists only the
+                      // one-off gifts expiring within 3 days; exhausted gifts
+                      // (remain 0) are dropped even though the upstream already
+                      // filters them.
+                      const monthly = [...status.credits.packages]
+                        .filter(pack => pack.monthly)
+                        .sort((left, right) => right.remain - left.remain)
+                      const SOON_MS = 3 * 24 * 60 * 60 * 1000
+                      const now = Date.now()
+                      const expiring = [...status.credits.packages]
+                        .filter(pack => !pack.monthly && pack.remain > 0
+                          && (pack.expiresAtMs ?? Number.MAX_SAFE_INTEGER) - now <= SOON_MS)
+                        .sort((left, right) =>
+                          (left.expiresAtMs ?? Number.MAX_SAFE_INTEGER) -
+                          (right.expiresAtMs ?? Number.MAX_SAFE_INTEGER))
                       return (
                         <div className="dsm-workbuddy-credits-panels">
-                          <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-nearest">
-                            <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsNearest')}</span>
-                            {nearest === undefined
-                              ? <span className="dsm-workbuddy-credit-panel-empty">—</span>
-                              : <>
-                                  <strong className="dsm-workbuddy-credit-panel-value">{nearest.packageName}</strong>
-                                  <span className="dsm-workbuddy-credit-panel-meta">
-                                    {t('row.creditsExpiryTime', { expiresAt: formatDateTime(nearest.earliestExpiryMs!) })}
-                                  </span>
-                                  <span className="dsm-workbuddy-credit-panel-meta">
-                                    {t('row.creditsPackageTotal', { total: formatNumber(nearest.size) })}
-                                    {' · '}
-                                    {t('row.creditsPackageRemain', { remain: formatNumber(nearest.remain) })}
-                                  </span>
-                                </>}
-                          </section>
                           <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-activities">
-                            <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsActivities')}</span>
-                            {status.credits.accounts.length === 0
-                              ? <span className="dsm-workbuddy-credit-panel-empty">{t('row.creditsEmpty')}</span>
+                            {monthly.map((pack, index) => (
+                              <div className="dsm-workbuddy-credit-monthly-row" key={`monthly-${pack.packageName}-${String(index)}`}>
+                                <span className="dsm-workbuddy-credit-monthly-name">{pack.packageName}</span>
+                                <span className="dsm-workbuddy-credit-monthly-meta">
+                                  {t('row.creditsMonthlyRemain', {
+                                    remain: formatNumber(pack.remain),
+                                    size: formatNumber(pack.size),
+                                    at: pack.cycleRefreshMs === undefined ? '' : formatDate(pack.cycleRefreshMs),
+                                  })}
+                                </span>
+                              </div>
+                            ))}
+                            {expiring.length === 0
+                              ? <span className="dsm-workbuddy-credit-panel-empty">{t('row.creditsNoSoon')}</span>
                               : <ul className="dsm-workbuddy-credit-packages">
-                                  {status.credits.accounts.map((account, index) => (
-                                    <li key={`${account.packageName}-${String(index)}`}>
-                                      <span>{account.packageName}</span>
-                                      <span>{formatNumber(account.remain)} · {t('row.packageCount', { count: account.count })}</span>
-                                    </li>
-                                  ))}
+                                  {expiring.map((pack, index) => {
+                                    const at = pack.expiresAtMs
+                                    return (
+                                      <li key={`${pack.packageName}-${String(index)}`}>
+                                        <span>{pack.packageName}</span>
+                                        <span>
+                                          {formatNumber(pack.remain)}
+                                          {at === undefined ? '' : ` · ${formatDate(at)}`}
+                                        </span>
+                                      </li>
+                                    )
+                                  })}
                                 </ul>}
                             <div className="dsm-workbuddy-credit-soon">
                               <span>{t('row.creditsExpiringSoon')}</span>
@@ -374,6 +423,23 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           <section className="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-total">
                             <span className="dsm-workbuddy-credit-panel-title">{t('row.creditsTotalLabel')}</span>
                             <strong className="dsm-workbuddy-credit-total-value">{formatNumber(status.credits.total)}</strong>
+                            {status.checkin === undefined ? null
+                              : <div className="dsm-workbuddy-checkin">
+                                  <button
+                                    type="button"
+                                    className="dsm-btn dsm-btn-primary dsm-workbuddy-checkin-button"
+                                    disabled={!status.checkin.active || status.checkin.todayCheckedIn || checkingIn}
+                                    onClick={() => { void claimDailyCheckin() }}
+                                  >
+                                    {checkingIn
+                                      ? t('row.checkinClaiming')
+                                      : status.checkin.todayCheckedIn ? t('row.checkinClaimed') : (status.checkin.claimButtonText ?? t('row.checkinClaim'))}
+                                  </button>
+                                </div>}
+                            {status.checkinError === undefined && checkinActionError === undefined ? null
+                              : <span className="dsm-workbuddy-checkin-error">
+                                  {t('row.checkinError', { message: checkinActionError ?? status.checkinError ?? '' })}
+                                </span>}
                           </section>
                         </div>
                       )
