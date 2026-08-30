@@ -74,13 +74,18 @@ Config:
 | `id` / `name` | 模型名与 id |
 | `maxInputTokens` / `maxOutputTokens` | 上下文 / 最大输出 |
 | `credits` (`"x0.79 credits"`) | 积分倍率，需从字符串解析出数字 |
-| `supportsImages` | 多模态标记 |
-| `reasoning.supportedEfforts` (`["low","high","xhigh"]`) | 推理档位 |
+| `supportsImages` | ~~多模态标记~~（已弃用，见下方「图片输入手动开关」） |
+| `reasoning.supportedEfforts` (`["low","high","xhigh"]`) | 可选推理档位（用户可选手动档位） |
+| `reasoning.effort` (`"high"` / `"medium"`) | 固定推理档位（上游只标默认强度，未给可选档位） |
 | `reasoning.defaultEffort` | 默认档位 |
 | `descriptionZh` / `descriptionEn` | 中英文描述 |
 | `onlyReasoning` / `supportsToolCall` | 能力标记 |
 
 > 原版把这些**全丢了**，只留 id/name/tokens。这是最可惜的一处。
+>
+> **图片输入手动开关**：`supportsImages` / `disabledMultimodal` 上游标记实测不可靠，图片支持改由用户勾选 `imageModelIds` 显式决定（默认不勾选），不再从上游能力标记推断。见 `src/index.ts` 的 `withImageSelection`。
+>
+> **推理强度两态（已知问题）**：上游 `reasoning` 有两种形态——(A) `supportedEfforts` 数组（可选手动档位，如 glm-5.3 的 low/high/xhigh）与 (B) `effort` 单值（固定档位，如 deepseek 的 high）。当前 `parseReasoning`（`src/upstream.ts`）只解析形态 A，形态 B 的 11 个 cli 模型（deepseek-v4-flash/pro、hy3、auto、glm-5.1/5.2、glm-5v-turbo、kimi-k3-1/k2.7/k2.6、minimax-m3）推理能力会被整体丢弃。详见 `docs/reasoning-investigation.md`。
 
 ### 3.2 账号切换（实测可行，原版完全没有）
 
@@ -124,7 +129,8 @@ uin <B> (<账号乙>): catalog HTTP 200, 28 models, 16 cli, credits total=0
 
 ### 3.4 其他体验点
 
-- **积分展示**：原版只显示 `total` + 每个包的进度条；实测有 20~29 个包，其中 19 个同名「运营裂变包」各 100 积分 —— 需要**按包名聚合**，否则卡片被刷屏
+- **积分展示**：原版只显示 `total` + 每个包的进度条；实测有 20~29 个包，其中 19 个同名「运营裂变包」各 100 积分 —— 需要**按包名聚合**，否则卡片被刷屏。同时区分**月度周期套餐**（按周期刷新、看周期剩余）与**一次性礼包**（看到期时间）；月度包不显示到期时间、展示下次刷新点
+- **每日签到**：`/plugins/dsh-connect-workbuddy/checkin`（POST）提供一键签到，查询状态与领取均走该路由，回环来源校验 + 领取前二次确认，不重复领取
 - **卡片外观**：从 workbuddy 的 inline style 换成 trae 的 `dsm-*` CSS 类 + `--dsw-alias-*` 主题变量 + LD 图标
 - **错误呈现**：上游错误分类映射到人话（额度不足 / 需重新登录 / 限流），而不是抛 HTTP 状态码
 
@@ -161,7 +167,7 @@ dsh-connect-workbuddy/
 │       ├── styles.ts       # dsm-* CSS
 │       └── icon.ts         # LD 图标
 ├── tests/
-├── scripts/                # 已建的 4 个探针
+├── scripts/                # 探针与校验脚本（probe-auth / probe-accounts / probe-account-switch / probe-models / probe-credits / probe-checkin / verify-e2e）
 └── docs/DESIGN.md
 ```
 

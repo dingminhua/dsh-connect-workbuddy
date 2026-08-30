@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Docs
+
+- `docs/DESIGN.md` 对齐当前进度：图片输入改为手动勾选说明；补充 `reasoning.effort`（固定档位）形态与推理强度两态已知问题；积分展示补充月度周期套餐与每日签到；scripts 探针数量更新。
+- README 与 README.en.md 功能特性更新：图片输入改为按模型手动勾选。
+- 新增 `docs/reasoning-investigation.md`：记录推理强度调查结论（上游两态数据、DSH 链路、实测档位、待决策修复方向）。仅记录，未改代码。
+
 ## 1.0.0 (2026-08-30)
 
 ### Features
