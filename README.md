@@ -1,5 +1,5 @@
 <p align="center">
-  <b>dsh-connect-workbuddy</b>
+  <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="860" alt="dsh-connect-workbuddy settings panel" />
 </p>
 
 <h1 align="center">dsh-connect-workbuddy</h1>

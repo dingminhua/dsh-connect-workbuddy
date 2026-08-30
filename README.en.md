@@ -1,4 +1,10 @@
-# dsh-connect-workbuddy
+<p align="center">
+  <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="860" alt="dsh-connect-workbuddy settings panel" />
+</p>
+
+<h1 align="center">dsh-connect-workbuddy</h1>
+
+<p align="center"><b>Connect locally signed-in WorkBuddy models to DeepSeek Harness, with a read-only credits overview and model management.</b></p>
 
 [English](README.en.md) | 中文
 

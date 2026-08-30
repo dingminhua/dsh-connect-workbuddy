@@ -5,3 +5,4 @@ coverage/
 *.log
 .env
 .DS_Store
+.dsh-vision-router/
