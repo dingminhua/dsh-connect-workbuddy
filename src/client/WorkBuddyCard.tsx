@@ -355,6 +355,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                         {t('row.tokenExpiry', { expiresAt: formatDateTime(status.tokenExpiresAtMs) })}
                       </span>
                     : null}
+                  {status.status === 'error'
+                    || (status.status === 'signed-in' && status.creditsError !== undefined)
+                    ? <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
+                    : null}
                 </div>
                 <button
                   type="button"
