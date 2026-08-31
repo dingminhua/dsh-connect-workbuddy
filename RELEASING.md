@@ -80,7 +80,9 @@ npm pack --dry-run
 
 ### 7. 2FA 确认（若账号开启两步验证）
 
-`npm publish` 若提示 EOTP，按 npm CLI 给出的 URL 在浏览器登录确认即可，终端内的 `npm publish` 会自动继续。
+> **本项目约定：用浏览器授权，不用 `--otp` 方式。** `npm publish` 若提示 EOTP，按 npm CLI 给出的 URL 在浏览器登录确认即可，终端内的 `npm publish` 会自动继续。**不要**用 `npm publish --otp=<6位验证码>` 绕过——那是命令行验证码方式，本项目账号绑定的是浏览器授权。
+
+若浏览器打开的验证 URL 失效（404），重跑一次 `npm publish` 让 npm 生成新的授权链接，再在浏览器确认。
 
 ### 8. 验证发布成功
 
@@ -93,7 +95,7 @@ npm view dsh-connect-workbuddy dist-tags.latest   # 应为 X.Y.Z
 
 ## 常见问题
 
-- **`npm publish` 报 EOTP**：账号开启了 2FA，按第 7 步在浏览器确认，不要绕过。
+- **`npm publish` 报 EOTP**：账号开启了 2FA，**按第 7 步在浏览器授权**（npm CLI 给出的 URL），不要用 `--otp=<码>` 命令行方式——本项目账号绑定的是浏览器授权。链接 404 就重跑 `npm publish` 生成新链接。
 - **发布后 `npm view ... version` 还是旧版本**：registry 缓存延迟，稍等重查 `npm view ... versions`。
 - **本地开发与发布的关系**：本地开发用 `link:` 安装，与 npm 发布互不影响；npm 发布的包是 `lib/`、README 等静态文件，同一份源码。
 - **LICENSE 版权被改动**：发布前 `grep -F "Copyright (c) 2026 LaoDing" LICENSE` 必须命中；若被改成其他名称，先还原再发布。
