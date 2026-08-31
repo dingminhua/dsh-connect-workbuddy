@@ -21,5 +21,9 @@ export default defineConfig({
     env: {
       DSH_HOME: isolatedHome,
     },
+    // Windows runners cold-start PowerShell very slowly; `processStartTimeMs`
+    // shells out to `powershell` there, so give heartbeat tests headroom.
+    // Locally (macOS/Linux) each test still finishes in well under a second.
+    testTimeout: 30_000,
   },
 })
