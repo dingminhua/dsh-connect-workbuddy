@@ -1,6 +1,11 @@
 packages:
   - '.'
 
+# 本项目定位是当天跟进上游预发布（dsh-* rc / pi-ai），与 pnpm 11 默认的
+# 24h 供应龄策略天然冲突；依赖版本由 lockfile 锁定（--frozen-lockfile）
+# 兜底。显式声明 0，保持本地与 CI 跨 pnpm 版本行为一致。
+minimumReleaseAge: 0
+
 allowBuilds:
   '@google/genai': false
   protobufjs: false
