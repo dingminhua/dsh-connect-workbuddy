@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.3 (2026-09-04)
+
+### Breaking Changes
+
+- **跟进上游 DSH 0.1.2-rc.1 / Cordis 4.0.2**：本插件依赖链全部更新至 `0.1.2-rc.1`（`@deepseek-ai/dsh-*`）与 `4.0.2`（`@deepseek-ai/cordis`）。以下 API 变更需要同步适配：
+
+  - `installSettingsSection(ctx, ns, schema, entry, hooks)` 移除：改为 `ctx.settings.installSection(ctx, ns, schema, entry, hooks)`（实为 `SettingsProvider.installSection` 实例方法）。
+  - `settingsNamespace('workbuddy')` 移除：改为 `'workbuddy' as SettingsNamespace`（dsh-settings 导出的 branded type）。
+  - `registerModelDiscovery` 回调签名的 `signal` 字段从 `request.signal` 移至回调第二参数 `async (request, signal) =>`。
+  - `SettingsNamespace` branded type 语义收紧：`WORKBUDDY_SETTINGS_NS` 需显式 `as SettingsNamespace` 断言。
+  - Cordis 4.0.2 要求所有服务访问显式 inject：`inject` 声明从 `['llm']` 扩为 `['llm', 'settings']`。
+  - `onChange` 回调在 `installSection` 注册时同步触发：涉及的前置变量（如 `invalidateCatalog`）需提前声明。
+
+### Dependencies
+
+- `@deepseek-ai/cordis`：`4.0.1` → `4.0.2`
+- 所有 `@deepseek-ai/dsh-*` 包：`0.1.1-rc.1` → `0.1.2-rc.1`
+- `@deepseek-ai/dsh-client-runtime`：`0.1.1-rc.2`（不变，0.1.2-rc.1 未发布）
+- `@deepseek-ai/schemastery`：`3.18.1-rc.1` → `3.18.2`
+- `@earendil-works/pi-ai`：`0.82.1` → `0.85.0`
+- `@deepseek-ai/dsh-client-ui-settings`：补充显式 devDependency（已作为 0.1.2-rc.1 依赖）
+
+### Infrastructure
+
+- `pnpm.overrides` 从 `package.json` 迁移至 `pnpm-workspace.yaml`（pnpm 11 要求）。
+
 ## 1.1.2 (2026-08-31)
 
 ### Fixes

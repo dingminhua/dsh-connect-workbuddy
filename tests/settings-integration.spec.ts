@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -8,6 +8,9 @@ import * as WorkBuddy from '../src/index.ts'
 class MemorySettings extends SettingsProvider {
   readonly writable = true
   private storedDocument: Record<string, unknown> = {}
+  apply(ctx: Context): void {
+    ctx.settings = this
+  }
   protected load(): Promise<Record<string, unknown>> { return Promise.resolve(structuredClone(this.storedDocument)) }
   protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
     this.storedDocument[ns] = structuredClone(section)

@@ -21,7 +21,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
@@ -106,10 +106,10 @@ export {
 export const name = 'dsh-connect-workbuddy'
 
 /** The model registry required before the provider can register. */
-export const inject = ['llm']
+export const inject = ['llm', 'settings']
 
 /** Settings namespace for the plugin configuration card. */
-export const WORKBUDDY_SETTINGS_NS = settingsNamespace('workbuddy')
+export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 
 /** Plugin configuration. */
 export interface Config {
@@ -192,6 +192,7 @@ export function apply(ctx: Context, config: Config): void {
     value.lastCatalog?.length ? value.lastCatalog : FALLBACK_WORKBUDDY_MODELS
 
   let current = () => config
+  let invalidateCatalog = (): void => {}
   const discoverModels = async (signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]> => {
     const credential = await store.resolve()
     return client.fetchModels(credential, signal)
@@ -210,8 +211,8 @@ export function apply(ctx: Context, config: Config): void {
     discoverModels,
   }))
 
-  installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
-    setSource(source) { current = source },
+  ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+    setSource(source: () => Config) { current = source },
     onChange() {
       const next = current()
       store.setDesktopPath(next.authFile)
@@ -222,7 +223,6 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   let stopped = false
-  let invalidateCatalog = (): void => {}
   ctx.effect(() => () => {
     stopped = true
     void shim.close()
@@ -276,11 +276,11 @@ export function apply(ctx: Context, config: Config): void {
           releaseDirectory?.()
         }
 
-        ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request) => {
+        ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request, signal) => {
           if (request.provider !== WORKBUDDY_PROVIDER) return []
           const next = withImageSelection(
             deriveCatalog(
-              await discoverModels(request.signal),
+              await discoverModels(signal),
               enabledSet(current()),
               current().contextBudgets ?? {},
             ),

@@ -137,6 +137,12 @@ dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 - [corrinehu/dsh-workbuddy-connect](https://github.com/corrinehu/dsh-workbuddy-connect)（MIT，Copyright (c) 2026 Corrine Hu）— **本项目的主要参照**。WorkBuddy 接入 DeepSeek Harness 的完整可行方案由该项目首先验证：桌面端凭据的发现与刷新机制、上游协议与请求头约定、loopback shim 的入站加固、pi-ai provider 的装配方式、以及状态诊断 CLI，均以其为参照。本项目在保留这些已验证能力的基础上重写，着重改善使用体验。
 - [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)（MIT）— WorkBuddy 上游协议（`copilot.tencent.com` 的 wire behavior）的参照实现，经 `dsh-workbuddy-connect` 转引。
 
+### 插件呈现与结构的基线
+
+- [dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)（MIT，Copyright (c) 2026 LaoDing）— 插件的呈现方式与其保持一致：设置卡片的结构与交互、模型管理（刷新 → 勾选 → 保存）与账号选择模型、只读的 host↔client 路由形态，以及 npm 发布工程。
+- [dingminhua/dsh-subagent-default-model](https://github.com/dingminhua/dsh-subagent-default-model)（MIT，Copyright (c) 2026 LaoDing）— `dsm-*` 卡片风格体系、`row.*` 双语文案键约定与品牌图标的来源，经 `dsh-connect-trae` 转引。
+- [franksong2702/dsh-codex-connect](https://github.com/franksong2702/dsh-codex-connect)（Apache-2.0）— DSH 插件结构与 provider 注册的参照，经 `dsh-workbuddy-connect` 转引；其 Apache-2.0 义务在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中单独履行。
+
 ### 说明
 
 以上项目的版权归各自作者所有。本项目采用**借鉴设计思路 + 独立实现**的方式，未整体复制任何参考项目的源码；关键模块均为独立编写，并在源文件头部注释中标注了所参考的具体项目与模式。若你发现本项目的标注有遗漏或不当之处，请提交 issue，我们会立即更正。
