@@ -145,8 +145,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   /** Save failure surfaced next to the buttons; cleared by the next attempt. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
-  /** Set right after a CONFIRMED Clear so the dropped choice is stated. */
-  const [accountNote, setAccountNote] = useState<'cleared' | undefined>(undefined)
   /** A refused account write (silently unpersisted settings on a locked file). */
   const [accountError, setAccountError] = useState<string | undefined>(undefined)
   const [checkingIn, setCheckingIn] = useState(false)
@@ -238,7 +236,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const switchAccount = async (accountId: string): Promise<void> => {
     if (settingsScope === undefined) return
     setSwitchingAccount(true)
-    setAccountNote(undefined)
     setAccountError(undefined)
     try {
       // Verified write: `set()` resolving does not prove the value was stored
@@ -254,37 +251,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   }
 
   /**
-   * Drop the explicit choice so the region returns to its documented default:
-   * follow whatever the WorkBuddy app is currently signed in as. The empty
-   * string is the settings-level sentinel for "no explicit selection" (the
-   * store normalizes it away, and the host's legacy attribution treats it as a
-   * deliberate clear rather than an unset key); the account id itself is never
-   * written here.
-   *
-   * The confirmation is only shown once the write is CONFIRMED. That matters
-   * twice over: the restored default is usually the very account that was
-   * saved, so the state line is the only feedback the user gets — and on
-   * Windows the atomic replace of `settings.yaml` can fail outright (locked by
-   * an antivirus scanner or a sync client), in which case claiming "cleared"
-   * would be a lie that the old selection silently contradicts.
+   * Drop the explicit choice — the "follow the app's current sign-in" mode has
+   * been removed from the card. Users pick a saved account explicitly instead,
+   * so no clear affordance is rendered.
    */
-  const clearAccount = async (): Promise<void> => {
-    if (settingsScope === undefined) return
-    setSwitchingAccount(true)
-    setAccountError(undefined)
-    try {
-      await writeAccountSlot(settingsScope, activeRegion, '')
-      await refreshUsage(activeRegion)
-      if (mounted.current) setAccountNote('cleared')
-    } catch (error: unknown) {
-      if (!mounted.current) return
-      setAccountNote(undefined)
-      setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
-    } finally {
-      if (mounted.current) setSwitchingAccount(false)
-    }
-  }
-
   const claimDailyCheckin = async (): Promise<void> => {
     setCheckingIn(true)
     setCheckinActionError(undefined)
@@ -500,7 +470,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                       role="tab"
                       aria-selected={region === activeRegion}
                       className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}`}
-                      onClick={() => { setActiveRegion(region); setAccountNote(undefined); setAccountError(undefined) }}
+                      onClick={() => { setActiveRegion(region); setAccountError(undefined) }}
                     >
                       {regionStatus === undefined
                         ? null
@@ -574,34 +544,13 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                         ))}
                       </select>
                     </div>
-                    {/* The way out of an explicit choice — including an
-                        orphaned one, which is how this state becomes
-                        recoverable at all. Enabled whenever there is a choice
-                        that CAN be cleared: with no explicit selection the
-                        write is a harmless no-op (the sentinel normalizes to
-                        "no selection"), and with a valid one it is exactly the
-                        documented "follow the app's current sign-in". */}
-                    <button
-                      type="button"
-                      className="dsm-btn dsm-btn-outline"
-                      disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
-                      onClick={() => { void clearAccount() }}
-                    >
-                      {t('row.accountsFollowApp')}
-                    </button>
-                    {/* State, not a hint: which of the two modes this region is
-                        in. Without it, clearing a choice that the app's current
-                        sign-in already matches changes nothing on screen — the
-                        "the button does nothing" report. The confirmation line
-                        is shown first, while it is still news. */}
+                    {/* State, not a hint: whether this region is running a saved
+                        choice. The "follow the app's sign-in" mode has been
+                        removed from this card — accounts are picked explicitly. */}
                     <span className="dsm-workbuddy-account-state" role="status">
-                      {accountNote === 'cleared'
-                        ? t('row.accountsCleared')
-                        : selectionExplicit === false
-                          ? t('row.accountsFollowingApp')
-                          : selectionExplicit === true
-                            ? t('row.accountsSavedChoice')
-                            : ''}
+                      {selectionExplicit === true
+                        ? t('row.accountsSavedChoice')
+                        : ''}
                     </span>
                     {/* A write that did not persist is stated, never swallowed.
                         Reaching this means `set()` resolved while the value is
