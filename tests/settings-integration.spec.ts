@@ -611,11 +611,22 @@ describe('regionStateOf', () => {
 })
 
 describe('DSH 0.1.7 settings compatibility', () => {
-  it('declares volatile metadata on regions, accounts, and authFile', () => {
+  it('marks volatile fields when the runtime schemastery supports it, stays a no-op otherwise', () => {
     const dict = (WorkBuddy.Config as any).dict
-    expect(dict?.regions?.meta?.volatile).toBe(true)
-    expect(dict?.accounts?.meta?.volatile).toBe(true)
-    expect(dict?.authFile?.meta?.volatile).toBe(true)
+    // `volatile()` exists from schemastery 3.18.3 (DSH 0.1.7 line). On older
+    // pinning (3.18.2, DSH 0.1.5 line) asVolatile MUST be an identity no-op —
+    // hand-written meta.volatile would bypass schemastery's own validation —
+    // so the assertion branches on the runtime capability instead of assuming.
+    const supportsVolatile = typeof dict?.regions?.volatile === 'function'
+    if (supportsVolatile) {
+      expect(dict?.regions?.meta?.volatile).toBe(true)
+      expect(dict?.accounts?.meta?.volatile).toBe(true)
+      expect(dict?.authFile?.meta?.volatile).toBe(true)
+    } else {
+      expect(dict?.regions?.meta?.volatile).toBeUndefined()
+      expect(dict?.accounts?.meta?.volatile).toBeUndefined()
+      expect(dict?.authFile?.meta?.volatile).toBeUndefined()
+    }
     expect(dict?.accounts?.meta?.default).toEqual({})
   })
 

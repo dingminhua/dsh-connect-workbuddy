@@ -218,10 +218,16 @@ const accountSelectionConfig = z.object({
 })
 
 function asVolatile<T>(schema: z<T>): z<T> {
-  if (typeof (schema as any).volatile === 'function') {
-    return (schema as any).volatile()
+  // `volatile()` exists from schemastery 3.18.3 (the DSH 0.1.7 line, which is
+  // the only line whose settings write gate reads the marker). Older pinning
+  // (3.18.2, the 0.1.5 line) has no such method, and the schema must stay
+  // byte-identical to the unmarked original there: hand-writing
+  // `meta.volatile = true` would bypass schemastery's own
+  // validateVolatileSchema checks and produce a schema no 0.1.5 consumer
+  // understands — so on that line this helper degrades to an identity no-op.
+  if (typeof (schema as unknown as { volatile?: () => z<T> }).volatile === 'function') {
+    return (schema as unknown as { volatile: () => z<T> }).volatile()
   }
-  ;(schema as any).meta = { ...(schema as any).meta, volatile: true }
   return schema
 }
 
@@ -319,7 +325,11 @@ export function selectAccountFor(
 
 /** Whether a region carries the Clear sentinel rather than a saved choice. */
 export function regionCleared(value: Config, region: WorkBuddyRegion): boolean {
-  return value.accounts?.[region] === ''
+  // `accounts` is volatile on the 0.1.7 line: the stored value is a live
+  // cosmokit reference whose `.get()` yields the plain record, so a raw
+  // `value.accounts?.[region]` read is always undefined there and the Clear
+  // sentinel would never be observed (issue #13's clear path).
+  return unwrapVolatile(value.accounts)?.[region] === ''
 }
 
 /**
@@ -362,9 +372,13 @@ export function apply(ctx: Context, config: Config): void {
 
   const stacks = {} as Record<WorkBuddyRegion, WorkBuddyRegionStack>
   for (const region of REGION_KEYS) {
+    // `authFile` is volatile on the 0.1.7 line: the raw config value is a live
+    // cosmokit reference, and passing it through would hand the store a
+    // reference object instead of a path.
+    const authFile = unwrapVolatile(config.authFile)
     const store = new WorkBuddyCredentialStore({
       region,
-      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
+      ...authFile === undefined ? {} : { desktopPath: authFile },
       refresh: credential => client.refreshToken(credential),
     })
     const catalog = new WorkBuddyCatalog(region)

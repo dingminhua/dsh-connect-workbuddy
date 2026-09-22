@@ -22,10 +22,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createElement as h } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
@@ -44,7 +42,12 @@ import type { WorkBuddySettingsKey } from './locales.ts'
 /** Localized copy injected by the browser-plugin registration. */
 export interface WorkBuddyCardInjected {
   t: (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
-  settingsScope: {
+  /**
+   * Optional by design: a host line that provides neither settings surface
+   * (or a probe before the mirror populates) leaves this undefined, and the
+   * card renders read-only — saving is the only capability that needs it.
+   */
+  settingsScope?: {
     getSnapshot(): { status: string; value?: unknown; writable: boolean }
     subscribe(listener: () => void): () => void
     set(field: string, value: unknown): Promise<void>
@@ -480,12 +483,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
           <span className="dsm-plugin-card-title">{title}</span>
           <span className="dsm-plugin-card-description">{t('row.desc')}</span>
         </span>
-        <span
-          aria-hidden="true"
-          className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`}
-        >
-          {h(IconChevronDownOutline14, { size: 14 })}
-        </span>
+        <span aria-hidden="true" className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} />
       </button>
       <div className="dsm-plugin-card-body" hidden={!open}>
         {open
