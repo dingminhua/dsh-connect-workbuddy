@@ -134,6 +134,19 @@ export class WorkBuddyCatalog {
   private usable = true
 
   /**
+   * Whether the user has switched this region's provider ON. Opt-out: defaults
+   * to `true`, so a config predating this switch (and the pre-region-split flat
+   * fields, which never carry `enabled`) keeps both providers running. Set to
+   * `false` by `setRegionEnabled` to withdraw the region from DSH's model
+   * picker entirely (its adapter route and configurable-provider entry are
+   * pulled by the Host via `AdapterRegistrationHandle.replace([])` /
+   * `DirectoryRegistrationHandle.replace([])`). This is a USER choice, distinct
+   * from {@link usable}: a region the user switched off keeps its catalog,
+   * accounts, and model picks intact and reappears the moment they re-check it.
+   */
+  private enabled = true
+
+  /**
    * @param region Seeds the static fallback for this region; each region's
    * provider must never serve the other region's roster before its first
    * live refresh lands.
@@ -145,19 +158,26 @@ export class WorkBuddyCatalog {
   /**
    * Current entries; the fallback list until the upstream answer lands.
    *
-   * Empty while this region has no local sign-in: the provider stays
-   * registered (its row still hosts the settings card and the account picker),
-   * but it advertises nothing to pick. DSH drops empty provider groups from
-   * the picker (`buildModelCatalog` filters `models.length > 0`), so the group
-   * disappears exactly when it would be pure noise.
+   * Empty while this region has no local sign-in OR the user has switched it
+   * off: the provider stays registered (its row still hosts the settings card
+   * and the account picker), but it advertises nothing to pick. DSH drops empty
+   * provider groups from the picker (`buildModelCatalog` filters
+   * `models.length > 0`), so the group disappears exactly when it would be pure
+   * noise. The two empty causes are independent: `usable` is the automatic
+   * "no account" gate (issue #12), `enabled` is the user's explicit on/off.
    */
   current(): readonly WorkBuddyModelInfo[] {
-    return this.usable ? this.models : []
+    return this.usable && this.enabled ? this.models : []
   }
 
   /** Whether this region currently advertises any model. */
   isRegionUsable(): boolean {
     return this.usable
+  }
+
+  /** Whether the user has this region's provider switched on. */
+  isRegionEnabled(): boolean {
+    return this.enabled
   }
 
   /**
@@ -174,6 +194,21 @@ export class WorkBuddyCatalog {
   setRegionUsable(usable: boolean): boolean {
     if (this.usable === usable) return false
     this.usable = usable
+    return true
+  }
+
+  /**
+   * Record the user's explicit on/off choice for this region's provider.
+   *
+   * Distinct from {@link setRegionUsable}: that is the automatic "no local
+   * account" gate, while this is a deliberate user action (issue #11-style
+   * region switch). The Host reads the same `enabled` flag through
+   * `regionStateOf(config, region).enabled !== false`, so the two halves never
+   * disagree. Returns whether the value changed.
+   */
+  setRegionEnabled(enabled: boolean): boolean {
+    if (this.enabled === enabled) return false
+    this.enabled = enabled
     return true
   }
 

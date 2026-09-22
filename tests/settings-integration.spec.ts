@@ -647,3 +647,92 @@ describe('DSH 0.1.7 settings compatibility', () => {
     expect(WorkBuddy.selectAccountFor('cn', wrappedConfig, undefined)).toEqual('account-1')
   })
 })
+
+describe('region on/off switch (issue #11-style region toggle)', () => {
+  it('withdraws a switched-off region from the picker while leaving the other live', async () => {
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+
+    // Switch the international region off.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { regions: { global: { enabled: false } } })
+    // Its route is withdrawn, so the provider drops out of `listProviders()` —
+    // which is exactly the list DSH builds the model picker from. The group is
+    // gone, not merely hidden. (`listModels` would throw "no adapter registered
+    // for provider", which is the same fact stated as an error.)
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).not.toContain('workbuddy-global')
+    // Its configurable-provider entry is withdrawn from Settings → Models too.
+    await expect.poll(() => ctx.llm.listConfigurableProviders().map(entry => entry.provider)).not.toContain('workbuddy-global')
+    // The domestic region is untouched, AND its own directory entry SURVIVES.
+    // This is the guard for a real bug: the directory is ONE registration
+    // holding both entries, so replacing it per region makes the last region
+    // win and silently drops the other's entry — a disabled region would take
+    // its enabled sibling out of Settings → Models with it.
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    expect(ctx.llm.listConfigurableProviders()).toContainEqual({
+      provider: 'workbuddy', displayName: 'WorkBuddy', settingsNs: 'workbuddy', settingsPath: [], declared: false,
+    })
+  })
+
+  it('re-opening a region restores its models without affecting the other', async () => {
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { regions: { cn: { enabled: false } } })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).not.toContain('workbuddy')
+    expect((await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+
+    // Re-enable CN: its route returns, the global region is never disturbed.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { regions: { cn: { enabled: true } } })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    expect((await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+  })
+
+  it('a config written before the switch existed keeps both regions on', async () => {
+    // No `enabled` field anywhere — the opt-out default must keep both live.
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+  })
+
+  it('both switched off can still be restored', async () => {
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
+      regions: { cn: { enabled: false }, global: { enabled: false } },
+    })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).not.toContain('workbuddy')
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).not.toContain('workbuddy-global')
+    await expect.poll(() => ctx.llm.listConfigurableProviders().length).toBe(0)
+
+    // Bring both back.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
+      regions: { cn: { enabled: true }, global: { enabled: true } },
+    })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+  })
+})

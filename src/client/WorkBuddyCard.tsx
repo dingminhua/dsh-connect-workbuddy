@@ -22,9 +22,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createElement as h } from 'react'
+import type { ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
+  nextRegionEnabled,
+  regionEnabledOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
@@ -33,15 +37,16 @@ import {
   toPersistedWorkBuddyModel,
   withWorkBuddyRegion,
 } from '../status-paths.ts'
-import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebUsage } from '../status-paths.ts'
+import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from '../status-paths.ts'
 import { writeAccountSlot, writeRegionModels } from './account-selection.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
-import type { WorkBuddySettingsKey } from './locales.ts'
+import { searchReasonLabel, searchedView, signedOutNotice, signedOutText } from './searched-paths.ts'
+import type { Translate } from './searched-paths.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
 export interface WorkBuddyCardInjected {
-  t: (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
+  t: Translate
   /**
    * Optional by design: a host line that provides neither settings surface
    * (or a probe before the mirror populates) leaves this undefined, and the
@@ -83,6 +88,74 @@ if (typeof document !== 'undefined') {
     styleTag.textContent = WORKBUDDY_CARD_CSS
     document.head.appendChild(styleTag)
   }
+}
+
+/**
+ * One probed path, with its cause. The presentation rules — which entries are
+ * worth showing up front, and how a reason is labelled — live in
+ * `./searched-paths.ts` so they are unit-testable without a DOM.
+ */
+function renderSearchedItem(
+  item: WorkBuddyWebSearchPath,
+  t: Translate,
+): ReactElement {
+  return (
+    <li key={`${item.source}:${item.path}`}>
+      <code>{item.path}</code>
+      <span className={`dsm-workbuddy-searched-reason${item.reason === 'encrypted' ? ' dsm-workbuddy-searched-reason-encrypted' : item.reason === 'wrong-region' ? ' dsm-workbuddy-searched-reason-wrong-region' : ''}`}>
+        {searchReasonLabel(item, t)}
+        {item.message === undefined ? null : ` · ${item.message}`}
+      </span>
+    </li>
+  )
+}
+
+/**
+ * The probed-path list behind a signed-out card.
+ *
+ * Collapsed by default because it is a diagnostic, not a headline. The
+ * interesting failures (encrypted / invalid / unreadable) are listed up front;
+ * the merely-absent candidates — most of them, on any normal machine — sit
+ * behind a second toggle, so the one entry that explains the failure is not
+ * buried under a dozen "not found" lines. When nothing interesting was found
+ * the absent list IS the explanation, so it opens directly.
+ *
+ * An `encrypted` failure additionally raises a notice: it is the one cause
+ * where the user is very likely already signed in, and telling them to sign in
+ * again sends them to an action that cannot work.
+ */
+function SearchedPaths(
+  { items, t }: { items: readonly WorkBuddyWebSearchPath[], t: Translate },
+): ReactElement {
+  const view = searchedView(items)
+  // Only an explicit click is remembered. Initializing state from the derived
+  // value instead would freeze the first answer: this card re-probes every 60
+  // seconds, so a machine that first reported only absent paths and later
+  // reported an encrypted file would keep the findings hidden.
+  const [explicitOpen, setExplicitOpen] = useState<boolean | undefined>(undefined)
+  const showMissing = explicitOpen ?? view.missingOpen
+  return (
+    <details className="dsm-workbuddy-searched">
+      <summary>{t('row.searchedTitle')} ({view.total})</summary>
+      <p className="dsm-workbuddy-searched-hint">{t('row.searchedHint')}</p>
+      {view.encrypted
+        ? <p className="dsm-workbuddy-searched-notice" role="status">{t('row.searchedEncryptedNotice')}</p>
+        : null}
+      <ul className="dsm-workbuddy-searched-list">
+        {view.interesting.map(item => renderSearchedItem(item, t))}
+        {showMissing ? view.missing.map(item => renderSearchedItem(item, t)) : null}
+      </ul>
+      {showMissing || view.missing.length === 0
+        ? null
+        : <button
+          type="button"
+          className="dsm-workbuddy-searched-more"
+          onClick={() => { setExplicitOpen(true) }}
+        >
+          {t('row.searchedMore', { count: view.missing.length })}
+        </button>}
+    </details>
+  )
 }
 
 function formatNumber(value: number): string {
@@ -148,12 +221,12 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   /** Save failure surfaced next to the buttons; cleared by the next attempt. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
-  /** Set right after a CONFIRMED Clear so the dropped choice is stated. */
-  const [accountNote, setAccountNote] = useState<'cleared' | undefined>(undefined)
   /** A refused account write (silently unpersisted settings on a locked file). */
   const [accountError, setAccountError] = useState<string | undefined>(undefined)
   const [checkingIn, setCheckingIn] = useState(false)
   const [checkinActionError, setCheckinActionError] = useState<string | undefined>(undefined)
+  /** Region whose on/off checkbox write is in flight, so its box can't race. */
+  const [togglingRegion, setTogglingRegion] = useState<WorkBuddyWebRegion | undefined>(undefined)
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -241,7 +314,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   const switchAccount = async (accountId: string): Promise<void> => {
     if (settingsScope === undefined) return
     setSwitchingAccount(true)
-    setAccountNote(undefined)
     setAccountError(undefined)
     try {
       // Verified write: `set()` resolving does not prove the value was stored
@@ -257,37 +329,45 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   }
 
   /**
-   * Drop the explicit choice so the region returns to its documented default:
-   * follow whatever the WorkBuddy app is currently signed in as. The empty
-   * string is the settings-level sentinel for "no explicit selection" (the
-   * store normalizes it away, and the host's legacy attribution treats it as a
-   * deliberate clear rather than an unset key); the account id itself is never
-   * written here.
+   * Whether one region's provider is switched on, read off the SAME committed
+   * settings document the Host reads (`regionEnabledOf` mirrors the Host's
+   * `regionStateOf` opt-out rule: only an explicit `false` disables). Reading
+   * the stored value rather than echoing local state means a rejected write,
+   * another window's change, or a restart all converge on the truth.
    *
-   * The confirmation is only shown once the write is CONFIRMED. That matters
-   * twice over: the restored default is usually the very account that was
-   * saved, so the state line is the only feedback the user gets — and on
-   * Windows the atomic replace of `settings.yaml` can fail outright (locked by
-   * an antivirus scanner or a sync client), in which case claiming "cleared"
-   * would be a lie that the old selection silently contradicts.
+   * The whole settings section is passed deliberately: `regionEnabledOf`
+   * accepts either it or the bare `regions` map, because passing the section
+   * where the map was expected was a shipped bug (the lookup read
+   * `section['cn']`, found nothing, and reported `true` forever — the checkbox
+   * stayed checked and clicking it appeared dead while the write succeeded).
    */
-  const clearAccount = async (): Promise<void> => {
-    if (settingsScope === undefined) return
-    setSwitchingAccount(true)
-    setAccountError(undefined)
+  const regionOn = (item: WorkBuddyWebRegion): boolean =>
+    regionEnabledOf(settingsScope?.getSnapshot().value, item)
+  const activeRegionOn = regionOn(activeRegion)
+
+  /**
+   * Switch one region's provider off or on. The write carries the region's
+   * whole slot through untouched — only `enabled` changes — so the user's
+   * directory, model picks, image opt-ins and budgets survive a round trip.
+   * The Host withdraws or restores the provider route on the next `onChange`,
+   * which is what actually removes it from DSH's model picker.
+   */
+  const toggleRegion = async (item: WorkBuddyWebRegion, enabled: boolean): Promise<void> => {
+    if (settingsScope === undefined || settingsScope.getSnapshot().writable !== true) return
+    setTogglingRegion(item)
     try {
-      await writeAccountSlot(settingsScope, activeRegion, '')
-      await refreshUsage(activeRegion)
-      if (mounted.current) setAccountNote('cleared')
-    } catch (error: unknown) {
-      if (!mounted.current) return
-      setAccountNote(undefined)
-      setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+      // `nextRegionEnabled` unwraps the settings section itself and returns the
+      // bare `regions` map, which is exactly what this field write needs.
+      await settingsScope.set('regions', nextRegionEnabled(settingsScope.getSnapshot().value, item, enabled))
     } finally {
-      if (mounted.current) setSwitchingAccount(false)
+      if (mounted.current) setTogglingRegion(undefined)
     }
   }
 
+  /**
+   * Claim the daily check-in reward for the active region. The action endpoint
+   * is region-scoped; the response only refreshes this tab's check-in state.
+   */
   const claimDailyCheckin = async (): Promise<void> => {
     setCheckingIn(true)
     setCheckinActionError(undefined)
@@ -437,8 +517,11 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       //
       // Verified write, because a save DISCARDS the draft: if the write did not
       // persist, throwing the user's edits away while reporting success would
-      // be unrecoverable — the draft is the only copy.
+      // be unrecoverable — the draft is the only copy. `enabled` rides along
+      // too: `writeRegionModels` replaces the whole region slot, so omitting it
+      // would silently re-open a provider the user had switched off.
       await writeRegionModels(settingsScope, status.region, {
+        enabled: activeRegionOn,
         lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
         enabledModelIds: [...activeEnabledIds],
         imageModelIds: [...activeImageIds],
@@ -456,13 +539,39 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   }
 
   const title = t('row.title')
+  /**
+   * Show a name, or a placeholder when the desktop app recorded none.
+   *
+   * The Host sends `''` rather than an identifier, because a `uin`/`uid` shown
+   * where a name belongs reads as "the plugin does not know who this is" — the
+   * placeholder says the honest thing instead.
+   */
+  const nameOf = (value: string): string => value === '' ? t('row.accountUnnamed') : value
   const label = status.status === 'signed-in'
-    ? t('row.signedIn', { accountName: status.accountName })
+    ? t('row.signedIn', { accountName: nameOf(status.accountName) })
     : status.status === 'error'
       ? t('row.requestFailed')
       : t('row.signedOut')
   /** The saved choice no longer matches a local sign-in (tokens are fine). */
   const selectionLost = status.status === 'signed-out' && status.selectionLost === true
+  /**
+   * The paths the Host probed, on the branch where nothing was found at all.
+   * Absent on the legacy card payload (an older Host), so it defaults empty
+   * rather than rendering an empty diagnostic.
+   */
+  const searched: readonly WorkBuddyWebSearchPath[]
+    = status.status === 'signed-out' ? status.searched ?? [] : []
+  /**
+   * What the signed-out paragraph says, and whether to append the Host's raw
+   * error. The rule lives in `./searched-paths.ts` because it is the fix for a
+   * real duplication: `resolve()`'s message already enumerated every path, and
+   * the list below enumerates them again with better reasons.
+   */
+  const notice = signedOutNotice({
+    selectionLost,
+    message: status.status === 'signed-out' ? status.message : undefined,
+    searched,
+  })
   /**
    * Whether this region runs a saved choice, per the Host. `undefined` only on
    * the error branch, which renders no picker and therefore no state line.
@@ -491,24 +600,38 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
               <div className="dsm-workbuddy-tabs" role="tablist" aria-label={title}>
                 {WORKBUDDY_REGIONS.map(region => {
                   const regionStatus = statusByRegion[region]
+                  const regionOnState = regionOn(region)
                   return (
-                    <button
-                      key={region}
-                      type="button"
-                      role="tab"
-                      aria-selected={region === activeRegion}
-                      className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}`}
-                      onClick={() => { setActiveRegion(region); setAccountNote(undefined); setAccountError(undefined) }}
-                    >
-                      {regionStatus === undefined
-                        ? null
-                        : <span aria-hidden="true" className="dsm-workbuddy-tab-dot" style={dotStyle(regionStatus.status)} />}
-                      {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
-                    </button>
+                    <div key={region} className="dsm-workbuddy-tab-cell">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={region === activeRegion}
+                        className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}${regionOnState ? '' : ' dsm-workbuddy-tab-off'}`}
+                        onClick={() => { setActiveRegion(region); setAccountError(undefined) }}
+                      >
+                        {regionStatus === undefined
+                          ? null
+                          : <span aria-hidden="true" className="dsm-workbuddy-tab-dot" style={dotStyle(regionStatus.status)} />}
+                        {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
+                      </button>
+                      <label className="dsm-workbuddy-tab-switch" title={t('row.tabSwitchHint')}>
+                        <input
+                          type="checkbox"
+                          checked={regionOnState}
+                          disabled={togglingRegion === region || settingsScope?.getSnapshot().writable !== true}
+                          aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
+                          onChange={(event) => { void toggleRegion(region, event.target.checked) }}
+                        />
+                      </label>
+                    </div>
                   )
                 })}
               </div>
               <p className="dsm-workbuddy-models-summary">{t('row.tabHint')}</p>
+              {!activeRegionOn
+                ? <p className="dsm-workbuddy-tab-off-notice">{t('row.tabOffNotice')}</p>
+                : null}
               <div className="dsm-workbuddy-usage-account">
                 <div className="dsm-workbuddy-usage-account-copy" role="status">
                   <div className="dsm-workbuddy-usage-status">
@@ -522,7 +645,11 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                     : null}
                   {status.status === 'error'
                     || (status.status === 'signed-in' && status.creditsError !== undefined)
-                    ? <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
+                    // A refusal gets its own, specific advice in the panel below;
+                    // the generic "sign in again" would contradict it.
+                    ? status.status === 'signed-in' && status.credentialRejected === true
+                      ? null
+                      : <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
                     : null}
                   {selectionLost
                     ? <span className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</span>
@@ -567,39 +694,18 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                           : <option value="" disabled>{t('row.accountNoneInEffect')}</option>}
                         {status.accounts.map(account => (
                           <option key={account.id} value={account.id}>
-                            {account.accountName}{account.domain === '' ? '' : ` · ${account.domain}`}
+                            {nameOf(account.accountName)}{account.domain === '' ? '' : ` · ${account.domain}`}
                           </option>
                         ))}
                       </select>
                     </div>
-                    {/* The way out of an explicit choice — including an
-                        orphaned one, which is how this state becomes
-                        recoverable at all. Enabled whenever there is a choice
-                        that CAN be cleared: with no explicit selection the
-                        write is a harmless no-op (the sentinel normalizes to
-                        "no selection"), and with a valid one it is exactly the
-                        documented "follow the app's current sign-in". */}
-                    <button
-                      type="button"
-                      className="dsm-btn dsm-btn-outline"
-                      disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
-                      onClick={() => { void clearAccount() }}
-                    >
-                      {t('row.accountsFollowApp')}
-                    </button>
-                    {/* State, not a hint: which of the two modes this region is
-                        in. Without it, clearing a choice that the app's current
-                        sign-in already matches changes nothing on screen — the
-                        "the button does nothing" report. The confirmation line
-                        is shown first, while it is still news. */}
+                    {/* State, not a hint: whether this region is running a saved
+                        choice. The "follow the app's sign-in" mode has been
+                        removed from this card — accounts are picked explicitly. */}
                     <span className="dsm-workbuddy-account-state" role="status">
-                      {accountNote === 'cleared'
-                        ? t('row.accountsCleared')
-                        : selectionExplicit === false
-                          ? t('row.accountsFollowingApp')
-                          : selectionExplicit === true
-                            ? t('row.accountsSavedChoice')
-                            : ''}
+                      {selectionExplicit === true
+                        ? t('row.accountsSavedChoice')
+                        : ''}
                     </span>
                     {/* A write that did not persist is stated, never swallowed.
                         Reaching this means `set()` resolved while the value is
@@ -698,6 +804,32 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         </div>
                       )
                     })()}
+                    {status.credentialRejected === true
+                      ? <section className="dsm-workbuddy-usage-error" role="alert">
+                          <strong>{t('row.credentialRejectedTitle')}</strong>
+                          <p>{t('row.credentialRejectedIntro', { accountName: nameOf(status.accountName) })}</p>
+                          {status.recovery?.usableAccount !== undefined
+                            ? <p>{t('row.credentialRejectedSwitch', { accountName: nameOf(status.recovery.usableAccount.accountName) })}</p>
+                            : status.recovery?.reloginRequired === true
+                              ? <p>{t('row.credentialRejectedRelogin')}</p>
+                              : <p>{t('row.credentialRejectedChoose')}</p>}
+                          {status.recovery?.usableAccount === undefined
+                            ? null
+                            : <button
+                                type="button"
+                                className="dsm-btn dsm-btn-outline"
+                                disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
+                                onClick={() => {
+                                  const target = status.recovery?.usableAccount
+                                  if (target !== undefined) void switchAccount(target.accountId)
+                                }}
+                              >
+                                {switchingAccount
+                                  ? t('row.accountsScanning')
+                                  : t('row.credentialRejectedSwitchAction', { accountName: nameOf(status.recovery.usableAccount.accountName) })}
+                              </button>}
+                        </section>
+                      : null}
                     {status.creditsError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     <section className="dsm-workbuddy-models" aria-label={t('row.modelsTitle')}>
@@ -805,15 +937,22 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                   </>
                 : null}
               {status.status === 'signed-out'
-                ? <p className="dsm-workbuddy-usage-text">
-                    {/* An orphaned saved id is NOT a signed-out machine: the
-                        tokens are fine and re-signing in would not repair the
-                        id. Say what actually helps (re-pick, or follow the app
-                        again) instead of echoing the resolve() error, which
-                        tells the user to sign in — the one action that cannot
-                        fix this. */}
-                    {selectionLost ? t('row.selectionLostMessage') : status.message ?? t('row.signedOutHint')}
-                  </p>
+                ? <>
+                    <p className="dsm-workbuddy-usage-text">
+                      {/* An orphaned saved id is NOT a signed-out machine: the
+                          tokens are fine and re-signing in would not repair the
+                          id. Say what actually helps (re-pick, or follow the app
+                          again) instead of echoing the resolve() error, which
+                          tells the user to sign in — the one action that cannot
+                          fix this. The same goes for a wrong-region sign-in.
+                          When a probed-path list follows, its paths ARE the
+                          enumeration the resolve() error repeats, so the
+                          paragraph states the situation and the list supplies
+                          the detail. */}
+                      {signedOutText(notice, t)}
+                    </p>
+                    {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
+                  </>
                 : null}
               {status.status === 'error' ? <p className="dsm-workbuddy-usage-error">{status.message}</p> : null}
             </div>

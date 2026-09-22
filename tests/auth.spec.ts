@@ -777,3 +777,59 @@ describe('WorkBuddyCredentialStore region scoping', () => {
     await expect(readFile(legacyPath, 'utf8')).rejects.toThrow()
   })
 })
+
+/**
+ * The account NAME is a display value, never an identifier.
+ *
+ * Showing `uin`/`uid` where a name belongs is what made a perfectly healthy
+ * account read as "the plugin does not know who this is": the decrypted
+ * nickname had not loaded, so the card fell back to a bare number.
+ */
+describe('account names are names, not identifiers', () => {
+  it('uses the nickname when the desktop app recorded one', async () => {
+    await writeAuth(LIVE, accountDoc({}))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    expect((await store.accounts())[0]?.accountName).toBe('Alpha')
+  })
+
+  it('reports an empty name — NOT the uin or uid — when no nickname exists', async () => {
+    await writeAuth(LIVE, accountDoc({ account: { uid: 'uid-1', uin: '100000000001', enterpriseId: '' } }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const account = (await store.accounts())[0]
+    expect(account?.accountName).toBe('')
+    // The identifier must not leak into the displayed name by any route.
+    expect(account?.accountName).not.toContain('100000000001')
+    expect(account?.accountName).not.toContain('uid-1')
+    // The account is still fully usable: only its LABEL is unknown.
+    expect(account?.id).toBeTruthy()
+    expect((await store.resolve()).accessToken).toBe('token-alpha')
+  })
+
+  it('treats an empty nickname the same as a missing one', async () => {
+    await writeAuth(LIVE, accountDoc({ account: { uid: 'uid-1', uin: '100000000001', nickname: '', enterpriseId: '' } }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    expect((await store.accounts())[0]?.accountName).toBe('')
+  })
+
+  it('keeps uin on the credential itself, where the plugin still needs it', async () => {
+    // Dropping uin from the DISPLAY must not drop it from the model: it is the
+    // stable identity account ids are derived from.
+    await writeAuth(LIVE, accountDoc({}))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const credential = await store.resolve()
+    expect(credential.uin).toBe('100000000001')
+    expect((await store.accounts())[0]?.id).toBe(workbuddyAccountId(credential))
+  })
+})

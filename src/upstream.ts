@@ -391,6 +391,45 @@ function isGatewayAuthRejection(status: number, text: string): boolean {
   return lower.includes('openresty') || lower.includes('apisix') || lower.includes('authorization required')
 }
 
+/** Marker carried by {@link WorkBuddyCredentialRejectedError}; survives bundling. */
+export const CREDENTIAL_REJECTED_CODE = 'WORKBUDDY_CREDENTIAL_REJECTED'
+
+/**
+ * The upstream refused the CREDENTIAL itself rather than failing the request.
+ *
+ * This is a distinct, actionable class: the token is not usable and no retry
+ * with the same token will help. Callers use it to tell the user what to do
+ * about it (switch accounts, or sign in again) instead of showing a raw HTTP
+ * error, and the card must never confuse it with a transient upstream fault.
+ *
+ * Identified by {@link CREDENTIAL_REJECTED_CODE} rather than `instanceof`, so
+ * the check keeps working when the caller and the thrower end up in different
+ * module instances (bundled host half vs. a test's source import).
+ */
+export class WorkBuddyCredentialRejectedError extends Error {
+  readonly code = CREDENTIAL_REJECTED_CODE
+  /** HTTP status the upstream answered with (401 or 403). */
+  readonly status: number
+
+  constructor(status: number) {
+    super(
+      `workbuddy: the signed-in credential was rejected by the upstream gateway (http ${status}).`
+      + ' The stored token is no longer accepted — most likely a stale credential file from an earlier'
+      + ' sign-in was selected. Re-sign in to the WorkBuddy desktop app, then pick that account in the'
+      + ' plugin card. Run `dsh-connect-workbuddy doctor` to list every discovered credential.',
+    )
+    this.name = 'WorkBuddyCredentialRejectedError'
+    this.status = status
+  }
+}
+
+/** Whether an error reports that the upstream refused the credential itself. */
+export function isCredentialRejectedError(value: unknown): value is WorkBuddyCredentialRejectedError {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { code?: unknown }).code === CREDENTIAL_REJECTED_CODE
+}
+
 async function readEnvelope(response: Response): Promise<Envelope> {
   const text = await response.text()
   let parsed: unknown
@@ -398,12 +437,7 @@ async function readEnvelope(response: Response): Promise<Envelope> {
     parsed = JSON.parse(text)
   } catch {
     if (isGatewayAuthRejection(response.status, text)) {
-      throw new Error(
-        `workbuddy: the signed-in credential was rejected by the upstream gateway (http ${response.status}).`
-        + ' The stored token is no longer accepted — most likely a stale credential file from an earlier'
-        + ' sign-in was selected. Re-sign in to the WorkBuddy desktop app, then pick that account in the'
-        + ' plugin card. Run `dsh-connect-workbuddy doctor` to list every discovered credential.',
-      )
+      throw new WorkBuddyCredentialRejectedError(response.status)
     }
     throw new Error(`workbuddy upstream returned non-JSON (http ${response.status}): ${text.slice(0, 160)}`)
   }
@@ -419,8 +453,15 @@ async function readEnvelope(response: Response): Promise<Envelope> {
   return envelope
 }
 
-/** Fail an envelope whose business code is non-zero, classified like HTTP errors. */
+/**
+ * Fail an envelope whose business code is non-zero, classified like HTTP errors.
+ *
+ * A JSON body on a 401/403 is still a credential refusal: the edge answered in
+ * the business shape, but the token is just as unusable, so it maps to the same
+ * actionable error instead of a generic "client" failure.
+ */
 function envelopeError(status: number, envelope: Envelope): Error {
+  if (status === 401 || status === 403) return new WorkBuddyCredentialRejectedError(status)
   const kind = classifyUpstreamError(status, envelope.msg)
   return new Error(`workbuddy upstream ${kind} (http ${status}): ${envelope.msg.slice(0, 160)}`)
 }

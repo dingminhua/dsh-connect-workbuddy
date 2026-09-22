@@ -23,7 +23,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
+import { resolveCredentialRecovery } from './credential-recovery.ts'
+import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
+import { isCredentialRejectedError } from './upstream.ts'
 import { regionOfStatusUrl } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
@@ -32,7 +35,7 @@ import {
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
-import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebUsage } from './status-paths.ts'
+import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from './status-paths.ts'
 
 export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
 export type { WorkBuddyWebUsage }
@@ -58,6 +61,12 @@ export interface WorkBuddyStatusRouteOptions {
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
   /**
+   * Whether the requested region's provider is currently offered to DSH. The
+   * card renders this as the tab's on/off checkbox, so the switch reflects the
+   * committed settings value rather than a local guess.
+   */
+  regionEnabled(region: WorkBuddyRegion): boolean
+  /**
    * Report whether a region still has at least one local sign-in.
    *
    * The card is where sign-in state actually changes under the plugin's nose
@@ -67,6 +76,15 @@ export interface WorkBuddyStatusRouteOptions {
    * no scan of its own.
    */
   regionUsable?(region: WorkBuddyRegion, usable: boolean): void
+  /**
+   * Verify whether one local account is still accepted by the upstream.
+   *
+   * Consulted ONLY after the selected credential has been refused, to tell
+   * "switch accounts" apart from "sign in again". Left undefined, nothing is
+   * claimed usable and the card falls back to the re-login advice that needs no
+   * probe.
+   */
+  accountUsable?(region: WorkBuddyRegion, account: WorkBuddyRecoveryCandidate): Promise<boolean>
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -136,11 +154,17 @@ function toWebModel(
 
 type WorkBuddyWebModelFromInfo = import('./status-paths.ts').WorkBuddyWebModel
 
-/** Project a store account into the card's token-free account row. */
+/**
+ * Project a store account into the card's token-free account row.
+ *
+ * `uin` is deliberately NOT forwarded: the card has never rendered it, so
+ * sending it was pure exposure of an account identifier for no feature. The
+ * name carries whatever the desktop app recorded, and `''` means the card
+ * should show its own placeholder rather than an identifier.
+ */
 function toWebAccount(account: {
   id: string
   accountName: string
-  uin?: string
   domain: string
   source: 'desktop' | 'dsh'
   tokenExpiresAtMs: number
@@ -149,11 +173,41 @@ function toWebAccount(account: {
   return {
     id: account.id,
     accountName: account.accountName,
-    ...account.uin === undefined ? {} : { uin: account.uin },
     domain: account.domain,
     source: account.source,
     tokenExpiresAtMs: account.tokenExpiresAtMs,
     selected: account.selected,
+  }
+}
+
+/**
+ * The probed-path list for a signed-out region, or nothing when the store
+ * cannot produce one.
+ *
+ * Diagnostics must never turn a page into an error: `diagnose()` re-reads the
+ * filesystem, and a store built without it (or one whose probe throws on an
+ * exotic filesystem) degrades to the plain "not signed in" hint the card showed
+ * before this existed. Failure reasons are `safeMessage`d because a raw
+ * filesystem error can embed an absolute path or a fragment of file content.
+ */
+async function searchedPaths(
+  store: WorkBuddyCredentialStore,
+): Promise<{ searched?: readonly WorkBuddyWebSearchPath[] }> {
+  if (typeof store.diagnose !== 'function') return {}
+  try {
+    const { failures } = await store.diagnose()
+    if (failures.length === 0) return {}
+    return {
+      searched: failures.map(failure => ({
+        path: failure.path,
+        source: failure.source,
+        reason: failure.reason,
+        ...failure.message === undefined ? {} : { message: safeMessage(failure.message) },
+      })),
+    }
+  } catch {
+    // A diagnostics pass is never worth failing the card over.
+    return {}
   }
 }
 
@@ -173,13 +227,21 @@ export async function workBuddyWebStatus(
   // The card is a live view of this same scan, so this is where a sign-in that
   // happened behind the plugin's back gets noticed — before the next restart.
   deps.regionUsable?.(region, accounts.length > 0)
+  // The provider's on/off state is independent of sign-in: a region the user
+  // switched off renders its switch as off even when fully signed in, and the
+  // card reads this committed value rather than a local guess.
+  const enabled = deps.regionEnabled(region)
   const authStatus = await store.status()
   // Whether a saved per-region choice is in effect, on every branch: the card
   // needs it to show that clearing really did return the region to the app's
   // current sign-in, even when that default is the same account as before.
   const selectionExplicit = store.hasExplicitSelection()
   if (authStatus.state !== 'signed-out' && accounts.length === 0) {
-    return { status: 'signed-out', accounts: [], selectionExplicit }
+    // Both `status()` and `accounts()` derive from the same scan, so this pair
+    // is only reachable when a sign-in landed between the two calls. A
+    // credential just appeared: there is nothing to diagnose, and a list of
+    // failed probe paths would contradict what the user is looking at.
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled }
   }
   let credential
   try {
@@ -192,12 +254,18 @@ export async function workBuddyWebStatus(
     // `selectionLost` lets the card tell the two causes apart: an orphaned
     // saved id (the tokens here are fine — re-pick or clear) versus a genuinely
     // signed-out machine (the "sign in again" hint is then accurate).
+    const webAccounts = accounts.map(toWebAccount)
     return {
       status: 'signed-out',
-      accounts: accounts.map(toWebAccount),
+      accounts: webAccounts,
       message: safeMessage(error),
       selectionExplicit,
+      enabled,
       ...await store.selectionLost() ? { selectionLost: true } : {},
+      // Only the genuinely empty machine gets the probe list. When local
+      // sign-ins DO exist (the orphaned-saved-id case), the card already has
+      // the right advice and a list of failed paths would bury it.
+      ...webAccounts.length === 0 ? await searchedPaths(store) : {},
     }
   }
   // Only user-facing identity and expiry cross to the browser. Token material
@@ -205,13 +273,16 @@ export async function workBuddyWebStatus(
   const selected = accounts.find(account => account.selected)
   const account = {
     accountId: selected?.id ?? '',
-    accountName: credential.nickname ?? credential.uin ?? credential.uid,
-    ...credential.uin === undefined ? {} : { uin: credential.uin },
+    // The human name only; '' lets the card render its own placeholder. A bare
+    // `uin`/`uid` is an identifier, not a name, and showing one made the account
+    // read as "unknown user" instead of simply unnamed.
+    accountName: credential.nickname ?? '',
     ...credential.domain === '' ? {} : { domain: credential.domain },
     region,
     source: credential.source,
     tokenExpiresAtMs: credential.expiresAtMs,
     selectionExplicit,
+    enabled,
     accounts: accounts.map(toWebAccount),
     models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
     enabledModelIds: [...deps.enabledModelIds(region)],
@@ -221,6 +292,22 @@ export async function workBuddyWebStatus(
     deps.client.fetchCredits(credential),
     deps.client.fetchCheckinStatus(credential),
   ])
+  // Both calls carry the SAME credential, so either one reporting a refusal
+  // classifies the credential itself — and the honest advice depends on whether
+  // another local account would work, which is what the recovery pass answers.
+  // It runs only on this failure path, so a healthy account pays nothing.
+  const rejected = [creditsResult, checkinResult].some(
+    result => result.status === 'rejected' && isCredentialRejectedError(result.reason),
+  )
+  const recovery = !rejected ? undefined : await resolveCredentialRecovery({
+    region,
+    store: deps.store(region),
+    ...selected === undefined ? {} : { rejectedAccountId: selected.id },
+    // Without an injected probe nothing can be verified, so no account is
+    // claimed usable — `reloginRequired` then still reports the one case that
+    // needs no probe (there is nothing else to switch to).
+    probe: deps.accountUsable ?? (async () => false),
+  })
   return {
     status: 'signed-in',
     ...account,
@@ -230,6 +317,8 @@ export async function workBuddyWebStatus(
     ...checkinResult.status === 'fulfilled'
       ? { checkin: checkinResult.value }
       : { checkinError: safeMessage(checkinResult.reason) },
+    ...!rejected ? {} : { credentialRejected: true },
+    ...recovery === undefined ? {} : { recovery },
   }
 }
 
