@@ -333,5 +333,12 @@ export type WorkBuddyWebUsage =
     credentialRejected?: boolean
     /** Present only alongside {@link credentialRejected}. */
     recovery?: WorkBuddyWebRecovery
+    /**
+     * Diagnostic only: whether this Host build's Config carries the volatile
+     * markers dsh-settings requires before it will persist any field. Exposed
+     * so a save refusal can be attributed to the settings gate rather than
+     * guessed at.
+     */
+    diagVolatile?: { regions: boolean, accounts: boolean, authFile: boolean }
   }
   | { status: 'error'; message: string }

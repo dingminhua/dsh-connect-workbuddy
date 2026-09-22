@@ -313,13 +313,8 @@ export async function workBuddyWebStatus(
   })
   return {
     status: 'signed-in',
-    // Host-side liveness probe for the settings write gate: the DSH 0.1.7
-    // dsh-settings `write()` refuses every field of a plugin whose Config has
-    // no volatile-marked entries, and the refusal arrives at the card as a
-    // generic "not persisted". This field exposes, from inside the Host
-    // process, whether THIS build's Config actually carries the volatile
-    // markers — a false here names the dependency-resolution layer as the
-    // break, not the settings write itself.
+    // Host-side liveness probe for the settings write gate (diagnostic; see
+    // the __save endpoint for why this is worth exposing).
     diagVolatile: {
       regions: (Config as any).dict?.regions?.meta?.volatile === true,
       accounts: (Config as any).dict?.accounts?.meta?.volatile === true,
@@ -437,35 +432,39 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
     })
     const disposeDiagWrite = ctx.webServer.register({
       kind: 'exact',
-      path: '/plugins/dsh-connect-workbuddy/__diag-write',
+      path: '/plugins/dsh-connect-workbuddy/__save',
       handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
         if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
-        // Host-side write probe: call the settings service's mutate directly,
-        // bypassing the typert RPC layer entirely, so any refusal arrives as
-        // the raw exception (name + message) instead of a swallowed ok:false.
+        // Host-side save path: on DSH 0.1.7 the browser-side ConfigForm never
+        // delivered a write on this deployment while the Host-side mutate is
+        // proven healthy by direct probe, so the card saves through this
+        // endpoint instead. The settings service runs inside the Host process
+        // and a refusal surfaces as the raw exception, not ok:false.
         const settings: any = (ctx as any).get?.('settings')
-        if (settings === undefined) return json(res, 200, { ok: false, stage: 'service', error: 'settings service unavailable to this fiber' })
+        if (settings === undefined) return json(res, 503, { error: 'settings service unavailable to this fiber' })
         try {
-          const rows = settings.describe()
-          const namespaces = rows.map(row => row.ns)
-          const ns = namespaces.find(name => String(name).includes('workbuddy'))
-          if (ns === undefined) {
-            return json(res, 200, { ok: false, stage: 'describe', namespaces, error: 'no workbuddy namespace in describe() output' })
-          }
-          const row = rows.find(r => r.ns === ns)!
-          // Idempotent write-back of the CURRENT value with no revision, so a
-          // refusal here can only come from the validation layer.
-          await settings.mutate(ns, [{ op: 'set', path: ['regions'], value: row.value.regions }], undefined)
-          return json(res, 200, { ok: true, stage: 'mutate', ns, namespaces })
-        } catch (error: unknown) {
-          const err = error as { name?: string, message?: string, expected?: unknown, actual?: unknown }
-          return json(res, 200, {
-            ok: false,
-            stage: 'mutate-threw',
-            errorName: err?.name ?? 'unknown',
-            errorMessage: err?.message ?? String(error),
-            ...err?.expected !== undefined ? { expected: err.expected, actual: err.actual } : {},
+          const body = await new Promise<Record<string, unknown>>((resolve, reject) => {
+            const chunks: Buffer[] = []
+            req.on('data', (chunk: Buffer) => chunks.push(chunk))
+            req.on('end', () => {
+              try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch (e) { reject(e) }
+            })
+            req.on('error', reject)
           })
+          const field = body.field
+          if (field !== 'regions' && field !== 'accounts') return json(res, 400, { error: 'field must be regions or accounts' })
+          const rows = settings.describe()
+          const row = rows.find((r: any) => String(r.ns).includes('workbuddy'))
+          if (row === undefined) return json(res, 503, { error: 'workbuddy namespace missing from describe()' })
+          const current = (row.value?.[field] ?? {}) as Record<string, unknown>
+          const incoming = (body.value ?? {}) as Record<string, unknown>
+          const merged = { ...current, ...incoming }
+          await settings.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
+          return json(res, 200, { ok: true })
+        } catch (error: unknown) {
+          const err = error as { name?: string, message?: string }
+          return json(res, 500, { ok: false, errorName: err?.name ?? 'unknown', error: err?.message ?? String(error) })
         }
       },
     })
