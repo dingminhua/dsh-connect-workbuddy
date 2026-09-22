@@ -217,16 +217,31 @@ const accountSelectionConfig = z.object({
   global: z.string().description('Selected international account id (never a token)'),
 })
 
+function asVolatile<T>(schema: z<T>): z<T> {
+  if (typeof (schema as any).volatile === 'function') {
+    return (schema as any).volatile()
+  }
+  ;(schema as any).meta = { ...(schema as any).meta, volatile: true }
+  return schema
+}
+
+function unwrapVolatile<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && 'get' in (value as object) && typeof (value as any).get === 'function') {
+    return (value as any).get()
+  }
+  return value
+}
+
 export const Config: z<Config> = z.object({
-  authFile: z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
+  authFile: asVolatile(z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)')),
   accountId: z.string().description('Deprecated: pre-split account selector, attributed to its own region'),
-  accounts: accountSelectionConfig.description('Per-region account selections, keyed cn | global'),
-  regions: z.dict(regionStateConfig).default({}).description('Per-region model directory and selection, keyed cn | global'),
+  accounts: asVolatile(accountSelectionConfig.default({} as any).description('Per-region account selections, keyed cn | global')) as z<Partial<Record<WorkBuddyRegion, string>>>,
+  regions: asVolatile(z.dict(regionStateConfig).default({}).description('Per-region model directory and selection, keyed cn | global')),
   lastCatalog: z.array(modelConfig).description('Deprecated: pre-region-split CN model directory') as z<WorkBuddyModelInfo[]>,
   enabledModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN selection'),
   imageModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN image opt-in'),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}).description('Deprecated: pre-region-split CN context budgets'),
-})
+}) as unknown as z<Config>
 
 /**
  * One region's saved model state. A config written before the region split has
@@ -238,14 +253,19 @@ export const Config: z<Config> = z.object({
  * picks.
  */
 export function regionStateOf(config: Config, region: WorkBuddyRegion): WorkBuddyRegionState {
-  const stored = config.regions?.[region]
+  const regions = unwrapVolatile(config.regions)
+  const stored = regions?.[region]
   if (stored !== undefined) return stored
   if (region !== 'cn') return {}
+  const lastCatalog = unwrapVolatile(config.lastCatalog)
+  const enabledModelIds = unwrapVolatile(config.enabledModelIds)
+  const imageModelIds = unwrapVolatile(config.imageModelIds)
+  const contextBudgets = unwrapVolatile(config.contextBudgets)
   return {
-    ...config.lastCatalog === undefined ? {} : { lastCatalog: config.lastCatalog },
-    ...config.enabledModelIds === undefined ? {} : { enabledModelIds: config.enabledModelIds },
-    ...config.imageModelIds === undefined ? {} : { imageModelIds: config.imageModelIds },
-    ...config.contextBudgets === undefined ? {} : { contextBudgets: config.contextBudgets },
+    ...lastCatalog === undefined ? {} : { lastCatalog },
+    ...enabledModelIds === undefined ? {} : { enabledModelIds },
+    ...imageModelIds === undefined ? {} : { imageModelIds },
+    ...contextBudgets === undefined ? {} : { contextBudgets },
   }
 }
 
@@ -289,10 +309,12 @@ export function selectAccountFor(
   value: Config,
   legacyAccountRegion: WorkBuddyRegion | undefined,
 ): string | undefined {
-  const configured = value.accounts?.[region]
+  const accounts = unwrapVolatile(value.accounts)
+  const configured = accounts?.[region]
   if (configured === '') return undefined
   if (configured !== undefined) return configured
-  return legacyAccountRegion === region ? value.accountId : undefined
+  const accountId = unwrapVolatile(value.accountId)
+  return legacyAccountRegion === region ? accountId : undefined
 }
 
 /** Whether a region carries the Clear sentinel rather than a saved choice. */
@@ -408,8 +430,9 @@ export function apply(ctx: Context, config: Config): void {
 
   /** Push the current config into every region's store selection and catalog. */
   const applySelection = (value: Config): void => {
+    const authFile = unwrapVolatile(value.authFile)
     for (const region of REGION_KEYS) {
-      stacks[region].store.setDesktopPath(value.authFile)
+      stacks[region].store.setDesktopPath(authFile)
       stacks[region].store.selectAccount(effectiveAccountFor(region, value))
       stacks[region].catalog.set(configuredModels(value, region))
     }
@@ -463,9 +486,19 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
-    setSource(source: () => Config) { current = source },
-    onChange() { applySelection(current()) },
+  ;(ctx as any).inject(['settings'], (sctx: any) => {
+    if (typeof sctx.settings?.configure === 'function') {
+      sctx.settings.configure({ auto: true }, ctx.fiber)
+    } else if (typeof sctx.settings?.installSection === 'function') {
+      sctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+        setSource(source: () => Config) { current = source },
+        onChange() { applySelection(current()) },
+      })
+    }
+  })
+
+  ;(ctx as any).on('loader/volatile-update', () => {
+    applySelection(current())
   })
 
   // Initial wiring: selections, per-region catalogs from the saved state.

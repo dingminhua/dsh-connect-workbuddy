@@ -609,3 +609,30 @@ describe('regionStateOf', () => {
     expect(WorkBuddy.regionStateOf(config, 'global').enabledModelIds).toEqual(['gpt-5.6-sol'])
   })
 })
+
+describe('DSH 0.1.7 settings compatibility', () => {
+  it('declares volatile metadata on regions, accounts, and authFile', () => {
+    const dict = (WorkBuddy.Config as any).dict
+    expect(dict?.regions?.meta?.volatile).toBe(true)
+    expect(dict?.accounts?.meta?.volatile).toBe(true)
+    expect(dict?.authFile?.meta?.volatile).toBe(true)
+    expect(dict?.accounts?.meta?.default).toEqual({})
+  })
+
+  it('unwraps volatile references cleanly in regionStateOf and selectAccountFor', () => {
+    const wrappedConfig = {
+      regions: {
+        get: () => ({ cn: { enabledModelIds: ['glm-5.3'] } }),
+      },
+      accounts: {
+        get: () => ({ cn: 'account-1' }),
+      },
+      authFile: {
+        get: () => '/path/to/auth',
+      },
+    } as any
+
+    expect(WorkBuddy.regionStateOf(wrappedConfig, 'cn').enabledModelIds).toEqual(['glm-5.3'])
+    expect(WorkBuddy.selectAccountFor('cn', wrappedConfig, undefined)).toEqual('account-1')
+  })
+})

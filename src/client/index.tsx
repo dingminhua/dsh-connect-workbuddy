@@ -72,13 +72,23 @@ export function apply(ctx: WorkBuddyClientContext): void {
     const namespace = 'settings.workbuddy'
     ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-connect-workbuddy: settings copy')
     const t = ctx.locale.bind(namespace) as WorkBuddyCardInjected['t']
-    const settingsScope = ctx.settingsScope.bind({ namespace: 'workbuddy' }) as NonNullable<WorkBuddyCardInjected['settingsScope']>
-    ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-      name: 'settings.plugin.item',
-      key: 'workbuddy',
-      priority: 30,
-      inject: (): WorkBuddyCardInjected => ({ t, settingsScope }),
-    }, WorkBuddyCard))
+
+    const servedNamespaces = (ctx as any).configForms?.describe?.()?.getSnapshot?.()?.view?.namespaces ?? []
+    const servedNs = servedNamespaces.find((entry: any) => entry.ns === 'workbuddy' || /workbuddy/i.test(entry.ns))
+    const settingsScope = (ctx as any).configForms?.get?.(servedNs ? servedNs.ns : 'dsh-connect-workbuddy')
+      ?? ctx.settingsScope?.bind({ namespace: 'workbuddy' }) as NonNullable<WorkBuddyCardInjected['settingsScope']>
+
+    const registerCard = (slotName: any, key: string) => {
+      ctx.slots.inject(slotName as any, () => (ctx.slots as any).register({
+        name: slotName,
+        key,
+        priority: 30,
+        inject: (): WorkBuddyCardInjected => ({ t, settingsScope }),
+      }, (p: any) => p && p.view === 'page' ? WorkBuddyCard(p) : (WorkBuddyCard as any)(p)))
+    }
+
+    registerCard('plugins.row.config', 'dsh-connect-workbuddy#dsh-connect-workbuddy')
+    registerCard('settings.plugin.item', 'workbuddy')
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.
