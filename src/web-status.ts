@@ -313,6 +313,13 @@ export async function workBuddyWebStatus(
   })
   return {
     status: 'signed-in',
+    // The persisted per-region budgets, read straight from the Host config.
+    // The browser settings mirror can be stale — a write made through the Host
+    // save endpoint never updates it — so the card renders these instead of
+    // re-deriving them from a snapshot that may predate the save.
+    contextBudgets: Object.fromEntries(
+      Object.entries(deps.contextBudgets(region)).filter(([, value]) => typeof value === 'number'),
+    ) as Record<string, number>,
     // Host-side liveness probe for the settings write gate (diagnostic; see
     // the __save endpoint for why this is worth exposing).
     diagVolatile: {

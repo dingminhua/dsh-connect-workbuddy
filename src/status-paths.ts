@@ -340,5 +340,11 @@ export type WorkBuddyWebUsage =
      * guessed at.
      */
     diagVolatile?: { regions: boolean, accounts: boolean, authFile: boolean }
+    /**
+     * The persisted per-region context budgets as the Host reads them. The
+     * browser settings mirror can lag a write made through the Host save
+     * endpoint, so the card renders these rather than a possibly-stale snapshot.
+     */
+    contextBudgets?: Record<string, number>
   }
   | { status: 'error'; message: string }
