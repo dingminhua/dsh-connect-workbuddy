@@ -217,11 +217,64 @@ const accountSelectionConfig = z.object({
   global: z.string().description('Selected international account id (never a token)'),
 })
 
+/**
+ * Mark a field editable without a plugin reload, on hosts that support it.
+ *
+ * DSH 0.1.7 replaced the `settings.yaml` section seam with the profile-backed
+ * `@deepseek-ai/dsh-settings` service, and that service only lets a browser
+ * card write fields whose schema declares `volatile`. A field without the mark
+ * is filtered out of the form and the write is refused, so the card's save
+ * button reports `settings field "<name>" was not persisted by the settings
+ * write` — the failure users hit on 0.1.7.
+ *
+ * The mark must be applied ONLY when the running schemastery actually
+ * implements it. `Schema.prototype.volatile` arrived in schemastery 3.18.3,
+ * while every 0.1.5 host pins 3.18.2 — where the method is absent AND the
+ * concept does not exist anywhere in the stack (`dsh-settings` and the Cordis
+ * loader on that line contain no reference to it). Hand-writing
+ * `meta.volatile = true` there would bypass schemastery's own
+ * `validateVolatileSchema` pass and produce a schema that no 0.1.5 code path
+ * understands, so the capability probe deliberately degrades to a no-op
+ * instead: on 0.1.5 the schema stays byte-for-byte what it is today.
+ *
+ * @param schema - the field schema to mark.
+ * @returns the same schema, marked when the host can honour it.
+ */
+function asVolatile<T extends z<any>>(schema: T): T {
+  const mark = (schema as unknown as { volatile?: () => T }).volatile
+  return typeof mark === 'function' ? mark.call(schema) : schema
+}
+
+/**
+ * Unwrap a `volatile` config reference back to its current plain value.
+ *
+ * On a host with volatile support the loader hands `apply` a config whose
+ * marked fields are live references (`{ get(): T }`, created by cosmokit's
+ * `createVolatile`) rather than plain values — the reference is what lets the
+ * loader push a settings edit into the running fiber without a reload. Every
+ * read of such a field must therefore go through this unwrap: reading
+ * `config.regions` directly yields the reference object, and `config.regions.cn`
+ * is `undefined` because the reference exposes only `get`.
+ *
+ * Detection is structural rather than an `instanceof`/`isVolatile` import so
+ * the plugin keeps working on hosts that ship a different cosmokit copy, and
+ * plain values pass through untouched — which is every value on 0.1.5.
+ *
+ * @param value - a config field that may be a volatile reference.
+ * @returns the plain value.
+ */
+function unwrapVolatile<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as unknown as { get: () => T }).get()
+  }
+  return value
+}
+
 export const Config: z<Config> = z.object({
-  authFile: z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
+  authFile: asVolatile(z.string()).description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
   accountId: z.string().description('Deprecated: pre-split account selector, attributed to its own region'),
-  accounts: accountSelectionConfig.description('Per-region account selections, keyed cn | global'),
-  regions: z.dict(regionStateConfig).default({}).description('Per-region model directory and selection, keyed cn | global'),
+  accounts: asVolatile(accountSelectionConfig).description('Per-region account selections, keyed cn | global'),
+  regions: asVolatile(z.dict(regionStateConfig).default({})).description('Per-region model directory and selection, keyed cn | global'),
   lastCatalog: z.array(modelConfig).description('Deprecated: pre-region-split CN model directory') as z<WorkBuddyModelInfo[]>,
   enabledModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN selection'),
   imageModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN image opt-in'),
@@ -238,14 +291,21 @@ export const Config: z<Config> = z.object({
  * picks.
  */
 export function regionStateOf(config: Config, region: WorkBuddyRegion): WorkBuddyRegionState {
-  const stored = config.regions?.[region]
+  // Unwrap FIRST: on a volatile host the marked fields are live references, and
+  // `reference[region]` is `undefined` — the silent failure this guards against.
+  const regions = unwrapVolatile(config.regions)
+  const stored = regions?.[region]
   if (stored !== undefined) return stored
   if (region !== 'cn') return {}
+  const lastCatalog = unwrapVolatile(config.lastCatalog)
+  const enabledModelIds = unwrapVolatile(config.enabledModelIds)
+  const imageModelIds = unwrapVolatile(config.imageModelIds)
+  const contextBudgets = unwrapVolatile(config.contextBudgets)
   return {
-    ...config.lastCatalog === undefined ? {} : { lastCatalog: config.lastCatalog },
-    ...config.enabledModelIds === undefined ? {} : { enabledModelIds: config.enabledModelIds },
-    ...config.imageModelIds === undefined ? {} : { imageModelIds: config.imageModelIds },
-    ...config.contextBudgets === undefined ? {} : { contextBudgets: config.contextBudgets },
+    ...lastCatalog === undefined ? {} : { lastCatalog },
+    ...enabledModelIds === undefined ? {} : { enabledModelIds },
+    ...imageModelIds === undefined ? {} : { imageModelIds },
+    ...contextBudgets === undefined ? {} : { contextBudgets },
   }
 }
 
@@ -289,15 +349,15 @@ export function selectAccountFor(
   value: Config,
   legacyAccountRegion: WorkBuddyRegion | undefined,
 ): string | undefined {
-  const configured = value.accounts?.[region]
+  const configured = unwrapVolatile(value.accounts)?.[region]
   if (configured === '') return undefined
   if (configured !== undefined) return configured
-  return legacyAccountRegion === region ? value.accountId : undefined
+  return legacyAccountRegion === region ? unwrapVolatile(value.accountId) : undefined
 }
 
 /** Whether a region carries the Clear sentinel rather than a saved choice. */
 export function regionCleared(value: Config, region: WorkBuddyRegion): boolean {
-  return value.accounts?.[region] === ''
+  return unwrapVolatile(value.accounts)?.[region] === ''
 }
 
 /**
@@ -340,9 +400,10 @@ export function apply(ctx: Context, config: Config): void {
 
   const stacks = {} as Record<WorkBuddyRegion, WorkBuddyRegionStack>
   for (const region of REGION_KEYS) {
+    const desktopPath = unwrapVolatile(config.authFile)
     const store = new WorkBuddyCredentialStore({
       region,
-      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
+      ...desktopPath === undefined ? {} : { desktopPath },
       refresh: credential => client.refreshToken(credential),
     })
     const catalog = new WorkBuddyCatalog(region)
@@ -408,8 +469,9 @@ export function apply(ctx: Context, config: Config): void {
 
   /** Push the current config into every region's store selection and catalog. */
   const applySelection = (value: Config): void => {
+    const desktopPath = unwrapVolatile(value.authFile)
     for (const region of REGION_KEYS) {
-      stacks[region].store.setDesktopPath(value.authFile)
+      stacks[region].store.setDesktopPath(desktopPath)
       stacks[region].store.selectAccount(effectiveAccountFor(region, value))
       stacks[region].catalog.set(configuredModels(value, region))
     }
@@ -463,10 +525,57 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
-    setSource(source: () => Config) { current = source },
-    onChange() { applySelection(current()) },
-  })
+  /**
+   * Register the `workbuddy` configuration section on whichever settings seam
+   * the running host provides.
+   *
+   * 0.1.5 exposes `ctx.settings.installSection(owner, ns, schema, entry, hooks)`
+   * and hands the plugin a `setSource` hook to follow its own live config.
+   *
+   * 0.1.7 replaced that seam: `settings.yaml` sections moved into the profile
+   * and the service now only exposes `configure({ auto })`, which declares the
+   * instance's page policy — the page itself is derived from the plugin's
+   * `Config` schema. There is no `setSource` any more, and none is needed: on
+   * that line the marked fields arrive as live volatile references that the
+   * loader updates IN PLACE (`_commitVolatile` → `updateVolatile`), so the
+   * `config` object captured here keeps answering with current values and
+   * `loader/volatile-update` is only the "re-read it" signal.
+   *
+   * Detection is structural so one published artifact serves both lines; the
+   * 0.1.5 branch is the exact call this plugin has always made.
+   */
+  const settingsSeam = ctx.settings as unknown as {
+    configure?: (presentation: { auto?: boolean }, owner?: unknown) => unknown
+    installSection?: (
+      owner: Context,
+      ns: SettingsNamespace,
+      schema: typeof Config,
+      entry: Config,
+      hooks: {
+        setSource(source: () => Config): void
+        onChange(): void
+      },
+    ) => void
+  }
+
+  if (typeof settingsSeam.configure === 'function') {
+    settingsSeam.configure({ auto: true }, ctx.fiber)
+    // `loader/volatile-update` is declared by the 0.1.7 Cordis loader and by no
+    // 0.1.5 package, so the listener name is cast rather than module-augmented:
+    // an augmentation here would collide with the loader's own declaration on a
+    // host that ships it. The event only tells us marked fields moved — the
+    // values themselves are read through `unwrapVolatile` at each use.
+    const onVolatileUpdate = ctx.on as unknown as (
+      name: 'loader/volatile-update',
+      listener: (paths: readonly (readonly string[])[]) => void,
+    ) => unknown
+    onVolatileUpdate('loader/volatile-update', () => { applySelection(current()) })
+  } else {
+    settingsSeam.installSection!(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+      setSource(source: () => Config) { current = source },
+      onChange() { applySelection(current()) },
+    })
+  }
 
   // Initial wiring: selections, per-region catalogs from the saved state.
   applySelection(config)

@@ -609,3 +609,78 @@ describe('regionStateOf', () => {
     expect(WorkBuddy.regionStateOf(config, 'global').enabledModelIds).toEqual(['gpt-5.6-sol'])
   })
 })
+
+/**
+ * Forward-compatibility with the DSH 0.1.7 settings line, where the marked
+ * Config fields arrive as cosmokit volatile references (`{ get(): T }`) that
+ * the loader updates in place, and where `ctx.settings` exposes `configure`
+ * instead of `installSection`.
+ *
+ * These tests pin the CONTRACT rather than the host: the 0.1.7 dependency stack
+ * cannot be installed alongside the 0.1.5 one this repo builds against, so the
+ * reference shape is synthesized. That is sound because the plugin only ever
+ * performs structural checks on it — see `unwrapVolatile`.
+ */
+describe('DSH 0.1.7 volatile compatibility', () => {
+  /** A stand-in for cosmokit's `createVolatile` reference. */
+  const volatileRef = <T,>(value: T) => ({ get: () => value })
+
+  it('keeps the Config schema unchanged on a schemastery without volatile()', () => {
+    // The 0.1.5 line pins schemastery 3.18.2, where `volatile` does not exist.
+    // `asVolatile` must then be an identity no-op: same object, same metadata,
+    // so a 0.1.5 host sees exactly the schema it saw before this change.
+    const schema = WorkBuddy.Config as unknown as {
+      dict?: Record<string, { meta?: { volatile?: boolean }, volatile?: unknown } | undefined>
+    }
+    const fields = schema.dict ?? {}
+    const marked = ['regions', 'accounts', 'authFile'] as const
+    const hasVolatileMethod = typeof fields.authFile?.volatile === 'function'
+    for (const field of marked) {
+      if (hasVolatileMethod) {
+        // Running on a schemastery that DOES support it: the marks must be set.
+        expect(fields[field]?.meta?.volatile).toBe(true)
+      } else {
+        // The 0.1.5 stack: no volatile metadata may be invented by hand,
+        // because schemastery would not run its own validateVolatileSchema pass
+        // over it and no 0.1.5 code path understands the flag.
+        expect(fields[field]?.meta?.volatile).toBeUndefined()
+      }
+    }
+  })
+
+  it('reads volatile references as their current values', () => {
+    const config = {
+      authFile: volatileRef('/tmp/auth'),
+      accounts: volatileRef({ cn: 'account-1', global: 'account-2' }),
+      regions: volatileRef({ cn: { enabledModelIds: ['glm-5.3'] } }),
+    } as unknown as WorkBuddy.Config
+
+    // The bug this guards: `reference[region]` is undefined, so an unwrapped
+    // read silently reports "nothing configured" and the card looks empty.
+    expect(WorkBuddy.regionStateOf(config, 'cn').enabledModelIds).toEqual(['glm-5.3'])
+    expect(WorkBuddy.regionStateOf(config, 'global')).toEqual({})
+    expect(WorkBuddy.selectAccountFor('cn', config, undefined)).toBe('account-1')
+    expect(WorkBuddy.selectAccountFor('global', config, undefined)).toBe('account-2')
+  })
+
+  it('honours the Clear sentinel through a volatile reference', () => {
+    const config = {
+      accounts: volatileRef({ cn: '', global: 'account-2' }),
+    } as unknown as WorkBuddy.Config
+    // `''` means "the user dropped this region's choice" and must terminate the
+    // lookup, rather than fall through to the legacy accountId.
+    expect(WorkBuddy.regionCleared(config, 'cn')).toBe(true)
+    expect(WorkBuddy.regionCleared(config, 'global')).toBe(false)
+    expect(WorkBuddy.selectAccountFor('cn', config, 'cn')).toBeUndefined()
+  })
+
+  it('still reads plain values, which is every value on 0.1.5', () => {
+    const config = {
+      authFile: '/tmp/auth',
+      accounts: { cn: 'account-1' },
+      regions: { cn: { enabledModelIds: ['glm-5.3'] } },
+    } as WorkBuddy.Config
+    expect(WorkBuddy.regionStateOf(config, 'cn').enabledModelIds).toEqual(['glm-5.3'])
+    expect(WorkBuddy.selectAccountFor('cn', config, undefined)).toBe('account-1')
+  })
+})

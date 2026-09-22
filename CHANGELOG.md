@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.0.7 (2026-09-22)
+
+### Fixes
+
+- **往前兼容 DSH 0.1.7 的设置体系：为可写字段声明 volatile，并在读取时解包**。DSH 0.1.7 把 `settings.yaml` 的 section 机制换成 profile 承载的 `@deepseek-ai/dsh-settings`，该服务只接受 schema 声明了 `volatile` 的字段写入：未声明的字段会被 `volatileForm(schema)` 过滤掉，写入直接被拒，用户侧看到的就是 `settings field "regions" was not persisted by the settings write`。本版为 `authFile`、`accounts`、`regions` 补上标记。
+
+  - **标记按能力探测施加，不写死**。`Schema.prototype.volatile` 是 schemastery **3.18.3** 才有的，而 0.1.5 全线把 schemastery 钉在 **3.18.2**，且该版本线上 `dsh-settings` 与 Cordis loader 对 volatile **零引用**（均实测确认）。因此 `asVolatile()` 在 3.18.2 上是**恒等 no-op**——实测返回同一个对象、`meta` 逐字段不变，**0.1.5 的 schema 与本版之前完全一致**。刻意不走「手写 `meta.volatile = true`」的兜底：那会绕过 schemastery 自己的 `validateVolatileSchema` 校验，写出一个 0.1.5 上没有任何代码理解的 schema。
+  - **读取端必须解包 volatile 引用**，这是更隐蔽的一半。0.1.7 下被标记的字段不是普通值，而是 cosmokit 的活引用（`{ get(): T }`，由 `createVolatile` 生成，loader 用 `updateVolatile` **就地**更新它以实现免重载热更新）。**直接读 `config.regions` 拿到的是引用对象，`config.regions.cn` 因此恒为 `undefined`**——静默失败，卡片会显示成「什么都没配置」。新增 `unwrapVolatile()` 并铺到每一处读取点：`regionStateOf`（含 4 个 deprecated 扁平字段回落）、`selectAccountFor`、`regionCleared`，以及 `apply` 里初始 `desktopPath` 与 `applySelection`。
+  - **`installSection` / `configure` 双路探测**。0.1.5 只有 `installSection`、0.1.7 只有 `configure`（两版类型声明实测互斥），按结构探测择一，**0.1.5 走的分支与调用参数逐字未变**。0.1.7 的 `configure({ auto: true })` 不需要 `setSource` 等价物：活引用就地更新，因此本版额外监听 `loader/volatile-update` 作为「重新读取」的信号。
+  - **客户端半个插件未改动**（`src/client/*` 零改动）。这是刻意的：0.1.7 用 `ctx.configForms` 取代了 `settingsScope`，而 `settingsScope` 同时被本插件的客户端 `inject` 硬依赖，且 0.1.7 不再声明 `settings.plugin.item` 槽位。Cordis 的依赖门是硬的（`_refresh()` 遇任一未满足 inject 即把 fiber 置为 `INACTIVE`），直接迁移会让插件在 0.1.7 上**整体不激活**。完整客户端迁移留待真正升级到 0.1.7 时单独做，本版只落地对 0.1.5 无影响的 Host 侧前向兼容。
+
+  **核查**：改动经真实依赖栈双向验证——0.1.5 侧用 `@deepseek-ai/schemastery@3.18.2` + `@deepseek-ai/dsh-settings@0.1.5-rc.2` 确认 `asVolatile` 恒等 no-op、schema 规范化后**语义等价**（对照组先用「两份独立构建的相同 schema」验证比较器本身有效）、且 seam 探测真实走到 `installSection`；0.1.7 侧用 `@deepseek-ai/schemastery@3.18.3` + `dsh-settings@0.1.7-alpha.1` 的真实 `volatileForm` / `isVolatilePath` 确认三个字段**全部进入可编辑表且写入路径全部放行**，反向对照（不打标记）则 `volatileForm` 返回 `undefined`、0.1.7 会抛 `Plugin entry "workbuddy" has no volatile fields`。
+
+### Tests
+
+测试总数 179 → 183（新增 4 例，`tests/settings-integration.spec.ts`）：
+
+- **schema 在 0.1.5 上不被改动**：按运行时能力断言——有 `volatile()` 时三个字段必须带标记，没有时（0.1.5 实况）**不得**出现任何手写的 `meta.volatile`。
+- **volatile 引用按当前值读取**：合成 `{ get }` 引用，断言 `regionStateOf` / `selectAccountFor` 解包正确——这条正是「直接读 `reference[region]` 恒为 `undefined`」那个静默失败的守卫。
+- **Clear 哨兵穿过 volatile 引用仍生效**：`''` 必须终止查找、不回落 legacy `accountId`。
+- **普通值照常读取**（0.1.5 上所有值都是普通值）。
+
 ## 2.0.6 (2026-09-22)
 
 ### Fixes
