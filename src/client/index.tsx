@@ -87,6 +87,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
       }, WorkBuddyCard))
     }
 
+    registerCard('plugins.bundle.config', 'dsh-connect-workbuddy')
     registerCard('plugins.row.config', 'dsh-connect-workbuddy#dsh-connect-workbuddy')
     registerCard('settings.plugin.item', 'workbuddy')
   } catch (error: unknown) {
