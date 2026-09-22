@@ -84,6 +84,28 @@ export interface WorkBuddyWebCheckin {
   claimButtonText?: string
 }
 
+/**
+ * What the user can do about a credential the upstream refused.
+ *
+ * Two different fixes hide behind one 401, and naming the wrong one is worse
+ * than saying nothing: with a stale account SELECTED but a healthy sign-in
+ * sitting right there, "sign in again" sends the user to re-authenticate — which
+ * changes nothing, because the credentials were never the problem.
+ */
+export interface WorkBuddyWebRecovery {
+  /**
+   * Another local account answered the upstream during recovery, so switching
+   * to it is a VERIFIED fix rather than a suggestion.
+   */
+  usableAccount?: { accountId: string; accountName: string }
+  /**
+   * Signing in again is the only remaining fix: this region has no other local
+   * account to switch to. Set only in that case — never as a fallback for
+   * "nothing could be verified".
+   */
+  reloginRequired: boolean
+}
+
 /** Editable WorkBuddy model row rendered by the plugin-owned settings card. */
 export interface WorkBuddyWebModel {
   id: string
@@ -121,8 +143,11 @@ export function toPersistedWorkBuddyModel(
 /** One selectable local account, token-free. */
 export interface WorkBuddyWebAccount {
   id: string
+  /**
+   * The account's human name, or `''` when the desktop app recorded none.
+   * The card renders its own placeholder for the empty case.
+   */
   accountName: string
-  uin?: string
   domain: string
   source: 'desktop' | 'dsh'
   tokenExpiresAtMs: number
@@ -166,8 +191,11 @@ export type WorkBuddyWebUsage =
   | {
     status: 'signed-in'
     accountId: string
+    /**
+     * The account's human name, or `''` when the desktop app recorded none.
+     * Never an identifier — see {@link WorkBuddyWebAccount.accountName}.
+     */
     accountName: string
-    uin?: string
     domain?: string
     /** Which per-region model directory and selection this account owns. */
     region: WorkBuddyWebRegion
@@ -183,5 +211,13 @@ export type WorkBuddyWebUsage =
     creditsError?: string
     checkin?: WorkBuddyWebCheckin
     checkinError?: string
+    /**
+     * The upstream refused the credential itself (a 401/403), as opposed to a
+     * transient upstream fault. Distinguishes "your token is not usable" from
+     * "the request failed", which need opposite advice.
+     */
+    credentialRejected?: boolean
+    /** Present only alongside {@link credentialRejected}. */
+    recovery?: WorkBuddyWebRecovery
   }
   | { status: 'error'; message: string }

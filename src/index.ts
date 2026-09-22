@@ -32,6 +32,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, fallbackModelsFor, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
+import { createAccountUsabilityProbe } from './credential-recovery.ts'
 import {
   createWorkBuddyAdapter,
   regionOfProvider,
@@ -77,6 +78,7 @@ export {
   defaultDesktopAuthCandidates,
   defaultDesktopAuthDirs,
   defaultDesktopAuthPath,
+  hasEncryptedCredentialFields,
   legacyWorkbuddyOwnAuthPath,
   parseWorkBuddyAuth,
   WORKBUDDY_AUTH_FILE_ENV,
@@ -90,12 +92,28 @@ export {
   type WorkBuddyStoreOptions,
 } from './auth.ts'
 export {
+  clearAtRestKeyCache,
+  deriveAtRestKey,
+  deriveAtRestKeyId,
+  fetchAtRestKeyPayload,
+  findWorkbuddyAppExecutable,
+  isEncryptedFieldWrapper,
+  openEncryptedField,
+  readAtRestKey,
+  WORKBUDDY_APP_EXECUTABLE_ENV,
+  workbuddyAppExecutableCandidates,
+  type WorkBuddyEncryptedField,
+} from './at-rest.ts'
+export {
   classifyUpstreamError,
+  CREDENTIAL_REJECTED_CODE,
+  isCredentialRejectedError,
   parseCreditMultiplier,
   parseReasoning,
   parseUpstreamModel,
   prepareChatBody,
   regionOf,
+  WorkBuddyCredentialRejectedError,
   WorkBuddyUpstreamClient,
   type UpstreamErrorKind,
   type WorkBuddyChatResult,
@@ -105,6 +123,14 @@ export {
   type WorkBuddyRefreshOutcome,
   type WorkBuddyUpstreamModel,
 } from './upstream.ts'
+export {
+  createAccountUsabilityProbe,
+  resolveCredentialRecovery,
+  type WorkBuddyCredentialRecovery,
+  type WorkBuddyProbeStore,
+  type WorkBuddyRecoveryCandidate,
+  type WorkBuddyUsabilityProbeOptions,
+} from './credential-recovery.ts'
 export {
   WORKBUDDY_HOST_HEARTBEAT_FILENAME,
   clearHostHeartbeat,
@@ -350,6 +376,14 @@ export function apply(ctx: Context, config: Config): void {
     stacks[region] = { store, catalog, shim }
   }
 
+  // Answers "would switching to this account help?" after the upstream refuses
+  // the selected credential. It reads a candidate credential WITHOUT touching
+  // the live selection, so probing can never silently re-route billing.
+  const accountUsabilityProbe = createAccountUsabilityProbe({
+    store: region => stacks[region].store,
+    client,
+  })
+
   // Stamp the user's explicit image opt-in onto a model list. This is the ONLY
   // source of `multimodal`; upstream capability flags are never trusted. Applied
   // to every runtime catalog path (save, discovery, startup seed) so a model's
@@ -407,8 +441,7 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /** Push the current config into every region's store selection and catalog. */
-  const applySelection = (value: Config): void => {
-    for (const region of REGION_KEYS) {
+  const applySelection = (value: Config): void => {    for (const region of REGION_KEYS) {
       stacks[region].store.setDesktopPath(value.authFile)
       stacks[region].store.selectAccount(effectiveAccountFor(region, value))
       stacks[region].catalog.set(configuredModels(value, region))
@@ -451,6 +484,11 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['webServer'], (webCtx) => registerWorkBuddyStatusRoute(webCtx, {
     store: region => stacks[region].store,
     client,
+    // Verifies whether some OTHER local account is still accepted upstream, so
+    // a refused credential can be answered with "switch accounts" instead of a
+    // re-login instruction that would change nothing. Cached per account and
+    // issuance time; only ever consulted after a rejection.
+    accountUsable: accountUsabilityProbe,
     displayModels: region => displayModels(current(), region),
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],

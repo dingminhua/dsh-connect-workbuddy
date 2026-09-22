@@ -5,6 +5,7 @@ import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
 import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
+import { WorkBuddyCredentialRejectedError } from '../src/upstream.ts'
 
 const CREDENTIAL: WorkBuddyCredential = {
   accessToken: 'access',
@@ -273,6 +274,90 @@ describe('workBuddyWebStatus', () => {
     expect(status.creditsError).toContain('[redacted]')
     expect(status.creditsError).not.toContain('supersecret')
   })
+
+  it('flags a refused credential and points at the usable account instead of saying "sign in again"', async () => {
+    const probed: string[] = []
+    const status = await workBuddyWebStatus(deps({
+      client: {
+        fetchCredits: async () => { throw new WorkBuddyCredentialRejectedError(401) },
+        fetchCheckinStatus: async () => { throw new WorkBuddyCredentialRejectedError(401) },
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
+      },
+      accountUsable: async (_region, account) => {
+        probed.push(account.id)
+        return account.id === 'bbb'
+      },
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.credentialRejected).toBe(true)
+    // The selected account is 'aaa', so only the OTHER account is probed.
+    expect(probed).toEqual(['bbb'])
+    expect(status.recovery?.usableAccount).toEqual({ accountId: 'bbb', accountName: 'Beta' })
+    // Switching is the fix, so re-login must NOT be demanded.
+    expect(status.recovery?.reloginRequired).toBe(false)
+  })
+
+  it('does not claim any account is usable when the probe confirms none', async () => {
+    const status = await workBuddyWebStatus(deps({
+      client: {
+        fetchCredits: async () => { throw new WorkBuddyCredentialRejectedError(401) },
+        fetchCheckinStatus: async () => { throw new WorkBuddyCredentialRejectedError(401) },
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
+      },
+      accountUsable: async () => false,
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.credentialRejected).toBe(true)
+    expect(status.recovery?.usableAccount).toBeUndefined()
+    // Other accounts exist, so "sign in again" is not the only fix and must not
+    // be asserted — that assertion is what misleads when a switch would do.
+    expect(status.recovery?.reloginRequired).toBe(false)
+  })
+
+  it('requires a re-login only when there is no other account to switch to', async () => {
+    const single = [ACCOUNTS[0]!]
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({ ...baseStore(), accounts: async () => single }) as never,
+      client: {
+        fetchCredits: async () => { throw new WorkBuddyCredentialRejectedError(403) },
+        fetchCheckinStatus: async () => ({ active: true, todayCheckedIn: false, streakDays: 0, dailyCredit: 100, todayCredit: 0, isStreakDay: false, nextStreakDay: 0, streakBonusDays: 0, streakBonusCredit: 0 }),
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
+      },
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.credentialRejected).toBe(true)
+    expect(status.recovery?.reloginRequired).toBe(true)
+  })
+
+  it('does not treat an ordinary upstream fault as a refused credential', async () => {
+    // A transient failure needs a retry, not a re-login: classifying it as a
+    // credential problem would send the user to re-authenticate for nothing.
+    const status = await workBuddyWebStatus(deps({
+      client: {
+        fetchCredits: async () => { throw new Error('workbuddy upstream server (http 503): busy') },
+        fetchCheckinStatus: async () => { throw new Error('workbuddy upstream server (http 503): busy') },
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
+      },
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.credentialRejected).toBeUndefined()
+    expect(status.recovery).toBeUndefined()
+  })
+
+  it('classifies a JSON 401 body as a refused credential too', async () => {
+    // The edge usually answers HTML, but a business-shaped 401 means the same
+    // thing about the token, so it must reach the same advice.
+    const status = await workBuddyWebStatus(deps({
+      client: {
+        fetchCredits: async () => { throw new WorkBuddyCredentialRejectedError(401) },
+        fetchCheckinStatus: async () => ({ active: true, todayCheckedIn: false, streakDays: 0, dailyCredit: 100, todayCredit: 0, isStreakDay: false, nextStreakDay: 0, streakBonusDays: 0, streakBonusCredit: 0 }),
+        claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
+      },
+      accountUsable: async () => false,
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.credentialRejected).toBe(true)
+  })
 })
 
 describe('workBuddyWebStatus region routing', () => {
@@ -517,5 +602,47 @@ describe('registerWorkBuddyStatusRoute', () => {
     const { res, status } = response()
     await handler(request('GET'), res)
     expect(status()).toBe(405)
+  })
+})
+
+/**
+ * The card document must not carry identifiers the card never renders.
+ *
+ * `uin` was forwarded to the browser while nothing ever displayed it, which
+ * made it pure exposure of an account identifier. The name travels as a name
+ * (empty when unknown) so the card can supply its own placeholder.
+ */
+describe('workBuddyWebStatus account identifiers', () => {
+  it('never sends uin to the browser', async () => {
+    const status = await workBuddyWebStatus(deps(), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    const payload = JSON.stringify(status)
+    expect(payload).not.toContain('100000000001')
+    expect(payload).not.toContain('100000000002')
+    for (const account of status.accounts) {
+      expect(Object.keys(account)).not.toContain('uin')
+    }
+    expect(Object.keys(status)).not.toContain('uin')
+  })
+
+  it('sends an empty name rather than an identifier when no nickname exists', async () => {
+    // `exactOptionalPropertyTypes` forbids assigning `undefined`, so the field
+    // is omitted rather than blanked.
+    const { nickname: _dropped, ...withoutNickname } = CREDENTIAL
+    const nameless: WorkBuddyCredential = withoutNickname
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        ...baseStore(),
+        resolve: async () => nameless,
+        accounts: async () => [{ ...ACCOUNTS[0]!, accountName: '' }],
+      }) as never,
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.accountName).toBe('')
+    expect(status.accounts[0]?.accountName).toBe('')
+    // The account is still identified for the picker by its id...
+    expect(status.accountId).toBe('aaa')
+    // ...and no identifier leaks through the name.
+    expect(status.accountName).not.toContain('100000000001')
   })
 })

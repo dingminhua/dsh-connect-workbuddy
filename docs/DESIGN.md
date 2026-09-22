@@ -213,6 +213,8 @@ dsh-subagent-default-model (MIT) ──► dsh-connect-trae (MIT, LaoDing)      
 |---|---|
 | `src/upstream.ts` | `dsh-workbuddy-connect` (MIT) + `workbuddy2api` (MIT)；改动：解析 credits/reasoning/多模态字段 |
 | `src/auth.ts` | `dsh-workbuddy-connect` (MIT)；改动：单文件 → 目录扫描多账号 |
+| `src/at-rest.ts` | 无参考实现（原创）；来源：逆向本机 WorkBuddy 桌面端自身的字段加密格式（AES-256-GCM 信封 + 长度前缀 AAD 转录），密钥向已安装 App 的原生绑定现取，不内置副本 |
+| `src/credential-recovery.ts` | 无参考实现（原创）；区分「切换账号即可」与「必须重新登录」两条 401 恢复路径：靠真实探测而非猜测，且绝不自动切换账号（账单归属由用户决定） |
 | `src/shim.ts` | `dsh-workbuddy-connect` (MIT)；改动：无（加固原样保留） |
 | `src/adapter.ts` | `dsh-workbuddy-connect` (MIT) → `dsh-codex-connect` (Apache-2.0) 转引 |
 | `src/bin.ts` / `src/host-heartbeat.ts` | `dsh-workbuddy-connect` (MIT)；改动：扩展多账号诊断 |
@@ -229,5 +231,6 @@ dsh-subagent-default-model (MIT) ──► dsh-connect-trae (MIT, LaoDing)      
 1. **历史 auth 文件不是官方多账号 API** —— 是 WorkBuddy 的备份产物。默认仍跟随 App 当前登录，切换是显式选项；文档需如实说明。
 2. **上游协议非官方** —— WorkBuddy 更新可能破坏；保留静态 fallback 目录，上游不可用时 provider 不空。
 3. **`credits` 字段是字符串**（`"x0.79 credits"` / `"x0.05"` / `undefined`）—— 解析需容错，解析不出就不显示倍率，不虚构。
-4. **隐私** —— 卡片只传昵称/uin 掩码/到期时间/积分；token、uid 不出现在任何 HTTP 响应里。所有探针脚本已按此原则编写（只输出长度与形状）。
+4. **隐私** —— 卡片只传**昵称**（App 未记录名字时传空串，由卡片显示「未命名账号」占位）、到期时间与积分；token、**uin、uid** 都不出现在任何 HTTP 响应里。账号名是**显示值，绝不是标识符**：把 `uin`/`uid` 当名字显示会让一个完全健康的账号读起来像「插件不知道这是谁」，所以 store 的名字兜底链里没有它们。所有探针脚本已按此原则编写（只输出长度与形状）。
+5. **字段加密随版本轮换** —— 新版桌面端把 auth 文件的 token 字段改为 AES-256-GCM 信封，密钥是**构建期常量**（编译进 App 的 Electron 原生模块），不是用户密钥，也**不是插件可以长期内置的东西**：随 App 版本可能更换。插件因此在需要时向本机已安装的 App 现取（`ELECTRON_RUN_AS_NODE` + `loggerGet()`），只在进程内存缓存，绝不落盘；App 不在场时加密文件读不出来，表现为未登录，而不会退化成残缺 token。纯字符串文件走原路径，不启子进程。
 5. **合规** —— 沿用 workbuddy 的免责声明；第三方声明登记 `workbuddy2api` (MIT) 与架构参考。

@@ -25,6 +25,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { isEncryptedFieldWrapper, openEncryptedField, readAtRestKey } from './at-rest.ts'
 import { regionOf, type WorkBuddyRefreshOutcome, type WorkBuddyRegion } from './upstream.ts'
 
 /** Normalized WorkBuddy credential, timestamps in epoch milliseconds. */
@@ -94,14 +95,26 @@ export interface WorkBuddyStoreOptions {
   refresh: (credential: WorkBuddyCredential) => Promise<WorkBuddyRefreshOutcome>
   /** Refresh this long before actual expiry; default five minutes. */
   refreshMarginMs?: number
+  /**
+   * Resolves the desktop app's at-rest field key, used to open documents whose
+   * token fields are encrypted (Windows builds). Defaults to asking the
+   * installed app; injectable so the encrypted path is testable.
+   */
+  resolveAtRestKey?: () => Promise<Buffer | undefined>
 }
 
 /** One selectable local account, token-free. */
 export interface WorkBuddyAccountChoice {
   /** Stable id derived from `uin` (or `uid` when uin is absent). */
   id: string
+  /**
+   * The account's human name, or `''` when the desktop app recorded none.
+   *
+   * Never an identifier: `uin`/`uid` are opaque numbers and UUIDs, and using one
+   * as a display name reads as "the plugin does not know who this is". Callers
+   * that render a name choose their own placeholder for the empty case.
+   */
   accountName: string
-  uin?: string
   domain: string
   source: 'desktop' | 'dsh'
   tokenExpiresAtMs: number
@@ -204,18 +217,65 @@ export function expiryToMs(value: number): number {
   return value > 1e12 ? value : value * 1000
 }
 
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value !== '' ? value : undefined
+/**
+ * Resolve one string field, transparently opening the desktop app's
+ * encrypted-field wrapper when present.
+ *
+ * Windows builds of the WorkBuddy desktop app store `accessToken` and
+ * `refreshToken` as `{$wbEncrypted:1,envelope}` instead of plain strings; a
+ * reader that only accepts strings sees no credential at all and reports the
+ * account as signed out. The SAME treatment applies to `nickname`: it is
+ * encrypted in those builds too, so a strings-only reader silently degrades the
+ * account's display name to its uin (a bare number) even after tokens start
+ * working — which reads as "the plugin does not know who this is".
+ *
+ * `key` is undefined when the at-rest key could not be obtained, in which case
+ * an encrypted field resolves to undefined rather than to a fabricated value.
+ */
+function credentialField(
+  value: unknown,
+  key: Buffer | undefined,
+): string | undefined {
+  if (typeof value === 'string') return value
+  if (!isEncryptedFieldWrapper(value)) return undefined
+  if (key === undefined) return undefined
+  return openEncryptedField(value, key)
+}
+
+/**
+ * An optional field that may legitimately be absent: an absent value, a
+ * non-string that is not a wrapper, and an unopenable wrapper all mean
+ * "unknown", which must not fail the whole document. Only the REQUIRED token
+ * fields treat an unopenable wrapper as fatal (see {@link parseWorkBuddyAuth}).
+ *
+ * `account.phoneNumber` is deliberately never read: it is encrypted in these
+ * builds, and the card's privacy contract admits nickname, masked uin, expiry
+ * and credits only — a phone number is none of the plugin's business.
+ */
+function optionalCredentialField(value: unknown, key: Buffer | undefined): string | undefined {
+  if (typeof value === 'string') return value === '' ? undefined : value
+  if (!isEncryptedFieldWrapper(value)) return undefined
+  if (key === undefined) return undefined
+  try {
+    return openEncryptedField(value, key)
+  } catch {
+    return undefined
+  }
 }
 
 /**
  * Parse a WorkBuddy auth document in either on-disk shape: the plugin OAuth
  * nested form `{"auth":{...},"account":{...}}` and the flat panel form.
  * Returns undefined when the document carries no access token.
+ *
+ * `atRestKey` is required to read documents whose fields are encrypted
+ * (see {@link credentialField}); pass the key obtained from
+ * `readAtRestKey()` when the plain read reports no token.
  */
 export function parseWorkBuddyAuth(
   text: string,
   filePath: string,
+  atRestKey?: Buffer,
 ): WorkBuddyCredential | undefined {
   let parsed: unknown
   try {
@@ -236,21 +296,31 @@ export function parseWorkBuddyAuth(
     auth = document
     identity = document
   }
-  const accessToken = typeof auth['accessToken'] === 'string' ? auth['accessToken'] : ''
-  if (accessToken === '') return undefined
+  let accessToken: string | undefined
+  let refreshToken: string | undefined
+  try {
+    accessToken = credentialField(auth['accessToken'], atRestKey)
+    refreshToken = credentialField(auth['refreshToken'], atRestKey)
+  } catch {
+    // A malformed envelope, a key mismatch, or a failed authentication tag is
+    // "this document is not readable", exactly like an absent token — it must
+    // never surface as a half-decrypted credential.
+    return undefined
+  }
+  if (accessToken === undefined || accessToken === '') return undefined
   const expiresAtMs = typeof auth['expiresAt'] === 'number' ? expiryToMs(auth['expiresAt']) : 0
   const refreshExpiresAtMs = typeof auth['refreshExpiresAt'] === 'number' ? expiryToMs(auth['refreshExpiresAt']) : undefined
   const lastRefreshAtMs = typeof auth['lastRefreshTime'] === 'number' ? expiryToMs(auth['lastRefreshTime']) : undefined
-  const enterpriseId = optionalString(identity['enterpriseId'])
-  const nickname = optionalString(identity['nickname'])
-  const uin = optionalString(identity['uin'])
+  const enterpriseId = optionalCredentialField(identity['enterpriseId'], atRestKey)
+  const nickname = optionalCredentialField(identity['nickname'], atRestKey)
+  const uin = optionalCredentialField(identity['uin'], atRestKey)
   const credential: WorkBuddyCredential = {
     accessToken,
-    refreshToken: typeof auth['refreshToken'] === 'string' ? auth['refreshToken'] : '',
+    refreshToken: refreshToken ?? '',
     expiresAtMs,
     ...refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs },
-    domain: optionalString(auth['domain']) ?? '',
-    uid: optionalString(identity['uid']) ?? '',
+    domain: optionalCredentialField(auth['domain'], atRestKey) ?? '',
+    uid: optionalCredentialField(identity['uid'], atRestKey) ?? '',
     ...enterpriseId === undefined ? {} : { enterpriseId },
     ...nickname === undefined ? {} : { nickname },
     ...uin === undefined ? {} : { uin },
@@ -259,6 +329,41 @@ export function parseWorkBuddyAuth(
     filePath,
   }
   return credential
+}
+
+/**
+ * Whether a document carries any field the reader must decrypt — the token
+ * fields or the identity fields — i.e. whether reading it needs the at-rest key
+ * at all.
+ *
+ * Deciding this BEFORE asking the app for its key keeps the plain case (macOS
+ * and older Windows builds, and every plugin-owned copy) from paying for a
+ * child process on every credential read. Identity fields are included because
+ * a future build could encrypt the display name while leaving tokens plain;
+ * gating on tokens alone would then silently drop the name again.
+ */
+export function hasEncryptedCredentialFields(text: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return false
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
+  const document = parsed as Record<string, unknown>
+  const auth = typeof document['auth'] === 'object' && document['auth'] !== null
+    ? document['auth'] as Record<string, unknown>
+    : document
+  const identity = typeof document['account'] === 'object' && document['account'] !== null
+    ? document['account'] as Record<string, unknown>
+    : document
+  return isEncryptedFieldWrapper(auth['accessToken'])
+    || isEncryptedFieldWrapper(auth['refreshToken'])
+    || isEncryptedFieldWrapper(identity['nickname'])
+    || isEncryptedFieldWrapper(identity['uin'])
+    || isEncryptedFieldWrapper(identity['uid'])
+    || isEncryptedFieldWrapper(identity['enterpriseId'])
+    || isEncryptedFieldWrapper(auth['domain'])
 }
 
 /**
@@ -363,14 +468,40 @@ function isENOENT(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }
 
-/** Read one auth file, tolerating absence and unparsable content. */
-async function readAuthFile(path: string): Promise<WorkBuddyCredential | undefined> {
+/**
+ * Read one auth file, tolerating absence and unparsable content.
+ *
+ * The desktop app encrypts its token fields on Windows builds. The plain read
+ * is tried first and the app is only asked for its at-rest key when the
+ * document actually carries encrypted wrappers, so the common case costs no
+ * child process. `resolveAtRestKey` is injectable so the encrypted path is
+ * testable without a real desktop install.
+ */
+async function readAuthFile(
+  path: string,
+  resolveAtRestKey: () => Promise<Buffer | undefined>,
+): Promise<WorkBuddyCredential | undefined> {
+  let text: string
   try {
-    return parseWorkBuddyAuth(await readFile(path, 'utf8'), path)
+    text = await readFile(path, 'utf8')
   } catch (error: unknown) {
     if (isENOENT(error)) return undefined
     return undefined
   }
+  const plain = parseWorkBuddyAuth(text, path)
+  if (plain !== undefined) return plain
+  if (!hasEncryptedCredentialFields(text)) return undefined
+  let key: Buffer | undefined
+  try {
+    key = await resolveAtRestKey()
+  } catch {
+    // The app did not hand over its key (not installed, older or newer build).
+    // The document stays unreadable rather than being mis-reported as signed
+    // out with a fabricated token.
+    return undefined
+  }
+  if (key === undefined) return undefined
+  return parseWorkBuddyAuth(text, path, key)
 }
 
 /**
@@ -391,6 +522,7 @@ export class WorkBuddyCredentialStore {
   private readonly legacyOwnPath: string
   private readonly legacyOwnPathExplicit: string | undefined
   private readonly authDirs: readonly string[] | undefined
+  private readonly resolveAtRestKey: () => Promise<Buffer | undefined>
   private desktopPathOverride: string | undefined
   private accountId: string | undefined
   private inflight: Promise<WorkBuddyCredential> | undefined
@@ -404,6 +536,7 @@ export class WorkBuddyCredentialStore {
     this.legacyOwnPathExplicit = options.legacyOwnPath
     this.authDirs = options.authDirs
     this.desktopPathOverride = options.desktopPath
+    this.resolveAtRestKey = options.resolveAtRestKey ?? readAtRestKey
   }
 
   /** Whether a credential's login domain belongs to this store's region. */
@@ -559,7 +692,7 @@ export class WorkBuddyCredentialStore {
     const files = await this.candidateFiles()
     const byId = new Map<string, WorkBuddyCredential>()
     for (const file of files) {
-      const credential = await readAuthFile(file)
+      const credential = await readAuthFile(file, this.resolveAtRestKey)
       if (credential === undefined || !this.matchesRegion(credential.domain)) continue
       const id = workbuddyAccountId(credential)
       const existing = byId.get(id)
@@ -625,8 +758,11 @@ export class WorkBuddyCredentialStore {
       const id = workbuddyAccountId(credential)
       return {
         id,
-        accountName: credential.nickname ?? credential.uin ?? credential.uid,
-        ...credential.uin === undefined ? {} : { uin: credential.uin },
+        // The human name, or '' when the app did not give one. Deliberately NO
+        // fallback to `uin`/`uid`: those are opaque identifiers, and showing one
+        // as a "name" put a bare number in front of the user where a name
+        // belonged. Presentation layers render their own placeholder for ''.
+        accountName: credential.nickname ?? '',
         domain: credential.domain,
         source: credential.source,
         tokenExpiresAtMs: credential.expiresAtMs,
@@ -667,6 +803,20 @@ export class WorkBuddyCredentialStore {
     // undefined so the caller surfaces "no signed-in account" and the user can
     // re-select instead of the plugin quietly switching accounts.
     return credentials.find(credential => workbuddyAccountId(credential) === this.accountId)
+  }
+
+  /**
+   * One account's stored credential by id, WITHOUT consulting or changing the
+   * current selection.
+   *
+   * Exists so a recovery probe can test whether some OTHER local account is
+   * still accepted upstream while a rejected one stays selected: mutating the
+   * live selection to find that out would be exactly the silent account switch
+   * this store refuses to perform (it would bill the wrong account mid-probe).
+   */
+  async credentialFor(accountId: string): Promise<WorkBuddyCredential | undefined> {
+    const credentials = await this.readAll()
+    return credentials.find(credential => workbuddyAccountId(credential) === accountId)
   }
 
   /** The credential to send upstream: {@link current}, refreshed on demand. */

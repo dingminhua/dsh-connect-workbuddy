@@ -23,7 +23,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
+import { resolveCredentialRecovery } from './credential-recovery.ts'
+import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
+import { isCredentialRejectedError } from './upstream.ts'
 import { regionOfStatusUrl } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
@@ -67,6 +70,15 @@ export interface WorkBuddyStatusRouteOptions {
    * no scan of its own.
    */
   regionUsable?(region: WorkBuddyRegion, usable: boolean): void
+  /**
+   * Verify whether one local account is still accepted by the upstream.
+   *
+   * Consulted ONLY after the selected credential has been refused, to tell
+   * "switch accounts" apart from "sign in again". Left undefined, nothing is
+   * claimed usable and the card falls back to the re-login advice that needs no
+   * probe.
+   */
+  accountUsable?(region: WorkBuddyRegion, account: WorkBuddyRecoveryCandidate): Promise<boolean>
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -136,11 +148,17 @@ function toWebModel(
 
 type WorkBuddyWebModelFromInfo = import('./status-paths.ts').WorkBuddyWebModel
 
-/** Project a store account into the card's token-free account row. */
+/**
+ * Project a store account into the card's token-free account row.
+ *
+ * `uin` is deliberately NOT forwarded: the card has never rendered it, so
+ * sending it was pure exposure of an account identifier for no feature. The
+ * name carries whatever the desktop app recorded, and `''` means the card
+ * should show its own placeholder rather than an identifier.
+ */
 function toWebAccount(account: {
   id: string
   accountName: string
-  uin?: string
   domain: string
   source: 'desktop' | 'dsh'
   tokenExpiresAtMs: number
@@ -149,7 +167,6 @@ function toWebAccount(account: {
   return {
     id: account.id,
     accountName: account.accountName,
-    ...account.uin === undefined ? {} : { uin: account.uin },
     domain: account.domain,
     source: account.source,
     tokenExpiresAtMs: account.tokenExpiresAtMs,
@@ -205,8 +222,10 @@ export async function workBuddyWebStatus(
   const selected = accounts.find(account => account.selected)
   const account = {
     accountId: selected?.id ?? '',
-    accountName: credential.nickname ?? credential.uin ?? credential.uid,
-    ...credential.uin === undefined ? {} : { uin: credential.uin },
+    // The human name only; '' lets the card render its own placeholder. A bare
+    // `uin`/`uid` is an identifier, not a name, and showing one made the account
+    // read as "unknown user" instead of simply unnamed.
+    accountName: credential.nickname ?? '',
     ...credential.domain === '' ? {} : { domain: credential.domain },
     region,
     source: credential.source,
@@ -221,6 +240,22 @@ export async function workBuddyWebStatus(
     deps.client.fetchCredits(credential),
     deps.client.fetchCheckinStatus(credential),
   ])
+  // Both calls carry the SAME credential, so either one reporting a refusal
+  // classifies the credential itself — and the honest advice depends on whether
+  // another local account would work, which is what the recovery pass answers.
+  // It runs only on this failure path, so a healthy account pays nothing.
+  const rejected = [creditsResult, checkinResult].some(
+    result => result.status === 'rejected' && isCredentialRejectedError(result.reason),
+  )
+  const recovery = !rejected ? undefined : await resolveCredentialRecovery({
+    region,
+    store: deps.store(region),
+    ...selected === undefined ? {} : { rejectedAccountId: selected.id },
+    // Without an injected probe nothing can be verified, so no account is
+    // claimed usable — `reloginRequired` then still reports the one case that
+    // needs no probe (there is nothing else to switch to).
+    probe: deps.accountUsable ?? (async () => false),
+  })
   return {
     status: 'signed-in',
     ...account,
@@ -230,6 +265,8 @@ export async function workBuddyWebStatus(
     ...checkinResult.status === 'fulfilled'
       ? { checkin: checkinResult.value }
       : { checkinError: safeMessage(checkinResult.reason) },
+    ...!rejected ? {} : { credentialRejected: true },
+    ...recovery === undefined ? {} : { recovery },
   }
 }
 

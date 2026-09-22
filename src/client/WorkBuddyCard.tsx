@@ -423,8 +423,16 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   }
 
   const title = t('row.title')
+  /**
+   * Show a name, or a placeholder when the desktop app recorded none.
+   *
+   * The Host sends `''` rather than an identifier, because a `uin`/`uid` shown
+   * where a name belongs reads as "the plugin does not know who this is" — the
+   * placeholder says the honest thing instead.
+   */
+  const nameOf = (value: string): string => value === '' ? t('row.accountUnnamed') : value
   const label = status.status === 'signed-in'
-    ? t('row.signedIn', { accountName: status.accountName })
+    ? t('row.signedIn', { accountName: nameOf(status.accountName) })
     : status.status === 'error'
       ? t('row.requestFailed')
       : t('row.signedOut')
@@ -494,7 +502,11 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                     : null}
                   {status.status === 'error'
                     || (status.status === 'signed-in' && status.creditsError !== undefined)
-                    ? <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
+                    // A refusal gets its own, specific advice in the panel below;
+                    // the generic "sign in again" would contradict it.
+                    ? status.status === 'signed-in' && status.credentialRejected === true
+                      ? null
+                      : <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
                     : null}
                   {selectionLost
                     ? <span className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</span>
@@ -539,7 +551,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           : <option value="" disabled>{t('row.accountNoneInEffect')}</option>}
                         {status.accounts.map(account => (
                           <option key={account.id} value={account.id}>
-                            {account.accountName}{account.domain === '' ? '' : ` · ${account.domain}`}
+                            {nameOf(account.accountName)}{account.domain === '' ? '' : ` · ${account.domain}`}
                           </option>
                         ))}
                       </select>
@@ -649,6 +661,32 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                         </div>
                       )
                     })()}
+                    {status.credentialRejected === true
+                      ? <section className="dsm-workbuddy-usage-error" role="alert">
+                          <strong>{t('row.credentialRejectedTitle')}</strong>
+                          <p>{t('row.credentialRejectedIntro', { accountName: nameOf(status.accountName) })}</p>
+                          {status.recovery?.usableAccount !== undefined
+                            ? <p>{t('row.credentialRejectedSwitch', { accountName: nameOf(status.recovery.usableAccount.accountName) })}</p>
+                            : status.recovery?.reloginRequired === true
+                              ? <p>{t('row.credentialRejectedRelogin')}</p>
+                              : <p>{t('row.credentialRejectedChoose')}</p>}
+                          {status.recovery?.usableAccount === undefined
+                            ? null
+                            : <button
+                                type="button"
+                                className="dsm-btn dsm-btn-outline"
+                                disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
+                                onClick={() => {
+                                  const target = status.recovery?.usableAccount
+                                  if (target !== undefined) void switchAccount(target.accountId)
+                                }}
+                              >
+                                {switchingAccount
+                                  ? t('row.accountsScanning')
+                                  : t('row.credentialRejectedSwitchAction', { accountName: nameOf(status.recovery.usableAccount.accountName) })}
+                              </button>}
+                        </section>
+                      : null}
                     {status.creditsError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     <section className="dsm-workbuddy-models" aria-label={t('row.modelsTitle')}>

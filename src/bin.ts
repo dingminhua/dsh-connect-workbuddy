@@ -26,6 +26,7 @@ import {
   WorkBuddyCredentialStore,
   workbuddyOwnAuthPath,
 } from './auth.ts'
+import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutable } from './at-rest.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
@@ -89,6 +90,7 @@ async function doctor(jsonOutput: boolean): Promise<number> {
   const desktopPresent = await anyStore.desktopFilePresent()
   const heartbeat = await readHostHeartbeat()
   const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
+  const appExecutable = findWorkbuddyAppExecutable()
   const regionLists = await Promise.all(REGIONS.map(async region => ({
     region,
     accounts: await makeStore(region).accounts(),
@@ -104,6 +106,16 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       dir: defaultDesktopAuthDirs()[0] ?? '(no platform default)',
       candidates: defaultDesktopAuthCandidates(),
       present: desktopPresent,
+    },
+    /**
+     * Whether the encrypted-credential path is available. The desktop app
+     * encrypts token fields on Windows builds; opening them needs that same
+     * app, so an install location is exactly what this records. No key
+     * material is read or reported here.
+     */
+    atRestDecryption: {
+      appExecutable: appExecutable ?? `(not found; set ${WORKBUDDY_APP_EXECUTABLE_ENV})`,
+      available: appExecutable !== undefined,
     },
     ownAuthFiles: {
       cn: workbuddyOwnAuthPath('cn'),
@@ -131,6 +143,9 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     hints: [
       ...anySignedIn ? [] : ['Sign in once in the WorkBuddy desktop app (either region), then run status again.'],
       ...desktopPresent ? [] : [`No WorkBuddy desktop auth file at the expected path; set ${WORKBUDDY_AUTH_FILE_ENV} if it lives elsewhere.`],
+      ...appExecutable === undefined
+        ? [`The WorkBuddy desktop app was not found, so encrypted credential fields cannot be opened; set ${WORKBUDDY_APP_EXECUTABLE_ENV} to its executable if it is installed elsewhere.`]
+        : [],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and providers are unavailable until DSH starts the plugin.'],
     ],
   }
@@ -140,10 +155,11 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     process.stdout.write([
       `WorkBuddy Connect ${WORKBUDDY_CONNECT_VERSION} on ${process.version}`,
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
+      `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable})`,
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       ...regionLists.flatMap(({ region, accounts }) => [
         `${REGION_LABELS[region]} accounts: ${accounts.length} (own copy ${workbuddyOwnAuthPath(region)})`,
-        ...accounts.map(account => `  - ${account.accountName} (${account.id})${account.selected ? ' [selected]' : ''} expires ${new Date(account.tokenExpiresAtMs).toISOString()}`),
+        ...accounts.map(account => `  - ${account.accountName === '' ? '(unnamed)' : account.accountName} (${account.id})${account.selected ? ' [selected]' : ''} expires ${new Date(account.tokenExpiresAtMs).toISOString()}`),
       ]),
       `Static fallback models: CN ${report.fallbackModels.cn}, Global ${report.fallbackModels.global}`,
       ...report.hints.map(hint => `Hint: ${hint}`),
