@@ -29,7 +29,14 @@ import type { WorkBuddyWebRegion } from '../status-paths.ts'
  */
 export interface WorkBuddyAccountScope {
   getSnapshot(): { value?: unknown }
-  set(field: string, value: unknown): Promise<void>
+  /**
+   * Whether the Host accepted the write. On DSH 0.1.7 the scope resolves
+   * `false` — it does NOT reject — when the Host refuses the mutation (stale
+   * revision conflict, volatile-path validation, unwritable profile); the
+   * scope then reloads Host state on its own. `undefined`/`void` (the 0.1.5
+   * scope) counts as accepted: that line has no refusal channel.
+   */
+  set(field: string, value: unknown): Promise<boolean | void>
 }
 
 /**
@@ -42,11 +49,33 @@ export class WorkBuddySettingsWriteError extends Error {
   /** The settings field that did not land. */
   readonly field: string
 
-  constructor(field: string) {
-    super(`workbuddy: settings field "${field}" was not persisted by the settings write`)
+  constructor(field: string, reason?: string) {
+    super(`workbuddy: settings field "${field}" was not persisted by the settings write${reason === undefined ? '' : `: ${reason}`}`)
     this.name = 'WorkBuddySettingsWriteError'
     this.field = field
   }
+}
+
+/**
+ * One field write with exactly one recovery retry.
+ *
+ * On DSH 0.1.7 a refused write resolves `false` while the scope transparently
+ * reloads Host state. A single refusal is the documented stale-writer path
+ * (the Host bumps the revision under us), so after that reload the value is
+ * re-built from the fresh snapshot and tried once more. A second refusal is
+ * deterministic — validation or a read-only profile — and must fail loudly
+ * with a message that names the refusal instead of the generic read-back
+ * assertion, which cannot distinguish "rejected" from "accepted but lost".
+ */
+async function setWithRecovery(
+  scope: WorkBuddyAccountScope,
+  field: 'accounts' | 'regions',
+  build: () => unknown,
+): Promise<boolean> {
+  let accepted = await scope.set(field, build())
+  if (accepted !== false) return true
+  accepted = await scope.set(field, build())
+  return accepted !== false
 }
 
 /** Read the per-region account selections out of the settings snapshot. */
@@ -86,8 +115,13 @@ export async function writeAccountSlot(
   region: WorkBuddyWebRegion,
   value: string,
 ): Promise<void> {
-  const accounts = configuredAccountsOf(scope.getSnapshot().value)
-  await scope.set('accounts', { ...accounts, [region]: value })
+  const accepted = await setWithRecovery(scope, 'accounts', () => {
+    const accounts = configuredAccountsOf(scope.getSnapshot().value)
+    return { ...accounts, [region]: value }
+  })
+  if (!accepted) {
+    throw new WorkBuddySettingsWriteError('accounts', 'the Host refused the write twice (revision conflict or validation refused the value)')
+  }
   const landed = configuredAccountsOf(scope.getSnapshot().value)[region]
   // Note the deliberately exact comparison: `undefined` (slot absent) and `''`
   // (slot cleared) are different states with different meanings, and only the
@@ -119,9 +153,14 @@ export async function writeRegionModels(
   region: WorkBuddyWebRegion,
   payload: { lastCatalog: readonly { id: string }[] } & Record<string, unknown>,
 ): Promise<void> {
-  const configured = (scope.getSnapshot().value as { regions?: Record<string, unknown> } | undefined)?.regions
-  const regions = typeof configured === 'object' && configured !== null ? configured : {}
-  await scope.set('regions', { ...regions, [region]: payload })
+  const accepted = await setWithRecovery(scope, 'regions', () => {
+    const configured = (scope.getSnapshot().value as { regions?: Record<string, unknown> } | undefined)?.regions
+    const regions = typeof configured === 'object' && configured !== null ? configured : {}
+    return { ...regions, [region]: payload }
+  })
+  if (!accepted) {
+    throw new WorkBuddySettingsWriteError('regions', 'the Host refused the write twice (revision conflict or validation refused the value)')
+  }
 
   const landed = (scope.getSnapshot().value as
     | { regions?: Record<string, { lastCatalog?: { id?: string }[] }> }

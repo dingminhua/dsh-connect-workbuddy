@@ -55,7 +55,8 @@ export interface WorkBuddyCardInjected {
   settingsScope?: {
     getSnapshot(): { status: string; value?: unknown; writable: boolean }
     subscribe(listener: () => void): () => void
-    set(field: string, value: unknown): Promise<void>
+    /** Whether the Host accepted the write (0.1.7); `void` on the 0.1.5 line. */
+    set(field: string, value: unknown): Promise<boolean | void>
   }
 }
 
