@@ -310,6 +310,18 @@ export async function workBuddyWebStatus(
   })
   return {
     status: 'signed-in',
+    // Host-side liveness probe for the settings write gate: the DSH 0.1.7
+    // dsh-settings `write()` refuses every field of a plugin whose Config has
+    // no volatile-marked entries, and the refusal arrives at the card as a
+    // generic "not persisted". This field exposes, from inside the Host
+    // process, whether THIS build's Config actually carries the volatile
+    // markers — a false here names the dependency-resolution layer as the
+    // break, not the settings write itself.
+    diagVolatile: {
+      regions: (Config as any).dict?.regions?.meta?.volatile === true,
+      accounts: (Config as any).dict?.accounts?.meta?.volatile === true,
+      authFile: (Config as any).dict?.authFile?.meta?.volatile === true,
+    },
     ...account,
     ...creditsResult.status === 'fulfilled'
       ? { credits: toCredits(creditsResult.value) }
