@@ -265,6 +265,70 @@ interface WorkBuddyRegionStack {
 const REGION_KEYS: readonly WorkBuddyRegion[] = ['cn', 'global']
 
 /**
+ * The account id a region should select, or `undefined` for the documented
+ * default: follow whatever the WorkBuddy app is currently signed in as.
+ *
+ * Three inputs decide it, and the ORDER is the whole point:
+ *
+ * 1. `accounts[region] === ''` — the Clear sentinel. It means "the user
+ *    dropped this region's choice", which is the opposite of the key being
+ *    absent ("never configured"). It therefore terminates the lookup: falling
+ *    through to the legacy `accountId` here would re-bind the very account the
+ *    user just dropped, and would do it after clearing appeared to succeed.
+ * 2. `accounts[region]` set to a real id — an explicit per-region choice.
+ * 3. absent key, with the pre-split `accountId` belonging to this region —
+ *    the legacy migration, attributed once at startup from the local scan.
+ *
+ * `legacyAccountRegion` is resolved asynchronously after the first
+ * `applySelection` pass, so this is a pure function of it rather than a
+ * closure over the stores: the same call answers both the early pass (no
+ * attribution yet) and every later one.
+ */
+export function selectAccountFor(
+  region: WorkBuddyRegion,
+  value: Config,
+  legacyAccountRegion: WorkBuddyRegion | undefined,
+): string | undefined {
+  const configured = value.accounts?.[region]
+  if (configured === '') return undefined
+  if (configured !== undefined) return configured
+  return legacyAccountRegion === region ? value.accountId : undefined
+}
+
+/** Whether a region carries the Clear sentinel rather than a saved choice. */
+export function regionCleared(value: Config, region: WorkBuddyRegion): boolean {
+  return value.accounts?.[region] === ''
+}
+
+/**
+ * Which region owns the pre-split `accountId`, or `undefined` when it cannot
+ * be attributed (the field is absent, or the account is gone from every local
+ * sign-in list).
+ *
+ * Regions the user explicitly cleared are skipped, even when the saved account
+ * IS among their local sign-ins. `selectAccountFor` already refuses to fall
+ * back for a cleared region, so this cannot change what runs — but it keeps the
+ * attribution honest about its own decision: the region that owns this id is
+ * not the one the user just told the plugin to stop pinning, so the other
+ * region must get the chance to claim it.
+ *
+ * `accountsFor` is injected so the sequential, stop-at-first-match scan is
+ * testable without a filesystem.
+ */
+export async function legacyAttributionRegion(
+  value: Config,
+  accountsFor: (region: WorkBuddyRegion) => Promise<readonly { id: string }[]>,
+): Promise<WorkBuddyRegion | undefined> {
+  const id = value.accountId
+  if (id === undefined) return undefined
+  for (const region of REGION_KEYS) {
+    if (regionCleared(value, region)) continue
+    if ((await accountsFor(region)).some(account => account.id === id)) return region
+  }
+  return undefined
+}
+
+/**
  * Start both regions' loopback endpoints, register the `workbuddy` (CN) and
  * `workbuddy-global` (international) providers, and refresh each region's
  * model catalog from the upstream once that region's credentials allow it.
@@ -331,11 +395,8 @@ export function apply(ctx: Context, config: Config): void {
    * a selection that belongs to the other side of the split.
    */
   let legacyAccountRegion: WorkBuddyRegion | undefined
-  const effectiveAccountFor = (region: WorkBuddyRegion, value: Config): string | undefined => {
-    const explicit = value.accounts?.[region]
-    if (explicit !== undefined) return explicit
-    return legacyAccountRegion === region ? value.accountId : undefined
-  }
+  const effectiveAccountFor = (region: WorkBuddyRegion, value: Config): string | undefined =>
+    selectAccountFor(region, value, legacyAccountRegion)
 
   const discoverModels = async (
     region: WorkBuddyRegion,
@@ -380,19 +441,17 @@ export function apply(ctx: Context, config: Config): void {
   // local scan can tell which one that is, then re-apply. Until this resolves
   // (or when no legacy field exists) both regions simply run their defaults.
   void (async () => {
-    const id = current().accountId
-    if (id === undefined) return
     try {
-      for (const region of REGION_KEYS) {
-        const accounts = await stacks[region].store.accounts()
-        if (accounts.some(account => account.id === id)) {
-          legacyAccountRegion = region
-          applySelection(current())
-          return
-        }
+      const region = await legacyAttributionRegion(current(), async candidate =>
+        stacks[candidate].store.accounts())
+      if (region === undefined) {
+        // Either no legacy field, or the saved account vanished (the app
+        // replaced its sign-in): both regions keep their defaults and the card
+        // lets the user re-select.
+        return
       }
-      // The saved account vanished (app replaced its sign-in): no attribution,
-      // both regions keep their defaults, and the card lets the user re-select.
+      legacyAccountRegion = region
+      applySelection(current())
     } catch {
       // Scan failure: keep defaults; the next card-driven scan converges.
     }

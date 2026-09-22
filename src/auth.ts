@@ -468,6 +468,20 @@ export class WorkBuddyCredentialStore {
     return this.accountId
   }
 
+  /**
+   * Whether the region runs a SAVED choice rather than the documented default.
+   *
+   * `false` means "follow the app's current sign-in", which is also what the
+   * card's Clear action restores. The two states can resolve to the very same
+   * account — an upgraded user whose pre-split `accountId` happens to be the
+   * app's current sign-in clears the choice and sees no change at all — so the
+   * card cannot infer this from the account list alone. It reports the state
+   * here so clearing is observable instead of looking like a dead button.
+   */
+  hasExplicitSelection(): boolean {
+    return this.accountId !== undefined
+  }
+
   /** The auth-file path candidates, in probe order. */
   private resolveDesktopCandidates(): string[] {
     const fromEnv = process.env[WORKBUDDY_AUTH_FILE_ENV]

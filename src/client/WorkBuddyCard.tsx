@@ -36,6 +36,7 @@ import {
   withWorkBuddyRegion,
 } from '../status-paths.ts'
 import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebUsage } from '../status-paths.ts'
+import { writeAccountSlot, writeRegionModels } from './account-selection.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -117,22 +118,23 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
   return { background: color }
 }
 
-/** Read the per-region account selections out of the settings snapshot. */
-function configuredAccountsOf(configured: unknown): Record<string, string> {
-  const accounts = (configured as { accounts?: unknown } | undefined)?.accounts
-  return typeof accounts === 'object' && accounts !== null ? accounts as Record<string, string> : {}
-}
-
 /** Render WorkBuddy sign-in state, credits, and model selection as one card. */
 export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
   const [open, setOpen] = useState(false)
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
-  /** Last-known usage per region, so tab dots survive tab switches. */
+  /**
+   * Last-known usage per region, so tab dots survive tab switches.
+   *
+   * The placeholder carries `selectionExplicit: false` because that is the
+   * state the plugin documents as the default before any choice is saved. It
+   * is never rendered: the account picker and its state line only appear once
+   * a real fetch has populated `accounts`.
+   */
   const [statusByRegion, setStatusByRegion] = useState<Partial<Record<WorkBuddyWebRegion, WorkBuddyWebUsage>>>({
-    cn: { status: 'signed-out', accounts: [] },
-    global: { status: 'signed-out', accounts: [] },
+    cn: { status: 'signed-out', accounts: [], selectionExplicit: false },
+    global: { status: 'signed-out', accounts: [], selectionExplicit: false },
   })
   const [busy, setBusy] = useState(false)
   const [settingsRevision, setSettingsRevision] = useState(0)
@@ -143,6 +145,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   /** Save failure surfaced next to the buttons; cleared by the next attempt. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
+  /** Set right after a CONFIRMED Clear so the dropped choice is stated. */
+  const [accountNote, setAccountNote] = useState<'cleared' | undefined>(undefined)
+  /** A refused account write (silently unpersisted settings on a locked file). */
+  const [accountError, setAccountError] = useState<string | undefined>(undefined)
   const [checkingIn, setCheckingIn] = useState(false)
   const [checkinActionError, setCheckinActionError] = useState<string | undefined>(undefined)
   const mounted = useRef(true)
@@ -189,7 +195,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     return () => { controller.abort() }
   }, [open, activeRegion, refreshUsage])
 
-  const status: WorkBuddyWebUsage = statusByRegion[activeRegion] ?? { status: 'signed-out', accounts: [] }
+  const status: WorkBuddyWebUsage = statusByRegion[activeRegion]
+    ?? { status: 'signed-out', accounts: [], selectionExplicit: false }
 
   useEffect(() => {
     if (!open || status.status !== 'signed-in') return
@@ -231,10 +238,16 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const switchAccount = async (accountId: string): Promise<void> => {
     if (settingsScope === undefined) return
     setSwitchingAccount(true)
+    setAccountNote(undefined)
+    setAccountError(undefined)
     try {
-      const configuredAccounts = configuredAccountsOf(settingsScope.getSnapshot().value)
-      await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: accountId })
+      // Verified write: `set()` resolving does not prove the value was stored
+      // (see `writeAccountSlot`), and a silently dropped switch would leave the
+      // picker showing one account while another one serves.
+      await writeAccountSlot(settingsScope, activeRegion, accountId)
       await refreshUsage(activeRegion)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setSwitchingAccount(false)
     }
@@ -244,15 +257,29 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
    * Drop the explicit choice so the region returns to its documented default:
    * follow whatever the WorkBuddy app is currently signed in as. The empty
    * string is the settings-level sentinel for "no explicit selection" (the
-   * store normalizes it away); the account id itself is never written here.
+   * store normalizes it away, and the host's legacy attribution treats it as a
+   * deliberate clear rather than an unset key); the account id itself is never
+   * written here.
+   *
+   * The confirmation is only shown once the write is CONFIRMED. That matters
+   * twice over: the restored default is usually the very account that was
+   * saved, so the state line is the only feedback the user gets — and on
+   * Windows the atomic replace of `settings.yaml` can fail outright (locked by
+   * an antivirus scanner or a sync client), in which case claiming "cleared"
+   * would be a lie that the old selection silently contradicts.
    */
   const clearAccount = async (): Promise<void> => {
     if (settingsScope === undefined) return
     setSwitchingAccount(true)
+    setAccountError(undefined)
     try {
-      const configuredAccounts = configuredAccountsOf(settingsScope.getSnapshot().value)
-      await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: '' })
+      await writeAccountSlot(settingsScope, activeRegion, '')
       await refreshUsage(activeRegion)
+      if (mounted.current) setAccountNote('cleared')
+    } catch (error: unknown) {
+      if (!mounted.current) return
+      setAccountNote(undefined)
+      setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setSwitchingAccount(false)
     }
@@ -404,15 +431,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       // toPersistedWorkBuddyModel strips the card-only fields BY KEY: explicit
       // `undefined` values are rejected by the settings write's strict JSON
       // codec, which used to fail the whole save silently.
-      const configuredRegions = (configured as { regions?: Record<string, unknown> } | undefined)?.regions
-      await settingsScope.set('regions', {
-        ...typeof configuredRegions === 'object' && configuredRegions !== null ? configuredRegions : {},
-        [status.region]: {
-          lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
-          enabledModelIds: [...activeEnabledIds],
-          imageModelIds: [...activeImageIds],
-          contextBudgets: activeContextBudgets,
-        },
+      //
+      // Verified write, because a save DISCARDS the draft: if the write did not
+      // persist, throwing the user's edits away while reporting success would
+      // be unrecoverable — the draft is the only copy.
+      await writeRegionModels(settingsScope, status.region, {
+        lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
+        enabledModelIds: [...activeEnabledIds],
+        imageModelIds: [...activeImageIds],
+        contextBudgets: activeContextBudgets,
       })
       discardModels()
       await refreshUsage(activeRegion)
@@ -433,6 +460,11 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       : t('row.signedOut')
   /** The saved choice no longer matches a local sign-in (tokens are fine). */
   const selectionLost = status.status === 'signed-out' && status.selectionLost === true
+  /**
+   * Whether this region runs a saved choice, per the Host. `undefined` only on
+   * the error branch, which renders no picker and therefore no state line.
+   */
+  const selectionExplicit = status.status === 'error' ? undefined : status.selectionExplicit
 
   return (
     <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
@@ -468,7 +500,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                       role="tab"
                       aria-selected={region === activeRegion}
                       className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}`}
-                      onClick={() => { setActiveRegion(region) }}
+                      onClick={() => { setActiveRegion(region); setAccountNote(undefined); setAccountError(undefined) }}
                     >
                       {regionStatus === undefined
                         ? null
@@ -557,6 +589,31 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                     >
                       {t('row.accountsFollowApp')}
                     </button>
+                    {/* State, not a hint: which of the two modes this region is
+                        in. Without it, clearing a choice that the app's current
+                        sign-in already matches changes nothing on screen — the
+                        "the button does nothing" report. The confirmation line
+                        is shown first, while it is still news. */}
+                    <span className="dsm-workbuddy-account-state" role="status">
+                      {accountNote === 'cleared'
+                        ? t('row.accountsCleared')
+                        : selectionExplicit === false
+                          ? t('row.accountsFollowingApp')
+                          : selectionExplicit === true
+                            ? t('row.accountsSavedChoice')
+                            : ''}
+                    </span>
+                    {/* A write that did not persist is stated, never swallowed.
+                        Reaching this means `set()` resolved while the value is
+                        absent from the document (a locked settings.yaml on
+                        Windows), so the choice shown above is NOT the one in
+                        effect and saying nothing would leave the user with a
+                        picker that lies. */}
+                    {accountError === undefined
+                      ? null
+                      : <span className="dsm-workbuddy-account-error" role="alert">
+                          {t('row.accountsWriteFailed', { message: accountError })}
+                        </span>}
                   </section>
                 : null}
               {status.status === 'signed-in'

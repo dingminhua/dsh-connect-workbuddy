@@ -5,13 +5,23 @@ import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as WorkBuddy from '../src/index.ts'
 
+/**
+ * Raw user sections present BEFORE the provider is constructed. `SettingsProvider`
+ * is a Cordis service and cannot be `new`ed outside a context, so a document
+ * that was already on disk when the plugin loads (the restart case) is staged
+ * here and folded into the first `load()`.
+ */
+let preloadedDocument: Record<string, unknown> = {}
+
 class MemorySettings extends SettingsProvider {
   readonly writable = true
   private storedDocument: Record<string, unknown> = {}
   apply(ctx: Context): void {
     ctx.settings = this
   }
-  protected load(): Promise<Record<string, unknown>> { return Promise.resolve(structuredClone(this.storedDocument)) }
+  protected load(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ ...structuredClone(preloadedDocument), ...structuredClone(this.storedDocument) })
+  }
   protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
     this.storedDocument[ns] = structuredClone(section)
     return Promise.resolve()
@@ -19,7 +29,11 @@ class MemorySettings extends SettingsProvider {
 }
 
 let context: Context | undefined
-afterEach(async () => { await context?.fiber.dispose(); context = undefined })
+afterEach(async () => {
+  await context?.fiber.dispose()
+  context = undefined
+  preloadedDocument = {}
+})
 
 describe('WorkBuddy provider registration', () => {
   it('registers both regional providers, settings, and fallback models after shim startup', async () => {
@@ -178,6 +192,260 @@ describe('account selection through the settings seam', () => {
     expect((doc as { accounts?: Record<string, string> }).accounts?.cn).toBe('')
     // The plugin keeps serving both regions (no crash, no dead provider).
     expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+  })
+
+  it('a cleared region is not re-bound by the legacy accountId at startup (issue #11)', async () => {
+    // An upgraded user carries the pre-split `accountId`, which is attributed
+    // to its region once the local scan resolves. If the user then clears the
+    // region, the sentinel must WIN over that attribution — otherwise the very
+    // selection they dropped comes back, and it comes back silently because the
+    // restored default is usually the same account, so nothing looks different.
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-clear-legacy-'))
+    await writeLiveAuth(root)
+    // The account the legacy `accountId` names. Only the billing identity
+    // fields matter to the id, so a partial credential is enough.
+    const legacyId = (await import('../src/auth.ts')).workbuddyAccountId({
+      uid: 'uid-1',
+      uin: '100000000001',
+      nickname: 'Alpha',
+    })
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    // The legacy field is the composition base, exactly as an upgraded user's
+    // saved config arrives.
+    await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+
+    // Let the startup attribution resolve while `accounts.cn` is still absent:
+    // this is the window in which the legacy id becomes effective.
+    await expect.poll(async () =>
+      (await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS) as { accountId?: string }).accountId,
+    ).toBe(legacyId)
+
+    // Now the user clears the CN region.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
+
+    const doc = await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS) as {
+      accounts?: Record<string, string>
+      accountId?: string
+    }
+    // The legacy field itself is left untouched (it is the migration source for
+    // the OTHER region too) — the sentinel is what has to win, and it does:
+    // a cleared region resolves to "follow the app", never to the legacy id.
+    expect(doc.accounts?.cn).toBe('')
+    expect(doc.accountId).toBe(legacyId)
+    expect(WorkBuddy.selectAccountFor('cn', doc, 'cn')).toBeUndefined()
+    // The other region is unaffected by the CN clear.
+    expect(WorkBuddy.selectAccountFor('global', doc, 'cn')).toBeUndefined()
+  })
+
+  it('the startup attribution skips a region cleared in an earlier session (issue #11)', async () => {    // The clear is already in the stored document when the plugin loads — the
+    // user cleared it, then restarted DSH. The attribution pass must not
+    // re-bind the region just because the legacy `accountId` still matches a
+    // local account.
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-clear-restart-'))
+    await mkdir(join(root, AUTH_DIR), { recursive: true })
+    await writeFile(join(root, AUTH_DIR, LIVE), JSON.stringify({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-alpha',
+        refreshToken: 'refresh-alpha',
+        tokenType: 'Bearer',
+        domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+    const legacyId = (await import('../src/auth.ts')).workbuddyAccountId({
+      uid: 'uid-1', uin: '100000000001', nickname: 'Alpha',
+    })
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    // Pre-existing user layer: the legacy field AND the CN clear, side by side.
+    preloadedDocument = { [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accountId: legacyId, accounts: { cn: '' } } }
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+
+    const doc = await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS) as {
+      accounts?: Record<string, string>
+      accountId?: string
+    }
+    // Whatever the scan concluded, the cleared slot still wins.
+    expect(doc.accounts?.cn).toBe('')
+    expect(WorkBuddy.selectAccountFor('cn', doc, 'cn')).toBeUndefined()
+    // The plugin serves normally; clearing is not a broken state.
+    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+  })
+
+  it('clear is observable through the usage route even when the account is unchanged (issue #11)', async () => {
+    // The upgraded user's legacy selection IS the app's current sign-in — the
+    // case where clearing changed nothing on screen, because the restored
+    // default is the same account. `selectionExplicit` is what lets the card
+    // report the mode change instead of looking like a dead button.
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-clear-visible-'))
+    await mkdir(join(root, AUTH_DIR), { recursive: true })
+    await writeFile(join(root, AUTH_DIR, LIVE), JSON.stringify({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-alpha',
+        refreshToken: 'refresh-alpha',
+        tokenType: 'Bearer',
+        domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+    const legacyId = (await import('../src/auth.ts')).workbuddyAccountId({
+      uid: 'uid-1', uin: '100000000001', nickname: 'Alpha',
+    })
+    const { WORKBUDDY_USAGE_PATH } = await import('../src/status-paths.ts')
+
+    interface Captured { path: string; handler: (req: unknown, res: unknown) => Promise<void> | void }
+    const captured: Captured[] = []
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin({
+      name: 'webServer',
+      inject: [] as const,
+      apply(c: Context) {
+        c.provide('webServer', {
+          register: (entry: { path: string }) => { captured.push(entry as Captured); return () => {} },
+        })
+      },
+    })
+    await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+
+    const usage = captured.find(entry => entry.path === WORKBUDDY_USAGE_PATH)
+    if (usage === undefined) throw new Error('usage route missing')
+    const call = async (): Promise<{ accountName: string; selectionExplicit: boolean }> => {
+      let payload = ''
+      const res = { writeHead: () => {}, end: (body: string) => { payload = body } }
+      await usage.handler({ method: 'GET', headers: {}, url: `${WORKBUDDY_USAGE_PATH}?region=cn` }, res)
+      return JSON.parse(payload) as { accountName: string; selectionExplicit: boolean }
+    }
+
+    await expect.poll(async () => (await call()).selectionExplicit).toBe(true)
+    expect((await call()).accountName).toBe('Alpha')
+
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
+
+    // Same account — the app's sign-in is Alpha and the saved choice was Alpha —
+    // but the mode flipped, which is exactly what the card now surfaces.
+    const after = await call()
+    expect(after.accountName).toBe('Alpha')
+    expect(after.selectionExplicit).toBe(false)
+  })
+})
+
+describe('legacyAttributionRegion', () => {
+  const cnAccount = { id: 'cn-account' }
+  const globalAccount = { id: 'global-account' }
+  /** The region dispatch a real store would answer; `global` has no accounts. */
+  const accountsFor = async (region: string): Promise<readonly { id: string }[]> =>
+    region === 'cn' ? [cnAccount] : []
+
+  it('attributes the legacy id to the region whose local list owns it', async () => {
+    expect(await WorkBuddy.legacyAttributionRegion({ accountId: 'cn-account' }, accountsFor)).toBe('cn')
+    expect(await WorkBuddy.legacyAttributionRegion({ accountId: 'global-account' }, accountsFor)).toBeUndefined()
+  })
+
+  it('does not attribute a cleared region (issue #11)', async () => {
+    // The user dropped the CN choice, then restarted. The id is still in the
+    // config and still matches a local CN account — without the skip, the
+    // startup pass would silently re-claim the region for it.
+    expect(await WorkBuddy.legacyAttributionRegion(
+      { accounts: { cn: '' }, accountId: 'cn-account' },
+      accountsFor,
+    )).toBeUndefined()
+  })
+
+  it('still attributes the other region when only one side was cleared', async () => {
+    // Clearing CN must not cost the international side its migration.
+    expect(await WorkBuddy.legacyAttributionRegion(
+      { accounts: { cn: '' }, accountId: 'global-account' },
+      async region => region === 'global' ? [globalAccount] : [cnAccount],
+    )).toBe('global')
+  })
+
+  it('reports no attribution when the saved account is gone everywhere', async () => {
+    // The app replaced its sign-in: both regions keep their defaults and the
+    // card lets the user re-pick.
+    expect(await WorkBuddy.legacyAttributionRegion({ accountId: 'vanished' }, accountsFor)).toBeUndefined()
+  })
+
+  it('reports no attribution when there is no legacy field at all', async () => {
+    expect(await WorkBuddy.legacyAttributionRegion({}, accountsFor)).toBeUndefined()
+  })
+
+  it('skips a cleared region instead of stopping the scan', async () => {
+    // Both regions hold the id; CN is cleared, so GLOBAL must claim it rather
+    // than the scan giving up at the skipped CN entry.
+    const both = async (): Promise<readonly { id: string }[]> => [{ id: 'shared' }]
+    expect(await WorkBuddy.legacyAttributionRegion({ accounts: { cn: '' }, accountId: 'shared' }, both))
+      .toBe('global')
+  })
+})
+
+describe('selectAccountFor', () => {
+  const legacy = { accountId: 'legacy-id' }
+
+  it('prefers an explicit per-region choice', () => {
+    const config = { accounts: { cn: 'chosen' }, accountId: 'legacy-id' }
+    expect(WorkBuddy.selectAccountFor('cn', config, 'cn')).toBe('chosen')
+  })
+
+  it('attributes the legacy id to its own region only', () => {
+    expect(WorkBuddy.selectAccountFor('cn', legacy, 'cn')).toBe('legacy-id')
+    // The other side of the split must not inherit it.
+    expect(WorkBuddy.selectAccountFor('global', legacy, 'cn')).toBeUndefined()
+  })
+
+  it('lets the empty-string sentinel terminate the legacy fallback (issue #11)', () => {
+    // The regression this locks: `""` is not `undefined`. Treating it as unset
+    // hands the region back to the legacy id, so clearing appears to succeed
+    // while the old choice keeps running.
+    const cleared = { accounts: { cn: '' }, accountId: 'legacy-id' }
+    expect(WorkBuddy.regionCleared(cleared, 'cn')).toBe(true)
+    expect(WorkBuddy.selectAccountFor('cn', cleared, 'cn')).toBeUndefined()
+  })
+
+  it('distinguishes a cleared region from a never-configured one', () => {
+    // Absent key = never configured = the legacy migration still applies...
+    expect(WorkBuddy.regionCleared(legacy, 'cn')).toBe(false)
+    expect(WorkBuddy.selectAccountFor('cn', legacy, 'cn')).toBe('legacy-id')
+    // ...while the sentinel is a deliberate clear and stops it.
+    expect(WorkBuddy.selectAccountFor('cn', { accounts: { cn: '' }, accountId: 'legacy-id' }, 'cn')).toBeUndefined()
+  })
+
+  it('keeps a cleared region cleared even when the legacy id is its own', () => {
+    // Both regions cleared: neither falls back to the shared legacy field.
+    const both = { accounts: { cn: '', global: '' }, accountId: 'legacy-id' }
+    expect(WorkBuddy.selectAccountFor('cn', both, 'cn')).toBeUndefined()
+    expect(WorkBuddy.selectAccountFor('global', both, 'global')).toBeUndefined()
+  })
+
+  it('clearing one region does not clear the other', () => {
+    const config = { accounts: { cn: '', global: 'kept' }, accountId: 'legacy-id' }
+    expect(WorkBuddy.selectAccountFor('cn', config, 'cn')).toBeUndefined()
+    expect(WorkBuddy.selectAccountFor('global', config, 'global')).toBe('kept')
   })
 })
 

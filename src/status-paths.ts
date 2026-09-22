@@ -148,6 +148,11 @@ export type WorkBuddyWebUsage =
    * sign-in again), versus nothing usable was found at all (sign in in the
    * desktop app). Only the latter makes the "sign in again" hint truthful —
    * re-signing in does not repair an orphaned id.
+   *
+   * `selectionExplicit` answers a question the account list cannot: whether
+   * the region runs a saved choice at all. Clearing restores the default, and
+   * when the default resolves to the same account the card would otherwise
+   * look unchanged — the "clear did nothing" report.
    */
   | {
     status: 'signed-out'
@@ -155,6 +160,8 @@ export type WorkBuddyWebUsage =
     message?: string
     /** The persisted account id matches no local account. */
     selectionLost?: boolean
+    /** A saved per-region choice is in effect (false = following the app). */
+    selectionExplicit: boolean
   }
   | {
     status: 'signed-in'
@@ -166,6 +173,8 @@ export type WorkBuddyWebUsage =
     region: WorkBuddyWebRegion
     source?: 'desktop' | 'dsh'
     tokenExpiresAtMs: number
+    /** A saved per-region choice is in effect (false = following the app). */
+    selectionExplicit: boolean
     accounts: readonly WorkBuddyWebAccount[]
     models: readonly WorkBuddyWebModel[]
     enabledModelIds: readonly string[]

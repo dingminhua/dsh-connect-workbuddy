@@ -161,8 +161,12 @@ export async function workBuddyWebStatus(
   const store = deps.store(region)
   const accounts = await store.accounts()
   const authStatus = await store.status()
+  // Whether a saved per-region choice is in effect, on every branch: the card
+  // needs it to show that clearing really did return the region to the app's
+  // current sign-in, even when that default is the same account as before.
+  const selectionExplicit = store.hasExplicitSelection()
   if (authStatus.state !== 'signed-out' && accounts.length === 0) {
-    return { status: 'signed-out', accounts: [] }
+    return { status: 'signed-out', accounts: [], selectionExplicit }
   }
   let credential
   try {
@@ -179,6 +183,7 @@ export async function workBuddyWebStatus(
       status: 'signed-out',
       accounts: accounts.map(toWebAccount),
       message: safeMessage(error),
+      selectionExplicit,
       ...await store.selectionLost() ? { selectionLost: true } : {},
     }
   }
@@ -193,6 +198,7 @@ export async function workBuddyWebStatus(
     region,
     source: credential.source,
     tokenExpiresAtMs: credential.expiresAtMs,
+    selectionExplicit,
     accounts: accounts.map(toWebAccount),
     models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
     enabledModelIds: [...deps.enabledModelIds(region)],

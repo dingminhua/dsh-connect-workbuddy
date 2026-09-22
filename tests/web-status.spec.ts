@@ -47,12 +47,14 @@ function baseStore(): {
   status: () => Promise<{ state: 'signed-in'; expiresAtMs: number }>
   resolve: () => Promise<WorkBuddyCredential>
   selectionLost: () => Promise<boolean>
+  hasExplicitSelection: () => boolean
 } {
   return {
     accounts: async () => ACCOUNTS,
     status: async () => ({ state: 'signed-in', expiresAtMs: CREDENTIAL.expiresAtMs }),
     resolve: async () => CREDENTIAL,
     selectionLost: async () => false,
+    hasExplicitSelection: () => true,
   }
 }
 
@@ -98,6 +100,7 @@ describe('workBuddyWebStatus', () => {
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('workbuddy: no signed-in account') },
         selectionLost: async () => false,
+        hasExplicitSelection: () => false,
       }) as never,
     }), 'cn')
     expect(status.status).toBe('signed-out')
@@ -112,6 +115,7 @@ describe('workBuddyWebStatus', () => {
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('no account') },
         selectionLost: async () => false,
+        hasExplicitSelection: () => false,
       }) as never,
     }), 'cn')
     expect(status.status).toBe('signed-out')
@@ -131,6 +135,7 @@ describe('workBuddyWebStatus', () => {
           throw new Error('workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app')
         },
         selectionLost: async () => true,
+        hasExplicitSelection: () => true,
       }) as never,
     }), 'cn')
     expect(status.status).toBe('signed-out')
@@ -147,6 +152,7 @@ describe('workBuddyWebStatus', () => {
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('no account') },
         selectionLost: async () => false,
+        hasExplicitSelection: () => false,
       }) as never,
     }), 'cn')
     if (status.status !== 'signed-out') throw new Error('expected signed-out')
@@ -159,6 +165,50 @@ describe('workBuddyWebStatus', () => {
     }), 'cn')
     expect(status.status).toBe('signed-in')
     expect('selectionLost' in status).toBe(false)
+  })
+
+  it('reports whether a saved choice is in effect, so clearing is observable (issue #11)', async () => {
+    // Clearing restores "follow the app's sign-in", which usually resolves to
+    // the SAME account. Without this flag the card cannot tell the user that
+    // anything happened, which is the "the button does nothing" report.
+    const saved = await workBuddyWebStatus(deps(), 'cn')
+    if (saved.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(saved.selectionExplicit).toBe(true)
+
+    const following = await workBuddyWebStatus(deps({
+      store: () => ({ ...baseStore(), hasExplicitSelection: () => false }) as never,
+    }), 'cn')
+    if (following.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(following.selectionExplicit).toBe(false)
+  })
+
+  it('reports the selection state on the signed-out branches too', async () => {
+    // The picker (and its Clear button) renders on the signed-out branches, so
+    // the flag has to be there as well or the state line goes blank exactly
+    // when the user needs the way out.
+    const orphaned = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => true,
+        hasExplicitSelection: () => true,
+      }) as never,
+    }), 'cn')
+    if (orphaned.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(orphaned.selectionExplicit).toBe(true)
+
+    const none = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => false,
+        hasExplicitSelection: () => false,
+      }) as never,
+    }), 'cn')
+    if (none.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(none.selectionExplicit).toBe(false)
   })
 
   it('never puts token material in the signed-in document', async () => {

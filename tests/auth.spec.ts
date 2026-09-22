@@ -501,6 +501,36 @@ describe('WorkBuddyCredentialStore multi-account discovery', () => {
     expect(await store.selectionLost()).toBe(false)
   })
 
+  it('reports whether a saved choice is in effect, distinct from the default (issue #11)', async () => {
+    // The card needs this to show that clearing did something. It cannot be
+    // read off the account list: the restored default is usually the very
+    // account that was saved, so "saved" and "following" look identical there.
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    // Untouched: following the app, no saved choice.
+    expect(store.hasExplicitSelection()).toBe(false)
+    expect((await store.accounts()).filter(account => account.selected)).toHaveLength(1)
+
+    // A pick is explicit, in effect, and still explicit when orphaned.
+    const alpha = (await store.accounts())[0]?.id
+    store.selectAccount(alpha)
+    expect(store.hasExplicitSelection()).toBe(true)
+    store.selectAccount('orphaned-id')
+    expect(store.hasExplicitSelection()).toBe(true)
+
+    // The empty-string sentinel is a clear, not a dead id: back to following.
+    store.selectAccount('')
+    expect(store.hasExplicitSelection()).toBe(false)
+    expect(store.selectedAccountId()).toBeUndefined()
+    expect((await store.current())?.nickname).toBe('Alpha')
+  })
+
   it('a vanished selected account keeps every region honest (no cross-region fallback)', async () => {
     // The same state must not leak across the region split: each region's
     // selection is its own, and an orphaned id in one leaves the other alone.
