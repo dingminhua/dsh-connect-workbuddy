@@ -435,11 +435,46 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposeDiagWrite = ctx.webServer.register({
+      kind: 'exact',
+      path: '/plugins/dsh-connect-workbuddy/__diag-write',
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        // Host-side write probe: call the settings service's mutate directly,
+        // bypassing the typert RPC layer entirely, so any refusal arrives as
+        // the raw exception (name + message) instead of a swallowed ok:false.
+        const settings: any = (ctx as any).get?.('settings')
+        if (settings === undefined) return json(res, 200, { ok: false, stage: 'service', error: 'settings service unavailable to this fiber' })
+        try {
+          const rows = settings.describe()
+          const namespaces = rows.map(row => row.ns)
+          const ns = namespaces.find(name => String(name).includes('workbuddy'))
+          if (ns === undefined) {
+            return json(res, 200, { ok: false, stage: 'describe', namespaces, error: 'no workbuddy namespace in describe() output' })
+          }
+          const row = rows.find(r => r.ns === ns)!
+          // Idempotent write-back of the CURRENT value with no revision, so a
+          // refusal here can only come from the validation layer.
+          await settings.mutate(ns, [{ op: 'set', path: ['regions'], value: row.value.regions }], undefined)
+          return json(res, 200, { ok: true, stage: 'mutate', ns, namespaces })
+        } catch (error: unknown) {
+          const err = error as { name?: string, message?: string, expected?: unknown, actual?: unknown }
+          return json(res, 200, {
+            ok: false,
+            stage: 'mutate-threw',
+            errorName: err?.name ?? 'unknown',
+            errorMessage: err?.message ?? String(error),
+            ...err?.expected !== undefined ? { expected: err.expected, actual: err.actual } : {},
+          })
+        }
+      },
+    })
     return () => {
       disposeRefresh()
       disposeCheckin()
       disposeAccounts()
       disposeUsage()
+      disposeDiagWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')
 }
