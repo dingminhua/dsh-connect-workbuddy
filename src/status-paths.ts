@@ -234,6 +234,24 @@ export interface WorkBuddyWebAccount {
 export type WorkBuddyWebPackage = WorkBuddyWebCreditPackage
 
 /**
+ * One probed candidate path and why it yielded no account.
+ *
+ * Safe to send to the browser: a path, its source, and a cause. No token
+ * material, and no content read out of the files beyond an error string.
+ *
+ * `encrypted` exists because WorkBuddy (unlike a plain JSON-token app) can
+ * refuse a correctly signed-in user: Windows builds encrypt the token fields,
+ * and opening them needs the desktop app present to hand over its at-rest key.
+ * Telling that user to "sign in again" is wrong — they already are.
+ */
+export interface WorkBuddyWebSearchPath {
+  path: string
+  source: 'desktop' | 'dsh'
+  reason: 'missing' | 'unreadable' | 'invalid' | 'encrypted'
+  message?: string
+}
+
+/**
  * Region of the signed-in credential: the CN app (`codebuddy.cn` /
  * `workbuddy.cn`) or the international WorkBuddy AI app (`workbuddy.ai`).
  * The card uses this to read and write the matching per-region model slot.
@@ -266,6 +284,16 @@ export type WorkBuddyWebUsage =
     selectionLost?: boolean
     /** A saved per-region choice is in effect (false = following the app). */
     selectionExplicit: boolean
+    /**
+     * The paths this region's store probed, and why each yielded nothing.
+     *
+     * Present only on the "nothing was found at all" branch — it is the
+     * explanation for a state that is otherwise a dead end. A missing candidate
+     * (`missing`) is normal noise on any machine and the card filters those out
+     * of its default view; the interesting ones are `unreadable`, `invalid`,
+     * and especially `encrypted`.
+     */
+    searched?: readonly WorkBuddyWebSearchPath[]
   }
   | {
     status: 'signed-in'

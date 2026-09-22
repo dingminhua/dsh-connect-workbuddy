@@ -35,7 +35,7 @@ import {
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
-import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebUsage } from './status-paths.ts'
+import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from './status-paths.ts'
 
 export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
 export type { WorkBuddyWebUsage }
@@ -181,6 +181,37 @@ function toWebAccount(account: {
 }
 
 /**
+ * The probed-path list for a signed-out region, or nothing when the store
+ * cannot produce one.
+ *
+ * Diagnostics must never turn a page into an error: `diagnose()` re-reads the
+ * filesystem, and a store built without it (or one whose probe throws on an
+ * exotic filesystem) degrades to the plain "not signed in" hint the card showed
+ * before this existed. Failure reasons are `safeMessage`d because a raw
+ * filesystem error can embed an absolute path or a fragment of file content.
+ */
+async function searchedPaths(
+  store: WorkBuddyCredentialStore,
+): Promise<{ searched?: readonly WorkBuddyWebSearchPath[] }> {
+  if (typeof store.diagnose !== 'function') return {}
+  try {
+    const { failures } = await store.diagnose()
+    if (failures.length === 0) return {}
+    return {
+      searched: failures.map(failure => ({
+        path: failure.path,
+        source: failure.source,
+        reason: failure.reason,
+        ...failure.message === undefined ? {} : { message: safeMessage(failure.message) },
+      })),
+    }
+  } catch {
+    // A diagnostics pass is never worth failing the card over.
+    return {}
+  }
+}
+
+/**
  * Assemble one region's card document. `region` is the tab the card is on;
  * the region-scoped store already answers with only that region's accounts,
  * so the document's model slots and account list are that region's by
@@ -206,6 +237,10 @@ export async function workBuddyWebStatus(
   // current sign-in, even when that default is the same account as before.
   const selectionExplicit = store.hasExplicitSelection()
   if (authStatus.state !== 'signed-out' && accounts.length === 0) {
+    // Both `status()` and `accounts()` derive from the same scan, so this pair
+    // is only reachable when a sign-in landed between the two calls. A
+    // credential just appeared: there is nothing to diagnose, and a list of
+    // failed probe paths would contradict what the user is looking at.
     return { status: 'signed-out', accounts: [], selectionExplicit, enabled }
   }
   let credential
@@ -219,13 +254,18 @@ export async function workBuddyWebStatus(
     // `selectionLost` lets the card tell the two causes apart: an orphaned
     // saved id (the tokens here are fine — re-pick or clear) versus a genuinely
     // signed-out machine (the "sign in again" hint is then accurate).
+    const webAccounts = accounts.map(toWebAccount)
     return {
       status: 'signed-out',
-      accounts: accounts.map(toWebAccount),
+      accounts: webAccounts,
       message: safeMessage(error),
       selectionExplicit,
       enabled,
       ...await store.selectionLost() ? { selectionLost: true } : {},
+      // Only the genuinely empty machine gets the probe list. When local
+      // sign-ins DO exist (the orphaned-saved-id case), the card already has
+      // the right advice and a list of failed paths would bury it.
+      ...webAccounts.length === 0 ? await searchedPaths(store) : {},
     }
   }
   // Only user-facing identity and expiry cross to the browser. Token material

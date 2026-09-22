@@ -647,3 +647,125 @@ describe('workBuddyWebStatus account identifiers', () => {
     expect(status.accountName).not.toContain('100000000001')
   })
 })
+
+describe('workBuddyWebStatus probed-path diagnostics', () => {
+  /** A store that resolves nothing and explains why, in the given ways. */
+  function signedOutStore(failures: readonly unknown[]): never {
+    return {
+      accounts: async () => [],
+      status: async () => ({ state: 'signed-out' }),
+      resolve: async () => { throw new Error('no account') },
+      selectionLost: async () => false,
+      hasExplicitSelection: () => false,
+      diagnose: async () => ({ tried: ['/a', '/b'], failures }),
+    } as never
+  }
+
+  it('surfaces the probed paths when nothing at all was found', async () => {
+    // The signed-out card is only actionable if it can say WHERE it looked: a
+    // user whose WorkBuddy keeps its login elsewhere needs that list to point
+    // the plugin at the right file.
+    const status = await workBuddyWebStatus(deps({
+      store: () => signedOutStore([
+        { path: '/home/u/.workbuddy/auth/workbuddy-desktop.info', source: 'desktop', reason: 'missing' },
+      ]),
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.searched).toEqual([
+      { path: '/home/u/.workbuddy/auth/workbuddy-desktop.info', source: 'desktop', reason: 'missing' },
+    ])
+  })
+
+  it('carries the encrypted reason through to the browser', async () => {
+    // The whole point of a separate reason: the card must be able to tell
+    // "you are signed in but the app is missing" from "there is no token".
+    const status = await workBuddyWebStatus(deps({
+      store: () => signedOutStore([
+        { path: '/x/auth.info', source: 'desktop', reason: 'encrypted', message: 'no key available' },
+      ]),
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.searched?.[0]).toMatchObject({ reason: 'encrypted', source: 'desktop' })
+  })
+
+  it('omits an empty probe list rather than sending an empty array', async () => {
+    // `[]` would make the card render an empty "Paths checked (0)" block.
+    const status = await workBuddyWebStatus(deps({
+      store: () => signedOutStore([]),
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.searched).toBeUndefined()
+  })
+
+  it('degrades to the plain signed-out hint when the store cannot diagnose', async () => {
+    // An older Host, or any store built without diagnostics. The card must not
+    // lose its signed-out state over a diagnostic it cannot produce.
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => [],
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => false,
+        hasExplicitSelection: () => false,
+      }) as never,
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.searched).toBeUndefined()
+  })
+
+  it('never lets a diagnostics failure break the status route', async () => {
+    // `diagnose()` re-reads the filesystem; an exotic error there must not turn
+    // the whole card into an error state.
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => [],
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => false,
+        hasExplicitSelection: () => false,
+        diagnose: async () => { throw new Error('the disk went away') },
+      }) as never,
+    }), 'cn')
+    expect(status.status).toBe('signed-out')
+    if (status.status !== 'signed-out') return
+    expect(status.searched).toBeUndefined()
+  })
+
+  it('does not list probed paths when local sign-ins merely lost their saved selection', async () => {
+    // The orphaned-id case: tokens are healthy and the fix is to re-pick the
+    // account. A list of failed paths would bury that with an irrelevant story.
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        ...(signedOutStore([{ path: '/x/auth.info', source: 'desktop', reason: 'missing' }]) as object),
+        accounts: async () => ACCOUNTS,
+        selectionLost: async () => true,
+      }) as never,
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.selectionLost).toBe(true)
+    expect(status.searched).toBeUndefined()
+  })
+
+  it('scrubs token-shaped content inside a probe message before it reaches the browser', async () => {
+    // Probe messages come from the filesystem and from the desktop app's child
+    // process, either of which can echo back a token fragment. The reason list
+    // must not become a new leak channel just because it is diagnostic copy.
+    const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1aWQtMSJ9.c2lnbmF0dXJl'
+    const status = await workBuddyWebStatus(deps({
+      store: () => signedOutStore([
+        {
+          path: '/x/auth.info',
+          source: 'desktop',
+          reason: 'unreadable',
+          message: `failed reading the document (access_token=${jwt})`,
+        },
+      ]),
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    const sent = JSON.stringify(status.searched)
+    expect(sent).not.toContain('c2lnbmF0dXJl')
+    expect(sent).toContain('[redacted')
+    // The path itself is the point of the feature and must survive.
+    expect(status.searched?.[0]?.path).toBe('/x/auth.info')
+  })
+})

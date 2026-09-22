@@ -89,6 +89,7 @@ export {
   workbuddyOwnAuthPath,
   type WorkBuddyAccountChoice,
   type WorkBuddyAuthStatus,
+  type WorkBuddyCandidateFailure,
   type WorkBuddyCredential,
   type WorkBuddyStoreOptions,
 } from './auth.ts'
@@ -167,6 +168,7 @@ export {
   type WorkBuddyWebModel,
   type WorkBuddyWebPackage,
   type WorkBuddyWebRegion,
+  type WorkBuddyWebSearchPath,
   type WorkBuddyWebUsage,
 } from './status-paths.ts'
 

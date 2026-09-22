@@ -25,7 +25,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { isEncryptedFieldWrapper, openEncryptedField, readAtRestKey } from './at-rest.ts'
+import { isEncryptedFieldWrapper, openEncryptedField, readAtRestKey, WORKBUDDY_APP_EXECUTABLE_ENV } from './at-rest.ts'
 import { regionOf, type WorkBuddyRefreshOutcome, type WorkBuddyRegion } from './upstream.ts'
 
 /** Normalized WorkBuddy credential, timestamps in epoch milliseconds. */
@@ -54,6 +54,22 @@ export interface WorkBuddyCredential {
    * was accepted). Undefined when the document omits the field.
    */
   lastRefreshAtMs?: number
+}
+
+/**
+ * Why one probed path did not yield an account.
+ *
+ * These are safe to surface: they carry paths and cause only, never token
+ * material. `encrypted` is the WorkBuddy-specific one — a build whose token
+ * fields are encrypted cannot be read at all unless the desktop app itself is
+ * present to hand over its at-rest key, so "sign in again" is the wrong advice
+ * for it (the user may be perfectly signed in).
+ */
+export interface WorkBuddyCandidateFailure {
+  path: string
+  source: 'desktop' | 'dsh'
+  reason: 'missing' | 'unreadable' | 'invalid' | 'encrypted'
+  message?: string
 }
 
 /** Read-only sign-in summary for status and doctor output. */
@@ -469,7 +485,20 @@ function isENOENT(error: unknown): boolean {
 }
 
 /**
- * Read one auth file, tolerating absence and unparsable content.
+ * One candidate file's probe result: the credential it yielded, or the reason
+ * it yielded none.
+ *
+ * `encrypted` is deliberately its own reason rather than folding into
+ * `invalid`. A document whose token fields are encrypted is *unreadable without
+ * the desktop app*, not malformed — reporting it as invalid would send a
+ * correctly signed-in user off to sign in again, which cannot possibly help.
+ */
+type AuthFileProbe =
+  | { credential: WorkBuddyCredential }
+  | { failure: Omit<WorkBuddyCandidateFailure, 'path' | 'source'> }
+
+/**
+ * Probe one auth file, reporting WHY it yielded no credential.
  *
  * The desktop app encrypts its token fields on Windows builds. The plain read
  * is tried first and the app is only asked for its at-rest key when the
@@ -477,31 +506,81 @@ function isENOENT(error: unknown): boolean {
  * child process. `resolveAtRestKey` is injectable so the encrypted path is
  * testable without a real desktop install.
  */
-async function readAuthFile(
+async function probeAuthFile(
   path: string,
   resolveAtRestKey: () => Promise<Buffer | undefined>,
-): Promise<WorkBuddyCredential | undefined> {
+): Promise<AuthFileProbe> {
   let text: string
   try {
     text = await readFile(path, 'utf8')
   } catch (error: unknown) {
-    if (isENOENT(error)) return undefined
-    return undefined
+    return {
+      failure: {
+        reason: isENOENT(error) ? 'missing' : 'unreadable',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    }
   }
   const plain = parseWorkBuddyAuth(text, path)
-  if (plain !== undefined) return plain
-  if (!hasEncryptedCredentialFields(text)) return undefined
+  if (plain !== undefined) return { credential: plain }
+  // Not plain-readable. Distinguish "the app encrypted this and we could not
+  // open it" from "this document is simply not a credential": only the former
+  // deserves the encrypted-specific advice.
+  const encrypted = hasEncryptedCredentialFields(text)
+  if (!encrypted) {
+    return isParseableJson(text)
+      ? { failure: { reason: 'invalid', message: 'no access token in the document' } }
+      : { failure: { reason: 'invalid', message: 'the file is not valid JSON' } }
+  }
   let key: Buffer | undefined
   try {
     key = await resolveAtRestKey()
-  } catch {
+  } catch (error: unknown) {
     // The app did not hand over its key (not installed, older or newer build).
-    // The document stays unreadable rather than being mis-reported as signed
-    // out with a fabricated token.
-    return undefined
+    return {
+      failure: {
+        reason: 'encrypted',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    }
   }
-  if (key === undefined) return undefined
-  return parseWorkBuddyAuth(text, path, key)
+  if (key === undefined) {
+    return {
+      failure: {
+        reason: 'encrypted',
+        message: `the credential fields are encrypted and no key was available; the WorkBuddy desktop app must be present (or set ${WORKBUDDY_APP_EXECUTABLE_ENV})`,
+      },
+    }
+  }
+  const decrypted = parseWorkBuddyAuth(text, path, key)
+  // A key WAS obtained and the document still did not yield a token: the
+  // envelope is malformed, the key belongs to another build, or the auth tag
+  // failed. That is a genuine format problem, not a missing app.
+  return decrypted === undefined
+    ? { failure: { reason: 'invalid', message: 'the encrypted credential fields could not be opened with the desktop app\'s key' } }
+    : { credential: decrypted }
+}
+
+/** Whether text parses as JSON at all; distinguishes "wrong shape" from "not JSON". */
+function isParseableJson(text: string): boolean {
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Read one auth file, tolerating absence and unparsable content. Kept as the
+ * credential-only view for callers that do not need the failure reason.
+ */
+async function readAuthFile(
+  path: string,
+  resolveAtRestKey: () => Promise<Buffer | undefined>,
+): Promise<WorkBuddyCredential | undefined> {
+  const probe = await probeAuthFile(path, resolveAtRestKey)
+  return 'credential' in probe ? probe.credential : undefined
 }
 
 /**
@@ -941,5 +1020,54 @@ export class WorkBuddyCredentialStore {
       }
     }
     return false
+  }
+
+  /**
+   * Which paths were probed and why each one yielded no credential.
+   *
+   * Read-only and token-free: it exists so a signed-out card can explain
+   * itself. A bare "not signed in" is undiagnosable on a machine whose layout
+   * differs from the ones this plugin was written against — and on Windows it
+   * is actively misleading, because encrypted token fields need the desktop app
+   * present to be read at all. Only paths this store actually consults are
+   * reported, and only files that failed: one healthy sibling would make the
+   * whole list noise.
+   */
+  async diagnose(): Promise<{
+    tried: string[]
+    failures: WorkBuddyCandidateFailure[]
+  }> {
+    const candidates: WorkBuddyCandidateFailure[] = []
+    for (const path of await this.candidateFiles()) {
+      const probe = await probeAuthFile(path, this.resolveAtRestKey)
+      if ('credential' in probe) continue
+      candidates.push({ path, source: 'desktop', ...probe.failure })
+    }
+    // Plugin-owned copies are reported separately: they are the plugin's own
+    // storage, and their absence is normal rather than a problem to explain.
+    for (const path of this.ownCandidates()) {
+      let text: string
+      try {
+        text = await readFile(path, 'utf8')
+      } catch (error: unknown) {
+        if (isENOENT(error)) continue
+        candidates.push({
+          path,
+          source: 'dsh',
+          reason: 'unreadable',
+          message: error instanceof Error ? error.message : String(error),
+        })
+        continue
+      }
+      const parsed = parseOwnDocument(text, path)
+      if (parsed === undefined || !this.matchesRegion(parsed.domain)) {
+        candidates.push({ path, source: 'dsh', reason: 'invalid', message: 'not a readable plugin-owned credential' })
+        continue
+      }
+      // Readable and region-matching, yet no account was found: that is a
+      // region mismatch or an unreadable sibling, not a credential problem.
+      continue
+    }
+    return { tried: [...await this.candidateFiles(), ...this.ownCandidates()], failures: candidates }
   }
 }

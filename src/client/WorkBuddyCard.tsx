@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
+import type { ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -37,15 +38,16 @@ import {
   toPersistedWorkBuddyModel,
   withWorkBuddyRegion,
 } from '../status-paths.ts'
-import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebUsage } from '../status-paths.ts'
+import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from '../status-paths.ts'
 import { writeAccountSlot, writeRegionModels } from './account-selection.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
-import type { WorkBuddySettingsKey } from './locales.ts'
+import { searchReasonLabel, searchedView } from './searched-paths.ts'
+import type { Translate } from './searched-paths.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
 export interface WorkBuddyCardInjected {
-  t: (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
+  t: Translate
   settingsScope: {
     getSnapshot(): { status: string; value?: unknown; writable: boolean }
     subscribe(listener: () => void): () => void
@@ -82,6 +84,74 @@ if (typeof document !== 'undefined') {
     styleTag.textContent = WORKBUDDY_CARD_CSS
     document.head.appendChild(styleTag)
   }
+}
+
+/**
+ * One probed path, with its cause. The presentation rules — which entries are
+ * worth showing up front, and how a reason is labelled — live in
+ * `./searched-paths.ts` so they are unit-testable without a DOM.
+ */
+function renderSearchedItem(
+  item: WorkBuddyWebSearchPath,
+  t: Translate,
+): ReactElement {
+  return (
+    <li key={`${item.source}:${item.path}`}>
+      <code>{item.path}</code>
+      <span className={`dsm-workbuddy-searched-reason${item.reason === 'encrypted' ? ' dsm-workbuddy-searched-reason-encrypted' : ''}`}>
+        {searchReasonLabel(item, t)}
+        {item.message === undefined ? null : ` · ${item.message}`}
+      </span>
+    </li>
+  )
+}
+
+/**
+ * The probed-path list behind a signed-out card.
+ *
+ * Collapsed by default because it is a diagnostic, not a headline. The
+ * interesting failures (encrypted / invalid / unreadable) are listed up front;
+ * the merely-absent candidates — most of them, on any normal machine — sit
+ * behind a second toggle, so the one entry that explains the failure is not
+ * buried under a dozen "not found" lines. When nothing interesting was found
+ * the absent list IS the explanation, so it opens directly.
+ *
+ * An `encrypted` failure additionally raises a notice: it is the one cause
+ * where the user is very likely already signed in, and telling them to sign in
+ * again sends them to an action that cannot work.
+ */
+function SearchedPaths(
+  { items, t }: { items: readonly WorkBuddyWebSearchPath[], t: Translate },
+): ReactElement {
+  const view = searchedView(items)
+  // Only an explicit click is remembered. Initializing state from the derived
+  // value instead would freeze the first answer: this card re-probes every 60
+  // seconds, so a machine that first reported only absent paths and later
+  // reported an encrypted file would keep the findings hidden.
+  const [explicitOpen, setExplicitOpen] = useState<boolean | undefined>(undefined)
+  const showMissing = explicitOpen ?? view.missingOpen
+  return (
+    <details className="dsm-workbuddy-searched">
+      <summary>{t('row.searchedTitle')} ({view.total})</summary>
+      <p className="dsm-workbuddy-searched-hint">{t('row.searchedHint')}</p>
+      {view.encrypted
+        ? <p className="dsm-workbuddy-searched-notice" role="status">{t('row.searchedEncryptedNotice')}</p>
+        : null}
+      <ul className="dsm-workbuddy-searched-list">
+        {view.interesting.map(item => renderSearchedItem(item, t))}
+        {showMissing ? view.missing.map(item => renderSearchedItem(item, t)) : null}
+      </ul>
+      {showMissing || view.missing.length === 0
+        ? null
+        : <button
+          type="button"
+          className="dsm-workbuddy-searched-more"
+          onClick={() => { setExplicitOpen(true) }}
+        >
+          {t('row.searchedMore', { count: view.missing.length })}
+        </button>}
+    </details>
+  )
 }
 
 function formatNumber(value: number): string {
@@ -481,6 +551,13 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   /** The saved choice no longer matches a local sign-in (tokens are fine). */
   const selectionLost = status.status === 'signed-out' && status.selectionLost === true
   /**
+   * The paths the Host probed, on the branch where nothing was found at all.
+   * Absent on the legacy card payload (an older Host), so it defaults empty
+   * rather than rendering an empty diagnostic.
+   */
+  const searched: readonly WorkBuddyWebSearchPath[]
+    = status.status === 'signed-out' ? status.searched ?? [] : []
+  /**
    * Whether this region runs a saved choice, per the Host. `undefined` only on
    * the error branch, which renders no picker and therefore no state line.
    */
@@ -850,15 +927,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                   </>
                 : null}
               {status.status === 'signed-out'
-                ? <p className="dsm-workbuddy-usage-text">
-                    {/* An orphaned saved id is NOT a signed-out machine: the
-                        tokens are fine and re-signing in would not repair the
-                        id. Say what actually helps (re-pick, or follow the app
-                        again) instead of echoing the resolve() error, which
-                        tells the user to sign in — the one action that cannot
-                        fix this. */}
-                    {selectionLost ? t('row.selectionLostMessage') : status.message ?? t('row.signedOutHint')}
-                  </p>
+                ? <>
+                    <p className="dsm-workbuddy-usage-text">
+                      {/* An orphaned saved id is NOT a signed-out machine: the
+                          tokens are fine and re-signing in would not repair the
+                          id. Say what actually helps (re-pick, or follow the app
+                          again) instead of echoing the resolve() error, which
+                          tells the user to sign in — the one action that cannot
+                          fix this. */}
+                      {selectionLost ? t('row.selectionLostMessage') : status.message ?? t('row.signedOutHint')}
+                    </p>
+                    {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
+                  </>
                 : null}
               {status.status === 'error' ? <p className="dsm-workbuddy-usage-error">{status.message}</p> : null}
             </div>
