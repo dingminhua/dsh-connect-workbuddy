@@ -35,13 +35,52 @@ afterEach(async () => {
   preloadedDocument = {}
 })
 
+/**
+ * A temp auth directory holding one CN and one international sign-in; returns
+ * the CN live file as the pinned path.
+ *
+ * Every test that asserts a region's ROSTER must pin this. Since issue #12 a
+ * region with no local sign-in advertises no models, so a config of `{}` reads
+ * whichever machine the suite happens to run on: it passed on a developer's
+ * machine (real WorkBuddy sign-ins present) and failed on CI (none), which is
+ * exactly the ambient dependency this helper removes. Pinning the CN file still
+ * exposes the `workbuddy-desktop-ai.info` sibling beside it — an explicit path
+ * pins the DIRECTORY (see `candidateFiles`), so both regions get an account.
+ */
+async function writeRegionFixtures(): Promise<string> {
+  const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = await mkdtemp(join(tmpdir(), 'wb-both-regions-'))
+  const dir = join(root, 'auth')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'workbuddy-desktop.info'), JSON.stringify({
+    account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
+    auth: {
+      accessToken: 'token-alpha', refreshToken: 'refresh-alpha', tokenType: 'Bearer',
+      domain: 'www.codebuddy.cn', expiresAt: Date.now() + 86_400_000,
+      refreshExpiresAt: Date.now() + 7 * 86_400_000,
+    },
+  }), 'utf8')
+  await writeFile(join(dir, 'workbuddy-desktop-ai.info'), JSON.stringify({
+    account: { uid: 'uid-2', uin: '100000000002', nickname: 'Gamma', enterpriseId: '' },
+    auth: {
+      accessToken: 'token-gamma', refreshToken: 'refresh-gamma', tokenType: 'Bearer',
+      domain: 'www.workbuddy.ai', expiresAt: Date.now() + 86_400_000,
+      refreshExpiresAt: Date.now() + 7 * 86_400_000,
+    },
+  }), 'utf8')
+  return join(dir, 'workbuddy-desktop.info')
+}
+
 describe('WorkBuddy provider registration', () => {
   it('registers both regional providers, settings, and fallback models after shim startup', async () => {
+    const authFile = await writeRegionFixtures()
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, {})
+    await ctx.plugin(WorkBuddy, { authFile })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
     expect(ctx.llm.listConfigurableProviders()).toContainEqual({
@@ -205,10 +244,13 @@ describe('WorkBuddy provider registration', () => {
   })
 
   it('stops serving on the shim port after disposal', async () => {
+    // Pinned fixtures: the probe below needs a region that actually serves a
+    // roster, which since issue #12 requires a local sign-in.
+    const authFile = await writeRegionFixtures()
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, {})
+    await ctx.plugin(WorkBuddy, { authFile })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
     // Find the shim's port while the plugin is live.
