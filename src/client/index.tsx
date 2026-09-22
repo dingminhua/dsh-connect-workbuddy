@@ -84,7 +84,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
         key,
         priority: 30,
         inject: (): WorkBuddyCardInjected => ({ t, settingsScope }),
-      }, (p: any) => p && p.view === 'page' ? WorkBuddyCard(p) : (WorkBuddyCard as any)(p)))
+      }, WorkBuddyCard))
     }
 
     registerCard('plugins.row.config', 'dsh-connect-workbuddy#dsh-connect-workbuddy')

@@ -119,9 +119,9 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
 }
 
 /** Render WorkBuddy sign-in state, credits, and model selection as one card. */
-export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & { view?: string }) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(view === 'page')
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
   /**
