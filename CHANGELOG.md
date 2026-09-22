@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.10 (2026-09-26)
+## 2.0.10 (2026-09-22)
 
 ### Bug Fixes
 
@@ -31,7 +31,7 @@
 
 - `docs/DESIGN.md` §3.4：记录「段落说结论、列表给细节」的分工，以及 `wrong-region` 为什么是**发现**而不是**缺席**。
 
-## 2.0.9 (2026-09-25)
+## 2.0.9 (2026-09-22)
 
 ### Features
 
@@ -60,7 +60,7 @@
 - `README.md` / `README.en.md`：功能特性新增「未登录时列出探测过的路径与原因」一条。
 - `docs/DESIGN.md` §3.4：记录未登录诊断的四档原因划分，以及「`encrypted` 必须独立成档」的理由。
 
-## 2.0.8 (2026-09-24)
+## 2.0.8 (2026-09-22)
 
 ### Features
 
@@ -90,7 +90,7 @@
 - `README.md` / `README.en.md`：「功能特性」新增「可单独关闭任一版本供应商」一条，并在双供应商那条说明关闭后的效果与代价。
 - `docs/DESIGN.md`：说明区域开关为何必须落在注册层（`replace([])`），以及它与 issue #12「无账号隐藏」的维度差异。
 
-## 2.0.7 (2026-09-23)
+## 2.0.7 (2026-09-22)
 
 ### Features
 
@@ -248,6 +248,21 @@
 ### Docs
 
 - `README.md` / `README.en.md` 的「已知限制 / Known limitations」补充账号失效后的表现与恢复方式，并说明重新登录桌面端无法修复该状态。
+
+## 2.0.3 (2026-09-17)
+
+### Fixes
+
+- **解析单数 `effort` 形态的推理声明，单数模型不再注册为非推理**（issue #7）。上游 `reasoning` 元数据存在两种拼写：复数 `supportedEfforts` 形态，与单数 `effort` 形态（`deepseek-v4.1-flash`、`kimi-k3`、`gemini-3.5-flash` 等）。原 `parseReasoning` 只读复数，单数形态整档被丢弃，模型被注册为 `reasoning: false`，thinking 永远无法启用。
+
+  - **实测证实单数 `effort` 是默认档而非唯一档**：两个网关（CN `copilot.tencent.com` / 国际 `www.workbuddy.ai`）均确认——`deepseek-v4.1-flash` 对 `low`/`high`/`max` 全部返回 200 且 `reasoning_content` 各异；`kimi-k3-1` 接受未声明的 `high` 档；不发 `reasoning_effort` 时思考字符数为 0，即上游默认关闭思考。
+  - **依据实证在解析层把单数形态折叠为复数**：`supportedEfforts` 展开为全阶梯 `low`/`medium`/`high`/`xhigh`/`max`（复数载荷观测到的词表，`minimal` 从未出现）、`effort` 折入 `defaultEffort`、`canDisableThinking` 视为 `true`（`off` 可用）。
+  - **复数形态逐字段透传不受影响**（`hy4-preview` 仍仅 `high` 且锁定 `off`）；未识别的单数 `effort` 值按单档透传，交由 adapter 的已知档位过滤。
+  - **adapter / 卡片 / 持久化零改动即自动生效**：改动只落在解析层。
+
+### Tests
+
+- `tests/upstream.spec.ts` 新增 55 行、`tests/adapter.spec.ts` 新增 20 行，共 6 例：覆盖单数折叠、混合形态优先级、以及线上真实载荷的集成断言。
 
 ## 2.0.2 (2026-09-15)
 
