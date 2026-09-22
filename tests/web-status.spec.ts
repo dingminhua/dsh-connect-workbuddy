@@ -89,6 +89,7 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     enabledModelIds: () => ['glm-5.3'],
     imageModelIds: () => ['glm-5.3'],
     contextBudgets: () => ({}),
+    regionEnabled: () => true,
     ...overrides,
   }
 }

@@ -133,6 +133,14 @@ uin <B> (<账号乙>): catalog HTTP 200, 28 models, 16 cli, credits total=0
 - **每日签到**：`/plugins/dsh-connect-workbuddy/checkin`（POST）提供一键签到，查询状态与领取均走该路由，回环来源校验 + 领取前二次确认，不重复领取
 - **卡片外观**：从 workbuddy 的 inline style 换成 trae 的 `dsm-*` CSS 类 + `--dsw-alias-*` 主题变量 + LD 图标
 - **错误呈现**：上游错误分类映射到人话（额度不足 / 需重新登录 / 限流），而不是抛 HTTP 状态码
+- **区域开关**（对齐 trae 的 issue #11）：每个 tab 一个勾选框，取消即 `AdapterRegistrationHandle.replace([])` + `DirectoryRegistrationHandle.replace([])`，把该供应商从选择器与「设置 → 模型」页**彻底摘除**（不是只藏 tab）。改动只落在 `regions.<region>.enabled` 一个字段上，其余槽位原样带过。
+
+  三个必须说清的约束：
+
+  1. **为何必须落在注册层**：DSH 的模型选择器取数自 `llm.listProviders()`，而它直接读路由表。只隐藏卡片 tab 的话，模型仍可选、选中必失败（正是 issue #12 那类「选择器说可选、实际必报错」）。已验证关闭后 `listProviders()` 不再含该 provider。
+  2. **为何是「先注册、再 replace([])」**：`registerAdapter([])` 的**首次**注册被 DSH 拒绝（`INVALID_ADAPTER`），而 `replace([])` 对已完成注册的句柄明确合法。两步放在同一同步段内，没有可观测的路由空窗。
+  3. **目录是「一条注册持有两个条目」**：`replace` 设置的是**完整条目集**，因此必须**一次性**给出「启用集合的完整列表」。按区域分别 replace 会让后者覆盖前者，把启用的一侧一起弄丢（DSH 的 `commit` 会先删本注册持有的全部条目再写入新集）。集成测试专门守护这一点。
+  4. **与 issue #12 的维度差异**：`WorkBuddyCatalog.usable` 是**自动**判断（本机有无该区域账号，由 `setRegionUsable` 驱动），`enabled` 是**用户显式**开关。两者独立且必须同时成立才对外提供模型——只修一个都会得出错误结论：只按 `usable` 会忽略用户「我就是不想看到它」的诉求，只按 `enabled` 会让无账号区域在用户勾选后复活成一堆必然 401 的模型。
 
 ---
 

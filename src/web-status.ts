@@ -61,6 +61,12 @@ export interface WorkBuddyStatusRouteOptions {
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
   /**
+   * Whether the requested region's provider is currently offered to DSH. The
+   * card renders this as the tab's on/off checkbox, so the switch reflects the
+   * committed settings value rather than a local guess.
+   */
+  regionEnabled(region: WorkBuddyRegion): boolean
+  /**
    * Report whether a region still has at least one local sign-in.
    *
    * The card is where sign-in state actually changes under the plugin's nose
@@ -190,13 +196,17 @@ export async function workBuddyWebStatus(
   // The card is a live view of this same scan, so this is where a sign-in that
   // happened behind the plugin's back gets noticed — before the next restart.
   deps.regionUsable?.(region, accounts.length > 0)
+  // The provider's on/off state is independent of sign-in: a region the user
+  // switched off renders its switch as off even when fully signed in, and the
+  // card reads this committed value rather than a local guess.
+  const enabled = deps.regionEnabled(region)
   const authStatus = await store.status()
   // Whether a saved per-region choice is in effect, on every branch: the card
   // needs it to show that clearing really did return the region to the app's
   // current sign-in, even when that default is the same account as before.
   const selectionExplicit = store.hasExplicitSelection()
   if (authStatus.state !== 'signed-out' && accounts.length === 0) {
-    return { status: 'signed-out', accounts: [], selectionExplicit }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled }
   }
   let credential
   try {
@@ -214,6 +224,7 @@ export async function workBuddyWebStatus(
       accounts: accounts.map(toWebAccount),
       message: safeMessage(error),
       selectionExplicit,
+      enabled,
       ...await store.selectionLost() ? { selectionLost: true } : {},
     }
   }
@@ -231,6 +242,7 @@ export async function workBuddyWebStatus(
     source: credential.source,
     tokenExpiresAtMs: credential.expiresAtMs,
     selectionExplicit,
+    enabled,
     accounts: accounts.map(toWebAccount),
     models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
     enabledModelIds: [...deps.enabledModelIds(region)],

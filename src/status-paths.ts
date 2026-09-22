@@ -47,6 +47,83 @@ export function regionOfStatusUrl(url: string): WorkBuddyWebRegion | undefined {
   return (WORKBUDDY_REGIONS as readonly string[]).includes(value) ? value as WorkBuddyWebRegion : undefined
 }
 
+/**
+ * Narrow a settings value to the `regions` map. Accepts EITHER the whole
+ * settings section (the Host's resolved `Config`) OR the `regions` map itself,
+ * and unwraps the former. This tolerance is deliberate: passing the whole
+ * section where the map was expected was a real shipped bug in the sibling
+ * project — the lookup then read `section['cn']` (absent), so the card's
+ * checkbox reported `true` forever and clicking it appeared to do nothing even
+ * though the write succeeded.
+ */
+function regionsMapOf(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const record = value as Record<string, unknown>
+  const nested = record['regions']
+  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>
+  }
+  return record
+}
+
+/** One region's stored slot as a plain object; any other shape reads as empty. */
+function regionSlotOf(value: unknown, region: WorkBuddyWebRegion): Record<string, unknown> {
+  const slot = regionsMapOf(value)[region]
+  return typeof slot === 'object' && slot !== null && !Array.isArray(slot)
+    ? slot as Record<string, unknown>
+    : {}
+}
+
+/**
+ * Whether one region's provider is switched on. Opt-out semantics: only an
+ * explicit `false` disables it, so a config written before this switch existed
+ * (and the pre-region-split flat fields, which never carry `enabled`) keep both
+ * providers running exactly as before. The Host reads the same rule through
+ * `regionStateOf`, so card and Host can never disagree about a region's state.
+ *
+ * `value` may be the whole settings section or the `regions` map (see
+ * {@link regionsMapOf}).
+ */
+export function regionEnabledOf(value: unknown, region: WorkBuddyWebRegion): boolean {
+  return regionSlotOf(value, region)['enabled'] !== false
+}
+
+/** Build the next `regions` settings value for a signed-in tab's save. */
+export function nextRegionSlots<Slot extends object>(
+  regions: unknown,
+  region: WorkBuddyWebRegion,
+  slot: Slot,
+): Record<string, unknown> {
+  const base = typeof regions === 'object' && regions !== null && !Array.isArray(regions)
+    ? regions as Record<string, unknown>
+    : {}
+  return { ...base, [region]: slot }
+}
+
+/**
+ * Build the next `regions` settings value for a provider on/off toggle. ONLY
+ * the target region's `enabled` flag changes: every other field of that slot
+ * (its directory, selection, image opt-ins, context budgets) and every other
+ * region's slot are carried over verbatim, so switching a provider off never
+ * discards the user's model picks and switching it back on restores them.
+ *
+ * This is deliberately separate from {@link nextRegionSlots}: that helper
+ * writes a whole slot from a signed-in tab's draft, while this one must work
+ * for a region that is signed OUT — which is precisely the region a user wants
+ * to switch off (no international install, no international account).
+ *
+ * `value` may be the whole settings section or the `regions` map; the RETURN
+ * value is always the `regions` map, i.e. exactly what `settingsScope.set(
+ * 'regions', ...)` needs.
+ */
+export function nextRegionEnabled(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  enabled: boolean,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, { ...regionSlotOf(value, region), enabled })
+}
+
 /** One credit package as the upstream returns it, node-free. */
 export interface WorkBuddyWebCreditPackage {
   packageName: string
@@ -182,6 +259,8 @@ export type WorkBuddyWebUsage =
   | {
     status: 'signed-out'
     accounts: readonly WorkBuddyWebAccount[]
+    /** Whether this region's provider is currently offered to DSH. */
+    enabled?: boolean
     message?: string
     /** The persisted account id matches no local account. */
     selectionLost?: boolean
@@ -199,6 +278,8 @@ export type WorkBuddyWebUsage =
     domain?: string
     /** Which per-region model directory and selection this account owns. */
     region: WorkBuddyWebRegion
+    /** Whether this region's provider is currently offered to DSH. */
+    enabled?: boolean
     source?: 'desktop' | 'dsh'
     tokenExpiresAtMs: number
     /** A saved per-region choice is in effect (false = following the app). */

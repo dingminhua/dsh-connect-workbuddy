@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.0.8 (2026-09-24)
+
+### Features
+
+- **可以单独关掉任一版本的供应商**（对齐 trae 的 issue #11）。每个 tab 右侧新增一个勾选框（默认都勾选），**取消勾选即把该供应商从 DSH 模型选择器里彻底撤掉**，而不是只藏起 tab。
+
+  - **关闭动作落到注册层，不是 UI 层**：`AdapterRegistrationHandle.replace([])` 抽掉该区域的路由，`DirectoryRegistrationHandle.replace([])` 摘掉它在「设置 → 模型」页的目录条目。已验证 `listProviders()` 在该区域关闭后不再含它——这正是 DSH 构造模型选择器的取数来源，所以分组是**真的消失**，不是被藏起来。注册仍是「先正常注册、再 replace([])」两步在同一同步段内完成：空数组的**首次**注册会被 DSH 拒绝（`INVALID_ADAPTER`），而 `replace([])` 明确合法。
+  - **配置**：`regions.<cn|global>.enabled`，**opt-out**——只有显式 `false` 才关闭。**开关出现前的配置、以及区域拆分前的扁平旧字段一律视为开启**，老用户零感知。
+  - **状态不丢**：开关只改该区域 `enabled` 一个字段，该槽位的目录 / 勾选 / 图片开关 / 上下文预算，以及另一个区域的整个槽位，全部原样带过。关掉再打开能完整恢复。
+  - **保存模型不会偷偷重开**：卡片保存目录时会**回写 `enabled`**——那次写入替换整个槽位，漏掉它就会「保存一次模型列表 = 悄悄重新打开已关闭的供应商」。
+  - **已关闭的区域不再做无意义的启动请求**：跳过它的启动目录刷新与 `registerModelDiscovery` 兜底，顺带消掉「无账号区域每次启动报一次错」的失败面。
+  - **已知代价**：若某会话此前选中的正是被关闭供应商的模型，该会话再调用会报 `NO_ADAPTER`（`no adapter registered for provider "..."`）。这是「彻底移除」的必然结果，卡片在关闭态的 tab 上给出明确提示文案，不静默失败。
+  - **与 issue #12 的「无账号自动隐藏」是两个独立维度**：`WorkBuddyCatalog` 现在同时持有 `usable`（自动：本机有无该区域账号）与 `enabled`（用户显式开关），`current()` 在**两者都成立**时才返回模型。只有用户重新勾选、且该区域确有账号时，模型才会回来。
+
+### Tests
+
+测试总数 236 → 255（新增 19 例）：
+
+- `tests/region.spec.ts`（新增 11 例）：`regionEnabledOf` 的 opt-out 缺省、**同时接受「整个 settings 段」与「`regions` 子对象」两种入参**（这正是 trae 上真实发生过的 bug：卡片传错一半 → 判定恒为 `true` → 勾选「点了没反应」）、`nextRegionEnabled` 只改目标字段且不碰另一区域、以及 Host 侧 `regionEnabled` 对扁平旧配置判定为开启。
+- `tests/catalog.spec.ts`（新增 4 例）：`setRegionEnabled` / `isRegionEnabled`、关闭后 `current()` 为空、重新开启恢复、以及 **`usable` 与 `enabled` 两个闸门互不干扰**（只开开关不足以让无账号区域复活）。
+- `tests/settings-integration.spec.ts`（新增 4 例，走真实宿主装配）：关闭国际版后 `listProviders()` 不含 `workbuddy-global`、目录条目同步消失、**国内版的目录条目必须仍在**（守护「目录是一次性注册持有两个条目」这一约束）、另一侧不受影响、重新开启恢复、两个都关仍可恢复、旧配置两边都开。
+- `tests/web-status.spec.ts`：`enabled` 在 signed-in / signed-out 两个分支都下发。
+
+**变异验证（实测）**：把「撤掉路由」改成「照常注册」（即只隐藏 tab 的假实现），3 条集成测试立刻失败；把目录 `replace` 改回**按区域分别调用**，`registers both regional providers` 与 `both switched off can still be restored` 两条失败，失败现场收到的正是 `[{workbuddy-global}]`——国内版条目被覆盖掉了，与 trae 记录的这个 bug 完全一致。测试确实咬得住。
+
+### Docs
+
+- `README.md` / `README.en.md`：「功能特性」新增「可单独关闭任一版本供应商」一条，并在双供应商那条说明关闭后的效果与代价。
+- `docs/DESIGN.md`：说明区域开关为何必须落在注册层（`replace([])`），以及它与 issue #12「无账号隐藏」的维度差异。
+
 ## 2.0.7 (2026-09-23)
 
 ### Features

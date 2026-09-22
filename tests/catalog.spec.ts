@@ -157,3 +157,44 @@ describe('fallbackModelsFor', () => {
     expect(fallbackModelsFor('cn')).toBe(FALLBACK_WORKBUDDY_MODELS)
   })
 })
+
+describe('WorkBuddyCatalog region enabled', () => {
+  it('advertises models by default (opt-out switch)', () => {
+    const catalog = new WorkBuddyCatalog('cn')
+    expect(catalog.isRegionEnabled()).toBe(true)
+    expect(catalog.current()).not.toHaveLength(0)
+  })
+
+  it('withdraws all models once switched off, and restores them on re-enable', () => {
+    const catalog = new WorkBuddyCatalog('cn')
+    catalog.setRegionEnabled(false)
+    expect(catalog.isRegionEnabled()).toBe(false)
+    expect(catalog.current()).toEqual([])
+    catalog.setRegionEnabled(true)
+    expect(catalog.isRegionEnabled()).toBe(true)
+    expect(catalog.current()).not.toHaveLength(0)
+  })
+
+  it('setRegionEnabled reports whether the value changed', () => {
+    const catalog = new WorkBuddyCatalog('cn')
+    expect(catalog.setRegionEnabled(false)).toBe(true)
+    expect(catalog.setRegionEnabled(false)).toBe(false)
+    expect(catalog.setRegionEnabled(true)).toBe(true)
+    expect(catalog.setRegionEnabled(true)).toBe(false)
+  })
+
+  it('a switched-off region stays empty even when usable, and an unusable region stays empty even when enabled — the two gates are independent', () => {
+    const catalog = new WorkBuddyCatalog('cn')
+    catalog.setRegionUsable(false)
+    catalog.setRegionEnabled(true)
+    expect(catalog.current()).toEqual([])
+    catalog.setRegionEnabled(false)
+    expect(catalog.current()).toEqual([])
+    // Re-enabling alone must not resurrect a region that still has no account.
+    catalog.setRegionEnabled(true)
+    expect(catalog.current()).toEqual([])
+    // Only when BOTH gates pass does the catalog reappear.
+    catalog.setRegionUsable(true)
+    expect(catalog.current()).not.toHaveLength(0)
+  })
+})

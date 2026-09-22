@@ -27,6 +27,8 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
+  nextRegionEnabled,
+  regionEnabledOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
@@ -149,6 +151,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const [accountError, setAccountError] = useState<string | undefined>(undefined)
   const [checkingIn, setCheckingIn] = useState(false)
   const [checkinActionError, setCheckinActionError] = useState<string | undefined>(undefined)
+  /** Region whose on/off checkbox write is in flight, so its box can't race. */
+  const [togglingRegion, setTogglingRegion] = useState<WorkBuddyWebRegion | undefined>(undefined)
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -251,9 +255,44 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   }
 
   /**
-   * Drop the explicit choice — the "follow the app's current sign-in" mode has
-   * been removed from the card. Users pick a saved account explicitly instead,
-   * so no clear affordance is rendered.
+   * Whether one region's provider is switched on, read off the SAME committed
+   * settings document the Host reads (`regionEnabledOf` mirrors the Host's
+   * `regionStateOf` opt-out rule: only an explicit `false` disables). Reading
+   * the stored value rather than echoing local state means a rejected write,
+   * another window's change, or a restart all converge on the truth.
+   *
+   * The whole settings section is passed deliberately: `regionEnabledOf`
+   * accepts either it or the bare `regions` map, because passing the section
+   * where the map was expected was a shipped bug (the lookup read
+   * `section['cn']`, found nothing, and reported `true` forever — the checkbox
+   * stayed checked and clicking it appeared dead while the write succeeded).
+   */
+  const regionOn = (item: WorkBuddyWebRegion): boolean =>
+    regionEnabledOf(settingsScope?.getSnapshot().value, item)
+  const activeRegionOn = regionOn(activeRegion)
+
+  /**
+   * Switch one region's provider off or on. The write carries the region's
+   * whole slot through untouched — only `enabled` changes — so the user's
+   * directory, model picks, image opt-ins and budgets survive a round trip.
+   * The Host withdraws or restores the provider route on the next `onChange`,
+   * which is what actually removes it from DSH's model picker.
+   */
+  const toggleRegion = async (item: WorkBuddyWebRegion, enabled: boolean): Promise<void> => {
+    if (settingsScope === undefined || settingsScope.getSnapshot().writable !== true) return
+    setTogglingRegion(item)
+    try {
+      // `nextRegionEnabled` unwraps the settings section itself and returns the
+      // bare `regions` map, which is exactly what this field write needs.
+      await settingsScope.set('regions', nextRegionEnabled(settingsScope.getSnapshot().value, item, enabled))
+    } finally {
+      if (mounted.current) setTogglingRegion(undefined)
+    }
+  }
+
+  /**
+   * Claim the daily check-in reward for the active region. The action endpoint
+   * is region-scoped; the response only refreshes this tab's check-in state.
    */
   const claimDailyCheckin = async (): Promise<void> => {
     setCheckingIn(true)
@@ -404,8 +443,11 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       //
       // Verified write, because a save DISCARDS the draft: if the write did not
       // persist, throwing the user's edits away while reporting success would
-      // be unrecoverable — the draft is the only copy.
+      // be unrecoverable — the draft is the only copy. `enabled` rides along
+      // too: `writeRegionModels` replaces the whole region slot, so omitting it
+      // would silently re-open a provider the user had switched off.
       await writeRegionModels(settingsScope, status.region, {
+        enabled: activeRegionOn,
         lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
         enabledModelIds: [...activeEnabledIds],
         imageModelIds: [...activeImageIds],
@@ -471,24 +513,38 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
               <div className="dsm-workbuddy-tabs" role="tablist" aria-label={title}>
                 {WORKBUDDY_REGIONS.map(region => {
                   const regionStatus = statusByRegion[region]
+                  const regionOnState = regionOn(region)
                   return (
-                    <button
-                      key={region}
-                      type="button"
-                      role="tab"
-                      aria-selected={region === activeRegion}
-                      className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}`}
-                      onClick={() => { setActiveRegion(region); setAccountError(undefined) }}
-                    >
-                      {regionStatus === undefined
-                        ? null
-                        : <span aria-hidden="true" className="dsm-workbuddy-tab-dot" style={dotStyle(regionStatus.status)} />}
-                      {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
-                    </button>
+                    <div key={region} className="dsm-workbuddy-tab-cell">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={region === activeRegion}
+                        className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}${regionOnState ? '' : ' dsm-workbuddy-tab-off'}`}
+                        onClick={() => { setActiveRegion(region); setAccountError(undefined) }}
+                      >
+                        {regionStatus === undefined
+                          ? null
+                          : <span aria-hidden="true" className="dsm-workbuddy-tab-dot" style={dotStyle(regionStatus.status)} />}
+                        {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
+                      </button>
+                      <label className="dsm-workbuddy-tab-switch" title={t('row.tabSwitchHint')}>
+                        <input
+                          type="checkbox"
+                          checked={regionOnState}
+                          disabled={togglingRegion === region || settingsScope?.getSnapshot().writable !== true}
+                          aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
+                          onChange={(event) => { void toggleRegion(region, event.target.checked) }}
+                        />
+                      </label>
+                    </div>
                   )
                 })}
               </div>
               <p className="dsm-workbuddy-models-summary">{t('row.tabHint')}</p>
+              {!activeRegionOn
+                ? <p className="dsm-workbuddy-tab-off-notice">{t('row.tabOffNotice')}</p>
+                : null}
               <div className="dsm-workbuddy-usage-account">
                 <div className="dsm-workbuddy-usage-account-copy" role="status">
                   <div className="dsm-workbuddy-usage-status">

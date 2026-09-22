@@ -27,6 +27,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
@@ -157,6 +158,9 @@ export {
   regionOfStatusUrl,
   toPersistedWorkBuddyModel,
   withWorkBuddyRegion,
+  regionEnabledOf,
+  nextRegionEnabled,
+  nextRegionSlots,
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
@@ -177,6 +181,15 @@ export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 
 /** One region's model directory and the user's selection within it. */
 export interface WorkBuddyRegionState {
+  /**
+   * Whether this region's provider is switched on. Opt-out: only an explicit
+   * `false` disables it, so a config predating this switch keeps both providers
+   * running. A disabled region is fully withdrawn from the harness — its adapter
+   * route and its configurable-provider entry both hold zero routes, so it
+   * disappears from DSH's model picker instead of lingering as an unselectable
+   * row (see `syncRegionRegistration`).
+   */
+  enabled?: boolean
   /** The last-refreshed directory for this region; what the card displays. */
   lastCatalog?: WorkBuddyModelInfo[]
   /** The user's selection in this region, as model ids. */
@@ -232,6 +245,7 @@ const modelConfig = z.object({
 })
 
 const regionStateConfig = z.object({
+  enabled: z.boolean().default(true).description('Whether this region\'s provider is offered to DSH (opt-out; false withdraws it entirely)'),
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
   imageModelIds: z.array(z.string()).default([]),
@@ -273,6 +287,18 @@ export function regionStateOf(config: Config, region: WorkBuddyRegion): WorkBudd
     ...config.imageModelIds === undefined ? {} : { imageModelIds: config.imageModelIds },
     ...config.contextBudgets === undefined ? {} : { contextBudgets: config.contextBudgets },
   }
+}
+
+/**
+ * Whether one region's provider is switched on. Opt-out semantics: only an
+ * explicit `false` disables it, so every config written before this switch
+ * existed — including the pre-region-split flat fields, which never carry
+ * `enabled` — keeps both providers running exactly as before. The card reads the
+ * same rule through `regionEnabledOf`, so the two halves can never disagree
+ * about a region's state.
+ */
+export function regionEnabled(config: Config, region: WorkBuddyRegion): boolean {
+  return regionStateOf(config, region).enabled !== false
 }
 
 /**
@@ -447,6 +473,7 @@ export function apply(ctx: Context, config: Config): void {
       stacks[region].catalog.set(configuredModels(value, region))
     }
     invalidateCatalog()
+    syncRegionRegistration(value)
     void refreshRegionUsability()
   }
 
@@ -478,6 +505,50 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  /**
+   * Live registration handles per region, filled once the shim is listening.
+   * A disabled region holds ZERO routes while staying registered: DSH allows
+   * `replace([])` for exactly this case ("a settings section that emptied holds
+   * zero routes while staying registered"), which is what makes the on/off
+   * switch reversible without a restart. Withdrawing the adapter route is what
+   * actually removes the region's models from DSH's model picker — hiding the
+   * card tab alone would leave every model selectable.
+   */
+  const registration: Record<WorkBuddyRegion, {
+    adapter?: AdapterRegistrationHandle
+    directory?: DirectoryRegistrationHandle
+  }> = { cn: {}, global: {} }
+
+  /**
+   * Publish each region's on/off state to the harness (issue #11-style region
+   * switch). Both swaps are single synchronous sections, so no request can
+   * observe a half-applied state, and `replace` announces itself through
+   * `llm/adapters-updated`, which is what makes third-party consumers drop the
+   * region too. No-op until the shim has registered; `applySelection` runs again
+   * on every card write (and once more after registration completes), so a
+   * toggle lands immediately.
+   */
+  const syncRegionRegistration = (value: Config): void => {
+    // Each region owns its OWN adapter registration, so a per-region replace is
+    // exactly that region's complete route set.
+    for (const region of REGION_KEYS) {
+      registration[region].adapter?.replace(regionEnabled(value, region) ? [WORKBUDDY_PROVIDERS[region]] : [])
+    }
+    // The directory is ONE registration holding BOTH entries: `replace` sets the
+    // complete entry set, so it is called once with the full enabled list.
+    // Replacing per region would make the last region win and silently drop the
+    // other's entry — a disabled region would take its enabled sibling with it.
+    registration.cn.directory?.replace(REGION_KEYS
+      .filter(region => regionEnabled(value, region))
+      .map(region => ({
+        provider: WORKBUDDY_PROVIDERS[region],
+        displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES[region],
+        settingsNs: WORKBUDDY_SETTINGS_NS,
+        settingsPath: [],
+        declared: false,
+      })))
+  }
+
   // Same-origin routes backing the Plugin-configuration card. `webServer`
   // can mount after this row, so wait reactively for it instead of sampling
   // ctx.get() once during apply (which silently loses all routes on Desktop).
@@ -494,6 +565,7 @@ export function apply(ctx: Context, config: Config): void {
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
+    regionEnabled: region => regionEnabled(current(), region),
     // The card re-reads this on every poll and rescan, so a sign-in the user
     // performs after startup brings the region's models back without a restart.
     regionUsable(region, usable) {
@@ -562,9 +634,14 @@ export function apply(ctx: Context, config: Config): void {
         let releaseAdapterGlobal: (() => void) | undefined
         let releaseDirectory: (() => void) | undefined
         try {
-          releaseAdapterCn = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], adapters.cn.adapter)
-          releaseAdapterGlobal = ctx.llm.registerAdapter([WORKBUDDY_GLOBAL_PROVIDER], adapters.global.adapter)
-          releaseDirectory = ctx.llm.registerConfigurableProviders([
+          // Always register the route first: an empty INITIAL registration is
+          // invalid (`INVALID_ADAPTER`), while `replace([])` on a live one is
+          // explicitly legal. `syncRegionRegistration` below then withdraws the
+          // route for a region the user has switched off, in the same synchronous
+          // section, so nothing observes the transient route.
+          releaseAdapterCn = registration.cn.adapter = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], adapters.cn.adapter)
+          releaseAdapterGlobal = registration.global.adapter = ctx.llm.registerAdapter([WORKBUDDY_GLOBAL_PROVIDER], adapters.global.adapter)
+          releaseDirectory = registration.cn.directory = ctx.llm.registerConfigurableProviders([
             {
               provider: WORKBUDDY_PROVIDER,
               displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES.cn,
@@ -602,9 +679,18 @@ export function apply(ctx: Context, config: Config): void {
           releaseDirectory?.()
         }
 
+        // Converge both regions on the saved on/off state: a region switched off
+        // while the harness was down is withdrawn here, before the startup seed
+        // below. `syncRegionRegistration` is a no-op for the freshly registered
+        // routes until this very call populates their handles.
+        syncRegionRegistration(current())
+
         ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request, signal) => {
           const region = regionOfProvider(request.provider ?? '')
           if (region === undefined) return []
+          // A switched-off region advertises nothing: its route is withdrawn, so
+          // this is defence in depth against a stale model-picker refresh.
+          if (!regionEnabled(current(), region)) return []
           const discovered = await discoverModels(region, signal)
           const state = regionStateOf(current(), region)
           const next = withImageSelection(
@@ -638,6 +724,10 @@ export function apply(ctx: Context, config: Config): void {
       if (stopped) return
 
       for (const region of REGION_KEYS) {
+        // A switched-off region is skipped entirely: its route is withdrawn, so
+        // the request would be pure waste — and skipping it is also what keeps a
+        // disabled region from contributing an error to the log on every start.
+        if (!regionEnabled(current(), region)) continue
         void (async () => {
           try {
             const credential = await stacks[region].store.resolve()
