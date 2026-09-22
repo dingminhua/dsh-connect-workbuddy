@@ -38,9 +38,14 @@ export type Translate = (key: WorkBuddySettingsKey, params?: Record<string, unkn
  * user is very likely signed in already, and the plugin simply cannot open the
  * token fields without the desktop app present. "Sign in again" is the one
  * action that cannot help, so this reason must never be hidden behind a toggle.
+ *
+ * `wrong-region` is equally a finding and equally actionable: the sign-in is
+ * real and readable, it just belongs to the other tab. That is why it must be
+ * shown up front — hidden among the absences it would look like "nothing here",
+ * when it is in fact the whole explanation, and the cheapest possible fix.
  */
 export const INTERESTING_REASONS: readonly WorkBuddyWebSearchPath['reason'][]
-  = ['encrypted', 'invalid', 'unreadable']
+  = ['encrypted', 'invalid', 'unreadable', 'wrong-region']
 
 /** How one probed-path list should be presented. */
 export interface SearchedView {
@@ -82,15 +87,18 @@ export function searchedView(items: readonly WorkBuddyWebSearchPath[]): Searched
   }
 }
 
-/** The reason's short label; `missing`/`unreadable`/`invalid`/`encrypted`. */
+/** Every reason's locale key, so no reason can silently fall through to a wrong one. */
+const REASON_KEYS: Record<WorkBuddyWebSearchPath['reason'], WorkBuddySettingsKey> = {
+  missing: 'row.reasonMissing',
+  unreadable: 'row.reasonUnreadable',
+  invalid: 'row.reasonInvalid',
+  encrypted: 'row.reasonEncrypted',
+  'wrong-region': 'row.reasonWrongRegion',
+}
+
+/** The reason's short label; `missing`/`unreadable`/`invalid`/`encrypted`/`wrong-region`. */
 export function searchReasonKey(reason: WorkBuddyWebSearchPath['reason']): WorkBuddySettingsKey {
-  return reason === 'missing'
-    ? 'row.reasonMissing'
-    : reason === 'unreadable'
-      ? 'row.reasonUnreadable'
-      : reason === 'encrypted'
-        ? 'row.reasonEncrypted'
-        : 'row.reasonInvalid'
+  return REASON_KEYS[reason] ?? 'row.reasonInvalid'
 }
 
 /**
@@ -103,4 +111,65 @@ export function searchReasonKey(reason: WorkBuddyWebSearchPath['reason']): WorkB
 export function searchReasonLabel(item: WorkBuddyWebSearchPath, t: Translate): string {
   const source = t(item.source === 'desktop' ? 'row.sourceDesktop' : 'row.sourceDsh')
   return `${source} · ${t(searchReasonKey(item.reason))}`
+}
+
+/** What the signed-out paragraph should say, and the inputs that decided it. */
+export interface SignedOutNotice {
+  key: WorkBuddySettingsKey
+  /** The Host's raw `resolve()` error, shown only when nothing supersedes it. */
+  fallback?: string
+}
+
+/**
+ * Choose the signed-out paragraph's copy.
+ *
+ * This exists because the card was saying the same thing twice. `resolve()`
+ * refuses with a message that already ENUMERATES every path it tried
+ * (`expected <Local>\workbuddy-desktop.info or <Roaming>\... or
+ * WORKBUDDY_AUTH_FILE`), and the probed-path `<details>` right below it listed
+ * those same paths with a per-entry reason. Both hint keys also opened with a
+ * variant of "no sign-in was found", so one screen carried four statements of
+ * one fact and the user's eye had nowhere to land.
+ *
+ * The rule: the paragraph states the situation, the list supplies the detail.
+ * Whenever a list is rendered, the enumeration in `message` is redundant by
+ * construction — the list is the same paths, with strictly better reasons — so
+ * the paragraph falls back to the concise hint. Measured against the real
+ * `resolve()` branches, the only content this drops is "or refresh an existing
+ * session", which is vacuous exactly here: `searched` is attached only when
+ * there are zero accounts, so there is no session to refresh.
+ *
+ * `selectionLost` still wins outright: there the tokens are healthy and the
+ * advice is to re-pick an account, which no path list can replace.
+ */
+export function signedOutNotice(input: {
+  selectionLost: boolean
+  message: string | undefined
+  searched: readonly WorkBuddyWebSearchPath[]
+}): SignedOutNotice {
+  if (input.selectionLost) return { key: 'row.selectionLostMessage' }
+  // A wrong-region sign-in is the one answer better than "you are not signed
+  // in": the user IS signed in, on the other tab. Say so in the headline
+  // instead of burying the fix in a collapsed list.
+  if (input.searched.some(item => item.reason === 'wrong-region')) {
+    return { key: 'row.signedOutWrongRegion' }
+  }
+  if (input.searched.length > 0) return { key: 'row.signedOutHint' }
+  // Nothing was probed, so the Host's message is the only account we have of
+  // what happened — and then it is not a duplicate, it is the whole story.
+  return input.message === undefined
+    ? { key: 'row.signedOutHint' }
+    : { key: 'row.signedOutHint', fallback: input.message }
+}
+
+/**
+ * The paragraph's final text: the localized copy, plus the Host message only
+ * when {@link signedOutNotice} decided nothing supersedes it.
+ *
+ * Kept here rather than inline in the JSX so the anti-duplication guarantee can
+ * be asserted on the string that is actually rendered, not on its inputs.
+ */
+export function signedOutText(notice: SignedOutNotice, t: Translate): string {
+  const hint = t(notice.key)
+  return notice.fallback === undefined ? hint : `${hint} (${notice.fallback})`
 }

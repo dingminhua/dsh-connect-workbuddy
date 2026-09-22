@@ -64,11 +64,21 @@ export interface WorkBuddyCredential {
  * fields are encrypted cannot be read at all unless the desktop app itself is
  * present to hand over its at-rest key, so "sign in again" is the wrong advice
  * for it (the user may be perfectly signed in).
+ *
+ * `wrong-region` is the second WorkBuddy-specific one, and it exists because of
+ * a real bug: a region-scoped store filters out every credential that belongs to
+ * the other region, so a candidate file holding a perfectly valid sign-in for
+ * the other tab was dropped by exactly the same `continue` that drops malformed
+ * files. The file then appeared in NO list at all — not an account (filtered by
+ * region) and not a failure (it parsed) — so a card could name two paths while
+ * its report listed one, and the user's actual, working sign-in was the one
+ * made invisible. Reporting it is also the most useful answer we can give: the
+ * user is signed in, and merely on the wrong tab.
  */
 export interface WorkBuddyCandidateFailure {
   path: string
   source: 'desktop' | 'dsh'
-  reason: 'missing' | 'unreadable' | 'invalid' | 'encrypted'
+  reason: 'missing' | 'unreadable' | 'invalid' | 'encrypted' | 'wrong-region'
   message?: string
 }
 
@@ -514,10 +524,16 @@ async function probeAuthFile(
   try {
     text = await readFile(path, 'utf8')
   } catch (error: unknown) {
+    const missing = isENOENT(error)
     return {
       failure: {
-        reason: isENOENT(error) ? 'missing' : 'unreadable',
-        message: error instanceof Error ? error.message : String(error),
+        reason: missing ? 'missing' : 'unreadable',
+        // An ENOENT message is the path spelled out again ("ENOENT: no such
+        // file or directory, open '<path>'"), and the card already prints that
+        // path on its own line — carrying it here rendered the same string
+        // twice in a row. A genuine read error (EACCES, EISDIR) says something
+        // the reason alone does not, so only that one is kept.
+        ...missing ? {} : { message: error instanceof Error ? error.message : String(error) },
       },
     }
   }
@@ -1040,7 +1056,24 @@ export class WorkBuddyCredentialStore {
     const candidates: WorkBuddyCandidateFailure[] = []
     for (const path of await this.candidateFiles()) {
       const probe = await probeAuthFile(path, this.resolveAtRestKey)
-      if ('credential' in probe) continue
+      if ('credential' in probe) {
+        // Reads fine, but belongs to the other region's tab: this store's
+        // `readAll()` filters it out, so the account list will not show it.
+        // Dropping it here too is what made a working sign-in invisible to the
+        // diagnostics — reported as neither account nor failure, it vanished,
+        // and a two-path card could truthfully claim to have checked one. Say
+        // whose sign-in this is instead: the fix is the other tab, not a
+        // re-login.
+        if (!this.matchesRegion(probe.credential.domain)) {
+          candidates.push({
+            path,
+            source: 'desktop',
+            reason: 'wrong-region',
+            message: `holds a ${regionOf(probe.credential.domain)} sign-in, but this tab reads the ${this.region} region`,
+          })
+        }
+        continue
+      }
       candidates.push({ path, source: 'desktop', ...probe.failure })
     }
     // Plugin-owned copies are reported separately: they are the plugin's own

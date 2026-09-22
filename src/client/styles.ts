@@ -68,6 +68,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-searched-list code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#b8b8b8);word-break:break-all}
 .dsm-workbuddy-searched-reason{color:var(--dsw-alias-label-tertiary,#999);font-size:11px}
 .dsm-workbuddy-searched-reason-encrypted{color:var(--dsw-alias-state-warning-primary,#e0a13a)}
+.dsm-workbuddy-searched-reason-wrong-region{color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-searched-notice{margin:6px 0 0;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:12px;line-height:18px}
 .dsm-workbuddy-searched-more{margin-top:6px;padding:0;border:0;background:none;color:var(--dsw-alias-brand-primary,#5686fe);font:inherit;font-size:12px;line-height:18px;cursor:pointer;text-align:left}
 .dsm-workbuddy-searched-more:hover{text-decoration:underline}

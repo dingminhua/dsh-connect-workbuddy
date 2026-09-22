@@ -243,11 +243,16 @@ export type WorkBuddyWebPackage = WorkBuddyWebCreditPackage
  * refuse a correctly signed-in user: Windows builds encrypt the token fields,
  * and opening them needs the desktop app present to hand over its at-rest key.
  * Telling that user to "sign in again" is wrong — they already are.
+ *
+ * `wrong-region` is the other WorkBuddy-specific one: the file holds a valid
+ * sign-in for the OTHER tab's region, so this tab filters it out of the account
+ * list. Without this entry the file was reported nowhere at all, which both
+ * undercounted "paths checked" and hid the user's real sign-in.
  */
 export interface WorkBuddyWebSearchPath {
   path: string
   source: 'desktop' | 'dsh'
-  reason: 'missing' | 'unreadable' | 'invalid' | 'encrypted'
+  reason: 'missing' | 'unreadable' | 'invalid' | 'encrypted' | 'wrong-region'
   message?: string
 }
 

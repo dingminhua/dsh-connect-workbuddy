@@ -42,7 +42,7 @@ import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebSearchPath, Wor
 import { writeAccountSlot, writeRegionModels } from './account-selection.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
-import { searchReasonLabel, searchedView } from './searched-paths.ts'
+import { searchReasonLabel, searchedView, signedOutNotice, signedOutText } from './searched-paths.ts'
 import type { Translate } from './searched-paths.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -98,7 +98,7 @@ function renderSearchedItem(
   return (
     <li key={`${item.source}:${item.path}`}>
       <code>{item.path}</code>
-      <span className={`dsm-workbuddy-searched-reason${item.reason === 'encrypted' ? ' dsm-workbuddy-searched-reason-encrypted' : ''}`}>
+      <span className={`dsm-workbuddy-searched-reason${item.reason === 'encrypted' ? ' dsm-workbuddy-searched-reason-encrypted' : item.reason === 'wrong-region' ? ' dsm-workbuddy-searched-reason-wrong-region' : ''}`}>
         {searchReasonLabel(item, t)}
         {item.message === undefined ? null : ` · ${item.message}`}
       </span>
@@ -558,6 +558,17 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const searched: readonly WorkBuddyWebSearchPath[]
     = status.status === 'signed-out' ? status.searched ?? [] : []
   /**
+   * What the signed-out paragraph says, and whether to append the Host's raw
+   * error. The rule lives in `./searched-paths.ts` because it is the fix for a
+   * real duplication: `resolve()`'s message already enumerated every path, and
+   * the list below enumerates them again with better reasons.
+   */
+  const notice = signedOutNotice({
+    selectionLost,
+    message: status.status === 'signed-out' ? status.message : undefined,
+    searched,
+  })
+  /**
    * Whether this region runs a saved choice, per the Host. `undefined` only on
    * the error branch, which renders no picker and therefore no state line.
    */
@@ -934,8 +945,12 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           id. Say what actually helps (re-pick, or follow the app
                           again) instead of echoing the resolve() error, which
                           tells the user to sign in — the one action that cannot
-                          fix this. */}
-                      {selectionLost ? t('row.selectionLostMessage') : status.message ?? t('row.signedOutHint')}
+                          fix this. The same goes for a wrong-region sign-in.
+                          When a probed-path list follows, its paths ARE the
+                          enumeration the resolve() error repeats, so the
+                          paragraph states the situation and the list supplies
+                          the detail. */}
+                      {signedOutText(notice, t)}
                     </p>
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>

@@ -128,6 +128,26 @@ describe('WorkBuddyCredentialStore.diagnose', () => {
     expect(failures[0]).toMatchObject({ reason: 'missing', source: 'desktop' })
   })
 
+  it('carries no message for an absence, because ENOENT only repeats the path', async () => {
+    // The card prints each entry's path on its own `<code>` line. Node's ENOENT
+    // text ("ENOENT: no such file or directory, open '<path>'") embeds that same
+    // path, so shipping it rendered the identical string twice in a row — a
+    // second, subtler version of the duplication this release fixes.
+    const { failures } = await makeStore().diagnose()
+    expect(failures[0]?.reason).toBe('missing')
+    expect(failures[0]?.message).toBeUndefined()
+  })
+
+  it('keeps a message for a genuine read error, which says more than the reason', async () => {
+    // EISDIR/EACCES are findings the reason alone cannot convey, and their text
+    // does NOT repeat the path. Dropping those would hide real information.
+    await mkdir(join(root, AUTH_DIR, LIVE), { recursive: true })
+    const { failures } = await makeStore().diagnose()
+    expect(failures[0]?.reason).toBe('unreadable')
+    expect(failures[0]?.message).toContain('EISDIR')
+    expect(failures[0]?.message).not.toContain(LIVE)
+  })
+
   it('keeps absent plugin-owned copies out of the report', async () => {
     // Every machine lacks the plugin's own copy until the first refresh. Listing
     // it as a "checked path" would put two permanent entries of noise in front
@@ -229,5 +249,41 @@ describe('WorkBuddyCredentialStore.diagnose', () => {
     expect(own?.path).toBe(ownPath)
     // The absent legacy copy is still skipped rather than reported.
     expect(failures.some(failure => failure.path === legacyPath)).toBe(false)
+  })
+
+  it('reports a desktop file holding the OTHER region\'s sign-in', async () => {
+    // The regression this pins, measured on a real machine: a CN-scoped store
+    // saw a valid GLOBAL credential in the desktop file, and `diagnose` dropped
+    // it on `'credential' in probe` — the same `continue` that drops malformed
+    // files. `readAll` had already filtered it out by region, so the file was in
+    // NO list: not an account, not a failure. A card then named two paths and
+    // truthfully reported one, while the user's working sign-in was the entry
+    // made invisible. It must be reported, and as the other region's.
+    await writeAuth(LIVE, accountDoc()) // codebuddy.cn — the CN doc
+    const store = makeStore({ region: 'global' })
+    const { failures } = await store.diagnose()
+    const desktop = failures.filter(failure => failure.source === 'desktop')
+    expect(desktop).toHaveLength(1)
+    expect(desktop[0]).toMatchObject({ reason: 'wrong-region', source: 'desktop' })
+    expect(desktop[0]?.path).toBe(join(root, AUTH_DIR, LIVE))
+    expect(desktop[0]?.message).toContain('cn')
+  })
+
+  it('counts every candidate path it names, so the total cannot under-report', async () => {
+    // The visible symptom of the bug above: the summary said "1" while the
+    // signed-out message enumerated two desktop paths. Every path the store
+    // consults must come back either as a failure or as a read credential —
+    // never as nothing.
+    const store = makeStore({ region: 'global' })
+    const { tried, failures } = await store.diagnose()
+    // Match on the `desktop app` source, not on a path substring: the plugin's
+    // own copies are named `.workbuddy-auth*.json` and a loose `includes('auth')`
+    // counts them too.
+    const desktopTried = tried.filter(path => path.startsWith(root) && path.includes(AUTH_DIR))
+    expect(desktopTried).toHaveLength(1)
+    const desktopFailures = failures.filter(failure => failure.source === 'desktop')
+    // Nothing on disk: each desktop candidate is reported as missing.
+    expect(desktopFailures).toHaveLength(desktopTried.length)
+    expect(desktopFailures[0]).toMatchObject({ reason: 'missing' })
   })
 })

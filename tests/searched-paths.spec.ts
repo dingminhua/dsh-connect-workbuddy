@@ -14,10 +14,26 @@ import {
   searchReasonKey,
   searchReasonLabel,
   searchedView,
+  signedOutNotice,
+  signedOutText,
 } from '../src/client/searched-paths.ts'
 import type { Translate } from '../src/client/searched-paths.ts'
 import { en, zh } from '../src/client/locales.ts'
 import type { WorkBuddyWebSearchPath } from '../src/status-paths.ts'
+
+/**
+ * Every reason the type allows, spelled out rather than derived from
+ * `Object.keys` of the tables: a reason added to the union without copy, a
+ * locale key, or a place in the grouping rules must fail a test, and a
+ * self-updating list would hide exactly that.
+ */
+const ALL_REASONS = ['missing', 'unreadable', 'invalid', 'encrypted', 'wrong-region'] as const
+
+/** A `resolve()`-style error that enumerates paths, as the Host really emits. */
+const RESOLVE_MESSAGE
+  = 'workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app'
+    + ' (expected C:\\Users\\u\\AppData\\Local\\...\\workbuddy-desktop.info or WORKBUDDY_AUTH_FILE),'
+    + ' or refresh an existing session'
 
 /** A probe failure, with only the fields the rules read. */
 function failure(
@@ -78,16 +94,30 @@ describe('searchedView', () => {
 
   it('keeps every non-missing reason visible', () => {
     // `encrypted` is the reason the feature exists; `invalid` and `unreadable`
-    // are genuine findings too. Only a plain absence may be hidden.
-    expect([...INTERESTING_REASONS].sort()).toEqual(['encrypted', 'invalid', 'unreadable'])
+    // are genuine findings too, and `wrong-region` is the strongest finding of
+    // all — the user IS signed in, just on the other tab. Only a plain absence
+    // may be hidden.
+    expect([...INTERESTING_REASONS].sort()).toEqual(['encrypted', 'invalid', 'unreadable', 'wrong-region'])
     const view = searchedView([
       failure('missing'),
       failure('encrypted'),
       failure('invalid'),
       failure('unreadable'),
+      failure('wrong-region'),
     ])
-    expect(view.interesting).toHaveLength(3)
+    expect(view.interesting).toHaveLength(4)
     expect(view.missing).toHaveLength(1)
+  })
+
+  it('groups EVERY reason in the union, so a new one cannot fall through', () => {
+    // Guards the failure mode this suite just hit: a reason added to the union
+    // lands in `missing` by default, which HIDES it behind the toggle — the
+    // opposite of what a finding needs.
+    for (const reason of ALL_REASONS) {
+      const view = searchedView([failure(reason)])
+      const grouped = reason === 'missing' ? view.missing : view.interesting
+      expect(grouped.map(item => item.reason)).toEqual([reason])
+    }
   })
 
   it('flags encrypted whenever any entry is encrypted', () => {
@@ -98,22 +128,23 @@ describe('searchedView', () => {
 
 describe('searchReasonKey', () => {
   it('maps each reason to its own copy key', () => {
-    const keys = (['missing', 'unreadable', 'invalid', 'encrypted'] as const).map(searchReasonKey)
+    const keys = ALL_REASONS.map(searchReasonKey)
     expect(keys).toEqual([
       'row.reasonMissing',
       'row.reasonUnreadable',
       'row.reasonInvalid',
       'row.reasonEncrypted',
+      'row.reasonWrongRegion',
     ])
     // Each reason must be distinguishable: two reasons sharing copy would make
     // the encrypted case look like a plain absence again.
-    expect(new Set(keys).size).toBe(4)
+    expect(new Set(keys).size).toBe(ALL_REASONS.length)
   })
 
   it('has copy for every reason in both locales', () => {
     // The `zh` table is typed against `en`, but an empty string would satisfy
     // the type and render as a blank cause.
-    for (const reason of ['missing', 'unreadable', 'invalid', 'encrypted'] as const) {
+    for (const reason of ALL_REASONS) {
       const key = searchReasonKey(reason)
       expect(en[key].length).toBeGreaterThan(0)
       expect(zh[key].length).toBeGreaterThan(0)
@@ -122,13 +153,13 @@ describe('searchReasonKey', () => {
   })
 
   it('gives each reason DISTINCT copy in each locale', () => {
-    // Four reasons exist precisely so they read as four different situations.
+    // Five reasons exist precisely so they read as five different situations.
     // If `encrypted` shared `missing`'s text, the whole feature would collapse
     // back into "the file was not found" while every other test still passed.
-    const keys = (['missing', 'unreadable', 'invalid', 'encrypted'] as const).map(searchReasonKey)
+    const keys = ALL_REASONS.map(searchReasonKey)
     for (const table of [en, zh]) {
       const texts = keys.map(key => table[key])
-      expect(new Set(texts).size).toBe(4)
+      expect(new Set(texts).size).toBe(ALL_REASONS.length)
     }
   })
 })
@@ -144,9 +175,13 @@ describe('searchReasonLabel', () => {
   })
 
   it('labels every reason without falling through to a default', () => {
-    for (const reason of ['missing', 'unreadable', 'invalid', 'encrypted'] as const) {
+    // `searchReasonKey` is a lookup table, so a reason missing from it would
+    // silently render as `invalid`. Assert each label carries ITS OWN key.
+    for (const reason of ALL_REASONS) {
       expect(searchReasonLabel(failure(reason), echo)).toContain(searchReasonKey(reason))
     }
+    expect(new Set(ALL_REASONS.map(reason => searchReasonLabel(failure(reason), echo))).size)
+      .toBe(ALL_REASONS.length)
   })
 })
 
@@ -173,5 +208,87 @@ describe('signed-out diagnostics copy', () => {
     const t: Translate = (key, params) => `${key}:${String(params?.['count'])}`
     expect(t('row.searchedMore', { count: 7 })).toBe('row.searchedMore:7')
     for (const table of [en, zh]) expect(table['row.searchedMore']).toContain('{count}')
+  })
+})
+
+describe('signedOutNotice', () => {
+  it('does NOT repeat the resolve() path list when a probed list is rendered', () => {
+    // The reported bug: the paragraph echoed `resolve()`'s "expected <a> or <b>
+    // or WORKBUDDY_AUTH_FILE" and the <details> below listed those same paths
+    // with reasons. Both hints also said "no sign-in was found", so one screen
+    // stated one fact four times.
+    const notice = signedOutNotice({
+      selectionLost: false,
+      message: RESOLVE_MESSAGE,
+      searched: [failure('missing', '/a'), failure('missing', '/b')],
+    })
+    expect(notice.fallback).toBeUndefined()
+    expect(notice.key).toBe('row.signedOutHint')
+
+    // Assert on the string actually rendered, not just on the inputs: this is
+    // the guarantee that was violated.
+    const rendered = signedOutText(notice, key => zh[key])
+    expect(rendered).toBe(zh['row.signedOutHint'])
+    expect(rendered).not.toContain('workbuddy-desktop.info')
+    expect(rendered).not.toContain('WORKBUDDY_AUTH_FILE')
+    expect(rendered).not.toContain('no signed-in WorkBuddy account')
+  })
+
+  it('renders the Host message when the fallback DOES apply', () => {
+    const rendered = signedOutText(
+      signedOutNotice({ selectionLost: false, message: RESOLVE_MESSAGE, searched: [] }),
+      key => zh[key],
+    )
+    expect(rendered).toContain(RESOLVE_MESSAGE)
+    expect(rendered).toContain(zh['row.signedOutHint'])
+  })
+
+  it('opens with copy that does not itself re-announce "no sign-in"', () => {
+    // The list's own summary is "Paths checked"; the paragraph above it says
+    // the situation. Neither may also restate the absence the third time.
+    expect(zh['row.searchedHint']).not.toContain('未找到登录信息')
+    expect(en['row.searchedHint']).not.toContain('No sign-in was found')
+  })
+
+  it('still shows the Host message when nothing was probed at all', () => {
+    // Then it is not a duplicate — it is the only account of what happened, and
+    // dropping it would leave a bare "sign in once" with no explanation.
+    const notice = signedOutNotice({ selectionLost: false, message: RESOLVE_MESSAGE, searched: [] })
+    expect(notice.fallback).toBe(RESOLVE_MESSAGE)
+  })
+
+  it('leaves the hint alone when the Host sent no message', () => {
+    const notice = signedOutNotice({ selectionLost: false, message: undefined, searched: [] })
+    expect(notice.fallback).toBeUndefined()
+    expect(notice.key).toBe('row.signedOutHint')
+  })
+
+  it('leads with the wrong-region fix instead of "not signed in"', () => {
+    // The user IS signed in; telling them to sign in again is the one action
+    // that cannot help, and burying the real fix in a collapsed list hides it.
+    const notice = signedOutNotice({
+      selectionLost: false,
+      message: RESOLVE_MESSAGE,
+      searched: [failure('wrong-region', '/a'), failure('missing', '/b')],
+    })
+    expect(notice.key).toBe('row.signedOutWrongRegion')
+    expect(notice.fallback).toBeUndefined()
+  })
+
+  it('lets an orphaned saved id outrank everything', () => {
+    // Tokens are healthy there; only re-picking an account helps, and no path
+    // list or region hint may replace that advice.
+    for (const searched of [[], [failure('wrong-region')], [failure('encrypted')]]) {
+      const notice = signedOutNotice({ selectionLost: true, message: RESOLVE_MESSAGE, searched })
+      expect(notice.key).toBe('row.selectionLostMessage')
+      expect(notice.fallback).toBeUndefined()
+    }
+  })
+
+  it('never returns copy that is missing from a locale', () => {
+    for (const table of [en, zh]) {
+      expect(table['row.signedOutWrongRegion'].length).toBeGreaterThan(0)
+    }
+    expect(zh['row.signedOutWrongRegion']).not.toBe(en['row.signedOutWrongRegion'])
   })
 })

@@ -688,6 +688,27 @@ describe('workBuddyWebStatus probed-path diagnostics', () => {
     expect(status.searched?.[0]).toMatchObject({ reason: 'encrypted', source: 'desktop' })
   })
 
+  it('carries the wrong-region reason through to the browser', async () => {
+    // End of the chain behind the reported `(1)`: the file holds a valid sign-in
+    // for the other tab, `diagnose()` reports it, and the card must receive it.
+    // If this entry is dropped anywhere along the way, the user's real sign-in
+    // is invisible AND the "Paths checked" count is short by one.
+    const status = await workBuddyWebStatus(deps({
+      store: () => signedOutStore([
+        {
+          path: '/x/auth/workbuddy-desktop.info',
+          source: 'desktop',
+          reason: 'wrong-region',
+          message: 'holds a global sign-in, but this tab reads the cn region',
+        },
+        { path: '/x/other/auth/workbuddy-desktop.info', source: 'desktop', reason: 'missing' },
+      ]),
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.searched).toHaveLength(2)
+    expect(status.searched?.[0]).toMatchObject({ reason: 'wrong-region', source: 'desktop' })
+  })
+
   it('omits an empty probe list rather than sending an empty array', async () => {
     // `[]` would make the card render an empty "Paths checked (0)" block.
     const status = await workBuddyWebStatus(deps({
