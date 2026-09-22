@@ -57,6 +57,16 @@ export interface WorkBuddyStatusRouteOptions {
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
+  /**
+   * Report whether a region still has at least one local sign-in.
+   *
+   * The card is where sign-in state actually changes under the plugin's nose
+   * (the user signs in to the desktop app, then presses "detect accounts
+   * again"), so the routes are the earliest honest place to notice. Both
+   * callers already read `store.accounts()` for their own answer, so this adds
+   * no scan of its own.
+   */
+  regionUsable?(region: WorkBuddyRegion, usable: boolean): void
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -160,6 +170,9 @@ export async function workBuddyWebStatus(
 ): Promise<WorkBuddyWebUsage> {
   const store = deps.store(region)
   const accounts = await store.accounts()
+  // The card is a live view of this same scan, so this is where a sign-in that
+  // happened behind the plugin's back gets noticed — before the next restart.
+  deps.regionUsable?.(region, accounts.length > 0)
   const authStatus = await store.status()
   // Whether a saved per-region choice is in effect, on every branch: the card
   // needs it to show that clearing really did return the region to the app's
@@ -270,7 +283,9 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         const region = requestRegion(req, res)
         if (region === undefined) return
         try {
-          json(res, 200, { accounts: (await deps.store(region).accounts()).map(toWebAccount) })
+          const accounts = await deps.store(region).accounts()
+          deps.regionUsable?.(region, accounts.length > 0)
+          json(res, 200, { accounts: accounts.map(toWebAccount) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })
         }

@@ -73,6 +73,53 @@ describe('WorkBuddyCatalog', () => {
     expect(() => catalog.set([])).toThrow(/cannot be empty/)
     expect(catalog.current().length).toBeGreaterThan(0)
   })
+
+  it('starts usable, so a scan that has not run yet cannot blank a region', () => {
+    // The permissive default matters: `setRegionUsable(false)` is called from an
+    // async scan, and a region must not lose its roster before that lands.
+    const catalog = new WorkBuddyCatalog()
+    expect(catalog.isRegionUsable()).toBe(true)
+    expect(catalog.current().length).toBeGreaterThan(0)
+  })
+
+  it('advertises nothing once its region is known to have no sign-in (issue #12)', () => {
+    // The static fallback exists for an OFFLINE upstream — not for a region the
+    // user has no account for, where every model is guaranteed to 401. DSH drops
+    // empty groups from the picker, so an empty answer is what hides the group.
+    const catalog = new WorkBuddyCatalog('global')
+    expect(catalog.current().length).toBeGreaterThan(0)
+    expect(catalog.setRegionUsable(false)).toBe(true)
+    expect(catalog.current()).toEqual([])
+    expect(catalog.isRegionUsable()).toBe(false)
+  })
+
+  it('reports no change when the usability value is already correct', () => {
+    // The caller uses this to skip invalidating adapter snapshots, and it runs
+    // on every settings change and card poll.
+    const catalog = new WorkBuddyCatalog()
+    expect(catalog.setRegionUsable(true)).toBe(false)
+    catalog.setRegionUsable(false)
+    expect(catalog.setRegionUsable(false)).toBe(false)
+    expect(catalog.setRegionUsable(true)).toBe(true)
+    expect(catalog.current().length).toBeGreaterThan(0)
+  })
+
+  it('keeps the non-empty guard and the usability flag independent', () => {
+    // They answer different questions: `set()` carries a live upstream answer
+    // and must never be empty, while "no account here" is a legitimate empty
+    // state that must survive a later refresh. Merging them would either lose
+    // the guard or lose the ability to hide the group.
+    const catalog = new WorkBuddyCatalog()
+    expect(() => catalog.set([])).toThrow(/cannot be empty/)
+    catalog.setRegionUsable(false)
+    expect(catalog.current()).toEqual([])
+    // A refresh that lands while the region is unusable still restores a real
+    // roster internally, ready for the moment an account appears.
+    catalog.set(MODELS)
+    expect(catalog.current()).toEqual([])
+    catalog.setRegionUsable(true)
+    expect(catalog.current()).toHaveLength(3)
+  })
 })
 
 describe('fallbackModelsFor', () => {

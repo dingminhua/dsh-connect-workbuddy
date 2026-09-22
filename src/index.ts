@@ -414,6 +414,35 @@ export function apply(ctx: Context, config: Config): void {
       stacks[region].catalog.set(configuredModels(value, region))
     }
     invalidateCatalog()
+    void refreshRegionUsability()
+  }
+
+  /**
+   * Tell each catalog whether its region has ANY local sign-in, so a region the
+   * user has no account for advertises nothing instead of a roster that can
+   * only 401 (issue #12).
+   *
+   * `accounts()` is the right source rather than the SELECTED credential: an
+   * orphaned saved id must not blank a region that still has other sign-ins to
+   * fall back on, and a region the user deliberately cleared must come back to
+   * life the moment its first account appears.
+   *
+   * Deliberately fire-and-forget and idempotent — it runs on every settings
+   * change, and `setRegionUsable` reports whether anything moved so a
+   * no-change pass costs nothing beyond the scan. A failed scan leaves the
+   * previous answer alone (the catalog starts permissive), so a transient
+   * filesystem error never blanks a working region.
+   */
+  const refreshRegionUsability = async (): Promise<void> => {
+    for (const region of REGION_KEYS) {
+      let accounts
+      try {
+        accounts = await stacks[region].store.accounts()
+      } catch {
+        continue
+      }
+      if (stacks[region].catalog.setRegionUsable(accounts.length > 0)) invalidateCatalog()
+    }
   }
 
   // Same-origin routes backing the Plugin-configuration card. `webServer`
@@ -427,6 +456,11 @@ export function apply(ctx: Context, config: Config): void {
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
+    // The card re-reads this on every poll and rescan, so a sign-in the user
+    // performs after startup brings the region's models back without a restart.
+    regionUsable(region, usable) {
+      if (stacks[region].catalog.setRegionUsable(usable)) invalidateCatalog()
+    },
   }))
 
   ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {

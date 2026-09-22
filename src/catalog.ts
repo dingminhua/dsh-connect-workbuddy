@@ -114,9 +114,24 @@ export function deriveCatalog(
   return applyContextBudgets(selected, budgets)
 }
 
-/** Mutable catalog shared by the shim's `/v1/models` and the adapter. */
+/**
+ * Mutable catalog shared by the shim's `/v1/models` and the adapter.
+ *
+ * The static fallback exists so an OFFLINE upstream never leaves a provider
+ * empty — but "offline" presumes the region is usable at all. A region with no
+ * local sign-in cannot serve one single request, so seeding it with a roster
+ * puts models in the picker that are guaranteed to 401 (issue #12). The host
+ * distinguishes the two cases through {@link WorkBuddyCatalog.setRegionUsable}.
+ */
 export class WorkBuddyCatalog {
   private models: readonly WorkBuddyModelInfo[]
+
+  /**
+   * Whether this region has any local sign-in. Defaults to `true` — the
+   * permissive direction — so a scan that has not run yet (or failed) keeps
+   * serving the fallback rather than blanking a region that may be fine.
+   */
+  private usable = true
 
   /**
    * @param region Seeds the static fallback for this region; each region's
@@ -127,9 +142,39 @@ export class WorkBuddyCatalog {
     this.models = fallbackModelsFor(region)
   }
 
-  /** Current entries; the fallback list until the upstream answer lands. */
+  /**
+   * Current entries; the fallback list until the upstream answer lands.
+   *
+   * Empty while this region has no local sign-in: the provider stays
+   * registered (its row still hosts the settings card and the account picker),
+   * but it advertises nothing to pick. DSH drops empty provider groups from
+   * the picker (`buildModelCatalog` filters `models.length > 0`), so the group
+   * disappears exactly when it would be pure noise.
+   */
   current(): readonly WorkBuddyModelInfo[] {
-    return this.models
+    return this.usable ? this.models : []
+  }
+
+  /** Whether this region currently advertises any model. */
+  isRegionUsable(): boolean {
+    return this.usable
+  }
+
+  /**
+   * Record whether this region has a local sign-in.
+   *
+   * Separate from {@link set} on purpose: `set()` carries a live upstream
+   * answer and must never be empty, while "this region has no account" is a
+   * legitimate empty state that must survive across refreshes. Keeping them
+   * apart is what lets the non-empty guard stay strict.
+   *
+   * @returns whether the value changed, so the caller can skip invalidating
+   *   its adapter snapshots when nothing moved.
+   */
+  setRegionUsable(usable: boolean): boolean {
+    if (this.usable === usable) return false
+    this.usable = usable
+    return true
   }
 
   /** Replace the list; callers invalidate their adapter snapshot after this. */

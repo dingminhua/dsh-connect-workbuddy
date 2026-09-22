@@ -60,26 +60,87 @@ describe('WorkBuddy provider registration', () => {
     expect(globalModels.map(model => model.id)).toContain('deepseek-v4.1-flash')
   })
 
-  it('serves a usable catalog even with no credentials configured', async () => {
+  it('hides a region that has no local sign-in, and serves the one that does (issue #12)', async () => {
+    // The static fallback exists so an OFFLINE upstream never leaves a provider
+    // empty, but it must not advertise models for a region the user has no
+    // account for: those can only 401, and DSH renders them as pickable.
+    // A nonexistent auth path means neither region has an account.
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-nocred-'))
+    const LIVE_FILE = 'workbuddy-desktop.info'
+
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    // Point the stores at a path that cannot exist so resolution always fails;
-    // the static fallbacks must still populate both providers.
-    await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
+    // The pinned path does not exist yet — and neither does its directory.
+    await ctx.plugin(WorkBuddy, { authFile: join(root, 'auth', LIVE_FILE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
-    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
-    expect((await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+
+    // Both providers stay REGISTERED — their settings cards and account pickers
+    // are how the user signs a region back in — but neither advertises models.
+    // DSH drops empty groups from the picker (`buildModelCatalog` filters
+    // `models.length > 0`), so the group disappears exactly when it is noise.
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBe(0)
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBe(0)
+
+    // Now give the CN region an account: its roster must come back on its own,
+    // without a restart, and the account-less global region must stay hidden.
+    await mkdir(join(root, 'auth'), { recursive: true })
+    await writeFile(join(root, 'auth', LIVE_FILE), JSON.stringify({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-alpha',
+        refreshToken: 'refresh-alpha',
+        tokenType: 'Bearer',
+        domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+
+    // The settings seam re-runs the scan; the CN region converges to serving.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { regions: { cn: { enabledModelIds: ['glm-5.3'] } } })
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    expect((await ctx.llm.listModels('workbuddy-global')).length).toBe(0)
   })
 
   it('applies the image opt-in to the runtime catalog on settings update', async () => {
+    // Needs a real account: since issue #12 a region with no local sign-in
+    // advertises no models, and this test is about the opt-in reaching them.
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-image-'))
+    const dir = join(root, 'auth')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'workbuddy-desktop.info'), JSON.stringify({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-alpha', refreshToken: 'refresh-alpha', tokenType: 'Bearer',
+        domain: 'www.codebuddy.cn', expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+    // Both regions get an account, so the global roster is actually served and
+    // the cross-region leak assertion below can still fail if it regresses.
+    await writeFile(join(dir, 'workbuddy-desktop-ai.info'), JSON.stringify({
+      account: { uid: 'uid-2', uin: '100000000002', nickname: 'Gamma', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-gamma', refreshToken: 'refresh-gamma', tokenType: 'Bearer',
+        domain: 'www.workbuddy.ai', expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
+    await ctx.plugin(WorkBuddy, { authFile: join(dir, 'workbuddy-desktop.info') })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
 
@@ -102,16 +163,34 @@ describe('WorkBuddy provider registration', () => {
     // glm-5.3 (also on its roster) must NOT inherit the CN opt-in.
     const globalAfter = await ctx.llm.listModels('workbuddy-global')
     const globalGlm = globalAfter.find(model => model.id === 'glm-5.3')
+    expect(globalAfter.length).toBeGreaterThan(0)
     expect(globalGlm?.inputModalities ?? []).not.toContain('image')
   })
 
   it('applies a global-slot opt-in to the international provider only', async () => {
+    // Needs a global account for the international roster to be advertised.
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-global-optin-'))
+    const dir = join(root, 'auth')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'workbuddy-desktop-ai.info'), JSON.stringify({
+      account: { uid: 'uid-2', uin: '100000000002', nickname: 'Gamma', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-gamma', refreshToken: 'refresh-gamma', tokenType: 'Bearer',
+        domain: 'www.workbuddy.ai', expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
+    await ctx.plugin(WorkBuddy, { authFile: join(dir, 'workbuddy-desktop-ai.info') })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
 
     // A save from the international tab writes regions.global.
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
