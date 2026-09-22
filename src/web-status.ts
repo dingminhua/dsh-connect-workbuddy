@@ -24,6 +24,9 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { resolveCredentialRecovery } from './credential-recovery.ts'
+// Live binding only: `Config` is referenced inside request-time function
+// bodies, never at module top level, so the index<->web-status cycle is safe.
+import { Config } from './index.ts'
 import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import { isCredentialRejectedError } from './upstream.ts'
