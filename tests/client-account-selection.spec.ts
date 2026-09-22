@@ -1,11 +1,50 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   configuredAccountsOf,
+  VERIFIED_WRITE_RETRY_DELAYS_MS,
   WorkBuddySettingsWriteError,
   writeAccountSlot,
   writeRegionModels,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
+
+/**
+ * The retry path suspends for real milliseconds, so the suite drives it on
+ * fake timers: every assertion below stays about BEHAVIOUR (what lands, how
+ * many attempts) while the wall clock cost stays at zero.
+ */
+beforeEach(() => { vi.useFakeTimers() })
+afterEach(() => { vi.useRealTimers() })
+
+/** Advance past every retry delay, letting a pending write run to completion. */
+const flushRetries = async (): Promise<void> => {
+  await vi.advanceTimersByTimeAsync(VERIFIED_WRITE_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0) + 1)
+}
+
+/**
+ * Await a write that is expected to FAIL, driving its retries on fake timers.
+ *
+ * The rejection is captured by the helper itself the moment it happens, before
+ * `vitest` can see an unhandled rejection: attaching a matcher and advancing
+ * timers separately leaves a window where the two race, and the suite reports
+ * it as an unhandled error even though every assertion passes.
+ *
+ * @param promise - the write under test.
+ * @param assert - the matcher to apply to the rejection.
+ */
+async function expectRejection(
+  promise: Promise<unknown>,
+  assert: (rejection: Error) => void,
+): Promise<void> {
+  let caught: Error | undefined
+  const settled = promise.then(
+    () => { throw new Error('expected the write to be rejected, but it resolved') },
+    (error: Error) => { caught = error },
+  )
+  await flushRetries()
+  await settled
+  assert(caught!)
+}
 
 /**
  * A settings scope that reproduces the Windows silent-failure shape.
@@ -18,8 +57,13 @@ import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
  * merely RETURNING — so `await set()` succeeds and the document never changed.
  *
  * `locked` models exactly that: the promise resolves, the write is dropped.
+ * `lockedFor` models the same interference for the FIRST n writes, which is
+ * what a retry is expected to outlast (issue #13).
  */
-function scopeWith(initial: Record<string, unknown>, options: { locked?: boolean } = {}): {
+function scopeWith(
+  initial: Record<string, unknown>,
+  options: { locked?: boolean, lockedFor?: number } = {},
+): {
   scope: WorkBuddyAccountScope
   document: () => Record<string, unknown>
   writes: () => number
@@ -33,6 +77,7 @@ function scopeWith(initial: Record<string, unknown>, options: { locked?: boolean
         writes += 1
         // A locked file: the call settles normally, nothing is stored.
         if (options.locked === true) return
+        if (options.lockedFor !== undefined && writes <= options.lockedFor) return
         document = { ...document, [field]: value }
       },
     },
@@ -74,15 +119,64 @@ describe('writeAccountSlot', () => {
     // success — and the card would show "cleared" while the old selection keeps
     // running, which is exactly the confusion the state line exists to remove.
     const { scope, writes } = scopeWith({ accounts: { cn: 'saved' } }, { locked: true })
-    await expect(writeAccountSlot(scope, 'cn', '')).rejects.toThrow(WorkBuddySettingsWriteError)
-    expect(writes()).toBe(1)
+    await expectRejection(writeAccountSlot(scope, 'cn', ''), (error) => {
+      expect(error).toBeInstanceOf(WorkBuddySettingsWriteError)
+    })
+    // One initial attempt plus one per retry delay, all before giving up.
+    expect(writes()).toBe(VERIFIED_WRITE_RETRY_DELAYS_MS.length + 1)
+  })
+
+  it('recovers when transient interference clears before a retry (issue #13)', async () => {
+    // The reported bug: the account picker appeared locked because the write
+    // was silently dropped while `settings.yaml` was held. That interference is
+    // transient, so a write dropped once must not be reported as a failure —
+    // the retry lands and the switch takes effect.
+    const { scope, document, writes } = scopeWith({ accounts: { cn: 'old' } }, { lockedFor: 1 })
+    const settled = writeAccountSlot(scope, 'cn', 'new')
+    await flushRetries()
+    await expect(settled).resolves.toBeUndefined()
+    expect(writes()).toBe(2)
+    expect(document()).toEqual({ accounts: { cn: 'new' } })
+  })
+
+  it('preserves the other region across the retry', async () => {
+    // The retry rebuilds the section from the LIVE snapshot, so a value that
+    // moved between attempts is not clobbered by a stale first-attempt copy.
+    const { scope, document } = scopeWith({ accounts: { global: 'first' } }, { lockedFor: 1 })
+    const settled = writeAccountSlot(scope, 'cn', 'cn-id')
+    await flushRetries()
+    await settled
+    expect(document()).toEqual({ accounts: { global: 'first', cn: 'cn-id' } })
+  })
+
+  it('reports the attempt count so a persistent lock is diagnosable', async () => {
+    const { scope } = scopeWith({}, { locked: true })
+    await expectRejection(writeAccountSlot(scope, 'cn', 'x'), (error) => {
+      expect(error).toMatchObject({
+        field: 'accounts',
+        attempts: VERIFIED_WRITE_RETRY_DELAYS_MS.length + 1,
+      })
+    })
+  })
+
+  it('keeps the message short, since the card wraps it in localized guidance', async () => {
+    // `row.accountsWriteFailed` / `row.saveError` already name the likely file
+    // holders in the user's language and interpolate this message; duplicating
+    // that guidance here would print it twice in one sentence.
+    const { scope } = scopeWith({}, { locked: true })
+    await expectRejection(writeAccountSlot(scope, 'cn', 'x'), (error) => {
+      expect(error.message).not.toMatch(/antivirus|sync client|open editor/)
+      expect(error.message).toContain('was not persisted')
+    })
   })
 
   it('reports which field failed so the card can name it', async () => {
     const { scope } = scopeWith({}, { locked: true })
-    await expect(writeAccountSlot(scope, 'cn', 'x')).rejects.toMatchObject({
-      name: 'WorkBuddySettingsWriteError',
-      field: 'accounts',
+    await expectRejection(writeAccountSlot(scope, 'cn', 'x'), (error) => {
+      expect(error).toMatchObject({
+        name: 'WorkBuddySettingsWriteError',
+        field: 'accounts',
+      })
     })
   })
 
@@ -94,7 +188,9 @@ describe('writeAccountSlot', () => {
       getSnapshot: () => ({ value: { accounts: {} } }),
       set: async () => {},
     }
-    await expect(writeAccountSlot(scope, 'cn', '')).rejects.toThrow(WorkBuddySettingsWriteError)
+    await expectRejection(writeAccountSlot(scope, 'cn', ''), (error) => {
+      expect(error).toBeInstanceOf(WorkBuddySettingsWriteError)
+    })
   })
 
   it('accepts a write that lands, including a real id', async () => {
@@ -135,7 +231,20 @@ describe('writeRegionModels', () => {
     // A save DISCARDS the draft afterwards, so a write that did not land makes
     // the card throw away the user's only copy while reporting success.
     const { scope } = scopeWith({ regions: {} }, { locked: true })
-    await expect(writeRegionModels(scope, 'cn', payload)).rejects.toThrow(WorkBuddySettingsWriteError)
+    await expectRejection(writeRegionModels(scope, 'cn', payload), (error) => {
+      expect(error).toBeInstanceOf(WorkBuddySettingsWriteError)
+    })
+  })
+
+  it('recovers a model save once interference clears', async () => {
+    // Same transient-window recovery as the account slot: a dropped save that
+    // succeeds on retry must not discard the user's draft.
+    const { scope, document, writes } = scopeWith({ regions: {} }, { lockedFor: 1 })
+    const settled = writeRegionModels(scope, 'cn', payload)
+    await flushRetries()
+    await expect(settled).resolves.toBeUndefined()
+    expect(writes()).toBe(2)
+    expect(document()['regions']).toEqual({ cn: payload })
   })
 
   it('detects a truncated catalog rather than trusting a present-but-wrong slot', async () => {
@@ -145,12 +254,16 @@ describe('writeRegionModels', () => {
       getSnapshot: () => ({ value: { regions: { cn: { lastCatalog: [{ id: 'glm-5.3' }] } } } }),
       set: async () => {},
     }
-    await expect(writeRegionModels(scope, 'cn', payload)).rejects.toThrow(WorkBuddySettingsWriteError)
+    await expectRejection(writeRegionModels(scope, 'cn', payload), (error) => {
+      expect(error).toBeInstanceOf(WorkBuddySettingsWriteError)
+    })
   })
 
   it('names the field it failed on', async () => {
     const { scope } = scopeWith({}, { locked: true })
-    await expect(writeRegionModels(scope, 'cn', payload)).rejects.toMatchObject({ field: 'regions' })
+    await expectRejection(writeRegionModels(scope, 'cn', payload), (error) => {
+      expect(error).toMatchObject({ field: 'regions' })
+    })
   })
 
   it('accepts a save that lands', async () => {

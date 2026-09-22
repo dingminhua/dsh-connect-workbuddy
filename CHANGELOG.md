@@ -13,14 +13,37 @@
 
   **核查**：改动经真实依赖栈双向验证——0.1.5 侧用 `@deepseek-ai/schemastery@3.18.2` + `@deepseek-ai/dsh-settings@0.1.5-rc.2` 确认 `asVolatile` 恒等 no-op、schema 规范化后**语义等价**（对照组先用「两份独立构建的相同 schema」验证比较器本身有效）、且 seam 探测真实走到 `installSection`；0.1.7 侧用 `@deepseek-ai/schemastery@3.18.3` + `dsh-settings@0.1.7-alpha.1` 的真实 `volatileForm` / `isVolatilePath` 确认三个字段**全部进入可编辑表且写入路径全部放行**，反向对照（不打标记）则 `volatileForm` 返回 `undefined`、0.1.7 会抛 `Plugin entry "workbuddy" has no volatile fields`。
 
+- **账号切换不再被 `settings.yaml` 的瞬时占用判死**（issue #13，报告者 `Linusteller`）。症状是「切到某个账号后无法再切换、清除也无效，锁死在默认账号」：每一次写入都被静默丢弃，卡片每次都报 `settings field "accounts" was not persisted by the settings write`。
+
+  - **根因不是 schema 缺省值**。报告与早前一份 PR 都归因于 `accounts` 未声明 `.default({})`，但实测**三处均无差别**：用真实 0.1.5 `SettingsProvider` 挂载两种 schema，初始解析（都是 `{}`、键都在）、正常写入（都成功）、失败写入（都失败）结果**逐项相同**。`.default({})` 不是原因，因此本版**没有**改 schema。
+  - **真正的机制是「写入静默失败」**。Host 的文档是 `settings.yaml`，替换方式是「写临时文件再 rename 覆盖」；Windows 上被杀毒软件、同步盘（OneDrive/Dropbox）或打开的编辑器短暂持有文件时，`@deepseek-ai/dsh-atomic-write` 会重试，但**该重试只对 `win32` 生效**，且窗口有限（8 次、20→200ms 退避，约 1 秒）。重试耗尽后失败以「不成功响应」回到浏览器，而客户端 `mutate()` 的处理是 `await this.recover(...); return` —— **只 return，不抛**。于是调用方的 `await` 成功返回、文档却原封不动；卡片随后回读发现值没落地，抛出那句报错。用户侧的表现就是「点了没反应」。
+  - **修复：回读校验加上重试预算**。`writeAccountSlot` / `writeRegionModels` 改为走同一条 `writeVerified()`：写入后回读，未落地则按 `[200ms, 600ms]` 重试，仍不落地才抛错。延迟刻意**长于** Host 自身的约 1 秒窗口——单纯重复 Host 的重试没有意义，真正需要覆盖的是「干扰比 Host 的窗口活得更久」这一段（扫描器刚写完一个新文件、同步盘轮到自己的回合）。代价只落在真实失败路径上。
+  - **每次尝试都重读快照**。`next` 是 thunk、`landed` 是谓词，而不是「一个值 + 一份快照」：重试必须基于**当前**文档重建 section，否则会把两次尝试之间另一个区域的改动覆盖掉。有一条测试专门锁这一点。
+  - **失败文案带上尝试次数**，让「一直失败」与「偶发一次」可区分。成因提示**不重复**：卡片本就把消息插进本地化的 `row.accountsWriteFailed` / `row.saveError`（那里已用中文/英文写明可能是哪个程序占了文件），所以 `message` 保持简短，避免同一行里说两遍。
+  - **边界未被放宽**：`''`（哨兵清除）与键缺失仍是两种状态，一条「丢键式清除」在重试下**依旧被拒绝**——重试只提供第二次机会，不把失败伪装成成功。
+
+  **核查（前后对照）**：同一份用例分别在改动前后运行——`main` 上抛的正是报告者的原始报错（`src/client/account-selection.ts:96`，无重试、无次数信息），本版上通过。另有用例覆盖：瞬时干扰后成功（断言写入 2 次且值落地）、跨重试保留另一区域、持续占用时报出尝试次数、丢键清除仍被拒绝。
+
 ### Tests
 
-测试总数 179 → 183（新增 4 例，`tests/settings-integration.spec.ts`）：
+测试总数 179 → 188（新增 9 例）：
+
+`tests/settings-integration.spec.ts` 新增 4 例：
 
 - **schema 在 0.1.5 上不被改动**：按运行时能力断言——有 `volatile()` 时三个字段必须带标记，没有时（0.1.5 实况）**不得**出现任何手写的 `meta.volatile`。
 - **volatile 引用按当前值读取**：合成 `{ get }` 引用，断言 `regionStateOf` / `selectAccountFor` 解包正确——这条正是「直接读 `reference[region]` 恒为 `undefined`」那个静默失败的守卫。
 - **Clear 哨兵穿过 volatile 引用仍生效**：`''` 必须终止查找、不回落 legacy `accountId`。
 - **普通值照常读取**（0.1.5 上所有值都是普通值）。
+
+`tests/client-account-selection.spec.ts` 新增 5 例（并把既有的失败用例改为断言重试次数）：
+
+- **瞬时干扰后恢复**（issue #13 的回归守卫）：第一次写入被丢弃、第二次落地，断言 `set()` 恰好调用 2 次且最终值正确。
+- **跨重试保留另一区域**：另一个区域的值不被过期副本覆盖。
+- **持续占用时报出尝试次数**：`attempts` 与实际尝试次数一致，便于区分偶发与持续。
+- **失败文案不重复成因**：断言消息里不含杀毒/同步盘字样（那属于本地化文案）。
+- **模型保存同样恢复**：保存草稿的场景下，重试成功才不会丢掉用户唯一的一份草稿。
+
+该文件用 **fake timers** 驱动重试（实测套件从 7.3s 回到 1.5s），并由一个辅助函数就地捕获拒绝，避免 vitest 把它报成 unhandled rejection。
 
 ## 2.0.6 (2026-09-22)
 

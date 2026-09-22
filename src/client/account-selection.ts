@@ -36,27 +36,48 @@ export interface WorkBuddyAccountScope {
  * A settings write that did not take effect.
  *
  * Distinct from a rejected `set()`: this is thrown when the write reported
- * success and the value is nonetheless absent from the document.
+ * success and the value is nonetheless absent from the document — the silent
+ * failure described on {@link writeVerified}.
+ *
+ * The message stays short and factual on purpose: the card renders it INSIDE a
+ * localized sentence (`row.accountsWriteFailed` / `row.saveError`) that already
+ * names the likely holders of the file in the user's own language. Repeating
+ * that guidance here would print it twice in one line.
  */
 export class WorkBuddySettingsWriteError extends Error {
   /** The settings field that did not land. */
   readonly field: string
+  /** How many writes were attempted before giving up. */
+  readonly attempts: number
 
-  constructor(field: string) {
-    super(`workbuddy: settings field "${field}" was not persisted by the settings write`)
+  constructor(field: string, attempts: number) {
+    super(
+      `workbuddy: settings field "${field}" was not persisted by the settings write`
+      + ` (${attempts} attempt${attempts === 1 ? '' : 's'})`,
+    )
     this.name = 'WorkBuddySettingsWriteError'
     this.field = field
+    this.attempts = attempts
   }
 }
 
-/** Read the per-region account selections out of the settings snapshot. */
-export function configuredAccountsOf(configured: unknown): Record<string, string> {
-  const accounts = (configured as { accounts?: unknown } | undefined)?.accounts
-  return typeof accounts === 'object' && accounts !== null ? accounts as Record<string, string> : {}
-}
+/**
+ * Delays before each retry of an unpersisted write; its length sets the retry
+ * budget (one initial attempt plus one per entry).
+ *
+ * Chosen to outlast the Host's own retry window rather than duplicate it.
+ * `@deepseek-ai/dsh-atomic-write` retries the Windows rename eight times with
+ * exponential backoff from 20 ms to 200 ms — roughly a second — and the
+ * interference that causes this routinely outlasts that (a scanner finishing
+ * with a freshly written file, a sync client taking its turn). A retry that
+ * lands adds its full write latency to the success path only when the first
+ * attempt genuinely failed, so the cost is confined to the failure case.
+ */
+export const VERIFIED_WRITE_RETRY_DELAYS_MS: readonly number[] = [200, 600]
 
 /**
- * Write one region's account slot, then confirm the value actually landed.
+ * Run one field write to verified completion, retrying a write the Host did
+ * not persist.
  *
  * `settingsScope.set()` resolving is NOT proof that anything was stored. The
  * Host's document is `settings.yaml`, replaced by writing a temp file and
@@ -71,9 +92,51 @@ export function configuredAccountsOf(configured: unknown): Record<string, string
  *
  * Reading the field back is the only reliable check, and it is what the
  * official plugin cards do (`CardForm.store()` compares the user layer against
- * the value it wrote). Failing loudly matters most on Clear: a false success
- * would flip the card to "following the app's sign-in" while the old selection
- * keeps running — the exact confusion that state line exists to remove.
+ * the value it wrote). What that check needs to be useful is a second chance:
+ * because the failure is reported as a RESOLVED promise, a caller that writes
+ * once and verifies once has no way to recover from interference that has
+ * already cleared by the time it looks again.
+ *
+ * `next` is a thunk and `landed` a predicate — not a value and a snapshot —
+ * because both must be evaluated against the CURRENT document on every
+ * attempt, including the first. That is what keeps a retry from clobbering a
+ * concurrent change to the section's other fields.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param field - the field being written; named in the error.
+ * @param next - builds the complete next value of `field` from the live snapshot.
+ * @param landed - whether `field` now reads back exactly as written.
+ * @throws {WorkBuddySettingsWriteError} when no attempt lands.
+ */
+async function writeVerified(
+  scope: WorkBuddyAccountScope,
+  field: string,
+  next: () => unknown,
+  landed: () => boolean,
+): Promise<void> {
+  const attempts = VERIFIED_WRITE_RETRY_DELAYS_MS.length + 1
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await scope.set(field, next())
+    if (landed()) return
+    const delay = VERIFIED_WRITE_RETRY_DELAYS_MS[attempt - 1]
+    if (delay === undefined) break
+    await new Promise<void>(resolve => { setTimeout(resolve, delay) })
+  }
+  throw new WorkBuddySettingsWriteError(field, attempts)
+}
+
+/** Read the per-region account selections out of the settings snapshot. */
+export function configuredAccountsOf(configured: unknown): Record<string, string> {
+  const accounts = (configured as { accounts?: unknown } | undefined)?.accounts
+  return typeof accounts === 'object' && accounts !== null ? accounts as Record<string, string> : {}
+}
+
+/**
+ * Write one region's account slot, then confirm the value actually landed.
+ *
+ * Failing loudly matters most on Clear: a false success would flip the card to
+ * "following the app's sign-in" while the old selection keeps running — the
+ * exact confusion that state line exists to remove.
  *
  * @param scope - the bound settings scope for this plugin's namespace.
  * @param region - the region whose slot is written; the other is preserved.
@@ -86,14 +149,18 @@ export async function writeAccountSlot(
   region: WorkBuddyWebRegion,
   value: string,
 ): Promise<void> {
-  const accounts = configuredAccountsOf(scope.getSnapshot().value)
-  await scope.set('accounts', { ...accounts, [region]: value })
-  const landed = configuredAccountsOf(scope.getSnapshot().value)[region]
-  // Note the deliberately exact comparison: `undefined` (slot absent) and `''`
-  // (slot cleared) are different states with different meanings, and only the
-  // second one is a successful clear. Treating them as equivalent would report
-  // success for a write that removed the key instead of setting the sentinel.
-  if (landed !== value) throw new WorkBuddySettingsWriteError('accounts')
+  await writeVerified(
+    scope,
+    'accounts',
+    // Re-read per attempt so a retry preserves whatever the OTHER region holds
+    // at that moment, which may have moved since the previous attempt.
+    () => ({ ...configuredAccountsOf(scope.getSnapshot().value), [region]: value }),
+    // Note the deliberately exact comparison: `undefined` (slot absent) and `''`
+    // (slot cleared) are different states with different meanings, and only the
+    // second one is a successful clear. Treating them as equivalent would report
+    // success for a write that removed the key instead of setting the sentinel.
+    () => configuredAccountsOf(scope.getSnapshot().value)[region] === value,
+  )
 }
 
 /**
@@ -119,17 +186,26 @@ export async function writeRegionModels(
   region: WorkBuddyWebRegion,
   payload: { lastCatalog: readonly { id: string }[] } & Record<string, unknown>,
 ): Promise<void> {
-  const configured = (scope.getSnapshot().value as { regions?: Record<string, unknown> } | undefined)?.regions
-  const regions = typeof configured === 'object' && configured !== null ? configured : {}
-  await scope.set('regions', { ...regions, [region]: payload })
-
-  const landed = (scope.getSnapshot().value as
-    | { regions?: Record<string, { lastCatalog?: { id?: string }[] }> }
-    | undefined)?.regions?.[region]
   const written = payload.lastCatalog.map(model => model.id)
-  const stored = landed?.lastCatalog?.map(model => model.id)
-  const ok = stored !== undefined
-    && stored.length === written.length
-    && stored.every((id, index) => id === written[index])
-  if (!ok) throw new WorkBuddySettingsWriteError('regions')
+  /** This region's slot as it currently reads back, if it is an object. */
+  const storedSlot = (): { lastCatalog?: { id?: string }[] } | undefined =>
+    (scope.getSnapshot().value as
+      | { regions?: Record<string, { lastCatalog?: { id?: string }[] }> }
+      | undefined)?.regions?.[region]
+  const landed = (): boolean => {
+    const stored = storedSlot()?.lastCatalog?.map(model => model.id)
+    return stored !== undefined
+      && stored.length === written.length
+      && stored.every((id, index) => id === written[index])
+  }
+  await writeVerified(
+    scope,
+    'regions',
+    () => {
+      const configured = (scope.getSnapshot().value as { regions?: Record<string, unknown> } | undefined)?.regions
+      const regions = typeof configured === 'object' && configured !== null ? configured : {}
+      return { ...regions, [region]: payload }
+    },
+    landed,
+  )
 }
