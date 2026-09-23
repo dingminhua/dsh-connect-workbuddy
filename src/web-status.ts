@@ -24,6 +24,9 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { resolveCredentialRecovery } from './credential-recovery.ts'
+// Live binding only: `Config` is referenced inside request-time function
+// bodies, never at module top level, so the index<->web-status cycle is safe.
+import { Config } from './index.ts'
 import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import { isCredentialRejectedError } from './upstream.ts'
@@ -310,6 +313,20 @@ export async function workBuddyWebStatus(
   })
   return {
     status: 'signed-in',
+    // The persisted per-region budgets, read straight from the Host config.
+    // The browser settings mirror can be stale — a write made through the Host
+    // save endpoint never updates it — so the card renders these instead of
+    // re-deriving them from a snapshot that may predate the save.
+    contextBudgets: Object.fromEntries(
+      Object.entries(deps.contextBudgets(region)).filter(([, value]) => typeof value === 'number'),
+    ) as Record<string, number>,
+    // Host-side liveness probe for the settings write gate (diagnostic; see
+    // the __save endpoint for why this is worth exposing).
+    diagVolatile: {
+      regions: (Config as any).dict?.regions?.meta?.volatile === true,
+      accounts: (Config as any).dict?.accounts?.meta?.volatile === true,
+      authFile: (Config as any).dict?.authFile?.meta?.volatile === true,
+    },
     ...account,
     ...creditsResult.status === 'fulfilled'
       ? { credits: toCredits(creditsResult.value) }
@@ -420,11 +437,50 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposeDiagWrite = ctx.webServer.register({
+      kind: 'exact',
+      path: '/plugins/dsh-connect-workbuddy/__save',
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        // Host-side save path: on DSH 0.1.7 the browser-side ConfigForm never
+        // delivered a write on this deployment while the Host-side mutate is
+        // proven healthy by direct probe, so the card saves through this
+        // endpoint instead. The settings service runs inside the Host process
+        // and a refusal surfaces as the raw exception, not ok:false.
+        const settings: any = (ctx as any).get?.('settings')
+        if (settings === undefined) return json(res, 503, { error: 'settings service unavailable to this fiber' })
+        try {
+          const body = await new Promise<Record<string, unknown>>((resolve, reject) => {
+            const chunks: Buffer[] = []
+            req.on('data', (chunk: Buffer) => chunks.push(chunk))
+            req.on('end', () => {
+              try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch (e) { reject(e) }
+            })
+            req.on('error', reject)
+          })
+          const field = body.field
+          if (field !== 'regions' && field !== 'accounts') return json(res, 400, { error: 'field must be regions or accounts' })
+          const rows = settings.describe()
+          const row = rows.find((r: any) => String(r.ns).includes('workbuddy'))
+          if (row === undefined) return json(res, 503, { error: 'workbuddy namespace missing from describe()' })
+          const current = (row.value?.[field] ?? {}) as Record<string, unknown>
+          const incoming = (body.value ?? {}) as Record<string, unknown>
+          const merged = { ...current, ...incoming }
+          await settings.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
+          return json(res, 200, { ok: true })
+        } catch (error: unknown) {
+          const err = error as { name?: string, message?: string }
+          return json(res, 500, { ok: false, errorName: err?.name ?? 'unknown', error: err?.message ?? String(error) })
+        }
+      },
+    })
     return () => {
       disposeRefresh()
       disposeCheckin()
       disposeAccounts()
       disposeUsage()
+      disposeDiagWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')
 }

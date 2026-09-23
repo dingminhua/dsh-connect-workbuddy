@@ -29,7 +29,14 @@ import type { WorkBuddyWebRegion } from '../status-paths.ts'
  */
 export interface WorkBuddyAccountScope {
   getSnapshot(): { value?: unknown }
-  set(field: string, value: unknown): Promise<void>
+  /**
+   * Whether the Host accepted the write. On DSH 0.1.7 the scope resolves
+   * `false` — it does NOT reject — when the Host refuses the mutation (stale
+   * revision conflict, volatile-path validation, unwritable profile); the
+   * scope then reloads Host state on its own. `undefined`/`void` (the 0.1.5
+   * scope) counts as accepted: that line has no refusal channel.
+   */
+  set(field: string, value: unknown): Promise<boolean | void>
 }
 
 /**
@@ -42,11 +49,85 @@ export class WorkBuddySettingsWriteError extends Error {
   /** The settings field that did not land. */
   readonly field: string
 
-  constructor(field: string) {
-    super(`workbuddy: settings field "${field}" was not persisted by the settings write`)
+  constructor(field: string, reason?: string) {
+    super(`workbuddy: settings field "${field}" was not persisted by the settings write${reason === undefined ? '' : `: ${reason}`}`)
     this.name = 'WorkBuddySettingsWriteError'
     this.field = field
   }
+}
+
+/** Read one settings field's current object value from the scope snapshot. */
+function fieldSnapshotOf(
+  scope: WorkBuddyAccountScope,
+  field: 'accounts' | 'regions',
+): Record<string, unknown> {
+  const value = (scope.getSnapshot().value as Record<string, unknown> | undefined)?.[field]
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+}
+
+/**
+ * Fallback write: POST the field to the plugin's own Host endpoint.
+ *
+ * The endpoint handler runs the settings mutate inside the Host process and
+ * reports the raw refusal exception, so a failure here names its cause instead
+ * of arriving as a swallowed `ok:false`. It merges the posted region key into
+ * the field's live value, preserving the other region.
+ */
+async function saveViaHostEndpoint(
+  field: 'accounts' | 'regions',
+  region: WorkBuddyWebRegion,
+  value: unknown,
+): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch('/plugins/dsh-connect-workbuddy/__save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, value: { [region]: value } }),
+    })
+  } catch (error) {
+    throw new WorkBuddySettingsWriteError(field, `Host save endpoint unreachable: ${String(error)}`)
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({ error: `HTTP ${String(response.status)}` })) as { errorName?: string, error?: string }
+    const reason = `${String(detail.errorName ?? '')} ${String(detail.error ?? '')}`.trim()
+    throw new WorkBuddySettingsWriteError(field, `Host save refused: ${reason === '' ? String(detail.error) : reason}`)
+  }
+}
+
+/**
+ * Write one volatile field, then confirm the value actually landed.
+ *
+ * The bound settings scope is the official path and is tried FIRST: it keeps
+ * the browser mirror in sync, and it is the only writer needed on hosts whose
+ * ConfigForm is healthy. On the affected DSH 0.1.7 deployment that scope
+ * settles without delivering anything — its `set()` resolves `false` while the
+ * Host's own mutate is perfectly healthy (proven by a direct in-Host probe) —
+ * so a write that does not read back falls through to the plugin's Host
+ * endpoint, which performs the mutate inside the Host process.
+ *
+ * `landed` decides whether a value read back from the scope is the value that
+ * was written; it is per-field because `''` (a cleared account slot) and an
+ * absent key are different states, and a truncated model catalog must not pass
+ * a shallow "is anything there?" check.
+ *
+ * @throws {WorkBuddySettingsWriteError} when neither path persists the value.
+ */
+async function writeField(
+  scope: WorkBuddyAccountScope,
+  field: 'accounts' | 'regions',
+  region: WorkBuddyWebRegion,
+  value: unknown,
+  landed: (readBack: unknown) => boolean,
+): Promise<void> {
+  let scopeDelivered = false
+  try {
+    scopeDelivered = (await scope.set(field, { ...fieldSnapshotOf(scope, field), [region]: value })) !== false
+  } catch {
+    scopeDelivered = false
+  }
+  if (scopeDelivered && landed(fieldSnapshotOf(scope, field)[region])) return
+  await saveViaHostEndpoint(field, region, value)
 }
 
 /** Read the per-region account selections out of the settings snapshot. */
@@ -86,14 +167,11 @@ export async function writeAccountSlot(
   region: WorkBuddyWebRegion,
   value: string,
 ): Promise<void> {
-  const accounts = configuredAccountsOf(scope.getSnapshot().value)
-  await scope.set('accounts', { ...accounts, [region]: value })
-  const landed = configuredAccountsOf(scope.getSnapshot().value)[region]
-  // Note the deliberately exact comparison: `undefined` (slot absent) and `''`
-  // (slot cleared) are different states with different meanings, and only the
-  // second one is a successful clear. Treating them as equivalent would report
-  // success for a write that removed the key instead of setting the sentinel.
-  if (landed !== value) throw new WorkBuddySettingsWriteError('accounts')
+  // Deliberately exact: `undefined` (slot absent) and `''` (slot cleared) are
+  // different states with different meanings, and only the second one is a
+  // successful clear. Treating them as equivalent would report success for a
+  // write that removed the key and silently restored the legacy fallback.
+  await writeField(scope, 'accounts', region, value, readBack => readBack === value)
 }
 
 /**
@@ -119,17 +197,14 @@ export async function writeRegionModels(
   region: WorkBuddyWebRegion,
   payload: { lastCatalog: readonly { id: string }[] } & Record<string, unknown>,
 ): Promise<void> {
-  const configured = (scope.getSnapshot().value as { regions?: Record<string, unknown> } | undefined)?.regions
-  const regions = typeof configured === 'object' && configured !== null ? configured : {}
-  await scope.set('regions', { ...regions, [region]: payload })
-
-  const landed = (scope.getSnapshot().value as
-    | { regions?: Record<string, { lastCatalog?: { id?: string }[] }> }
-    | undefined)?.regions?.[region]
+  // Compare the round-tripped catalog ids: they are user-visible and cheap to
+  // compare, and the selection fields ride in the same object so they cannot
+  // land separately. A present-but-truncated slot must not pass this check.
   const written = payload.lastCatalog.map(model => model.id)
-  const stored = landed?.lastCatalog?.map(model => model.id)
-  const ok = stored !== undefined
-    && stored.length === written.length
-    && stored.every((id, index) => id === written[index])
-  if (!ok) throw new WorkBuddySettingsWriteError('regions')
+  await writeField(scope, 'regions', region, payload, readBack => {
+    const stored = (readBack as { lastCatalog?: { id?: string }[] } | undefined)?.lastCatalog?.map(model => model.id)
+    return stored !== undefined
+      && stored.length === written.length
+      && stored.every((id, index) => id === written[index])
+  })
 }

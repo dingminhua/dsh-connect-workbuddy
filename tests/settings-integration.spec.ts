@@ -610,6 +610,44 @@ describe('regionStateOf', () => {
   })
 })
 
+describe('DSH 0.1.7 settings compatibility', () => {
+  it('marks volatile fields when the runtime schemastery supports it, stays a no-op otherwise', () => {
+    const dict = (WorkBuddy.Config as any).dict
+    // `volatile()` exists from schemastery 3.18.3 (DSH 0.1.7 line). On older
+    // pinning (3.18.2, DSH 0.1.5 line) asVolatile MUST be an identity no-op —
+    // hand-written meta.volatile would bypass schemastery's own validation —
+    // so the assertion branches on the runtime capability instead of assuming.
+    const supportsVolatile = typeof dict?.regions?.volatile === 'function'
+    if (supportsVolatile) {
+      expect(dict?.regions?.meta?.volatile).toBe(true)
+      expect(dict?.accounts?.meta?.volatile).toBe(true)
+      expect(dict?.authFile?.meta?.volatile).toBe(true)
+    } else {
+      expect(dict?.regions?.meta?.volatile).toBeUndefined()
+      expect(dict?.accounts?.meta?.volatile).toBeUndefined()
+      expect(dict?.authFile?.meta?.volatile).toBeUndefined()
+    }
+    expect(dict?.accounts?.meta?.default).toEqual({})
+  })
+
+  it('unwraps volatile references cleanly in regionStateOf and selectAccountFor', () => {
+    const wrappedConfig = {
+      regions: {
+        get: () => ({ cn: { enabledModelIds: ['glm-5.3'] } }),
+      },
+      accounts: {
+        get: () => ({ cn: 'account-1' }),
+      },
+      authFile: {
+        get: () => '/path/to/auth',
+      },
+    } as any
+
+    expect(WorkBuddy.regionStateOf(wrappedConfig, 'cn').enabledModelIds).toEqual(['glm-5.3'])
+    expect(WorkBuddy.selectAccountFor('cn', wrappedConfig, undefined)).toEqual('account-1')
+  })
+})
+
 describe('region on/off switch (issue #11-style region toggle)', () => {
   it('withdraws a switched-off region from the picker while leaving the other live', async () => {
     const authFile = await writeRegionFixtures()

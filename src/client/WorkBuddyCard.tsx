@@ -26,7 +26,6 @@ import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   nextRegionEnabled,
   regionEnabledOf,
@@ -48,10 +47,16 @@ import type { Translate } from './searched-paths.ts'
 /** Localized copy injected by the browser-plugin registration. */
 export interface WorkBuddyCardInjected {
   t: Translate
-  settingsScope: {
+  /**
+   * Optional by design: a host line that provides neither settings surface
+   * (or a probe before the mirror populates) leaves this undefined, and the
+   * card renders read-only — saving is the only capability that needs it.
+   */
+  settingsScope?: {
     getSnapshot(): { status: string; value?: unknown; writable: boolean }
     subscribe(listener: () => void): () => void
-    set(field: string, value: unknown): Promise<void>
+    /** Whether the Host accepted the write (0.1.7); `void` on the 0.1.5 line. */
+    set(field: string, value: unknown): Promise<boolean | void>
   }
 }
 
@@ -191,9 +196,9 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
 }
 
 /** Render WorkBuddy sign-in state, credits, and model selection as one card. */
-export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & { view?: string }) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(view === 'page')
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
   /**
@@ -349,7 +354,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
    * which is what actually removes it from DSH's model picker.
    */
   const toggleRegion = async (item: WorkBuddyWebRegion, enabled: boolean): Promise<void> => {
-    if (settingsScope === undefined || settingsScope.getSnapshot().writable !== true) return
+    if (settingsScope === undefined) return
     setTogglingRegion(item)
     try {
       // `nextRegionEnabled` unwraps the settings section itself and returns the
@@ -435,22 +440,28 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
   const activeImageIds = draft?.imageIds ?? savedImageIds
   const configured = settingsScope?.getSnapshot().value
-  // Context budgets live in the same per-region slot the save writes into, so a
-  // budget set on one region's model is never applied to the other's.
-  const configuredRegion = status.status === 'signed-in'
-    ? (configured as { regions?: Record<string, { contextBudgets?: unknown }> } | undefined)?.regions?.[status.region]
-    : undefined
-  // Before the first save after upgrading, fall back to the legacy flat field
-  // (the Host reads it as the CN region's state, so mirror that here).
-  const legacyContextBudgets = status.status === 'signed-in' && status.region === 'cn'
-    ? (configured as { contextBudgets?: unknown } | undefined)?.contextBudgets
-    : undefined
-  const savedContextBudgetsSource = configuredRegion?.contextBudgets ?? legacyContextBudgets
-  const savedContextBudgets = typeof savedContextBudgetsSource === 'object' && savedContextBudgetsSource !== null
-    ? savedContextBudgetsSource as Record<string, number>
-    : {}
+  // Context budgets come from the Host's own answer, NOT from the browser
+  // settings mirror. On the affected 0.1.7 deployment that mirror never picks
+  // up this plugin's writes (a save made through the Host endpoint leaves it
+  // stale), so reading it here made a successful save look like it reverted —
+  // the "save did nothing" report.
+  const savedContextBudgets = status.status === 'signed-in' ? (status.contextBudgets ?? {}) : {}
+  void configured
+  void settingsRevision
   const activeContextBudgets = draft?.contextBudgets ?? savedContextBudgets
   const dirty = draft !== undefined
+  /**
+   * Whether the card's inputs accept edits.
+   *
+   * Deliberately NOT the settings scope's own `writable` flag: on the affected
+   * DSH 0.1.7 deployment that flag stays false (the scope initialises it false
+   * and only raises it once its mirror loads as a Host-backed form), which left
+   * every input `disabled` — clicking them did nothing at all. Writes no longer
+   * depend on that flag: `writeField` tries the scope and falls back to the
+   * plugin's own Host endpoint, which performs the mutate in the Host process.
+   * A bound scope is therefore all that is required to accept an edit.
+   */
+  const canWrite = settingsScope !== undefined
 
   const editDraft = (edit: (current: WorkBuddyDraft) => WorkBuddyDraft): void => {
     setDrafts(prev => ({
@@ -588,12 +599,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
           <span className="dsm-plugin-card-title">{title}</span>
           <span className="dsm-plugin-card-description">{t('row.desc')}</span>
         </span>
-        <span
-          aria-hidden="true"
-          className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`}
-        >
-          {h(IconChevronDownOutline14, { size: 14 })}
-        </span>
+        <span aria-hidden="true" className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} />
       </button>
       <div className="dsm-plugin-card-body" hidden={!open}>
         {open
@@ -620,7 +626,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                         <input
                           type="checkbox"
                           checked={regionOnState}
-                          disabled={togglingRegion === region || settingsScope?.getSnapshot().writable !== true}
+                          disabled={togglingRegion === region || !canWrite}
                           aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
                           onChange={(event) => { void toggleRegion(region, event.target.checked) }}
                         />
@@ -680,7 +686,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                            The list is the one source that distinguishes "no
                            account in effect" from "signed in". */
                         value={status.accounts.find(account => account.selected)?.id ?? ''}
-                        disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
+                        disabled={switchingAccount || !canWrite}
                         onChange={event => { void switchAccount(event.currentTarget.value) }}
                       >
                         {/* Shown while no row is in effect — an orphaned saved
@@ -819,7 +825,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                             : <button
                                 type="button"
                                 className="dsm-btn dsm-btn-outline"
-                                disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
+                                disabled={switchingAccount || !canWrite}
                                 onClick={() => {
                                   const target = status.recovery?.usableAccount
                                   if (target !== undefined) void switchAccount(target.accountId)
@@ -856,7 +862,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                 <input
                                   type="checkbox"
                                   checked={activeEnabledIds.has(model.id)}
-                                  disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                  disabled={!canWrite || saving}
                                   onChange={() => { toggleModel(model.id) }}
                                 />
                                 <span className="dsm-workbuddy-model-copy">
@@ -871,7 +877,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                 <input
                                   type="checkbox"
                                   checked={activeImageIds.has(model.id)}
-                                  disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                  disabled={!canWrite || saving}
                                   onChange={() => { toggleImage(model.id) }}
                                 />
                                 <span>{t('row.modelImage')}</span>
@@ -883,7 +889,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                         type="radio"
                                         name={`context-${model.id}`}
                                         checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}
-                                        disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                        disabled={!canWrite || saving}
                                         onChange={() => { setContextBudget(model.id, 200_000) }}
                                       />
                                       <span>200K</span>
@@ -894,7 +900,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                     type="radio"
                                     name={`context-${model.id}`}
                                     checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow}
-                                    disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
+                                    disabled={model.nativeContextWindow <= 200_000 || !canWrite || saving}
                                     onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
                                   />
                                   <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>

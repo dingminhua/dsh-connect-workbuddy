@@ -333,5 +333,18 @@ export type WorkBuddyWebUsage =
     credentialRejected?: boolean
     /** Present only alongside {@link credentialRejected}. */
     recovery?: WorkBuddyWebRecovery
+    /**
+     * Diagnostic only: whether this Host build's Config carries the volatile
+     * markers dsh-settings requires before it will persist any field. Exposed
+     * so a save refusal can be attributed to the settings gate rather than
+     * guessed at.
+     */
+    diagVolatile?: { regions: boolean, accounts: boolean, authFile: boolean }
+    /**
+     * The persisted per-region context budgets as the Host reads them. The
+     * browser settings mirror can lag a write made through the Host save
+     * endpoint, so the card renders these rather than a possibly-stale snapshot.
+     */
+    contextBudgets?: Record<string, number>
   }
   | { status: 'error'; message: string }
