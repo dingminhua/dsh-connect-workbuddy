@@ -791,3 +791,110 @@ describe('workBuddyWebStatus probed-path diagnostics', () => {
     expect(status.searched?.[0]?.path).toBe('/x/auth.info')
   })
 })
+
+describe('registerWorkBuddyStatusRoute __save with a live-reference config', () => {
+  interface CapturedEntry { path: string; handler: (req: unknown, res: unknown) => Promise<void> | void }
+
+  /**
+   * Mount the status routes against a fake webServer AND a fake settings
+   * service whose resolved config carries `{get()}` live references for the
+   * volatile fields, exactly as the pinned schemastery resolves them.
+   * `mutate` replicates the real JSON-compatibility gate.
+   */
+  async function mountSaveRoutes(options: Partial<WorkBuddyStatusRouteOptions> = {}) {
+    // Returns the LIVE context plus the captured handler. The handler must be
+    // invoked BEFORE the fiber is disposed: `__save` reads `ctx.get('settings')`
+    // at request time, and after `fiber.dispose()` every service is gone (the
+    // handler would then answer 503 "settings service unavailable").
+    const ctx = new Context()
+    try {
+    
+
+    const captured: CapturedEntry[] = []
+    const mutateReceived: unknown[][] = []
+    let settingsDescribes = 0
+    const FakeWebServer = {
+      name: 'webServer', inject: [] as const,
+      apply(ctx: Context) {
+        ctx.provide('webServer', { register: (entry: CapturedEntry) => { captured.push(entry); return () => {} } })
+      },
+    }
+    const FakeSettings = {
+      name: 'settings', inject: [] as const,
+      apply(ctx: Context) {
+        ctx.provide('settings', {
+          describe: () => {
+            settingsDescribes += 1
+            return [{ ns: 'workbuddy', value: { regions: $regionsRef(), accounts: {} } }]
+          },
+          mutate: async (ns: string, ops: unknown[]) => {
+            if (JSON.stringify(ops) === undefined) {
+              throw new TypeError('settings mutate for "workbuddy" must contain only JSON-compatible data (found a function at $.ops[0].value.get)')
+            }
+            mutateReceived.push([ns, ops])
+          },
+        })
+      },
+    }
+    // A live reference with the same {get()} shape a volatile field resolves to.
+    const $regionsRef = () => ({ get: () => ({ cn: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } } }) })
+
+    await ctx.plugin(FakeWebServer)
+    await ctx.plugin(FakeSettings)
+    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
+    registerWorkBuddyStatusRoute(ctx, deps(options))
+    const save = captured.find(entry => entry.path.endsWith('__save'))
+    if (save === undefined) throw new Error('__save route was not registered')
+    return {
+      ctx,
+      handler: save.handler,
+      mutateReceived,
+      settingsDescribes,
+      dispose: () => { void ctx.fiber.dispose() },
+    }
+    } finally { /* caller disposes */ }
+  }
+
+  function saveResponse(): { res: { writeHead: (s: number, h?: Record<string, string>) => void; end: (b?: string) => void }, status: () => number, body: () => unknown } {
+    let statusCode = 0
+    let payload = ''
+    return {
+      res: { writeHead: (s: number) => { statusCode = s }, end: (b?: string) => { payload = b ?? '' } },
+      status: () => statusCode,
+      body: () => JSON.parse(payload),
+    }
+  }
+
+  function saveReq(payload: unknown) {
+    const chunks = [Buffer.from(JSON.stringify(payload))]
+    return {
+      method: 'POST',
+      url: '/plugins/dsh-connect-workbuddy/__save',
+      headers: { origin: 'http://127.0.0.1' },
+      on: (ev: string, cb: (c: Buffer) => void) => {
+        if (ev === 'data') for (const c of chunks) cb(c)
+        if (ev === 'end') (cb as unknown as { (): void }).call(undefined)
+      },
+    }
+  }
+
+  it('persists contextBudgets without leaking the live reference into mutate', async () => {
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes()
+    const { res, status } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } } } }), res)
+    dispose()
+    expect(status()).toBe(200)
+    expect(mutateReceived).toHaveLength(1)
+    // The payload handed to mutate must survive JSON round-trip (no function).
+    const tuple = mutateReceived[0]
+    expect(tuple?.[0]).toBe('workbuddy')
+    const ops = tuple?.[1] as unknown
+    const restored = JSON.parse(JSON.stringify(ops)) as unknown
+    expect(restored).toEqual(ops)
+    // The incoming region's budget is present.
+    const first = (ops as Array<{ value: Record<string, unknown> }>)[0]
+    expect(first).toBeDefined()
+    const value = (first as { value: Record<string, unknown> }).value as Record<string, unknown>
+    expect(value).toMatchObject({ cn: { contextBudgets: { 'glm-5.3': 1_000_000 } } })
+  })
+})

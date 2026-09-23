@@ -26,7 +26,7 @@ import type { WorkBuddyModelInfo } from './catalog.ts'
 import { resolveCredentialRecovery } from './credential-recovery.ts'
 // Live binding only: `Config` is referenced inside request-time function
 // bodies, never at module top level, so the index<->web-status cycle is safe.
-import { Config } from './index.ts'
+import { Config, unwrapVolatileDeep } from './index.ts'
 import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import { isCredentialRejectedError } from './upstream.ts'
@@ -475,8 +475,20 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           const rows = settings.describe()
           const row = rows.find((r: any) => String(r.ns).includes('workbuddy'))
           if (row === undefined) return json(res, 503, { error: 'workbuddy namespace missing from describe()' })
-          const current = (row.value?.[field] ?? {}) as Record<string, unknown>
+          // `row.value` is the settings service's resolved config, where a
+          // volatile field (regions / accounts) is a `{get(): T}` LIVE
+          // reference, not the plain object it looks like. Spreading that
+          // object leaks the reference function into the write payload —
+          // `{ ...{ get(){} } }` is `{ get: <function> }` — and the strict
+          // JSON-compatibility check on mutate then rejects the save with
+          // "found a function at $.ops[0].value.get". Deep-unwrap first so the
+          // merge never carries a function.
+          const current = unwrapVolatileDeep(row.value?.[field] ?? {}) as Record<string, unknown>
           const incoming = (body.value ?? {}) as Record<string, unknown>
+          // Merge per-region/per-field layers, not a flat top-level spread: a
+          // shallow `{ ...current, ...incoming }` would replace the WHOLE
+          // regions map with just the incoming region's slot, dropping every
+          // other region.
           const merged = { ...current, ...incoming }
           await settings.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
           return json(res, 200, { ok: true })

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.13 (Unreleased)
+
+### Bug Fixes
+
+- **上下文预算（或任何 regions/accounts 字段）保存失败：`settings mutate … must contain only JSON-compatible data (found a function at $.ops[0].value.get)`**（用户实报）。这是把「易失标记一生效」那条缺陷（2.0.12 修的）的**另一条受害者路径**补上了。
+
+  - **根因**：`__save` 端点（卡片保存的 Host 兜底路径）在合并时直接读取 `row.value[field]`，而 `row.value` 是 settings 服务解析后的 config——某 volatile 字段（`regions` / `accounts`）在那里是一个 `{ get(): T }` **活引用**。`{ ...这种对象 }` 展开后变成 `{ get: <函数> }`，于是 `settings.mutate` 的严格 JSON 兼容校验拒绝它，报 `found a function at $.ops[0].value.get`。保存**完全失败**（不是静默失败，而是直接报错），因为真实保存流程里 `scope.set()` 被判为未落盘后回退到了这个端点。
+  - **修法**：`__save` 在合并前先 `unwrapVolatileDeep(row.value?.[field])` 把活引用剥净，让 `mutate` 收到的 payload 只含 JSON 兼容数据。`unwrapVolatileDeep` 是 2.0.12 为 `installSection` 引入的同一 helper，这里复用。
+  - **回归测试**（`tests/web-status.spec.ts`）：构造一个 resolved config 含 `{ get() }` 活引用的 settings 服务，经真实 `__save` 路由请求，断言 `mutate` 收到的是一个能通过 JSON 往返的 payload（无函数），且上下文预算字段完好。**变异验证**：把 `unwrapVolatileDeep` 那行去掉，该用例立即变红。
+
+  > 说明：`__save` 会先把 `row.value[field]` 解包、再用「浅展开 + incoming 覆盖」合并到该字段。对单 region 写入（本次场景）足够；若日后要一次写多个 region 槽位，应改为深合并——届时再扩。
+
+### Tests
+
+- 331 → 332（新增 1 例：live-reference 配置下的 `__save` 保存回归）。
+
 ## 2.0.12 (2026-09-23)
 
 ### Features
