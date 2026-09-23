@@ -155,6 +155,31 @@ export {
   workBuddyWebStatus,
   type WorkBuddyStatusRouteOptions,
 } from './web-status.ts'
+import {
+  WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_CHECKIN_PATH,
+  WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_REGION_PARAM,
+  WORKBUDDY_REGIONS,
+  WORKBUDDY_USAGE_PATH,
+  regionOfStatusUrl,
+  toPersistedWorkBuddyModel,
+  withWorkBuddyRegion,
+  regionEnabledOf,
+  nextRegionEnabled,
+  nextRegionSlots,
+  // Imported for this module's own use AND re-exported below, so moving the
+  // implementation to the shared bridge did not change the public API.
+  unwrapVolatileDeep,
+  type WorkBuddyWebAccount,
+  type WorkBuddyWebCheckin,
+  type WorkBuddyWebCredits,
+  type WorkBuddyWebModel,
+  type WorkBuddyWebPackage,
+  type WorkBuddyWebRegion,
+  type WorkBuddyWebSearchPath,
+  type WorkBuddyWebUsage,
+} from './status-paths.ts'
 export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
@@ -168,15 +193,8 @@ export {
   regionEnabledOf,
   nextRegionEnabled,
   nextRegionSlots,
-  type WorkBuddyWebAccount,
-  type WorkBuddyWebCheckin,
-  type WorkBuddyWebCredits,
-  type WorkBuddyWebModel,
-  type WorkBuddyWebPackage,
-  type WorkBuddyWebRegion,
-  type WorkBuddyWebSearchPath,
-  type WorkBuddyWebUsage,
-} from './status-paths.ts'
+  unwrapVolatileDeep,
+}
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-connect-workbuddy'
@@ -310,23 +328,12 @@ function unwrapVolatile<T>(value: T): T {
  * live references, and every field it validated threw. The namespace never
  * registered, so the card's settings silently disappeared.
  *
- * Non-reference values are recursed into so a nested volatile field is caught
- * too — arrays are rebuilt rather than mutated, so the caller's config object is
- * never touched.
+ * The implementation now lives in the node-free host<->client bridge, because
+ * the browser half needs the SAME unwrap before it spreads a resolved field —
+ * spreading a live reference is `{get: <function>}`, which drops every sibling
+ * region. It is imported and re-exported from here so the Host entry keeps
+ * exposing it as part of its public API.
  */
-export function unwrapVolatileDeep<T>(value: T): T {
-  if (value === null || typeof value !== 'object') return value
-  if (typeof (value as { get?: unknown }).get === 'function') {
-    return unwrapVolatileDeep((value as unknown as { get: () => unknown }).get()) as T
-  }
-  if (Array.isArray(value)) return value.map(entry => unwrapVolatileDeep(entry)) as T
-  const source = value as Record<string, unknown>
-  const out: Record<string, unknown> = {}
-  for (const key of Object.keys(source)) {
-    out[key] = unwrapVolatileDeep(source[key])
-  }
-  return out as T
-}
 
 export const Config: z<Config> = z.object({
   authFile: asVolatile(z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)')),

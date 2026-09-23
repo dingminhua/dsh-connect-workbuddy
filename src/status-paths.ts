@@ -55,10 +55,18 @@ export function regionOfStatusUrl(url: string): WorkBuddyWebRegion | undefined {
  * project — the lookup then read `section['cn']` (absent), so the card's
  * checkbox reported `true` forever and clicking it appeared to do nothing even
  * though the write succeeded.
+ *
+ * The resolved section delivers `regions` as a `{get(): T}` LIVE reference, and
+ * a live reference is `typeof === 'object'` and not an array — so it passes a
+ * naive object check and gets returned as if it were the map. Every lookup on
+ * it is then `undefined`: the enabled flag reads back as "on" forever (the very
+ * symptom described above), and a merge that spreads this map silently drops
+ * the region it was not editing. Unwrap before narrowing.
  */
 function regionsMapOf(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
-  const record = value as Record<string, unknown>
+  const unwrapped = unwrapVolatileDeep(value)
+  if (typeof unwrapped !== 'object' || unwrapped === null || Array.isArray(unwrapped)) return {}
+  const record = unwrapped as Record<string, unknown>
   const nested = record['regions']
   if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
     return nested as Record<string, unknown>
@@ -348,3 +356,41 @@ export type WorkBuddyWebUsage =
     contextBudgets?: Record<string, number>
   }
   | { status: 'error'; message: string }
+
+/**
+ * Deep copy of a settings value with every `{get(): T}` live reference replaced
+ * by the value it resolves to.
+ *
+ * `regions` and `accounts` are declared `asVolatile(...)`, and schemastery
+ * resolves a volatile field to a live reference. That resolution happens in
+ * schemastery itself, driven by the schema's `meta.volatile`, so it is
+ * independent of the DSH line — the resolved section looks like this to the
+ * browser half on BOTH 0.1.5 and 0.1.7.
+ *
+ * A live reference is still `typeof === 'object'`, so `{ ...reference }` does
+ * NOT read the field: it produces `{ get: <function> }`. Any caller that
+ * spreads the resolved field to preserve its siblings — the card's
+ * "write one region, keep the other" merge — would otherwise DROP every
+ * sibling and leak a function into the document. Both halves therefore unwrap
+ * before touching a resolved field.
+ *
+ * Lives here, not in the Host entry, because the browser half needs it too and
+ * this module is the node-free bridge between the two.
+ *
+ * Non-reference values are recursed into so a nested volatile field is caught
+ * too — arrays and objects are rebuilt rather than mutated, so the caller's
+ * value is never touched.
+ */
+export function unwrapVolatileDeep<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value
+  if (typeof (value as { get?: unknown }).get === 'function') {
+    return unwrapVolatileDeep((value as unknown as { get: () => unknown }).get()) as T
+  }
+  if (Array.isArray(value)) return value.map(entry => unwrapVolatileDeep(entry)) as T
+  const source = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(source)) {
+    out[key] = unwrapVolatileDeep(source[key])
+  }
+  return out as T
+}

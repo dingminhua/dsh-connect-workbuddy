@@ -17,6 +17,7 @@
  * @module dsh-connect-workbuddy/client/account-selection
  */
 
+import { unwrapVolatileDeep } from '../status-paths.ts'
 import type { WorkBuddyWebRegion } from '../status-paths.ts'
 
 /**
@@ -56,12 +57,27 @@ export class WorkBuddySettingsWriteError extends Error {
   }
 }
 
-/** Read one settings field's current object value from the scope snapshot. */
+/**
+ * Read one settings field's current object value from the scope snapshot.
+ *
+ * The snapshot holds the RESOLVED section, where a volatile field
+ * (`regions` / `accounts`) is a `{get(): T}` LIVE reference rather than the
+ * plain object it resembles. Unwrapping first is not cosmetic: a live reference
+ * is still `typeof === 'object'`, so without this the caller spreads it into
+ * `{ get: <function> }` — which DROPS every sibling key (the other region) and
+ * leaks a reference function into the document.
+ *
+ * That was the "saving the international region loses the domestic one" report:
+ * every write here preserves the region it is not touching by spreading this
+ * value, so reading it wrong silently deleted the untouched region.
+ */
 function fieldSnapshotOf(
   scope: WorkBuddyAccountScope,
   field: 'accounts' | 'regions',
 ): Record<string, unknown> {
-  const value = (scope.getSnapshot().value as Record<string, unknown> | undefined)?.[field]
+  const value = unwrapVolatileDeep(
+    (scope.getSnapshot().value as Record<string, unknown> | undefined)?.[field],
+  )
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
 }
 
