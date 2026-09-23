@@ -12,7 +12,7 @@
 import { createCipheriv, createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   deriveAtRestKey,
@@ -413,11 +413,17 @@ describe('workbuddy app executable discovery', () => {
     // The reported bug: the binary was assumed to be named after the app, but
     // the WorkBuddy bundles declare CFBundleExecutable=Electron. The candidate
     // must follow the bundle, not the app's name.
+    //
+    // Every path here is built with `join`, exactly as the production code does.
+    // Hardcoding POSIX separators made this suite fail on Windows CI: there
+    // `join('/Applications', 'WorkBuddy.app')` yields backslashes, so a
+    // `startsWith('/Applications/...')` assertion is a statement about the
+    // HOST's separator, not about the behaviour under test.
     const mac = workbuddyAppExecutableCandidates(
       'darwin', '/Users/x', {},
-      bundle => `${bundle}/Contents/MacOS/Electron`,
+      bundle => join(bundle, 'Contents', 'MacOS', 'Electron'),
     )
-    expect(mac).toContain('/Applications/WorkBuddy.app/Contents/MacOS/Electron')
+    expect(mac).toContain(join('/Applications', 'WorkBuddy.app', 'Contents', 'MacOS', 'Electron'))
   })
 
   it('offers BOTH the domestic and the international macOS bundle', () => {
@@ -425,16 +431,45 @@ describe('workbuddy app executable discovery', () => {
     // knows only WorkBuddy.app reports it as absent and the sign-in as missing.
     const mac = workbuddyAppExecutableCandidates(
       'darwin', '/Users/x', {},
-      bundle => `${bundle}/Contents/MacOS/Electron`,
+      bundle => join(bundle, 'Contents', 'MacOS', 'Electron'),
     )
-    expect(mac.some(c => c.startsWith('/Applications/WorkBuddy.app'))).toBe(true)
-    expect(mac.some(c => c.startsWith('/Applications/WorkBuddy AI.app'))).toBe(true)
-    expect(mac.some(c => c.startsWith(join('/Users/x', 'Applications')))).toBe(true)
+    const expected = [
+      join('/Applications', 'WorkBuddy.app'),
+      join('/Applications', 'WorkBuddy AI.app'),
+      join('/Users/x', 'Applications'),
+    ]
+    for (const prefix of expected) {
+      expect(mac.some(candidate => candidate.startsWith(prefix))).toBe(true)
+    }
   })
 
   it('returns undefined when nothing exists at any candidate', () => {
     expect(findWorkbuddyAppExecutable('linux', '/home/x', {})).toBeUndefined()
     expect(findWorkbuddyAppExecutable('win32', 'C:\\nobody', { LOCALAPPDATA: 'C:\\definitely\\absent' })).toBeUndefined()
+  })
+
+  it('never mixes separators, so a hardcoded "/" in the builder would be caught', () => {
+    // Regression guard for a real CI failure. The production code uses `join`,
+    // which is correct on every platform; the TEST hardcoded POSIX separators
+    // and so failed only on the Windows runner — it was asserting "this machine
+    // is POSIX", not "the darwin candidates are right".
+    //
+    // The property worth pinning is the one that makes `join` mandatory: a
+    // builder that concatenates with a literal '/' produces MIXED separators on
+    // Windows (`\Applications/WorkBuddy.app`), which no correct path may ever
+    // contain. On POSIX this is trivially satisfied; on the Windows CI runner it
+    // is the assertion that bites.
+    const mac = workbuddyAppExecutableCandidates(
+      'darwin', '/Users/x', {},
+      bundle => join(bundle, 'Contents', 'MacOS', 'Electron'),
+    )
+    expect(mac.length).toBeGreaterThan(0)
+    for (const candidate of mac) {
+      const mixed = candidate.includes('/') && candidate.includes('\\')
+      expect(mixed).toBe(false)
+      // The separator actually used must be this host's.
+      expect(candidate.includes(sep)).toBe(true)
+    }
   })
 })
 
@@ -449,9 +484,9 @@ describe('macosBundleExecutable', () => {
     await writeFile(join(bundle, 'Contents', 'Info.plist'), plist)
     // Only a name that stays inside MacOS can be materialized; a traversal
     // candidate is exactly the case under test, and the parser must reject it
-    // before any file exists.
+    // before any file exists. The separator check mirrors the parser's own.
     const name = entries['CFBundleExecutable']
-    if (name !== undefined && !name.includes('/') && name !== '..' && name !== '.') {
+    if (name !== undefined && !name.includes('/') && !name.includes('\\') && name !== '..' && name !== '.') {
       await writeFile(join(bundle, 'Contents', 'MacOS', name), '')
     }
     return bundle
