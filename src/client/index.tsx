@@ -36,6 +36,7 @@ import { WorkBuddyCard } from './WorkBuddyCard.tsx'
 import type { WorkBuddyCardInjected } from './WorkBuddyCard.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
+import { WORKBUDDY_SETTINGS_ENTRY } from '../status-paths.ts'
 
 /**
  * The browser-side plugin context this entry needs.
@@ -43,15 +44,13 @@ import type { WorkBuddySettingsKey } from './locales.ts'
  * `ClientContext` used to be re-exported by `@deepseek-ai/dsh-client-runtime/client`;
  * that package stopped at 0.1.1-rc.2 and is neither published nor bundled on the
  * 0.1.5 line, so it cannot serve as a type source spanning both host lines.
- * The `slots` / `locale` / `settingsScope` seats the card actually touches are
- * declared by the client subpath modules imported above, so naming the three
- * explicitly keeps this entry compilable on either line. Cordis' `Context`
- * already carries the `effect` fiber API.
+ * The card hard-depends only on `slots` and `locale`. Its settings surface is
+ * discovered through `ctx.get()` because 0.1.5 and 0.1.7 provide different
+ * services.
  */
 export type WorkBuddyClientContext = Context & {
   slots: Context['slots']
   locale: Context['locale']
-  settingsScope: Context['settingsScope']
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -63,8 +62,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /** Stable browser-plugin name. */
 export const name = 'dsh-connect-workbuddy-client'
-/** Client services required by the Plugin configuration contribution. */
-export const inject = ['slots', 'locale', 'settingsScope']
+/**
+ * Client services required by the Plugin configuration contribution.
+ *
+ * Deliberately only the two services that exist on BOTH host lines. The
+ * settings surface differs by line — 0.1.5 provides `settingsScope`, 0.1.7
+ * replaces it with `configForms` — and Cordis' dependency gate is hard: any
+ * inject entry the running line does not provide keeps `apply` from ever
+ * running. Probing both via `ctx.get()` (which returns undefined, never
+ * throws, for an absent service) is what lets one build serve both lines.
+ */
+export const inject = ['slots', 'locale']
 
 /** Register card copy and the WorkBuddy card under Plugin configuration. */
 export function apply(ctx: WorkBuddyClientContext): void {
@@ -72,13 +80,66 @@ export function apply(ctx: WorkBuddyClientContext): void {
     const namespace = 'settings.workbuddy'
     ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-connect-workbuddy: settings copy')
     const t = ctx.locale.bind(namespace) as WorkBuddyCardInjected['t']
-    const settingsScope = ctx.settingsScope.bind({ namespace: 'workbuddy' }) as NonNullable<WorkBuddyCardInjected['settingsScope']>
-    ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-      name: 'settings.plugin.item',
-      key: 'workbuddy',
-      priority: 30,
-      inject: (): WorkBuddyCardInjected => ({ t, settingsScope }),
-    }, WorkBuddyCard))
+
+    // Soft service probe. Property access on an undeclared service THROWS
+    // ("cannot get property X without inject") — `?.` guards null/undefined,
+    // not a throwing getter — while `ctx.get()` returns undefined for an
+    // absent service. Never touch `ctx.configForms` / `ctx.settingsScope`
+    // directly; go through `get`.
+    const softGet = (name: string): unknown => (ctx as unknown as { get(name: string): unknown }).get(name)
+
+    let settingsScope: WorkBuddyCardInjected['settingsScope'] | undefined
+    const forms = softGet('configForms') as
+      | {
+          describe(): { getSnapshot(): { view?: { namespaces?: { ns: string }[] } } }
+          get(ns: string): WorkBuddyCardInjected['settingsScope']
+        }
+      | undefined
+    const legacy = softGet('settingsScope') as
+      | { bind(options: { namespace: string }): WorkBuddyCardInjected['settingsScope'] }
+      | undefined
+    if (forms !== undefined) {
+      // 0.1.7 line: pick the namespace the Host actually serves (the plugin
+      // may be mounted under a different entry id), falling back to the
+      // declared one when the mirror has not populated yet.
+      let ns = WORKBUDDY_SETTINGS_ENTRY
+      try {
+        const namespaces = forms.describe().getSnapshot().view?.namespaces ?? []
+        const served = namespaces.find(entry => entry.ns === WORKBUDDY_SETTINGS_ENTRY || entry.ns === 'workbuddy')
+        if (served !== undefined) ns = served.ns
+      } catch { /* mirror not ready: the declared id is still correct */ }
+      settingsScope = forms.get(ns)
+    } else if (legacy !== undefined) {
+      settingsScope = legacy.bind({ namespace: 'workbuddy' })
+    }
+
+    const registerCard = (slotName: string, key: string): void => {
+      try {
+        ctx.slots.inject(slotName as never, () => (ctx.slots as unknown as {
+          register(
+            options: { name: string; key: string; priority: number; inject: () => WorkBuddyCardInjected },
+            component: unknown,
+          ): () => void
+        }).register({
+          name: slotName,
+          key,
+          priority: 30,
+          inject: () => settingsScope === undefined
+            ? { t }
+            : { t, settingsScope },
+        }, WorkBuddyCard))
+      } catch (error: unknown) {
+        // Isolated per slot on purpose: the two host lines declare disjoint
+        // slot sets (0.1.5 only settings.plugin.item; 0.1.7 only the
+        // plugins.* pair), so one line's registration must never take the
+        // other slots down with it.
+        console.error(`[dsh-connect-workbuddy] card slot "${slotName}" failed to register (host provider unaffected):`, error)
+      }
+    }
+
+    registerCard('plugins.bundle.config', 'dsh-connect-workbuddy')
+    registerCard('plugins.row.config', 'dsh-connect-workbuddy#dsh-connect-workbuddy')
+    registerCard('settings.plugin.item', 'workbuddy')
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.

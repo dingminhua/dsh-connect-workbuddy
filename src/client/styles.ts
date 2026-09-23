@@ -22,7 +22,11 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-plugin-card-head{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
 .dsm-plugin-card-title{color:var(--dsw-alias-label-primary,#e6e6e6);font-size:15px;font-weight:600;line-height:1.4}
 .dsm-plugin-card-description{color:var(--dsw-alias-label-tertiary,#999);font-size:13px;line-height:1.5}
-.dsm-plugin-card-chevron{color:var(--dsw-alias-label-tertiary,#999);flex:none;display:inline-flex;transition:transform .16s}
+/* Pure-CSS caret: the host primitives' chevron icon names differ per DSH line
+   (0.1.5 Outline14 vs 0.1.7 OutlineRegular), so no static import can serve
+   both. A border caret in the plugin's own CSS is version-proof. */
+.dsm-plugin-card-chevron{color:var(--dsw-alias-label-tertiary,#999);flex:none;width:16px;height:16px;position:relative;transition:transform .16s}
+.dsm-plugin-card-chevron::before{content:"";display:block;position:absolute;left:4px;top:5px;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg)}
 .dsm-plugin-card-chevron-open{transform:rotate(180deg)}
 .dsm-plugin-card-body{border-top:1px solid var(--dsw-alias-border-l2,#36373b);margin:0 16px;padding:0 0 8px}
 .dsm-plugin-card-icon{width:32px;height:32px;flex:none;border-radius:7px}

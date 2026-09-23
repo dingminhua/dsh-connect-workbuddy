@@ -20,6 +20,11 @@ export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/mod
 export const WORKBUDDY_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/accounts/refresh'
 /** Plugin-owned daily check-in action endpoint. */
 export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
+/** Plugin-owned settings fallback used when the 0.1.7 form mirror is read-only. */
+export const WORKBUDDY_SETTINGS_WRITE_PATH = '/plugins/dsh-connect-workbuddy/settings'
+
+/** Profile entry id used by the 0.1.7 settings service. */
+export const WORKBUDDY_SETTINGS_ENTRY = 'dsh-connect-workbuddy'
 
 /** Query parameter naming the region a card request addresses. */
 export const WORKBUDDY_REGION_PARAM = 'region'
@@ -333,5 +338,11 @@ export type WorkBuddyWebUsage =
     credentialRejected?: boolean
     /** Present only alongside {@link credentialRejected}. */
     recovery?: WorkBuddyWebRecovery
+    /**
+     * The persisted per-region context budgets as the Host reads them. The
+     * browser settings mirror can lag a write made through the Host save
+     * endpoint, so the card renders these rather than a possibly-stale snapshot.
+     */
+    contextBudgets?: Record<string, number>
   }
   | { status: 'error'; message: string }

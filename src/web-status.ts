@@ -33,11 +33,18 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_SETTINGS_WRITE_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
 import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from './status-paths.ts'
 
-export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
+export {
+  WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_CHECKIN_PATH,
+  WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_SETTINGS_WRITE_PATH,
+  WORKBUDDY_USAGE_PATH,
+}
 export type { WorkBuddyWebUsage }
 
 /** Constructor dependencies. */
@@ -58,6 +65,8 @@ export interface WorkBuddyStatusRouteOptions {
   imageModelIds(region: WorkBuddyRegion): readonly string[]
   /** Saved local DSH context budgets by model id, for the requested region. */
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
+  /** Host settings mutation used when the 0.1.7 browser form is memory-backed. */
+  mutateSettings?(path: readonly string[], value: unknown): Promise<void>
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
   /**
@@ -111,6 +120,49 @@ function loopbackOrigin(req: IncomingMessage): boolean {
   } catch {
     return false
   }
+}
+
+const MAX_SETTINGS_BODY_BYTES = 1_048_576
+
+type WorkBuddySettingsWrite =
+  | { field: 'accounts'; region: WorkBuddyRegion; value: string }
+  | { field: 'regions'; region: WorkBuddyRegion; value: Record<string, unknown> }
+  | { field: 'regions.enabled'; region: WorkBuddyRegion; value: boolean }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Parse the card's small, field-constrained settings mutation. */
+async function readSettingsWrite(req: IncomingMessage): Promise<WorkBuddySettingsWrite> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > MAX_SETTINGS_BODY_BYTES) throw new Error('settings payload is too large')
+    chunks.push(buffer)
+  }
+  const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  if (!isRecord(body) || (body.region !== 'cn' && body.region !== 'global')) {
+    throw new Error('invalid settings payload')
+  }
+  if (body.field === 'accounts' && typeof body.value === 'string') {
+    return { field: body.field, region: body.region, value: body.value }
+  }
+  if (body.field === 'regions' && isRecord(body.value)) {
+    return { field: body.field, region: body.region, value: body.value }
+  }
+  if (body.field === 'regions.enabled' && typeof body.value === 'boolean') {
+    return { field: body.field, region: body.region, value: body.value }
+  }
+  throw new Error('invalid settings field or value')
+}
+
+function settingsPath(write: WorkBuddySettingsWrite): readonly string[] {
+  if (write.field === 'accounts') return ['accounts', write.region]
+  if (write.field === 'regions.enabled') return ['regions', write.region, 'enabled']
+  return ['regions', write.region]
 }
 
 /** Map the credit answer to the card's compact document. */
@@ -310,6 +362,13 @@ export async function workBuddyWebStatus(
   })
   return {
     status: 'signed-in',
+    // The persisted per-region budgets, read straight from the Host config.
+    // The browser settings mirror can be stale — a write made through the Host
+    // save endpoint never updates it — so the card renders these instead of
+    // re-deriving them from a snapshot that may predate the save.
+    contextBudgets: Object.fromEntries(
+      Object.entries(deps.contextBudgets(region)).filter(([, value]) => typeof value === 'number'),
+    ) as Record<string, number>,
     ...account,
     ...creditsResult.status === 'fulfilled'
       ? { credits: toCredits(creditsResult.value) }
@@ -420,11 +479,39 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposeSettingsWrite = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_SETTINGS_WRITE_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        if (deps.mutateSettings === undefined) {
+          return json(res, 503, { error: 'settings service does not support mutations' })
+        }
+        try {
+          const write = await readSettingsWrite(req)
+          await deps.mutateSettings(settingsPath(write), write.value)
+          return json(res, 200, { ok: true })
+        } catch (error: unknown) {
+          const status = error instanceof SyntaxError || (error instanceof Error && error.message.startsWith('invalid settings'))
+            ? 400
+            : error instanceof Error && error.message === 'settings payload is too large'
+              ? 413
+              : 500
+          return json(res, status, {
+            ok: false,
+            errorName: error instanceof Error ? error.name : 'Error',
+            error: safeMessage(error),
+          })
+        }
+      },
+    })
     return () => {
       disposeRefresh()
       disposeCheckin()
       disposeAccounts()
       disposeUsage()
+      disposeSettingsWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')
 }

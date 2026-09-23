@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   configuredAccountsOf,
   WorkBuddySettingsWriteError,
   writeAccountSlot,
+  writeRegionEnabled,
   writeRegionModels,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
+
+afterEach(() => { vi.restoreAllMocks() })
 
 /**
  * A settings scope that reproduces the Windows silent-failure shape.
@@ -111,6 +114,39 @@ describe('writeAccountSlot', () => {
     await writeAccountSlot(scope, 'cn', 'chosen')
     // What the card reads next must agree with what was verified.
     expect(configuredAccountsOf(scope.getSnapshot().value)).toEqual(document()['accounts'])
+  })
+
+  it('uses the Host fallback when the 0.1.7 ConfigForm is memory-backed', async () => {
+    const { scope } = scopeWith({ accounts: { global: 'kept' } }, { locked: true })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(writeAccountSlot(scope, 'cn', 'chosen')).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [, request] = fetchMock.mock.calls[0]!
+    expect(JSON.parse(String(request?.body))).toEqual({ field: 'accounts', region: 'cn', value: 'chosen' })
+  })
+})
+
+describe('writeRegionEnabled', () => {
+  it('preserves the rest of the region slot through the native scope', async () => {
+    const { scope, document } = scopeWith({
+      regions: { cn: { enabled: true, enabledModelIds: ['glm-5.3'], contextBudgets: { 'glm-5.3': 1_000_000 } } },
+    })
+    await writeRegionEnabled(scope, 'cn', false)
+    expect(document()['regions']).toEqual({
+      cn: { enabled: false, enabledModelIds: ['glm-5.3'], contextBudgets: { 'glm-5.3': 1_000_000 } },
+    })
+  })
+
+  it('falls back to the precise nested Host path', async () => {
+    const { scope } = scopeWith({ regions: { global: { enabled: true } } }, { locked: true })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    await writeRegionEnabled(scope, 'global', false)
+    const [, request] = fetchMock.mock.calls[0]!
+    expect(JSON.parse(String(request?.body))).toEqual({ field: 'regions.enabled', region: 'global', value: false })
   })
 })
 

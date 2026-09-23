@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { Readable } from 'node:stream'
 import { Context } from '@deepseek-ai/cordis'
 import { workBuddyWebStatus } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
-import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
+import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_SETTINGS_WRITE_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { WorkBuddyCredentialRejectedError } from '../src/upstream.ts'
@@ -245,6 +246,15 @@ describe('workBuddyWebStatus', () => {
     })
   })
 
+  it('projects the Host-selected context budgets into the card document', async () => {
+    const status = await workBuddyWebStatus(deps({
+      contextBudgets: () => ({ 'glm-5.3': 1_000_000 }),
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.contextBudgets).toEqual({ 'glm-5.3': 1_000_000 })
+    expect(status.models.find(model => model.id === 'glm-5.3')?.contextWindow).toBe(1_000_000)
+  })
+
   it('degrades a credit failure to creditsError instead of failing the document', async () => {
     const status = await workBuddyWebStatus(deps({
       client: {
@@ -434,14 +444,60 @@ describe('registerWorkBuddyStatusRoute', () => {
     return captured
   }
 
-  it('mounts the usage, account, check-in, and model routes', async () => {
+  it('mounts the usage, account, check-in, model, and save routes', async () => {
     const captured = await mountRoutes()
     expect(captured.map(entry => entry.path)).toEqual([
       '/plugins/dsh-connect-workbuddy/usage',
       '/plugins/dsh-connect-workbuddy/accounts/refresh',
       '/plugins/dsh-connect-workbuddy/checkin',
       '/plugins/dsh-connect-workbuddy/models/refresh',
+      WORKBUDDY_SETTINGS_WRITE_PATH,
     ])
+  })
+
+  it('maps a model save to the exact region path in the Host settings service', async () => {
+    const calls: { path: readonly string[]; value: unknown }[] = []
+    const captured = await mountRoutes({
+      async mutateSettings(path, value) { calls.push({ path, value }) },
+    })
+    const route = captured.find(entry => entry.path === WORKBUDDY_SETTINGS_WRITE_PATH)
+    if (route === undefined) throw new Error('settings route was not registered')
+    const result = response()
+    await route.handler(jsonRequest({
+      field: 'regions',
+      region: 'cn',
+      value: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } },
+    }), result.res)
+    expect(result.status()).toBe(200)
+    expect(calls).toEqual([{
+      path: ['regions', 'cn'],
+      value: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } },
+    }])
+  })
+
+  it('rejects fields outside the card contract before touching settings', async () => {
+    const calls: unknown[] = []
+    const captured = await mountRoutes({
+      async mutateSettings(...args) { calls.push(args) },
+    })
+    const route = captured.find(entry => entry.path === WORKBUDDY_SETTINGS_WRITE_PATH)
+    if (route === undefined) throw new Error('settings route was not registered')
+    const result = response()
+    await route.handler(jsonRequest({ field: 'authFile', region: 'cn', value: 'C:\\secret' }), result.res)
+    expect(result.status()).toBe(400)
+    expect(calls).toEqual([])
+  })
+
+  it('rejects non-loopback origins on the settings route', async () => {
+    const captured = await mountRoutes({ async mutateSettings() {} })
+    const route = captured.find(entry => entry.path === WORKBUDDY_SETTINGS_WRITE_PATH)
+    if (route === undefined) throw new Error('settings route was not registered')
+    const result = response()
+    await route.handler(jsonRequest(
+      { field: 'accounts', region: 'cn', value: 'account-1' },
+      'https://example.com',
+    ), result.res)
+    expect(result.status()).toBe(403)
   })
 
   it('routes the region query to that region\'s store, defaulting to cn', async () => {
@@ -496,6 +552,23 @@ describe('registerWorkBuddyStatusRoute', () => {
   /** Minimal request; an absent Origin header reads as loopback. */
   function request(method = 'POST', origin?: string, url?: string): { method: string; url: string; headers: { origin?: string } } {
     return { method, url: url ?? '/', headers: origin === undefined ? {} : { origin } }
+  }
+
+  /** IncomingMessage-shaped JSON request for the settings body reader. */
+  function jsonRequest(body: unknown, origin?: string): Readable & {
+    method: string
+    url: string
+    headers: { origin?: string }
+  } {
+    const req = Readable.from([JSON.stringify(body)]) as Readable & {
+      method: string
+      url: string
+      headers: { origin?: string }
+    }
+    req.method = 'POST'
+    req.url = WORKBUDDY_SETTINGS_WRITE_PATH
+    req.headers = origin === undefined ? {} : { origin }
+    return req
   }
 
   /** Response recorder: json() only needs writeHead + end. */

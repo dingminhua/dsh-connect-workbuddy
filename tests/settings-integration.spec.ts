@@ -610,6 +610,40 @@ describe('regionStateOf', () => {
   })
 })
 
+describe('DSH 0.1.7 settings compatibility', () => {
+  it('marks every user-editable field when the runtime supports volatile schemas', () => {
+    const dict = (WorkBuddy.Config as any).dict
+    const expected = typeof dict?.regions?.volatile === 'function' ? true : undefined
+    expect(dict?.regions?.meta?.volatile).toBe(expected)
+    expect(dict?.accounts?.meta?.volatile).toBe(expected)
+    expect(dict?.authFile?.meta?.volatile).toBe(expected)
+  })
+
+  it('unwraps volatile references cleanly in regionStateOf and selectAccountFor', () => {
+    const wrappedConfig = {
+      regions: {
+        get: () => ({ cn: { enabledModelIds: ['glm-5.3'] } }),
+      },
+      accounts: {
+        get: () => ({ cn: 'account-1' }),
+      },
+      authFile: {
+        get: () => '/path/to/auth',
+      },
+    } as any
+
+    expect(WorkBuddy.regionStateOf(wrappedConfig, 'cn').enabledModelIds).toEqual(['glm-5.3'])
+    expect(WorkBuddy.selectAccountFor('cn', wrappedConfig, undefined)).toEqual('account-1')
+  })
+
+  it('unwraps the deprecated account selector before attributing it', async () => {
+    const config = { accountId: { get: () => 'legacy-account' } } as any
+    await expect(WorkBuddy.legacyAttributionRegion(config, async region => (
+      region === 'global' ? [{ id: 'legacy-account' }] : []
+    ))).resolves.toBe('global')
+  })
+})
+
 describe('region on/off switch (issue #11-style region toggle)', () => {
   it('withdraws a switched-off region from the picker while leaving the other live', async () => {
     const authFile = await writeRegionFixtures()
