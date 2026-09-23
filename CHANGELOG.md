@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.13 (Unreleased)
+## 2.0.13 (2026-09-23)
 
 ### Bug Fixes
 
