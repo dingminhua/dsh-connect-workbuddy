@@ -265,14 +265,22 @@ const accountSelectionConfig = z.object({
   global: z.string().description('Selected international account id (never a token)'),
 })
 
-function asVolatile<T>(schema: z<T>): z<T> {
-  // `volatile()` exists from schemastery 3.18.3 (the DSH 0.1.7 line, which is
-  // the only line whose settings write gate reads the marker). Older pinning
-  // (3.18.2, the 0.1.5 line) has no such method, and the schema must stay
-  // byte-identical to the unmarked original there: hand-writing
-  // `meta.volatile = true` would bypass schemastery's own
-  // validateVolatileSchema checks and produce a schema no 0.1.5 consumer
-  // understands — so on that line this helper degrades to an identity no-op.
+/**
+ * Mark a schema's field as volatile on the DSH lines that support it.
+ *
+ * `volatile()` exists from schemastery 3.18.3 (the DSH 0.1.7 line, which is the
+ * only line whose settings write gate reads the marker). Older pinning (3.18.2,
+ * the 0.1.5 line) has no such method, and the schema must stay byte-identical to
+ * the unmarked original there: hand-writing `meta.volatile = true` would bypass
+ * schemastery's own validateVolatileSchema checks and produce a schema no 0.1.5
+ * consumer understands — so on that line this degrades to an identity no-op.
+ *
+ * Exported so BOTH arms are testable on any machine. The capability is decided
+ * by whichever schemastery the dependency tree resolves, so without a seam the
+ * no-op arm would silently stop being exercised the moment the pinned version
+ * moved up — which is exactly how the volatile-path defect below went unseen.
+ */
+export function asVolatile<T>(schema: z<T>): z<T> {
   if (typeof (schema as unknown as { volatile?: () => z<T> }).volatile === 'function') {
     return (schema as unknown as { volatile: () => z<T> }).volatile()
   }
@@ -284,6 +292,40 @@ function unwrapVolatile<T>(value: T): T {
     return (value as any).get()
   }
   return value
+}
+
+/**
+ * Deep copy of a config value with every `{get(): T}` live reference replaced
+ * by the value it resolves to.
+ *
+ * {@link unwrapVolatile} only peels the ONE level a caller reads, which is all
+ * the ordinary read paths need. Handing a config object to a settings service
+ * is different: the service validates and `structuredClone`s the WHOLE object,
+ * so a reference surviving anywhere inside it fails schema validation with a
+ * message that names the field but not the cause —
+ * `$.authFile expected string but got [object Object]`.
+ *
+ * That is exactly what happened on the 0.1.5 line once volatile marking became
+ * active: `installSection` received the raw config, whose volatile fields were
+ * live references, and every field it validated threw. The namespace never
+ * registered, so the card's settings silently disappeared.
+ *
+ * Non-reference values are recursed into so a nested volatile field is caught
+ * too — arrays are rebuilt rather than mutated, so the caller's config object is
+ * never touched.
+ */
+export function unwrapVolatileDeep<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value
+  if (typeof (value as { get?: unknown }).get === 'function') {
+    return unwrapVolatileDeep((value as unknown as { get: () => unknown }).get()) as T
+  }
+  if (Array.isArray(value)) return value.map(entry => unwrapVolatileDeep(entry)) as T
+  const source = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(source)) {
+    out[key] = unwrapVolatileDeep(source[key])
+  }
+  return out as T
 }
 
 export const Config: z<Config> = z.object({
@@ -656,7 +698,14 @@ export function apply(ctx: Context, config: Config): void {
       return
     }
     if (typeof settings.installSection === 'function') {
-      settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+      // The entry is DEEP-unwrapped, not passed as-is. `installSection` validates
+      // and `structuredClone`s the whole object, so a live reference anywhere
+      // inside it fails validation (`$.authFile expected string but got [object
+      // Object]`). That is not hypothetical: it is what broke every field the
+      // moment volatile marking became active, and it is why this call may not
+      // simply forward `config`.
+      const entry = unwrapVolatileDeep(config)
+      settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, entry, {
         setSource(source: () => Config) { current = source },
         onChange() { applySelection(current()) },
       })

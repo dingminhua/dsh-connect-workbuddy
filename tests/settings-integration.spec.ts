@@ -3,6 +3,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import z from '@deepseek-ai/schemastery'
 import * as WorkBuddy from '../src/index.ts'
 
 /**
@@ -15,6 +16,22 @@ let preloadedDocument: Record<string, unknown> = {}
 
 /** What the 0.1.7-shaped service received, so the test can prove the path taken. */
 let configureCalls: { auto?: boolean }[] = []
+
+/**
+ * `settings.get()` as the CARD sees it.
+ *
+ * On the 0.1.7 line a volatile field comes back as a `{get(): T}` live
+ * reference, so reading `doc.accounts.cn` directly is `undefined` — the raw
+ * document is not what any consumer renders. The browser card goes through the
+ * settings scope, and the plugin's own read paths go through `unwrapVolatile`;
+ * this reuses the production helper so an assertion cannot pass or fail on a
+ * shape no real consumer ever sees.
+ *
+ * (On the 0.1.5 line, where volatile marking is a no-op, this is the identity.)
+ */
+function readSettings(doc: unknown): { accounts?: Record<string, string>, accountId?: string } {
+  return WorkBuddy.unwrapVolatileDeep(doc) as { accounts?: Record<string, string>, accountId?: string }
+}
 
 class MemorySettings extends SettingsProvider {
   readonly writable = true
@@ -313,8 +330,8 @@ describe('account selection through the settings seam', () => {
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: 'orphaned-id' } })
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
 
-    const doc = await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)
-    expect((doc as { accounts?: Record<string, string> }).accounts?.cn).toBe('')
+    const doc = readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS))
+    expect(doc.accounts?.cn).toBe('')
     // The plugin keeps serving both regions (no crash, no dead provider).
     expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
   })
@@ -350,13 +367,13 @@ describe('account selection through the settings seam', () => {
     // Let the startup attribution resolve while `accounts.cn` is still absent:
     // this is the window in which the legacy id becomes effective.
     await expect.poll(async () =>
-      (await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS) as { accountId?: string }).accountId,
+      readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)).accountId,
     ).toBe(legacyId)
 
     // Now the user clears the CN region.
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
 
-    const doc = await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS) as {
+    const doc = readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)) as unknown as {
       accounts?: Record<string, string>
       accountId?: string
     }
@@ -403,7 +420,7 @@ describe('account selection through the settings seam', () => {
     await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
-    const doc = await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS) as {
+    const doc = readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)) as unknown as {
       accounts?: Record<string, string>
       accountId?: string
     }
@@ -615,23 +632,36 @@ describe('regionStateOf', () => {
 })
 
 describe('DSH 0.1.7 settings compatibility', () => {
-  it('marks volatile fields when the runtime schemastery supports it, stays a no-op otherwise', () => {
+  it('marks the plugin Config volatile on the line whose schema is marked', () => {
     const dict = (WorkBuddy.Config as any).dict
-    // `volatile()` exists from schemastery 3.18.3 (DSH 0.1.7 line). On older
-    // pinning (3.18.2, DSH 0.1.5 line) asVolatile MUST be an identity no-op —
-    // hand-written meta.volatile would bypass schemastery's own validation —
-    // so the assertion branches on the runtime capability instead of assuming.
+    // Both arms are asserted on the SAME machine: the config is marked when the
+    // resolved schemastery offers volatile(), and stays unmarked when it does
+    // not. Branching on the runtime capability (rather than assuming one) is
+    // what lets this suite mean the same thing on both dependency lines.
     const supportsVolatile = typeof dict?.regions?.volatile === 'function'
-    if (supportsVolatile) {
-      expect(dict?.regions?.meta?.volatile).toBe(true)
-      expect(dict?.accounts?.meta?.volatile).toBe(true)
-      expect(dict?.authFile?.meta?.volatile).toBe(true)
-    } else {
-      expect(dict?.regions?.meta?.volatile).toBeUndefined()
-      expect(dict?.accounts?.meta?.volatile).toBeUndefined()
-      expect(dict?.authFile?.meta?.volatile).toBeUndefined()
+    const marked = ['regions', 'accounts', 'authFile']
+    for (const field of marked) {
+      expect(dict?.[field]?.meta?.volatile).toBe(supportsVolatile ? true : undefined)
+    }
+    // Unmarked fields must NEVER acquire the marker: the 0.1.5 write gate does
+    // not read it, and a hand-written marker would bypass validation.
+    for (const field of ['lastCatalog', 'enabledModelIds', 'accountId']) {
+      expect(dict?.[field]?.meta?.volatile).toBeUndefined()
     }
     expect(dict?.accounts?.meta?.default).toEqual({})
+  })
+
+  it('asVolatile() is an identity no-op when the schema offers no volatile()', () => {
+    // The 0.1.5 arm, pinned deterministically. Without this the no-op path is
+    // only covered when the resolved schemastery happens to be old, so raising
+    // the pinned version would quietly delete the coverage — and a hand-written
+    // `meta.volatile = true` (which is what that arm exists to prevent) would go
+    // unnoticed.
+    const plain = z.object({ a: z.string() })
+    const stub = { ...plain, volatile: undefined } as unknown as typeof plain
+    // `asVolatile` must return the schema UNCHANGED — identity, same object.
+    expect(WorkBuddy.asVolatile(stub)).toBe(stub)
+    expect((WorkBuddy.asVolatile(stub) as any).dict?.a?.meta?.volatile).toBeUndefined()
   })
 
   it('unwraps volatile references cleanly in regionStateOf and selectAccountFor', () => {
@@ -649,6 +679,61 @@ describe('DSH 0.1.7 settings compatibility', () => {
 
     expect(WorkBuddy.regionStateOf(wrappedConfig, 'cn').enabledModelIds).toEqual(['glm-5.3'])
     expect(WorkBuddy.selectAccountFor('cn', wrappedConfig, undefined)).toEqual('account-1')
+  })
+
+  it('deep-unwraps, so a NESTED reference is peeled too', () => {
+    // The shallow helper only peels the top level a reader touches; the deep one
+    // exists because a settings service validates the WHOLE object it is handed.
+    const nested = {
+      accounts: { get: () => ({ cn: { get: () => 'account-1' } }) },
+      list: [{ get: () => 'x' }],
+      plain: 'kept',
+    }
+    const out = WorkBuddy.unwrapVolatileDeep(nested) as any
+    expect(out.accounts).toEqual({ cn: 'account-1' })
+    expect(out.list).toEqual(['x'])
+    expect(out.plain).toBe('kept')
+    // The caller's object is never mutated: `settings.get()` hands out the live
+    // config, and rewriting it in place would corrupt the running plugin.
+    expect(typeof (nested.accounts as any).get).toBe('function')
+  })
+
+  it('hands installSection a reference-free entry, so registration survives volatile marking', async () => {
+    // THE regression this guards. Once volatile marking is ACTIVE (schemastery
+    // 3.18.3+, i.e. what an npm install resolves), a volatile field holds a
+    // `{get(): T}` live reference. `installSection` validates and
+    // `structuredClone`s its `entry`, so forwarding the raw config threw
+    //
+    //     $.authFile expected string but got [object Object]
+    //
+    // and the namespace never registered — the card's settings vanished on the
+    // 0.1.5 line. Passing a deep-unwrapped entry is what makes both lines work.
+    //
+    // Skipped where volatile marking is a no-op (schemastery 3.18.2): there the
+    // entry is already plain and the bug cannot occur, which is exactly why it
+    // went unnoticed until the dependency was pinned high enough to enable it.
+    const dict = (WorkBuddy.Config as any).dict
+    const volatileActive = typeof dict?.regions?.volatile === 'function' && dict?.regions?.meta?.volatile === true
+
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+
+    // Registered either way: the namespace is what the card binds to.
+    await expect.poll(() => ctx.settings.describe().some(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBe(true)
+    // And the entry reaching the service carried no live reference — asserted on
+    // the observable outcome (a schema-valid registration) rather than on the
+    // internal call, so an implementation change cannot fake it.
+    if (volatileActive) {
+      const descriptor = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
+      expect(descriptor).toBeDefined()
+      // `base` is the composition entry the service cloned and validated; a live
+      // reference here would have thrown before this point.
+      expect(descriptor?.base).toMatchObject({ accounts: {}, regions: {} })
+    }
   })
 })
 

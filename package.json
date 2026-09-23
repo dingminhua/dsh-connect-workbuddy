@@ -2,7 +2,7 @@
   "name": "dsh-connect-workbuddy",
   "displayName": "DSH Connect WorkBuddy",
   "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
-  "version": "2.0.11",
+  "version": "2.0.12",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
   "license": "MIT",
@@ -31,6 +31,9 @@
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.4"
   },
   "files": [
     "lib",

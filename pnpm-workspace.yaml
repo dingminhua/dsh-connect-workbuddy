@@ -29,7 +29,15 @@ overrides:
   '@deepseek-ai/dsh-llm': 0.1.5-rc.2
   '@deepseek-ai/dsh-llm-pi-ai': 0.1.5-rc.2
   '@deepseek-ai/dsh-settings': 0.1.5-rc.2
-  '@deepseek-ai/schemastery': 3.18.2
+  # 3.18.4 而非 3.18.2：这一处刻意与「0.1.5 主机自带的那份」不同，因为**用户实际
+  # 拿到的是 3.18.4**——`package.json` 的 dependencies 把它钉住，npm 会为插件装一份
+  # 嵌套副本（已用 npm pack 实测）。那份才带 `volatile()`，也才是把 config 喂给
+  # `installSection` 时会踩到活引用的组合。开发环境若停在 3.18.2，`asVolatile()`
+  # 恒等退化，这条路径**一次都不会执行**——0.1.5 线设置区整个消失的缺陷就是这样
+  # 溜过 PR 与 CI 的。
+  # 代价：no-op 那条分支不再由「装到的版本恰好很旧」来覆盖。因此 `asVolatile()` 已
+  # 导出，并有一条不依赖安装版本的确定性用例（用不带 volatile() 的 schema 断言恒等）。
+  '@deepseek-ai/schemastery': 3.18.4
   '@earendil-works/pi-ai': 0.85.1
   # dsh-client-runtime 在 0.1.1-rc.2 之后停止发布，且不在 0.1.5 桌面捆绑集内
   # （其槽位/会话服务迁至 dsh-client-ui-renderer/client）。仅作旧主机行的

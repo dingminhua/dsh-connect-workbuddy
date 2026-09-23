@@ -1,5 +1,56 @@
 # Changelog
 
+## 2.0.12 (2026-09-23)
+
+### Features
+
+- **支持 DSH 0.1.7 线，且同一个构建同时服务 0.1.5 与 0.1.7**（合并社区 PR #14，作者 [@qikairo7](https://github.com/qikairo7)）。这不是「多支持一个版本」的可选增强——**在 0.1.7 上插件此前根本装配不起来**。
+
+  - **根因：settings 服务换型，`installSection` 消失。** 0.1.5 的 `SettingsProvider` 提供 `installSection(owner, ns, schema, entry, hooks)`；0.1.7 换成 `SettingsForms`，该方法**整个移除**（我在 `dsh-settings` / `dsh-config-editor` / `dsh-client-ui-settings-plugins` 三个包的整份 tarball 里逐一确认无此符号，也未迁移到其他包），取而代之的是 `configure({auto}, owner)`。而插件此前**无保护地裸调用** `ctx.settings.installSection(...)`——`inject = ['llm','settings']` 两个服务在 0.1.7 上都存在，所以 `apply()` 会一路执行到那一行。实测（用一个行为等同 0.1.7 的 settings 服务装配）：
+
+    ```
+    apply() THREW -> ctx.settings.installSection is not a function
+    ```
+
+    即**整个插件装配失败**：两个 provider 都不注册，卡片与 Web 状态路由同样不存在。这与「某个功能坏掉」在用户侧都是「用不了」，但成因完全不同——**也因此「重新登录」「重装插件」一概无效**。现在改为按能力探测：有 `configure` 走 `configure`，否则回落 `installSection`。
+  - **易失字段必须显式声明（issue #13 在 0.1.7 线上的真正根因）。** 0.1.7 的 settings 写入门要求插件 schema 把可写字段标记为 volatile，否则**写入被直接拒绝**（`Plugin entry "workbuddy" has no volatile fields`），`scope.set()` 却正常 resolve——于是卡片回读校验抛 `settings field "regions" was not persisted`。新增 `asVolatile()`：运行时探测 `schema.volatile()`，**有则调用、无则退化为 identity no-op**。这一条是兼容易失的关键——0.1.5 线（schemastery 3.18.2）没有该方法，退化为 no-op 后**其 schema 与合并前逐字节一致**，老用户零感知；手写 `meta.volatile = true` 会绕过 schemastery 自身的校验，产出一个 0.1.5 消费方看不懂的 schema，因此**故意不那样做**。
+  - **0.1.7 以「活引用」交付配置值。** 0.1.7 把配置值以 `{get(): T}` 形式交给 `apply()`，不解包则 `config.regions`、`value.accounts[region]`、`config.authFile` 静默变成对象或 `undefined`——表现为「设置明明写了却读不到」。新增 `unwrapVolatile()` 并在所有读取路径上解包，同时监听 `loader/volatile-update` 在每次写入后重读选择。
+  - **客户端双线槽位。** 两条线声明的是**互不相交**的槽位集合（0.1.5 只有 `settings.plugin.item`；0.1.7 是插件管理器的 `plugins.bundle.config` / `plugins.row.config`）。卡片现在逐个注册且**各自独立 try/catch**——一个槽位在某一线上不存在时，不能把另一条线的注册一起带走。settings scope 也按能力获取：0.1.7 走 `configForms.get(ns)`（并从镜像里取 Host 实际服务的 namespace，插件可能挂在别的 entry id 下），0.1.5 回落 `settingsScope.bind()`。
+  - **折叠箭头改为纯 CSS。** 两线 primitives 的图标名不重叠（`…Outline14` vs `…OutlineRegular`），没有任何一个静态图标 import 能同时服务两边。
+
+### Bug Fixes
+
+- **CI 在 windows-latest 上红了 2 例**（2.0.11 引入，本仓库自身的缺陷）。新增的 darwin 候选断言写死了 POSIX 字面量（`expect(mac).toContain('/Applications/WorkBuddy.app/Contents/MacOS/Electron')`）。生产代码没问题——它用 `join` 拼路径；错的是**测试**：它断言的是「跑测试的机器是 POSIX」，而非「darwin 候选列表对不对」。Windows 上 `join` 产出反斜杠，于是必然失败，而 macOS 上恒绿——**这正是它能一路走到 CI 的原因**。改为全部经 `join` 构造期望值，并补一条回归守卫：候选路径不得**混用**分隔符（用字面量 `/` 拼接在 Windows 上会产出 `\Applications/WorkBuddy.app`，任何正确路径都不会长这样）。
+
+- **易失标记一生效，0.1.5 线的设置区就整个消失**（合并 PR #14 后由本仓库查出并修复的真缺陷）。`asVolatile()` 给字段打上 volatile 标记后，该字段的值会被包成 `{get(): T}` **活引用**。而 `installSection(owner, ns, schema, entry, hooks)` 的第 4 个参数 `entry` 会被服务**校验并 `structuredClone`**，于是拿到活引用时逐字段抛错：
+
+  ```
+  $.authFile expected string but got [object Object]
+  ```
+
+  结果是命名空间**注册不上**——卡片设置区静默消失（实测 13 个测试变红）。
+
+  - **为什么 PR14 与 CI 都没发现**：两边都把 schemastery 锁在 **3.18.2**，那里没有 `volatile()`，`asVolatile()` 退化为 identity no-op，**这条路径从未被执行过**。而 PR14 自己又把 schemastery 钉进 `dependencies: 3.18.4`——npm 用户会解析到嵌套的 3.18.4，`volatile()` 真正生效，**恰好走进没人测过的分支**。开发环境掩盖了用户环境的缺陷，这是本次最值得记取的教训。
+  - **修法**：新增 `unwrapVolatileDeep()`，在把 config 交给 settings 服务前**递归**剥掉全部活引用（既有的 `unwrapVolatile()` 只剥调用方读取的那一层，够普通读路径用，不够交给服务校验用）。数组会被重建而非就地改写，调用方的 config 对象不受影响。
+  - **顺带把 `asVolatile()` 导出**，让「有 `volatile()` 则打标记 / 没有则恒等 no-op」两条分支**在任何机器上都能被确定性地断言**；否则把钉住的版本一提，no-op 那条分支的覆盖就会静默消失（而这正是手写 `meta.volatile` 会绕过校验的那条防线）。
+
+### Tests
+
+测试总数 300 → 326。
+
+- **双 settings 形态兼容（新增 2 例，这是 PR14 缺的那块）**：PR14 只测了 0.1.5 形态——而它修的恰恰是 **0.1.7 分支**，这样的套件在 0.1.7 分支再次坏掉时**不会变红**，正是让本次缺陷穿过 CI 的原因。现在两条路径各有独立用例：0.1.7 形态（有 `configure`、**无** `installSection`）下必须装配成功、两个 provider 均注册、且确实走了 `configure({auto:true})`；0.1.5 形态下必须继续走 `installSection`（否则命名空间不会注册）。**变异验证**：把 `installSection` 改回无保护裸调用，第一条立即变红。
+- **活引用不得喂给 settings 服务（新增 3 例）**：`unwrapVolatileDeep()` 必须递归剥净（含嵌套与数组）、且不就地改写调用方对象；`installSection` 拿到的 entry 必须无活引用（断言注册结果与 `base` 形状，而不是断言内部调用，实现改动无法伪造）；两条 volatile 分支各自被确定性断言。**变异验证**：把 `installSection` 的 entry 改回原始 config，**13 个用例立即变红**。
+- **测试读取也走生产 helper**：新增 `readSettings()`——0.1.7 上 `settings.get()` 返回的同样是活引用，直接读 `doc.accounts.cn` 得到 `undefined`，那是**任何真实消费方都不会看到的形状**。断言统一经 `unwrapVolatileDeep()` 解包，避免测试在真实消费方看不见的形状上通过或失败。
+- 其余为 PR14 自带的兼容与槽位隔离用例，以及上一版的凭据修复用例，全部保留。
+
+**双版本验证**：同一份代码在 schemastery **3.18.4**（volatile 生效）与 **3.18.2**（no-op 分支）下**均为 326 通过**。
+
+**同时把开发环境的 schemastery 提到 3.18.4**（`pnpm-workspace.yaml` 的 override）。此前它锁在 3.18.2，于是 CI 只覆盖 no-op 分支——**而用户实际拿到的是 3.18.4**（`dependencies` 钉住的那份嵌套副本）。开发环境与用户环境不一致，正是这个缺陷能同时躲过 PR 评审与 CI 的原因。代价是 no-op 分支不再由「装到的版本恰好很旧」顺带覆盖，因此 `asVolatile()` 改为导出，并用一条不依赖安装版本的用例把它钉死。
+
+### Docs
+
+- 本条目记录 0.1.7 的三项差异（settings 换型、易失声明、活引用）与其判定方式，供后续 DSH 升级时对照。
+
 ## 2.0.11 (2026-09-23)
 
 ### Bug Fixes
