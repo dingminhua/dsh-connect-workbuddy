@@ -131,3 +131,86 @@ describe('card region reads through a live reference', () => {
     expect((next.cn as { enabled?: boolean }).enabled).toBe(false)
   })
 })
+
+/**
+ * The write PATH, not just the value shape.
+ *
+ * The two writers have different semantics, and the difference DELETES data:
+ *
+ *  - `__save` merges the posted region into the field's authoritative value
+ *    inside the Host, preserving every other region.
+ *  - `scope.set(field, next)` hands the settings service the WHOLE field, which
+ *    the client merged from its own browser mirror. The Host does no
+ *    server-side merge on that path, so the client's object REPLACES the field.
+ *
+ * The mirror lags writes made through the endpoint (documented on
+ * `contextBudgets`), so re-deriving the merge from it loses the sibling region
+ * and then stores that loss verbatim.
+ *
+ * This is the reported Symptom: "I saved the domestic region and the
+ * international one was gone" — the disk showed `accounts` with both regions
+ * but `regions` holding only `cn`.
+ */
+describe('the Host endpoint is authoritative, so the mirror cannot delete a sibling', () => {
+  /** Faithful host: server-side merge, answers with the field it stored. */
+  function endpointWith(authoritative: Record<string, Record<string, unknown>>) {
+    const calls: { field: string, value: Record<string, unknown> }[] = []
+    const fetchImpl = async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { field: string, value: Record<string, unknown> }
+      calls.push(body)
+      const merged = { ...(authoritative[body.field] ?? {}), ...body.value }
+      authoritative[body.field] = merged
+      return { ok: true, json: async () => ({ ok: true, value: merged }) }
+    }
+    return { fetchImpl, calls, authoritative }
+  }
+
+  const slot = (id: string) => ({ enabled: true, lastCatalog: [{ id }], enabledModelIds: [id], contextBudgets: {} })
+
+  it('saving the second region must not delete the first', async () => {
+    const { fetchImpl, authoritative } = endpointWith({})
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fetchImpl as unknown as typeof fetch
+    try {
+      // The scope stores whatever it is handed, and its mirror never learns
+      // about the endpoint's merge — the exact shape on the user's machine.
+      const mirror: Record<string, unknown> = {}
+      const scope: WorkBuddyAccountScope = {
+        getSnapshot: () => ({ value: { regions: { get: () => mirror['regions'] ?? {} } } }),
+        set: async (field: string, next: unknown) => { mirror[field] = next },
+      }
+
+      await writeRegionModels(scope, 'global', slot('gpt-5.6-sol'))
+      expect(Object.keys(authoritative['regions'] ?? {})).toEqual(['global'])
+
+      // A stale mirror (as after any endpoint write) must not cost a region.
+      mirror['regions'] = {}
+      await writeRegionModels(scope, 'cn', slot('glm-5.3'))
+
+      expect(Object.keys(authoritative['regions'] ?? {}).sort()).toEqual(['cn', 'global'])
+      expect(authoritative['regions']?.global).toEqual(slot('gpt-5.6-sol'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('mirrors back the value the HOST stored, never a re-merge of its own', async () => {
+    // The scope records whatever it was handed, so this asserts what the client
+    // chose to mirror: the Host's authoritative field, not the stale re-merge.
+    const { fetchImpl } = endpointWith({})
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fetchImpl as unknown as typeof fetch
+    try {
+      const mirrored: unknown[] = []
+      const scope: WorkBuddyAccountScope = {
+        getSnapshot: () => ({ value: { regions: { get: () => ({}) } } }),
+        set: async (_field: string, next: unknown) => { mirrored.push(next) },
+      }
+      await writeRegionModels(scope, 'cn', slot('glm-5.3'))
+      expect(mirrored).toHaveLength(1)
+      expect((mirrored[0] as Record<string, unknown>).cn).toEqual(slot('glm-5.3'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})

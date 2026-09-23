@@ -93,7 +93,7 @@ async function saveViaHostEndpoint(
   field: 'accounts' | 'regions',
   region: WorkBuddyWebRegion,
   value: unknown,
-): Promise<void> {
+): Promise<Record<string, unknown> | undefined> {
   let response: Response
   try {
     response = await fetch('/plugins/dsh-connect-workbuddy/__save', {
@@ -109,18 +109,38 @@ async function saveViaHostEndpoint(
     const reason = `${String(detail.errorName ?? '')} ${String(detail.error ?? '')}`.trim()
     throw new WorkBuddySettingsWriteError(field, `Host save refused: ${reason === '' ? String(detail.error) : reason}`)
   }
+  // The endpoint answers with the field it actually stored (it merged the
+  // posted region into the authoritative value). Returned so the caller can
+  // mirror THAT rather than re-deriving the field from its own stale mirror.
+  // Older hosts answer `{ok:true}` alone, hence `undefined`.
+  const answer = await response.json().catch(() => undefined) as { value?: Record<string, unknown> } | undefined
+  return answer?.value
 }
 
 /**
  * Write one volatile field, then confirm the value actually landed.
  *
- * The bound settings scope is the official path and is tried FIRST: it keeps
- * the browser mirror in sync, and it is the only writer needed on hosts whose
- * ConfigForm is healthy. On the affected DSH 0.1.7 deployment that scope
- * settles without delivering anything — its `set()` resolves `false` while the
- * Host's own mutate is perfectly healthy (proven by a direct in-Host probe) —
- * so a write that does not read back falls through to the plugin's Host
- * endpoint, which performs the mutate inside the Host process.
+ * ORDER MATTERS, and getting it wrong DELETES DATA. The two writers do not have
+ * the same semantics:
+ *
+ * - The Host save endpoint merges the posted region into the field's
+ *   AUTHORITATIVE value inside the Host process, preserving every other region.
+ * - `scope.set(field, next)` hands the settings service the WHOLE field, merged
+ *   on the CLIENT out of the browser mirror. The Host performs no server-side
+ *   merge on this path, so whatever the client built REPLACES the field.
+ *
+ * The mirror is not a reliable merge base: a write made through the Host
+ * endpoint does not update it (that lag is documented on `contextBudgets`
+ * below), and on the affected 0.1.7 deployment the mirror for this namespace
+ * stays stale outright. Building the merge from it therefore produced
+ * `{ [region]: slot }` with every SIBLING region missing — and `scope.set`
+ * stores that verbatim, deleting them. That was the report "I saved the
+ * domestic region and the international one was gone": `accounts` survived
+ * (written while the mirror happened to be fresh) while `regions` lost a slot.
+ *
+ * So the Host endpoint goes FIRST — it is the only writer that cannot delete a
+ * sibling. `scope.set` is then attempted purely as a mirror refresh, and only
+ * when it delivers is the write considered done without the endpoint.
  *
  * `landed` decides whether a value read back from the scope is the value that
  * was written; it is per-field because `''` (a cleared account slot) and an
@@ -136,6 +156,25 @@ async function writeField(
   value: unknown,
   landed: (readBack: unknown) => boolean,
 ): Promise<void> {
+  // 1. Authoritative, server-side merge: cannot drop the sibling region.
+  let hostError: unknown
+  try {
+    const authoritative = await saveViaHostEndpoint(field, region, value)
+    // 2. Refresh the browser mirror with the value the HOST actually stored,
+    //    never with a re-merge of the client's own (possibly stale) mirror —
+    //    on a scope that stores whatever it is handed, writing the stale merge
+    //    back would undo the sibling-preserving merge made above. Best-effort
+    //    only: the Host is already the authority, so a refused refresh is fine.
+    if (authoritative !== undefined) {
+      try { await scope.set(field, authoritative) } catch { /* optional */ }
+    }
+    return
+  } catch (error) {
+    hostError = error
+  }
+
+  // 2. Endpoint unavailable (older Host, or route not mounted): fall back to
+  //    the scope, and verify the value really landed.
   let scopeDelivered = false
   try {
     scopeDelivered = (await scope.set(field, { ...fieldSnapshotOf(scope, field), [region]: value })) !== false
@@ -143,7 +182,9 @@ async function writeField(
     scopeDelivered = false
   }
   if (scopeDelivered && landed(fieldSnapshotOf(scope, field)[region])) return
-  await saveViaHostEndpoint(field, region, value)
+  throw hostError instanceof Error
+    ? hostError
+    : new WorkBuddySettingsWriteError(field, 'neither the Host save endpoint nor the settings scope persisted the value')
 }
 
 /** Read the per-region account selections out of the settings snapshot. */

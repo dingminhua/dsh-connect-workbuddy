@@ -491,7 +491,13 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           // other region.
           const merged = { ...current, ...incoming }
           await settings.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
-          return json(res, 200, { ok: true })
+          // Hand the AUTHORITATIVE merged field back to the caller. The client
+          // used to rebuild the field from its own browser mirror to refresh
+          // it, and on a scope that stores whatever it is handed that refresh
+          // WROTE THE STALE MIRROR BACK over this merge — deleting the sibling
+          // region the Host had just preserved. Returning the merged value lets
+          // the caller mirror the truth instead of re-deriving it.
+          return json(res, 200, { ok: true, value: merged })
         } catch (error: unknown) {
           const err = error as { name?: string, message?: string }
           return json(res, 500, { ok: false, errorName: err?.name ?? 'unknown', error: err?.message ?? String(error) })
