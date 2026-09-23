@@ -38,7 +38,7 @@ import {
   withWorkBuddyRegion,
 } from '../status-paths.ts'
 import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from '../status-paths.ts'
-import { writeAccountSlot, writeRegionModels } from './account-selection.ts'
+import { writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import { searchReasonLabel, searchedView, signedOutNotice, signedOutText } from './searched-paths.ts'
@@ -352,14 +352,27 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * directory, model picks, image opt-ins and budgets survive a round trip.
    * The Host withdraws or restores the provider route on the next `onChange`,
    * which is what actually removes it from DSH's model picker.
+   *
+   * Goes through `writeRegionEnabled` rather than calling `scope.set()`
+   * directly: on the affected 0.1.7 deployments that scope settles without
+   * storing anything, so a direct write appeared to succeed and then silently
+   * reverted. The helper adds the landed-check and the Host-endpoint fallback
+   * that every other settings write already had.
    */
   const toggleRegion = async (item: WorkBuddyWebRegion, enabled: boolean): Promise<void> => {
     if (settingsScope === undefined) return
     setTogglingRegion(item)
     try {
       // `nextRegionEnabled` unwraps the settings section itself and returns the
-      // bare `regions` map, which is exactly what this field write needs.
-      await settingsScope.set('regions', nextRegionEnabled(settingsScope.getSnapshot().value, item, enabled))
+      // bare `regions` map, which is the whole-slot merge this write starts from.
+      const regions = nextRegionEnabled(settingsScope.getSnapshot().value, item, enabled) as Record<string, unknown>
+      const slot = regions[item]
+      await writeRegionEnabled(
+        settingsScope,
+        item,
+        enabled,
+        typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
+      )
     } finally {
       if (mounted.current) setTogglingRegion(undefined)
     }

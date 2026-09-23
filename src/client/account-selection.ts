@@ -208,3 +208,41 @@ export async function writeRegionModels(
       && stored.every((id, index) => id === written[index])
   })
 }
+
+/**
+ * Switch one region's provider off or on, with the same landed-check as every
+ * other settings write.
+ *
+ * This exists because the toggle was the ONE write that still called
+ * `scope.set()` directly. On the affected 0.1.7 deployments that scope settles
+ * without storing anything, so flipping a provider off appeared to work and
+ * then silently reverted — the exact silent-failure mode
+ * {@link writeAccountSlot} and {@link writeRegionModels} were written to
+ * prevent for their own fields. Routing it through {@link writeField} gives it
+ * the same scope-first-then-Host-endpoint path, so the switch either lands or
+ * reports why it did not.
+ *
+ * The write carries the region's whole slot through untouched — only `enabled`
+ * changes — so the user's directory, model picks, image opt-ins and budgets
+ * survive the round trip. The Host withdraws or restores the provider route on
+ * the next `onChange`, which is what actually removes it from DSH's model
+ * picker.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param region - the region being switched.
+ * @param enabled - the desired state.
+ * @param slot - the region's COMPLETE next slot (the caller owns the snapshot
+ *   read and the whole-slot merge, so this stays a pure write).
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writeRegionEnabled(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  enabled: boolean,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['enabled'] === enabled
+  })
+}

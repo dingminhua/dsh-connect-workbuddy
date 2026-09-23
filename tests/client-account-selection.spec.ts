@@ -3,6 +3,7 @@ import {
   configuredAccountsOf,
   WorkBuddySettingsWriteError,
   writeAccountSlot,
+  writeRegionEnabled,
   writeRegionModels,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
@@ -156,5 +157,59 @@ describe('writeRegionModels', () => {
   it('accepts a save that lands', async () => {
     const { scope } = scopeWith({})
     await expect(writeRegionModels(scope, 'global', payload)).resolves.toBeUndefined()
+  })
+})
+
+describe('writeRegionEnabled', () => {
+  /** The region's whole slot, as the card builds it from one snapshot read. */
+  const slot = (enabled: boolean): Record<string, unknown> => ({
+    enabled,
+    lastCatalog: [{ id: 'glm-5.3' }],
+    enabledModelIds: ['glm-5.3'],
+  })
+
+  it('verifies the flag actually landed instead of trusting a resolved set()', async () => {
+    // THE regression this guards. The toggle used to call `scope.set()`
+    // directly, so on a scope that settles without storing anything the switch
+    // appeared to work and then silently reverted — the same silent-failure
+    // mode the account and catalog writes were already protected against.
+    // `locked` reproduces exactly that scope.
+    const { scope } = scopeWith({ regions: { cn: slot(true) } }, { locked: true })
+    await expect(writeRegionEnabled(scope, 'cn', false, slot(false)))
+      .rejects.toThrow(WorkBuddySettingsWriteError)
+  })
+
+  it('names the field it failed on', async () => {
+    const { scope } = scopeWith({}, { locked: true })
+    await expect(writeRegionEnabled(scope, 'cn', false, slot(false)))
+      .rejects.toMatchObject({ field: 'regions' })
+  })
+
+  it('accepts a switch that lands', async () => {
+    const { scope, document } = scopeWith({ regions: { cn: slot(true) } })
+    await expect(writeRegionEnabled(scope, 'cn', false, slot(false))).resolves.toBeUndefined()
+    const regions = document()['regions'] as Record<string, { enabled?: boolean }>
+    expect(regions.cn?.enabled).toBe(false)
+  })
+
+  it('carries the rest of the slot through, so a switch keeps the directory', async () => {
+    // Only `enabled` may change: the user's model picks, image opt-ins and
+    // context budgets ride in the same object and must survive the round trip.
+    const { scope, document } = scopeWith({ regions: {} })
+    await writeRegionEnabled(scope, 'cn', false, slot(false))
+    const regions = document()['regions'] as Record<string, { lastCatalog?: unknown, enabledModelIds?: unknown }>
+    expect(regions.cn?.lastCatalog).toEqual([{ id: 'glm-5.3' }])
+    expect(regions.cn?.enabledModelIds).toEqual(['glm-5.3'])
+  })
+
+  it('rejects a slot that exists but carries the WRONG flag', async () => {
+    // A present slot is not proof: a shallow check would pass here while the
+    // provider stayed switched on.
+    const scope: WorkBuddyAccountScope = {
+      getSnapshot: () => ({ value: { regions: { cn: { enabled: true } } } }),
+      set: async () => {},
+    }
+    await expect(writeRegionEnabled(scope, 'cn', false, { enabled: true }))
+      .rejects.toThrow(WorkBuddySettingsWriteError)
   })
 })
