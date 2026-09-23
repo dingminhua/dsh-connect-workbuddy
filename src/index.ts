@@ -619,20 +619,57 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  ;(ctx as any).inject(['settings'], (sctx: any) => {
-    if (typeof sctx.settings?.configure === 'function') {
-      sctx.settings.configure({ auto: true }, ctx.fiber)
-    } else if (typeof sctx.settings?.installSection === 'function') {
-      sctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+  // Settings registration differs per DSH line, and the two are NOT
+  // interchangeable:
+  //
+  //   0.1.5  `SettingsProvider.installSection(owner, ns, schema, entry, hooks)`
+  //          registers this plugin's namespace;
+  //   0.1.7  `SettingsForms` dropped `installSection` and exposes
+  //          `configure({auto}, owner)` instead.
+  //
+  // Calling `installSection` unconditionally made `apply()` throw on 0.1.7
+  // (`ctx.settings.installSection is not a function`), which took down the
+  // WHOLE plugin — no providers, no card. So each call is probed for the
+  // method it needs.
+  //
+  // Both calls go through a narrow local type rather than a blanket `any`: the
+  // installed typings describe the 0.1.5 line only, so `configure` is not on
+  // `SettingsProvider` and the event name below is not in `Events`. Naming the
+  // shapes here keeps the widening honest and reviewable.
+  interface SettingsShapes {
+    configure?: (presentation: { auto?: boolean }, owner?: unknown) => unknown
+    installSection?: (
+      owner: unknown,
+      ns: SettingsNamespace,
+      schema: unknown,
+      entry: unknown,
+      hooks: unknown,
+    ) => unknown
+  }
+
+  // `inject` rather than a direct read: `settings` is an optional service, and
+  // the callback runs once it is actually present.
+  ctx.inject(['settings'], (sctx) => {
+    const settings = sctx.settings as unknown as SettingsShapes
+    if (typeof settings.configure === 'function') {
+      settings.configure({ auto: true }, ctx.fiber)
+      return
+    }
+    if (typeof settings.installSection === 'function') {
+      settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
         setSource(source: () => Config) { current = source },
         onChange() { applySelection(current()) },
       })
     }
   })
 
-  ;(ctx as any).on('loader/volatile-update', () => {
-    applySelection(current())
-  })
+  // 0.1.7 hands volatile values back as live references and announces each
+  // write on this event, so the card's selections are re-read after one. The
+  // event does not exist on 0.1.5, which never emits it.
+  ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
+    .on('loader/volatile-update', () => {
+      applySelection(current())
+    })
 
   // Initial wiring: selections, per-region catalogs from the saved state.
   applySelection(config)

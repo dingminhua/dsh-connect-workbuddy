@@ -214,6 +214,15 @@ async function searchedPaths(
   }
 }
 
+/** Reads schemastery's internal `meta.volatile` marker for one top-level field. */
+function volatileFlagOf(field: string): boolean {
+  const dict = (Config as unknown as {
+    dict?: Record<string, { meta?: { volatile?: unknown } }>
+  }).dict
+  return dict?.[field]?.meta?.volatile === true
+}
+
+
 /**
  * Assemble one region's card document. `region` is the tab the card is on;
  * the region-scoped store already answers with only that region's accounts,
@@ -321,11 +330,13 @@ export async function workBuddyWebStatus(
       Object.entries(deps.contextBudgets(region)).filter(([, value]) => typeof value === 'number'),
     ) as Record<string, number>,
     // Host-side liveness probe for the settings write gate (diagnostic; see
-    // the __save endpoint for why this is worth exposing).
+    // the __save endpoint for why this is worth exposing). `dict`/`meta` are
+    // schemastery internals the public typings do not describe, so the shape is
+    // named here rather than widened to `any`.
     diagVolatile: {
-      regions: (Config as any).dict?.regions?.meta?.volatile === true,
-      accounts: (Config as any).dict?.accounts?.meta?.volatile === true,
-      authFile: (Config as any).dict?.authFile?.meta?.volatile === true,
+      regions: volatileFlagOf('regions'),
+      accounts: volatileFlagOf('accounts'),
+      authFile: volatileFlagOf('authFile'),
     },
     ...account,
     ...creditsResult.status === 'fulfilled'

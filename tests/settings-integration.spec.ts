@@ -13,6 +13,9 @@ import * as WorkBuddy from '../src/index.ts'
  */
 let preloadedDocument: Record<string, unknown> = {}
 
+/** What the 0.1.7-shaped service received, so the test can prove the path taken. */
+let configureCalls: { auto?: boolean }[] = []
+
 class MemorySettings extends SettingsProvider {
   readonly writable = true
   private storedDocument: Record<string, unknown> = {}
@@ -33,6 +36,7 @@ afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
   preloadedDocument = {}
+  configureCalls = []
 })
 
 /**
@@ -734,5 +738,74 @@ describe('region on/off switch (issue #11-style region toggle)', () => {
     })
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * The settings SERVICE CHANGED SHAPE between the two DSH lines, and the plugin
+ * must mount on both:
+ *
+ *   - 0.1.5 ships `SettingsProvider`, whose `installSection(owner, ns, schema,
+ *     entry, hooks)` registers the plugin's namespace;
+ *   - 0.1.7 ships `SettingsForms`, which dropped `installSection` entirely and
+ *     exposes `configure({auto}, owner)` instead.
+ *
+ * The plugin used to call `installSection` unconditionally, so on 0.1.7 `apply()`
+ * threw `ctx.settings.installSection is not a function` and the ENTIRE plugin
+ * failed to mount — not a degraded card, no providers at all. That is the
+ * regression these cases pin: the two lines are exercised separately, because a
+ * suite that only ever mounts the 0.1.5 shape cannot see the 0.1.7 branch break.
+ */
+describe('settings-service shape compatibility (0.1.5 vs 0.1.7)', () => {
+  /**
+   * The 0.1.7-alpha.2 shape: `configure()` present, `installSection()` gone.
+   *
+   * Cordis mounts a plugin CLASS (`ctx.plugin(Klass)`) and constructs it, so the
+   * shape is expressed as a class here — an instance is rejected outright
+   * ("expect function or object with an apply method").
+   */
+  class FormsOnlySettings extends Service {
+    constructor(ctx: Context) {
+      super(ctx, 'settings')
+      configureCalls.push({})
+    }
+    configure(presentation: { auto?: boolean }, _owner?: unknown): () => void {
+      configureCalls[configureCalls.length - 1] = presentation
+      return () => {}
+    }
+    describe(): unknown[] { return [] }
+    prepareDocument(): Promise<string> { return Promise.resolve('') }
+    apply(): void {}
+  }
+
+  it('mounts on a 0.1.7-shaped service that has configure() but no installSection()', async () => {
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(FormsOnlySettings)
+    // The pre-fix failure mode was a THROW here; awaiting it is the assertion.
+    await ctx.plugin(WorkBuddy, { authFile })
+
+    // Both providers still come up: the plugin degraded nothing, it took the
+    // other registration path.
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
+    // ...and it really did go through `configure`, not silently skip settings.
+    expect(configureCalls).toHaveLength(1)
+    expect(configureCalls[0]?.auto).toBe(true)
+  })
+
+  it('still uses installSection() when the service has one (the 0.1.5 path)', async () => {
+    // The mirror image: a service that offers BOTH must keep taking the 0.1.5
+    // branch, or the namespace would never be registered on that line.
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+
+    await expect.poll(() => ctx.settings.describe().some(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBe(true)
   })
 })
