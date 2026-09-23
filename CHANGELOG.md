@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.0.11 (2026-09-23)
+
+### Bug Fixes
+
+- **macOS 上「App 装着、账号也登录着，插件却说你没登录」**（issue #15，真机复现）。WorkBuddy 桌面端 **5.6.0 起**把 auth 文件的 token 字段改为 `$wbEncrypted` 加密信封，**macOS 与 Windows 同样如此**——此前「加密是 Windows 先行」的判断已不成立。而解密的密钥只能向本机 App 现取，于是「能不能找到 App」直接决定了「读不读得出凭据」。
+
+  - **根因：macOS 可执行文件名是写死的，而且写错了。** `workbuddyAppExecutableCandidates()` 把路径拼成 `<bundle>/Contents/MacOS/WorkBuddy`，但两个真实 bundle（`WorkBuddy.app` / `WorkBuddy AI.app`）的 `CFBundleExecutable` 都是 **`Electron`**——该路径并不存在。于是 `findWorkbuddyAppExecutable()` 返回 undefined，密钥取不到，加密凭据一律读不出来。真机实测：修正后 `doctor` 从 `unavailable` 变为 `available (/Applications/WorkBuddy.app/Contents/MacOS/Electron)`，`keyId=9127dea1b44020a7` 与真实构建一致。
+  - **二进制名改为向 bundle 自己问**（新增 `macosBundleExecutable()`，读 `Info.plist` 的 `CFBundleExecutable`）。App 改名、或换个二进制名，都不再需要改插件；plist 缺失或名字为空、含路径分隔符、为 `.`/`..` 时返回 undefined，**绝不猜一个路径**（plist 是磁盘数据，穿越会让 `execFile` 拿到 bundle 之外的东西）。
+  - **候选补齐国际版与「App 被归入子目录」两种情况**：新增 `WorkBuddy AI.app`（只装国际版的机器此前零命中），并对 `/Applications` 与 `~/Applications` **向下扫一层**，覆盖 `/Applications/IDE/WorkBuddy.app` 这类整理习惯。扫到的候选必须先用 `CFBundleIdentifier` 确认身份（`com.tencent.workbuddy*` / `com.workbuddy.*`，按点号边界匹配）才会被使用——**每个 Electron 应用的二进制都叫 `Electron`**，只按名字匹配就有可能启动另一个产品；拒绝一个候选只损失一次回退，接受错的那个是在用户机器上跑别的程序。这条有独立测试钉住。
+  - **Windows 候选补 `%LOCALAPPDATA%\WorkBuddy\WorkBuddy.exe`**：此前只探 `%LOCALAPPDATA%\Programs\WorkBuddy` 与两个 `Program Files`，装在用户级目录（同源 issue 里就有 `E:\WorkBuddy\WorkBuddy.exe` 这类自定义位置）的机器找不到 App。
+  - **macOS 分支改为可注入（`readBundleExecutable`）**：它与 `platform`/`home`/`env` 同一性质——会读真实文件系统，不留缝的话「期望的候选列表」会取决于跑测试的机器恰好装没装 App（本机装了、CI 没装），正是 2.0.6 已经修过的那类红灯。
+
+- **「未登录」与「登录信息读不出来」不再共用同一句话**（同一 issue 的用户可见症状）。这两件事在 `readAll()` 之后都表现为「账号数为 0」，此前一律抛 `no signed-in WorkBuddy account found … sign in once in the WorkBuddy desktop app`。但加密文件读不出来时用户**本来就是登录着的**，那句「重新登录一次」指向的是唯一无效的动作——issue #15 报告者的原话正是这句。
+
+  - 新增 `WorkBuddyEncryptedCredentialError`（以 `ENCRYPTED_CREDENTIAL_CODE` 标记而非 `instanceof`，跨打包边界仍可靠，与 `WorkBuddyCredentialRejectedError` 同一约定）：`resolve()` 在**失败路径上**跑一次 `diagnose()`，只要有一个桌面文件归因 `encrypted`，就改抛这条，文案给出「安装桌面 App，或用 `WORKBUDDY_APP_EXECUTABLE` 指定其位置」，并明说重新登录无效。**健康路径一个探针都不跑。**
+  - **诊断自身抛错不得顶掉真正的错误**：探测会读盘，失败时退回原来那句通用文案（有测试）。
+  - **顺带删掉一句不可达的过滤**：初版写了 `reason === 'encrypted' && source === 'desktop'`，但 `encrypted` 只由 `probeAuthFile()` 赋予，而插件自有副本从不经过它（按自有文档形状解析，损坏时是 `invalid`/`unreadable`）——该条件永远为真。留着它会让代码看起来在防守一件它并没防的事；测试改为直接钉住真正的不变量（自有副本必须归 `invalid`，以及不存在 `source === 'dsh'` 的 `encrypted`），变异验证确认可咬住。
+  - **卡片文案同步**：`signedOutNotice()` 让 `encrypted` 抢在通用提示之前（新增 `row.signedOutEncrypted`），因为通用提示说的正是那个无效动作。此前该建议藏在折叠区里的 `searchedEncryptedNotice`，而**段落**仍写着「重新登录一次」——用户多半只读那一段。既然段落已经承担，折叠区里那份重复提示连同其专属样式一并删除（2.0.10 刚立下的「段落说结论、列表给细节」分工，这次是它的延伸）。
+  - 优先级：`selectionLost` > `wrong-region` > `encrypted` > 通用提示。`wrong-region` 仍排在前面——那种情况下凭据是可读的，切个标签页即可，比装 App 更省事。
+
+### Tests
+
+测试总数 300 → 316（新增 16 例）。
+
+- `tests/at-rest.spec.ts`（+10 例）：`macosBundleExecutable` 必须读出 `Electron` 而不是按 App 名猜（**直接钉住本次根因**）、bundle 缺失时返回 undefined 而非猜路径、**四种穿越名（`../Evil` / `..` / `.` / `sub/Bin`）一律拒绝**、无 `CFBundleExecutable` 时返回 undefined；`isWorkbuddyBundle` 认国内版与国际版两个 id、**拒绝另一个 Electron 应用**（含 `com.workbuddyish` / `org.workbuddyevil` 这类仅前缀相似的）、拒绝不可读与无 id 的 bundle；候选列表含国际版与用户级目录、Windows 用户级安装被探到。macOS 相关断言全部走注入的 bundle reader，**套件结果不依赖跑测试的机器装没装 App**。
+- `tests/auth.spec.ts`（+5 例）：加密文件 + 取不到密钥必须抛 `WorkBuddyEncryptedCredentialError`、`paths` 指向该文件、文案含 `WORKBUDDY_APP_EXECUTABLE` 且**明确不含**「sign in again」与通用那句（对渲染出的字符串断言，不是对输入）；真正没有凭据的机器仍走通用文案；密钥可用时照常解析成功；**自有副本损坏必须归 `invalid` 且不得产生加密结论**；`diagnose()` 抛错时退回通用文案。
+- `tests/searched-paths.spec.ts`（+1 例，改 2 例）：加密原因必须在**段落**里被回答、且不回落去回显 `resolve()` 的消息；对渲染后的字符串断言「重新登录」这句话没有以任何形式残留。删掉了 `SearchedView.encrypted` 的两条断言——该字段已随折叠区那份重复提示一并删除（见下）。
+
+**变异验证（实测）**：共 8 处定向改写，7 处被测试咬住。**其中 1 处（`source === 'desktop'` 过滤）逃脱**——正因如此才发现它是不可达的死代码并删除，同时把测试改为钉住真正的不变量，再次变异确认可咬住。其余：把 macOS 二进制名改回 `'WorkBuddy'`、从候选里删掉 `WorkBuddy AI.app`、让身份校验恒为 `true`、关掉加密归类、去掉穿越防护、把 `encrypted` 移出段落优先级、调换 `wrong-region` 与 `encrypted` 的次序——逐一挂掉对应用例。
+
+**顺带清掉两处「看着像在防守、其实没有消费者」的代码**（与上面那句同源）：`describeMissingCredential()` 里不可达的 `source === 'desktop'` 过滤，以及 `SearchedView.encrypted`。后者的消费者是折叠区那份重复提示；提示既已由段落取代，字段留着只会让「列表」与「段落」在下次改动时再次漂移。
+
+### Docs
+
+- `README.md` / `README.en.md`：已知限制改口径——加密自 **5.6.0** 起、**macOS 同样在内**；补「二进制名向 bundle 现问」「含国际版 + 子目录扫描 + 身份校验」「未登录 ≠ 读不出来」三条。
+- `docs/DESIGN.md` §6 风险与边界：新增第 6 条，记录本次取证结论与三个决定（向 bundle 问名字、扫子目录但必须校验身份、失败分类下沉到 `resolve()`），并记下那句不可达过滤为何被删。
+
 ## 2.0.10 (2026-09-22)
 
 ### Bug Fixes

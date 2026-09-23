@@ -6,11 +6,12 @@ import {
   authFileName,
   defaultDesktopAuthDirs,
   expiryToMs,
+  isEncryptedCredentialError,
   parseWorkBuddyAuth,
   workbuddyAccountId,
   WorkBuddyCredentialStore,
 } from '../src/auth.ts'
-import type { WorkBuddyCredential } from '../src/auth.ts'
+import type { WorkBuddyCredential, WorkBuddyEncryptedCredentialError } from '../src/auth.ts'
 
 let root: string
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'wb-auth-')) })
@@ -831,5 +832,117 @@ describe('account names are names, not identifiers', () => {
     const credential = await store.resolve()
     expect(credential.uin).toBe('100000000001')
     expect((await store.accounts())[0]?.id).toBe(workbuddyAccountId(credential))
+  })
+})
+
+describe('resolve() distinguishes an unreadable credential from being signed out', () => {
+  /**
+   * A desktop document whose token fields are encrypted, in the shape
+   * WorkBuddy writes from 5.6.x (`{$wbEncrypted:1,envelope}`). The envelope is
+   * never opened here — every case below is about the KEY being unavailable,
+   * which is the state a user hits when the desktop app cannot be located.
+   */
+  function encryptedDoc(): Record<string, unknown> {
+    return accountDoc({
+      auth: {
+        accessToken: { $wbEncrypted: 1, envelope: 'not-base64-envelope' },
+        refreshToken: { $wbEncrypted: 1, envelope: 'not-base64-envelope' },
+        domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() + 86_400_000,
+      },
+    })
+  }
+
+  it('reports the encrypted cause instead of telling the user to sign in again', async () => {
+    // The reported bug: a signed-in user whose app could not be found was told
+    // to sign in again — the one action that cannot possibly help, because the
+    // credential is present and it is the KEY that is missing.
+    const path = await writeAuth(LIVE, encryptedDoc())
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+      resolveAtRestKey: async () => undefined,
+    })
+    const error = await store.resolve().then(() => undefined, (e: unknown) => e)
+    expect(isEncryptedCredentialError(error)).toBe(true)
+    expect((error as WorkBuddyEncryptedCredentialError).paths).toEqual([path])
+    const message = (error as Error).message
+    expect(message).toContain('WORKBUDDY_APP_EXECUTABLE')
+    // The contradictory instruction must be absent, not merely outranked.
+    expect(message).not.toContain('sign in again in the WorkBuddy desktop app')
+    expect(message).not.toContain('no signed-in WorkBuddy account found')
+  })
+
+  it('still says "sign in" when the machine genuinely has no credential', async () => {
+    // The classification must not swallow the ordinary signed-out case: there
+    // the generic advice IS correct.
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, 'absent')],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const error = await store.resolve().then(() => undefined, (e: unknown) => e)
+    expect(isEncryptedCredentialError(error)).toBe(false)
+    expect((error as Error).message).toContain('no signed-in WorkBuddy account found')
+  })
+
+  it('stays on the generic message when the key IS available and the file opens', async () => {
+    // A readable credential means resolve() succeeds; this pins that the new
+    // failure branch cannot fire on the healthy path.
+    await writeAuth(LIVE, accountDoc({}))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    expect((await store.resolve()).accessToken).toBe('token-alpha')
+  })
+
+  it('never lets a damaged PLUGIN-OWNED copy produce the encrypted verdict', async () => {
+    // Why this matters: the encrypted verdict tells the user to install the
+    // desktop app. The plugin's own refreshed copy is NOT written by that app —
+    // it is the plugin's own storage — so if such a copy could report
+    // `encrypted`, a corrupt plugin file would send the user to reinstall an
+    // app that is already there.
+    //
+    // What actually guarantees this is the CLASSIFICATION, not a source filter:
+    // plugin-owned copies are parsed as the plugin's own document shape and a
+    // damaged one reports `invalid`. So assert the reason itself — that reason
+    // is what makes `encrypted` desktop-only, and the error path keys on the
+    // reason alone.
+    const ownPath = join(root, 'own-encrypted.json')
+    await writeFile(ownPath, JSON.stringify({
+      version: 1,
+      credential: {
+        accessToken: { $wbEncrypted: 1, envelope: 'x' },
+        refreshToken: { $wbEncrypted: 1, envelope: 'x' },
+        domain: 'www.codebuddy.cn',
+      },
+    }), 'utf8')
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, 'absent')],
+      ownPath,
+      legacyOwnPath: join(root, 'absent-legacy.json'),
+      refresh: async () => ({ accessToken: 'never' }),
+      resolveAtRestKey: async () => undefined,
+    })
+    const { failures } = await store.diagnose()
+    const own = failures.find(failure => failure.path === ownPath)
+    expect(own?.source).toBe('dsh')
+    expect(own?.reason).toBe('invalid')
+    expect(failures.filter(failure => failure.reason === 'encrypted' && failure.source === 'dsh')).toEqual([])
+
+    const error = await store.resolve().then(() => undefined, (e: unknown) => e)
+    expect(isEncryptedCredentialError(error)).toBe(false)
+  })
+
+  it('falls back to the generic message when diagnostics themselves fail', async () => {
+    // Diagnostics read the filesystem; a throw there must not replace the real
+    // error with a confusing one.
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, 'absent')],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    store.diagnose = async () => { throw new Error('probe exploded') }
+    const error = await store.resolve().then(() => undefined, (e: unknown) => e)
+    expect((error as Error).message).toContain('no signed-in WorkBuddy account found')
   })
 })

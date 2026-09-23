@@ -15,6 +15,12 @@
  *   一个 store，账号、刷新、选择完全隔离；插件自有刷新副本也按区域分
  *   文件（`.workbuddy-auth.<region>.json`），双账号同时在线互不覆盖，
  *   旧的单文件 `.workbuddy-auth.json` 作为迁移源保留读取。
+ *   另（issue #15）：`resolve()` 不再把「没登录」与「有登录但凭据读不出来」
+ *   合并成同一句话。后者（加密字段 + 取不到密钥）改为抛
+ *   `WorkBuddyEncryptedCredentialError`，给出「装 App / 用
+ *   WORKBUDDY_APP_EXECUTABLE 指定」这条**可执行**的建议——对已登录的用户说
+ *   「请重新登录一次」指向的是唯一无效的动作。判定只在失败路径上跑一次
+ *   `diagnose()`，健康路径不付任何代价。
  *
  * @module dsh-connect-workbuddy/auth
  */
@@ -90,6 +96,54 @@ export interface WorkBuddyAuthStatus {
   nickname?: string
   domain?: string
   source?: 'desktop' | 'dsh'
+}
+
+/**
+ * Marker for a credential that EXISTS but could not be decrypted.
+ *
+ * Identified by {@link ENCRYPTED_CREDENTIAL_CODE} rather than `instanceof`, so
+ * the check keeps working when the thrower and the caller end up in different
+ * module instances (bundled host half vs. a test's source import) — the same
+ * convention `WorkBuddyCredentialRejectedError` uses.
+ */
+export const ENCRYPTED_CREDENTIAL_CODE = 'WORKBUDDY_ENCRYPTED_CREDENTIAL'
+
+/**
+ * The user IS signed in, but the credential file cannot be read.
+ *
+ * This exists because "signed out" and "signed in with an unreadable credential"
+ * resolve to the same observable state — zero accounts — and were therefore
+ * reported with the same message. That message told a correctly signed-in user
+ * to sign in again, which cannot possibly help: from WorkBuddy 5.6.x the desktop
+ * app encrypts its token fields, and reading them requires asking the installed
+ * app for its key. If that app cannot be located, the fix is to point the plugin
+ * at it (`WORKBUDDY_APP_EXECUTABLE`), never to sign in again.
+ *
+ * No token material is carried: only the paths and the environment variable.
+ */
+export class WorkBuddyEncryptedCredentialError extends Error {
+  readonly code = ENCRYPTED_CREDENTIAL_CODE
+  /** Files that hold an encrypted credential, for the user to recognize. */
+  readonly paths: readonly string[]
+
+  constructor(paths: readonly string[]) {
+    const where = paths.length > 0 ? paths.join(', ') : 'the credential file'
+    super(
+      `workbuddy: your WorkBuddy sign-in is present but encrypted, so it cannot be read`
+      + ` (${where}). The WorkBuddy desktop app must be present to hand over its key;`
+      + ` install it, or set ${WORKBUDDY_APP_EXECUTABLE_ENV} to its executable if it lives elsewhere.`
+      + ` Signing in again will not change this.`,
+    )
+    this.name = 'WorkBuddyEncryptedCredentialError'
+    this.paths = paths
+  }
+}
+
+/** Whether an error reports an unreadable (encrypted) credential. */
+export function isEncryptedCredentialError(value: unknown): value is WorkBuddyEncryptedCredentialError {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { code?: unknown }).code === ENCRYPTED_CREDENTIAL_CODE
 }
 
 /** Constructor options; only {@link refresh} is required. */
@@ -918,12 +972,7 @@ export class WorkBuddyCredentialStore {
   async resolve(): Promise<WorkBuddyCredential> {
     const credential = await this.current()
     if (credential === undefined) {
-      const candidates = this.resolveDesktopCandidates()
-      const desktop = candidates.length > 0 ? candidates.join(' or ') : '(no desktop path on this platform)'
-      throw new Error(
-        `workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app`
-        + ` (expected ${desktop} or ${WORKBUDDY_AUTH_FILE_ENV}), or refresh an existing session`,
-      )
+      throw await this.describeMissingCredential()
     }
     if (!this.needsRefresh(credential)) return credential
     this.inflight ??= this.refreshNow(credential)
@@ -931,6 +980,46 @@ export class WorkBuddyCredentialStore {
         this.inflight = undefined
       })
     return this.inflight
+  }
+
+  /**
+   * WHY no credential resolved, as the error to throw.
+   *
+   * `resolve()` seeing zero accounts has two very different causes, and the
+   * generic "sign in once" message is only correct for one of them. When a
+   * probe finds a credential file whose fields are encrypted and the key could
+   * not be obtained, the user is signed in and re-authenticating cannot help —
+   * so that case gets {@link WorkBuddyEncryptedCredentialError} instead, naming
+   * the file and the environment variable that actually fixes it.
+   *
+   * The probe is only run on the failure path, so the healthy case pays nothing.
+   * A probe that itself throws must not replace the real error, hence the
+   * fallback to the generic message.
+   */
+  private async describeMissingCredential(): Promise<Error> {
+    let failures: readonly WorkBuddyCandidateFailure[] = []
+    try {
+      failures = (await this.diagnose()).failures
+    } catch {
+      // Diagnostics are best-effort: never let them mask the sign-out error.
+    }
+    // `encrypted` is a DESKTOP-only reason by construction: `probeAuthFile` is
+    // what assigns it, and the plugin-owned copies never go through it (they
+    // are parsed as the plugin's own document shape, and a damaged one reports
+    // `invalid` / `unreadable`). So no source filter is needed here — and the
+    // one this replaced was unreachable, which made it read like a guard while
+    // guarding nothing.
+    const encrypted = failures
+      .filter(failure => failure.reason === 'encrypted')
+      .map(failure => failure.path)
+    if (encrypted.length > 0) return new WorkBuddyEncryptedCredentialError(encrypted)
+
+    const candidates = this.resolveDesktopCandidates()
+    const desktop = candidates.length > 0 ? candidates.join(' or ') : '(no desktop path on this platform)'
+    return new Error(
+      `workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app`
+      + ` (expected ${desktop} or ${WORKBUDDY_AUTH_FILE_ENV}), or refresh an existing session`,
+    )
   }
 
   /** Read-only sign-in summary; never refreshes and never throws. */

@@ -62,8 +62,6 @@ export interface SearchedView {
    * behind a second click.
    */
   missingOpen: boolean
-  /** Whether the encrypted-specific advice applies. */
-  encrypted: boolean
   /** Total probed entries, for the summary label. */
   total: number
 }
@@ -74,6 +72,12 @@ export interface SearchedView {
  * Order within each group is preserved from the Host: the store reports
  * candidates in probe order, which is meaningful (the live file before its
  * timestamped backups).
+ *
+ * There is deliberately no `encrypted` flag here. There used to be, for a
+ * notice rendered inside the list; that notice is gone because
+ * {@link signedOutNotice} now answers the encrypted cause in the paragraph, so
+ * the flag would have had no consumer — and a derived field kept "just in
+ * case" is how the list and the paragraph drift apart again.
  */
 export function searchedView(items: readonly WorkBuddyWebSearchPath[]): SearchedView {
   const interesting = items.filter(item => INTERESTING_REASONS.includes(item.reason))
@@ -82,7 +86,6 @@ export function searchedView(items: readonly WorkBuddyWebSearchPath[]): Searched
     interesting,
     missing,
     missingOpen: interesting.length === 0,
-    encrypted: items.some(item => item.reason === 'encrypted'),
     total: items.length,
   }
 }
@@ -141,6 +144,12 @@ export interface SignedOutNotice {
  *
  * `selectionLost` still wins outright: there the tokens are healthy and the
  * advice is to re-pick an account, which no path list can replace.
+ *
+ * `encrypted` also outranks the generic hint, and for the same reason
+ * `wrong-region` does: the generic copy tells the user to sign in again, which
+ * is precisely the action that cannot work when the credential exists but is
+ * encrypted. Leaving it in the collapsed list meant the headline contradicted
+ * the detail below it — and the headline is the only part most users read.
  */
 export function signedOutNotice(input: {
   selectionLost: boolean
@@ -153,6 +162,12 @@ export function signedOutNotice(input: {
   // instead of burying the fix in a collapsed list.
   if (input.searched.some(item => item.reason === 'wrong-region')) {
     return { key: 'row.signedOutWrongRegion' }
+  }
+  // Ranked below wrong-region because a readable sign-in on the other tab is a
+  // conclusive, cheaper fix; ranked above the generic hint because "sign in
+  // again" is the one instruction that cannot help here.
+  if (input.searched.some(item => item.reason === 'encrypted')) {
+    return { key: 'row.signedOutEncrypted' }
   }
   if (input.searched.length > 0) return { key: 'row.signedOutHint' }
   // Nothing was probed, so the Host's message is the only account we have of

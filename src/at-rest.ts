@@ -1,9 +1,8 @@
 /**
  * WorkBuddy desktop "at-rest" credential decryption.
  *
- * The WorkBuddy desktop app (2.x, Windows builds first) no longer stores
- * `auth.accessToken` / `auth.refreshToken` as plain strings. It now writes a
- * field wrapper:
+ * From 5.6.0 the WorkBuddy desktop app no longer stores `auth.accessToken` /
+ * `auth.refreshToken` as plain strings. It writes a field wrapper:
  *
  *   { "$wbEncrypted": 1, "envelope": "<base64 of a JSON envelope>" }
  *
@@ -24,12 +23,22 @@
  * payload, and caches it in memory for the process lifetime. Nothing is ever
  * written to disk, and the payload is never logged.
  *
+ * 改动：**「macOS 也加密」这一事实**（issue #15 真机取证）。本模块原先假设该
+ *   policy 是 Windows 先行、macOS 只是「将来可能」，于是 macOS 的可执行文件
+ *   路径用 App 名拼成 `<bundle>/Contents/MacOS/WorkBuddy`——而两个真实 bundle
+ *   的 `CFBundleExecutable` 都是 `Electron`，该路径并不存在。结果是 macOS 上
+ *   加密凭据**永远**取不到密钥，用户却被报成「未登录」。现在二进制名向 bundle
+ *   自己问（`macosBundleExecutable()`），候选含国际版 `WorkBuddy AI.app`，
+ *   并允许 App 被归入 applications 目录的子目录——扫到的候选必须先用
+ *   `CFBundleIdentifier` 确认身份才 `execFile`，因为**每个 Electron 应用的
+ *   二进制都叫 `Electron`**，只按名字匹配就可能启动另一个产品。
+ *
  * @module dsh-connect-workbuddy/at-rest
  */
 
 import { execFile } from 'node:child_process'
 import { createDecipheriv, createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -67,8 +76,20 @@ export const WORKBUDDY_APP_EXECUTABLE_ENV = 'WORKBUDDY_APP_EXECUTABLE'
 /** How long the app is given to answer with its key payload. */
 const KEY_FETCH_TIMEOUT_MS = 10_000
 
-/** File name of the WorkBuddy desktop executable, per platform. */
+/** File name of the WorkBuddy desktop executable on Windows. */
 const APP_EXECUTABLE_NAME = 'WorkBuddy.exe'
+
+/**
+ * macOS bundles the desktop app may be installed as, in probe order.
+ *
+ * `WorkBuddy.app` is the domestic build; `WorkBuddy AI.app` is the
+ * international one, and a machine may carry either or both. The user-level
+ * `~/Applications` location is included because macOS lets an app live there,
+ * and installs have been observed under a subdirectory of /Applications too —
+ * hence {@link findWorkbuddyAppExecutable}'s parent scan, which covers those
+ * without guessing any particular folder name.
+ */
+const MACOS_APP_BUNDLE_NAMES: readonly string[] = ['WorkBuddy.app', 'WorkBuddy AI.app']
 
 function encodeUint32(value: number): Buffer {
   const bytes = Buffer.allocUnsafe(4)
@@ -195,17 +216,59 @@ export function openEncryptedField(field: WorkBuddyEncryptedField, key: Buffer):
 }
 
 /**
+ * The executable inside a macOS app bundle, read from the bundle's own
+ * `Info.plist`.
+ *
+ * The binary is NOT reliably named after the app: the WorkBuddy bundles ship
+ * with `CFBundleExecutable` set to `Electron`, so a path assembled as
+ * `<bundle>/Contents/MacOS/WorkBuddy` does not exist and the app looks absent
+ * even when it is installed in the default location. Because the bundle
+ * documents the real name, asking it is both correct and robust to a future
+ * build that renames the binary.
+ *
+ * Returns undefined when the plist is absent, unreadable, or carries no usable
+ * name — never a guessed path, so a caller can keep probing.
+ */
+export function macosBundleExecutable(bundle: string): string | undefined {
+  let plist: string
+  try {
+    plist = readFileSync(join(bundle, 'Contents', 'Info.plist'), 'utf8')
+  } catch {
+    return undefined
+  }
+  // The plist is XML for every bundle observed; match the key's following
+  // <string> without pulling in a plist parser. A name is rejected when it is
+  // empty or would escape Contents/MacOS ('.', '..', or a path separator).
+  const match = /<key>\s*CFBundleExecutable\s*<\/key>\s*<string>([^<]*)<\/string>/u.exec(plist)
+  const name = match?.[1]?.trim()
+  if (name === undefined || name === '' || name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+    return undefined
+  }
+  return join(bundle, 'Contents', 'MacOS', name)
+}
+
+/**
  * Candidate paths of the WorkBuddy desktop executable, in probe order.
  *
  * The Windows build is the one that encrypts credentials, so Windows leads;
- * the macOS bundle is listed because the same native module ships there and a
- * future build may enable the policy, and `undefined` entries (an unset env
- * variable) are dropped.
+ * the macOS bundles are listed because the same native module ships there and
+ * the encryption policy is enabled on macOS builds too (observed from 5.6.x),
+ * and `undefined` entries (an unset env variable) are dropped.
+ *
+ * On macOS the executable name comes from each bundle (see
+ * {@link macosBundleExecutable}) rather than being assembled from the app name.
+ *
+ * `readBundleExecutable` is injectable, in the same spirit as `platform`/`home`/
+ * `env`: the macOS branch consults the real filesystem, so without a seam the
+ * expected candidates would depend on whether the host machine happens to have
+ * the app installed — and the test would pass on a developer's Mac while
+ * failing in CI.
  */
 export function workbuddyAppExecutableCandidates(
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
   env: NodeJS.ProcessEnv = process.env,
+  readBundleExecutable: (bundle: string) => string | undefined = macosBundleExecutable,
 ): string[] {
   const candidates: (string | undefined)[] = [env[WORKBUDDY_APP_EXECUTABLE_ENV]?.trim()]
   if (platform === 'win32') {
@@ -214,16 +277,93 @@ export function workbuddyAppExecutableCandidates(
     const programFilesX86 = env['ProgramFiles(x86)']?.trim()
     candidates.push(
       local === undefined || local === '' ? undefined : join(local, 'Programs', 'WorkBuddy', APP_EXECUTABLE_NAME),
+      local === undefined || local === '' ? undefined : join(local, 'WorkBuddy', APP_EXECUTABLE_NAME),
       programFiles === undefined || programFiles === '' ? undefined : join(programFiles, 'WorkBuddy', APP_EXECUTABLE_NAME),
       programFilesX86 === undefined || programFilesX86 === '' ? undefined : join(programFilesX86, 'WorkBuddy', APP_EXECUTABLE_NAME),
     )
   } else if (platform === 'darwin') {
-    candidates.push(
-      '/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy',
-      join(home, 'Applications', 'WorkBuddy.app', 'Contents', 'MacOS', 'WorkBuddy'),
-    )
+    for (const name of MACOS_APP_BUNDLE_NAMES) {
+      candidates.push(
+        readBundleExecutable(join('/Applications', name)),
+        readBundleExecutable(join(home, 'Applications', name)),
+      )
+    }
   }
   return candidates.filter((candidate): candidate is string => candidate !== undefined && candidate !== '')
+}
+
+/**
+ * Bundle identifier PREFIXES the desktop app is signed with — `com.tencent.
+ * workbuddy` (domestic, observed as `…workbuddy.mac`) and `com.workbuddy`
+ * (international, observed as `com.workbuddy.workbuddy-ai`).
+ *
+ * Used to CONFIRM that a discovered bundle really is WorkBuddy before it is
+ * launched. This matters because the discovery below scans directories and then
+ * execs what it finds: every Electron app is built around a binary called
+ * `Electron`, so a name-only match could pick a different product's bundle and
+ * run it. The identifier is the app's own claim about itself, so it is the
+ * check that makes the scan safe.
+ */
+const APP_BUNDLE_IDENTIFIER_PREFIXES: readonly string[] = ['com.tencent.workbuddy', 'com.workbuddy']
+
+/**
+ * Whether a bundle identifies itself as the WorkBuddy desktop app.
+ *
+ * The match is on dot boundaries, so a hypothetical `com.workbuddyish` cannot
+ * pass as `com.workbuddy`.
+ *
+ * An unreadable or identifier-less plist is treated as NOT WorkBuddy: refusing
+ * a candidate only costs a fallback to another path, whereas accepting the
+ * wrong one would execute an unrelated application.
+ */
+export function isWorkbuddyBundle(bundle: string): boolean {
+  let plist: string
+  try {
+    plist = readFileSync(join(bundle, 'Contents', 'Info.plist'), 'utf8')
+  } catch {
+    return false
+  }
+  const match = /<key>\s*CFBundleIdentifier\s*<\/key>\s*<string>([^<]*)<\/string>/u.exec(plist)
+  const identifier = match?.[1]?.trim().toLowerCase()
+  if (identifier === undefined || identifier === '') return false
+  return APP_BUNDLE_IDENTIFIER_PREFIXES.some(prefix =>
+    identifier === prefix || identifier.startsWith(`${prefix}.`))
+}
+
+/**
+ * Bundles of the desktop app found one level BELOW a macOS applications
+ * directory.
+ *
+ * Users do file apps into subfolders (`/Applications/IDE/WorkBuddy.app`), and
+ * a hardcoded `/Applications/<name>` then reports the app as missing while it
+ * is installed and signed in. The scan is deliberately ONE level deep and
+ * matches the known bundle names only, so it stays predictable and cheap; each
+ * candidate is then confirmed by {@link isWorkbuddyBundle} before use.
+ *
+ * Returns [] when the parent is absent or unreadable — a missing directory is
+ * the normal case, not an error.
+ */
+export function macosNestedAppBundles(parent: string): string[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(parent)
+  } catch {
+    return []
+  }
+  const bundles: string[] = []
+  for (const entry of entries) {
+    const nested = join(parent, entry)
+    for (const name of MACOS_APP_BUNDLE_NAMES) {
+      const bundle = join(nested, name)
+      try {
+        if (!statSync(bundle).isDirectory()) continue
+      } catch {
+        continue
+      }
+      if (isWorkbuddyBundle(bundle)) bundles.push(bundle)
+    }
+  }
+  return bundles
 }
 
 /**
@@ -240,6 +380,21 @@ export function findWorkbuddyAppExecutable(
       if (existsSync(candidate)) return candidate
     } catch {
       // Unreadable candidate: try the next one.
+    }
+  }
+  // macOS fallback: an app filed into a subfolder of an applications
+  // directory, which the exact-path candidates above cannot see.
+  if (platform === 'darwin') {
+    for (const parent of ['/Applications', join(home, 'Applications')]) {
+      for (const bundle of macosNestedAppBundles(parent)) {
+        const executable = macosBundleExecutable(bundle)
+        if (executable === undefined) continue
+        try {
+          if (existsSync(executable)) return executable
+        } catch {
+          // Unreadable: try the next bundle.
+        }
+      }
     }
   }
   return undefined

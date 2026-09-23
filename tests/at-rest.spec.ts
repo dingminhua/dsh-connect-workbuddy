@@ -10,12 +10,17 @@
  */
 
 import { createCipheriv, createHash } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   deriveAtRestKey,
   deriveAtRestKeyId,
   findWorkbuddyAppExecutable,
   isEncryptedFieldWrapper,
+  isWorkbuddyBundle,
+  macosBundleExecutable,
   openEncryptedField,
   workbuddyAppExecutableCandidates,
   WORKBUDDY_APP_EXECUTABLE_ENV,
@@ -386,14 +391,144 @@ describe('workbuddy app executable discovery', () => {
     expect(candidates.some(c => c.includes('WorkBuddy.exe'))).toBe(true)
   })
 
+  it('probes a per-user Windows install as well as the machine-wide ones', () => {
+    // `%LOCALAPPDATA%\WorkBuddy\WorkBuddy.exe` is a real observed layout: the
+    // machine-wide candidates alone report the app as missing there.
+    const candidates = workbuddyAppExecutableCandidates('win32', 'C:\\Users\\x', {
+      LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local',
+    })
+    expect(candidates).toContain(join('C:\\Users\\x\\AppData\\Local', 'WorkBuddy', 'WorkBuddy.exe'))
+  })
+
   it('offers the macOS bundle paths on darwin and nothing on linux', () => {
-    const mac = workbuddyAppExecutableCandidates('darwin', '/Users/x', {})
-    expect(mac.some(c => c.startsWith('/Applications/WorkBuddy.app'))).toBe(true)
+    // The bundle reader is injected: the real one consults the filesystem, so
+    // without a seam this expectation would depend on whether the machine
+    // running the suite happens to have WorkBuddy installed.
+    const mac = workbuddyAppExecutableCandidates('darwin', '/Users/x', {}, () => undefined)
+    expect(mac).toHaveLength(0)
     expect(workbuddyAppExecutableCandidates('linux', '/home/x', {})).toHaveLength(0)
+  })
+
+  it('assembles the macOS candidate from the name the bundle declares', () => {
+    // The reported bug: the binary was assumed to be named after the app, but
+    // the WorkBuddy bundles declare CFBundleExecutable=Electron. The candidate
+    // must follow the bundle, not the app's name.
+    const mac = workbuddyAppExecutableCandidates(
+      'darwin', '/Users/x', {},
+      bundle => `${bundle}/Contents/MacOS/Electron`,
+    )
+    expect(mac).toContain('/Applications/WorkBuddy.app/Contents/MacOS/Electron')
+  })
+
+  it('offers BOTH the domestic and the international macOS bundle', () => {
+    // A machine may carry only the international app; a candidates list that
+    // knows only WorkBuddy.app reports it as absent and the sign-in as missing.
+    const mac = workbuddyAppExecutableCandidates(
+      'darwin', '/Users/x', {},
+      bundle => `${bundle}/Contents/MacOS/Electron`,
+    )
+    expect(mac.some(c => c.startsWith('/Applications/WorkBuddy.app'))).toBe(true)
+    expect(mac.some(c => c.startsWith('/Applications/WorkBuddy AI.app'))).toBe(true)
+    expect(mac.some(c => c.startsWith(join('/Users/x', 'Applications')))).toBe(true)
   })
 
   it('returns undefined when nothing exists at any candidate', () => {
     expect(findWorkbuddyAppExecutable('linux', '/home/x', {})).toBeUndefined()
     expect(findWorkbuddyAppExecutable('win32', 'C:\\nobody', { LOCALAPPDATA: 'C:\\definitely\\absent' })).toBeUndefined()
+  })
+})
+
+describe('macosBundleExecutable', () => {
+  /** Build a throwaway .app bundle whose Info.plist carries the given keys. */
+  async function makeBundle(dir: string, entries: Record<string, string>): Promise<string> {
+    const bundle = join(dir, 'WorkBuddy.app')
+    await mkdir(join(bundle, 'Contents', 'MacOS'), { recursive: true })
+    const plist = ['<?xml version="1.0" encoding="UTF-8"?>', '<plist version="1.0"><dict>',
+      ...Object.entries(entries).flatMap(([k, v]) => [`<key>${k}</key>`, `<string>${v}</string>`]),
+      '</dict></plist>'].join('\n')
+    await writeFile(join(bundle, 'Contents', 'Info.plist'), plist)
+    // Only a name that stays inside MacOS can be materialized; a traversal
+    // candidate is exactly the case under test, and the parser must reject it
+    // before any file exists.
+    const name = entries['CFBundleExecutable']
+    if (name !== undefined && !name.includes('/') && name !== '..' && name !== '.') {
+      await writeFile(join(bundle, 'Contents', 'MacOS', name), '')
+    }
+    return bundle
+  }
+
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'wb-bundle-'))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('reads the real executable name instead of assuming the app name', async () => {
+    // This is the defect that made a signed-in macOS user look signed out: the
+    // path was built as .../MacOS/WorkBuddy while the bundle declares Electron.
+    const bundle = await makeBundle(dir, {
+      CFBundleIdentifier: 'com.tencent.workbuddy.mac',
+      CFBundleExecutable: 'Electron',
+    })
+    expect(macosBundleExecutable(bundle)).toBe(join(bundle, 'Contents', 'MacOS', 'Electron'))
+  })
+
+  it('returns undefined for a missing bundle rather than a guessed path', async () => {
+    expect(macosBundleExecutable(join(dir, 'Nope.app'))).toBeUndefined()
+  })
+
+  it('rejects a name that would escape Contents/MacOS', async () => {
+    // A plist is data read off disk; a traversal here would hand execFile a
+    // path outside the bundle.
+    for (const name of ['../Evil', '..', '.', 'sub/Bin']) {
+      const bundle = await makeBundle(dir, { CFBundleExecutable: name })
+      expect(macosBundleExecutable(bundle)).toBeUndefined()
+      await rm(bundle, { recursive: true, force: true })
+    }
+  })
+
+  it('returns undefined when the plist declares no executable', async () => {
+    const bundle = await makeBundle(dir, { CFBundleIdentifier: 'com.tencent.workbuddy.mac' })
+    expect(macosBundleExecutable(bundle)).toBeUndefined()
+  })
+})
+
+describe('isWorkbuddyBundle', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'wb-ident-'))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function bundleWith(identifier: string | undefined): Promise<string> {
+    const bundle = join(dir, `app-${Math.random().toString(36).slice(2)}.app`)
+    await mkdir(join(bundle, 'Contents'), { recursive: true })
+    const plist = identifier === undefined
+      ? '<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>'
+      : `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`
+    await writeFile(join(bundle, 'Contents', 'Info.plist'), plist)
+    return bundle
+  }
+
+  it('accepts the domestic and international bundle identifiers', async () => {
+    expect(isWorkbuddyBundle(await bundleWith('com.tencent.workbuddy.mac'))).toBe(true)
+    expect(isWorkbuddyBundle(await bundleWith('com.workbuddy.workbuddy-ai'))).toBe(true)
+  })
+
+  it('refuses another Electron app, so the scan cannot exec the wrong product', async () => {
+    // Every Electron app ships a binary named `Electron`; only the identifier
+    // distinguishes them, and this check is what makes the nested scan safe.
+    expect(isWorkbuddyBundle(await bundleWith('com.microsoft.VSCode'))).toBe(false)
+    expect(isWorkbuddyBundle(await bundleWith('com.workbuddyish.app'))).toBe(false)
+    expect(isWorkbuddyBundle(await bundleWith('org.workbuddyevil.mac'))).toBe(false)
+  })
+
+  it('refuses an unreadable or identifier-less bundle', async () => {
+    expect(isWorkbuddyBundle(join(dir, 'absent.app'))).toBe(false)
+    expect(isWorkbuddyBundle(await bundleWith(undefined))).toBe(false)
   })
 })

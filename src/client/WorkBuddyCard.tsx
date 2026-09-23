@@ -116,9 +116,12 @@ function renderSearchedItem(
  * buried under a dozen "not found" lines. When nothing interesting was found
  * the absent list IS the explanation, so it opens directly.
  *
- * An `encrypted` failure additionally raises a notice: it is the one cause
- * where the user is very likely already signed in, and telling them to sign in
- * again sends them to an action that cannot work.
+ * An `encrypted` failure deliberately adds NO notice of its own. It used to,
+ * because the paragraph above still said "sign in once in the desktop app" —
+ * the one action that cannot work when the credential exists but is encrypted.
+ * `signedOutNotice` now answers that cause in the paragraph itself, so a second
+ * copy here would restate it: the paragraph states the situation, this list
+ * supplies the detail, and the per-entry label already says what each path is.
  */
 function SearchedPaths(
   { items, t }: { items: readonly WorkBuddyWebSearchPath[], t: Translate },
@@ -134,9 +137,6 @@ function SearchedPaths(
     <details className="dsm-workbuddy-searched">
       <summary>{t('row.searchedTitle')} ({view.total})</summary>
       <p className="dsm-workbuddy-searched-hint">{t('row.searchedHint')}</p>
-      {view.encrypted
-        ? <p className="dsm-workbuddy-searched-notice" role="status">{t('row.searchedEncryptedNotice')}</p>
-        : null}
       <ul className="dsm-workbuddy-searched-list">
         {view.interesting.map(item => renderSearchedItem(item, t))}
         {showMissing ? view.missing.map(item => renderSearchedItem(item, t)) : null}

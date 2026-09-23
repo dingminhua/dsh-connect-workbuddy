@@ -254,4 +254,9 @@ dsh-subagent-default-model (MIT) ──► dsh-connect-trae (MIT, LaoDing)      
 3. **`credits` 字段是字符串**（`"x0.79 credits"` / `"x0.05"` / `undefined`）—— 解析需容错，解析不出就不显示倍率，不虚构。
 4. **隐私** —— 卡片只传**昵称**（App 未记录名字时传空串，由卡片显示「未命名账号」占位）、到期时间与积分；token、**uin、uid** 都不出现在任何 HTTP 响应里。账号名是**显示值，绝不是标识符**：把 `uin`/`uid` 当名字显示会让一个完全健康的账号读起来像「插件不知道这是谁」，所以 store 的名字兜底链里没有它们。所有探针脚本已按此原则编写（只输出长度与形状）。
 5. **字段加密随版本轮换** —— 新版桌面端把 auth 文件的 token 字段改为 AES-256-GCM 信封，密钥是**构建期常量**（编译进 App 的 Electron 原生模块），不是用户密钥，也**不是插件可以长期内置的东西**：随 App 版本可能更换。插件因此在需要时向本机已安装的 App 现取（`ELECTRON_RUN_AS_NODE` + `loggerGet()`），只在进程内存缓存，绝不落盘；App 不在场时加密文件读不出来，表现为未登录，而不会退化成残缺 token。纯字符串文件走原路径，不启子进程。
-5. **合规** —— 沿用 workbuddy 的免责声明；第三方声明登记 `workbuddy2api` (MIT) 与架构参考。
+6. **加密启用范围是 5.6.0 起、且 macOS 同样在内**（issue #15 取证）—— 此前文档与实现都把「字段加密」当作 Windows 先行的现象，`at-rest.ts` 的 macOS 候选也因此只是**占位**：路径用 App 名拼成 `<bundle>/Contents/MacOS/WorkBuddy`。实测两个真实 bundle 的 `CFBundleExecutable` 都是 `Electron`，**该路径不存在**，于是 macOS 上「App 明明装着、账号也登录着」却永远取不到密钥。四条结论固化下来：
+   - **二进制名向 bundle 自己问**（`macosBundleExecutable()` 读 `Info.plist`），不按 App 名猜。App 改名或换二进制名都不需要改插件。
+   - **候选要含国际版**，且允许 App 被归入 `/Applications` 的子目录：向下扫一层，并用 `CFBundleIdentifier` 确认身份后才 `execFile`。这条身份校验不是洁癖——**每个 Electron 应用的二进制都叫 `Electron`**，只按名字匹配就可能启动另一个产品；拒绝一个候选只损失一次回退，接受错的那个则是在用户机器上跑别的程序。
+   - **「未登录」不等于「读不出来」**：两者在 `readAll()` 之后都表现为账号数为 0，此前共用同一句「请重新登录一次」。而加密文件读不出时用户**本来就是登录着的**，那句话指向的是唯一无效的动作。现在 `resolve()` 在失败路径上跑一次 `diagnose()`，把 `encrypted` 单独归为 `WorkBuddyEncryptedCredentialError`（`code` 标记而非 `instanceof`，跨打包边界可靠），给出「安装 App / 用 `WORKBUDDY_APP_EXECUTABLE` 指定」这条**可执行**的建议。健康路径一次探针都不跑。
+   - `encrypted` 之所以**只能**来自桌面文件、不需要额外过滤：该原因由 `probeAuthFile()` 赋予，而插件自有副本从不经过它（按自有文档形状解析，损坏时是 `invalid`/`unreadable`）。代码里那句 `source === 'desktop'` 过滤是**不可达**的，已删——留着会让它看起来在防守一件它并没防的事。
+7. **合规** —— 沿用 workbuddy 的免责声明；第三方声明登记 `workbuddy2api` (MIT) 与架构参考。

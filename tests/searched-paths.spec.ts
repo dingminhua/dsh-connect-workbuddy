@@ -59,7 +59,6 @@ describe('searchedView', () => {
     expect(view.interesting.map(item => item.path)).toEqual(['/b'])
     expect(view.missing.map(item => item.path)).toEqual(['/a', '/c'])
     expect(view.missingOpen).toBe(false)
-    expect(view.encrypted).toBe(true)
     expect(view.total).toBe(3)
   })
 
@@ -69,14 +68,12 @@ describe('searchedView', () => {
     const view = searchedView([failure('missing', '/a'), failure('missing', '/b')])
     expect(view.interesting).toEqual([])
     expect(view.missingOpen).toBe(true)
-    expect(view.encrypted).toBe(false)
   })
 
   it('opens the absent list for an empty result rather than claiming detail', () => {
     const view = searchedView([])
     expect(view.total).toBe(0)
     expect(view.missingOpen).toBe(true)
-    expect(view.encrypted).toBe(false)
   })
 
   it('preserves the Host probe order inside each group', () => {
@@ -112,17 +109,13 @@ describe('searchedView', () => {
   it('groups EVERY reason in the union, so a new one cannot fall through', () => {
     // Guards the failure mode this suite just hit: a reason added to the union
     // lands in `missing` by default, which HIDES it behind the toggle — the
-    // opposite of what a finding needs.
+    // opposite of what a finding needs. `encrypted` is the reason this matters
+    // most: hidden there, the one explanation that fits would be invisible.
     for (const reason of ALL_REASONS) {
       const view = searchedView([failure(reason)])
       const grouped = reason === 'missing' ? view.missing : view.interesting
       expect(grouped.map(item => item.reason)).toEqual([reason])
     }
-  })
-
-  it('flags encrypted whenever any entry is encrypted', () => {
-    const view = searchedView([failure('missing'), failure('encrypted')])
-    expect(view.encrypted).toBe(true)
   })
 })
 
@@ -186,15 +179,43 @@ describe('searchReasonLabel', () => {
 })
 
 describe('signed-out diagnostics copy', () => {
+  it('answers the encrypted cause in the PARAGRAPH, where the user actually reads it', () => {
+    // The encrypted cause is the one where the user is already signed in, so
+    // "sign in once in the desktop app" — the generic hint — is the one action
+    // that cannot work. The advice used to live in a notice inside the
+    // collapsed <details>; the paragraph above it contradicted it. It is now
+    // the paragraph itself.
+    const notice = signedOutNotice({
+      selectionLost: false,
+      message: RESOLVE_MESSAGE,
+      searched: [failure('encrypted', '/a')],
+    })
+    expect(notice.key).toBe('row.signedOutEncrypted')
+    // ...and the Host's message is still NOT echoed: the paragraph supersedes
+    // it, which is what keeps "sign in once" off the screen.
+    expect(notice.fallback).toBeUndefined()
+  })
+
   it('says the desktop app is needed, and does not tell the user to sign in again', () => {
-    // The encrypted cause is the one where the user is already signed in;
-    // repeating "sign in once in the desktop app" would send them to an action
-    // that cannot work.
-    const notice = zh['row.searchedEncryptedNotice']
+    const notice = zh['row.signedOutEncrypted']
     expect(notice).toContain('WORKBUDDY_APP_EXECUTABLE')
     expect(notice).toContain('重新登录')
-    expect(notice).toContain('解决不了')
-    expect(en['row.searchedEncryptedNotice']).toContain('WORKBUDDY_APP_EXECUTABLE')
+    expect(notice).toContain('无法解决')
+    expect(en['row.signedOutEncrypted']).toContain('WORKBUDDY_APP_EXECUTABLE')
+    expect(en['row.signedOutEncrypted']).toContain('will not change this')
+  })
+
+  it('never tells an encrypted-credential user to sign in again', () => {
+    // Guard the contradiction directly, on the string that is rendered: the
+    // generic hint's instruction must not survive anywhere on this branch.
+    for (const table of [en, zh]) {
+      expect(table['row.signedOutEncrypted']).not.toBe(table['row.signedOutHint'])
+    }
+    const rendered = signedOutText(
+      signedOutNotice({ selectionLost: false, message: RESOLVE_MESSAGE, searched: [failure('encrypted')] }),
+      (key) => en[key],
+    )
+    expect(rendered).not.toContain('Sign in once in the WorkBuddy desktop app')
   })
 
   it('names the auth-file override in the hint so the user can redirect the probe', () => {
