@@ -214,3 +214,54 @@ describe('the Host endpoint is authoritative, so the mirror cannot delete a sibl
     }
   })
 })
+
+/**
+ * The provider switch must render the value the HOST committed.
+ *
+ * `writeField` sends the switch through the plugin's Host save endpoint (the
+ * only writer that cannot drop the sibling region), and that endpoint does NOT
+ * update the browser settings mirror. So a checkbox rendered from the mirror
+ * stayed ON after a successful disable — the "不能正确取消国际版/国内版" report —
+ * even though `enabled: false` was already in the settings document.
+ *
+ * The Host sends its committed value on the status payload (`status.enabled`),
+ * and the card prefers it, falling back to the mirror only when the Host has
+ * not answered yet.
+ */
+describe('the region switch reads the Host value, not the lagging mirror', () => {
+  /** Mirrors the card's `regionOn` resolution order. */
+  function regionOn(
+    fromHost: boolean | undefined,
+    mirror: unknown,
+    region: 'cn' | 'global',
+  ): boolean {
+    if (typeof fromHost === 'boolean') return fromHost
+    return regionEnabledOf(mirror, region)
+  }
+
+  it('shows OFF after the Host committed a disable, though the mirror still says ON', () => {
+    // The mirror is stale — exactly the shape after an endpoint-first write.
+    const staleMirror = { regions: { global: { enabled: true } } }
+    expect(regionOn(false, staleMirror, 'global')).toBe(false)
+  })
+
+  it('shows ON after the Host committed an enable, though the mirror still says OFF', () => {
+    const staleMirror = { regions: { global: { enabled: false } } }
+    expect(regionOn(true, staleMirror, 'global')).toBe(true)
+  })
+
+  it('falls back to the mirror when the Host has not answered yet', () => {
+    // A host that predates the field, or a status still loading.
+    expect(regionOn(undefined, { regions: { global: { enabled: false } } }, 'global')).toBe(false)
+    expect(regionOn(undefined, { regions: { global: { enabled: true } } }, 'global')).toBe(true)
+    // ...and keeps the opt-out rule for a slot that never carried the flag.
+    expect(regionOn(undefined, { regions: { global: { enabledModelIds: [] } } }, 'global')).toBe(true)
+  })
+
+  it('keeps the live-reference tolerance on the fallback path', () => {
+    // The mirror holds `{get(): T}` on both DSH lines; the fallback must still
+    // read the flag rather than reporting ON forever.
+    const liveMirror = { regions: { get: () => ({ global: { enabled: false } }) } }
+    expect(regionOn(undefined, liveMirror, 'global')).toBe(false)
+  })
+})

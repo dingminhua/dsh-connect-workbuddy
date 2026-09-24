@@ -268,7 +268,14 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   useEffect(() => {
     if (!open) return
     const controller = new AbortController()
-    void refreshUsage(activeRegion, controller.signal)
+    // BOTH regions, not just the active tab: both switches are always rendered
+    // in the tab bar, and the Host is where `regionOn` reads their state from.
+    // Fetching only the active region left the other switch on the mirror
+    // fallback until its tab was clicked — which is exactly the stale source
+    // this card is trying to stop trusting.
+    for (const region of WORKBUDDY_REGIONS) {
+      void refreshUsage(region, controller.signal)
+    }
     return () => { controller.abort() }
   }, [open, activeRegion, refreshUsage])
 
@@ -330,20 +337,33 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   }
 
   /**
-   * Whether one region's provider is switched on, read off the SAME committed
-   * settings document the Host reads (`regionEnabledOf` mirrors the Host's
-   * `regionStateOf` opt-out rule: only an explicit `false` disables). Reading
-   * the stored value rather than echoing local state means a rejected write,
-   * another window's change, or a restart all converge on the truth.
+   * Whether one region's provider is switched on.
    *
-   * The whole settings section is passed deliberately: `regionEnabledOf`
-   * accepts either it or the bare `regions` map, because passing the section
-   * where the map was expected was a shipped bug (the lookup read
-   * `section['cn']`, found nothing, and reported `true` forever — the checkbox
-   * stayed checked and clicking it appeared dead while the write succeeded).
+   * The HOST's answer wins, because on this deployment it is the only writer
+   * that lands: the switch goes through the plugin's Host save endpoint (that
+   * endpoint is the only writer that cannot drop the sibling region), and a
+   * write made there does NOT update the browser settings mirror. Reading the
+   * mirror therefore left the checkbox stuck ON after a successful disable —
+   * "不能正确取消国际版/国内版" — even though `enabled: false` was already in
+   * settings.yaml. The Host sends the committed value it derives from its own
+   * config (`status.enabled`, see `deps.regionEnabled`), so the card renders
+   * that.
+   *
+   * The mirror stays as the FALLBACK: a host that predates the field, or a
+   * status that has not loaded yet, still renders from the stored document
+   * rather than guessing. Both rules are the same opt-out rule (only an
+   * explicit `false` disables), so the two sources cannot disagree — only one
+   * of them can be stale.
    */
-  const regionOn = (item: WorkBuddyWebRegion): boolean =>
-    regionEnabledOf(settingsScope?.getSnapshot().value, item)
+  const regionOn = (item: WorkBuddyWebRegion): boolean => {
+    // The `error` arm of the union carries no `enabled` in its TYPE (the Host
+    // still fills it at runtime), so the field is read through a narrow probe
+    // rather than widening the union for one consumer.
+    const usage = statusByRegion[item] as { enabled?: unknown } | undefined
+    const fromHost = usage?.enabled
+    if (typeof fromHost === 'boolean') return fromHost
+    return regionEnabledOf(settingsScope?.getSnapshot().value, item)
+  }
   const activeRegionOn = regionOn(activeRegion)
 
   /**
@@ -365,6 +385,8 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
     try {
       // `nextRegionEnabled` unwraps the settings section itself and returns the
       // bare `regions` map, which is the whole-slot merge this write starts from.
+      // The mirror is only a merge base for the SLOT; the write itself lands in
+      // the Host (see `writeField`), which preserves the sibling region.
       const regions = nextRegionEnabled(settingsScope.getSnapshot().value, item, enabled) as Record<string, unknown>
       const slot = regions[item]
       await writeRegionEnabled(
@@ -373,6 +395,15 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         enabled,
         typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
       )
+      // Re-read the Host so the switch renders the value that was just
+      // committed. The write does not touch the browser mirror, and the Host is
+      // what `regionOn` now reads, so without this refresh the checkbox keeps
+      // showing its previous state and the toggle looks dead even though it
+      // landed — the "不能正确取消" report.
+      await refreshUsage(item)
+    } catch (error: unknown) {
+      // Surface the reason instead of leaving the switch silently unmoved.
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setTogglingRegion(undefined)
     }
