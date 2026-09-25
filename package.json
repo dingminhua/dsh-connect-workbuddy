@@ -1,7 +1,7 @@
 {
   "name": "dsh-connect-workbuddy",
   "displayName": "DSH Connect WorkBuddy",
-  "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
+  "description": "把本机登录的 WorkBuddy 模型接入 DeepSeek Harness，并提供只读的积分概览与模型管理。",
   "version": "2.1.0",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
