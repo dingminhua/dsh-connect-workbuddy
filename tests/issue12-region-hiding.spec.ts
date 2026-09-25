@@ -1,26 +1,42 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as WorkBuddy from '../src/index.ts'
 
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-  apply(ctx: Context): void { ctx.settings = this }
-  protected load(): Promise<Record<string, unknown>> { return Promise.resolve(structuredClone(this.storedDocument)) }
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
+/**
+ * The 0.1.7-shaped settings service, standing in for `SettingsForms`. The
+ * plugin is mounted with a DIRECT `apply(ctx, config)` call so `config` is a
+ * plain object BOTH the service and the plugin share by reference — `update()`
+ * mutates it and emits the 0.1.7 write announcement, exactly like the real
+ * Loader commits a volatile write and re-arms consumers.
+ */
+class MemorySettings extends Service {
+  constructor(ctx: Context) { super(ctx, 'settings') }
+  configure() { return () => {} }
+  describe() {
+    return [{ ns: WorkBuddy.WORKBUDDY_SETTINGS_NS, autoGenerate: true, revision: 0, applies: 'live', value: liveConfig }]
+  }
+  async update(ns: string, patch: Record<string, unknown>): Promise<void> {
+    for (const [key, value] of Object.entries(patch)) {
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)
+        && typeof liveConfig[key] === 'object' && liveConfig[key] !== null && !Array.isArray(liveConfig[key])) {
+        for (const [k, v] of Object.entries(value)) (liveConfig[key] as Record<string, unknown>)[k] = structuredClone(v)
+      } else {
+        liveConfig[key] = structuredClone(value)
+      }
+    }
+    ;(context as unknown as { emit(name: string): void })?.emit('loader/volatile-update')
   }
 }
 
+/** The config object the mounted plugin reads; reset between tests. */
+let liveConfig: Record<string, unknown> = {}
+
 let context: Context | undefined
-afterEach(async () => { await context?.fiber.dispose(); context = undefined })
+afterEach(async () => { await context?.fiber.dispose(); context = undefined; liveConfig = {} })
 
 /** A CN-only machine: exactly the reporter's environment. */
 async function cnOnlyRoot(): Promise<string> {
@@ -31,11 +47,17 @@ async function cnOnlyRoot(): Promise<string> {
     account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
     auth: {
       accessToken: 'token-alpha', refreshToken: 'refresh-alpha', tokenType: 'Bearer',
-      domain: 'www.workbuddy.cn', expiresAt: Date.now() + 86_400_000,
+      domain: 'www.codebuddy.cn', expiresAt: Date.now() + 86_400_000,
       refreshExpiresAt: Date.now() + 7 * 86_400_000,
     },
   }), 'utf8')
   return join(dir, 'workbuddy-desktop.info')
+}
+
+/** Mount the plugin with a direct `apply()`, sharing one mutable config. */
+function mountWorkBuddy(ctx: Context, config: Record<string, unknown>): void {
+  liveConfig = config
+  WorkBuddy.apply(ctx, config as WorkBuddy.Config)
 }
 
 describe('issue #12: a region with no account must not advertise models', () => {
@@ -45,7 +67,7 @@ describe('issue #12: a region with no account must not advertise models', () => 
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    mountWorkBuddy(ctx, { authFile })
     await expect.poll(() => ctx.llm.listProviders().map(p => p.id)).toContain('workbuddy-global')
 
     // CN: has an account → serves its roster.
@@ -68,7 +90,7 @@ describe('issue #12: a region with no account must not advertise models', () => 
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    mountWorkBuddy(ctx, { authFile })
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBe(0)
 
     // The user signs in to the international desktop app.

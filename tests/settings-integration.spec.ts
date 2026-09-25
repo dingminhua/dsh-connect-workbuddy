@@ -1,18 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import * as WorkBuddy from '../src/index.ts'
-
-/**
- * Raw user sections present BEFORE the provider is constructed. `SettingsProvider`
- * is a Cordis service and cannot be `new`ed outside a context, so a document
- * that was already on disk when the plugin loads (the restart case) is staged
- * here and folded into the first `load()`.
- */
-let preloadedDocument: Record<string, unknown> = {}
 
 /** What the 0.1.7-shaped service received, so the test can prove the path taken. */
 let configureCalls: { auto?: boolean }[] = []
@@ -20,39 +10,137 @@ let configureCalls: { auto?: boolean }[] = []
 /**
  * `settings.get()` as the CARD sees it.
  *
- * On the 0.1.7 line a volatile field comes back as a `{get(): T}` live
- * reference, so reading `doc.accounts.cn` directly is `undefined` — the raw
- * document is not what any consumer renders. The browser card goes through the
- * settings scope, and the plugin's own read paths go through `unwrapVolatile`;
- * this reuses the production helper so an assertion cannot pass or fail on a
- * shape no real consumer ever sees.
- *
- * (On the 0.1.5 line, where volatile marking is a no-op, this is the identity.)
+ * On 0.1.7 a volatile field comes back as a `{get(): T}` live reference, so
+ * reading `doc.accounts.cn` directly is `undefined` — the raw document is not
+ * what any consumer renders. The browser card goes through the settings scope,
+ * and the plugin's own read paths go through `unwrapVolatile`; this reuses the
+ * production helper so an assertion cannot pass or fail on a shape no real
+ * consumer ever sees.
  */
 function readSettings(doc: unknown): { accounts?: Record<string, string>, accountId?: string } {
   return WorkBuddy.unwrapVolatileDeep(doc) as { accounts?: Record<string, string>, accountId?: string }
 }
 
-class MemorySettings extends SettingsProvider {
+/**
+ * The 0.1.7-shaped settings service the suite mounts, standing in for the real
+ * `SettingsForms` (which 0.1.7 ships and 0.1.5 never did).
+ *
+ * The plugin is mounted with {@link mountWorkBuddy} — a direct `apply(ctx,
+ * config)` call — so `config` is a plain object THIS SERVICE and the plugin
+ * share by reference. `update()` mutates that object and emits the 0.1.7 write
+ * announcement, which is exactly what the real Loader does: it commits a
+ * volatile-only write into the running config and emits
+ * `loader/volatile-update` so every consumer re-reads.
+ */
+class MemorySettings extends Service {
   readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-  apply(ctx: Context): void {
-    ctx.settings = this
+  constructor(ctx: Context) {
+    super(ctx, 'settings')
+    configureCalls.push({})
   }
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve({ ...structuredClone(preloadedDocument), ...structuredClone(this.storedDocument) })
+  configure(presentation: { auto?: boolean }, _owner?: unknown): () => void {
+    configureCalls[configureCalls.length - 1] = presentation
+    return () => {}
   }
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
+  describe() {
+    const config = currentConfig()
+    return [{
+      ns: WorkBuddy.WORKBUDDY_SETTINGS_NS,
+      autoGenerate: true,
+      revision: 0,
+      applies: 'live',
+      value: config,
+      base: structuredClone(config),
+      user: structuredClone(config),
+    }]
   }
+  async update(ns: string, patch: Record<string, unknown>): Promise<void> {
+    // IN-PLACE merge, exactly like the 0.1.7 Loader: `config` IS the plugin's
+    // live config object (same reference the plugin's `current()` reads), so a
+    // write must mutate it, never replace it — a structuredClone would both
+    // choke on volatile references and break the shared reference.
+    mergeInto(currentConfig(), patch)
+    emitVolatileUpdate()
+  }
+  async get(ns: string): Promise<unknown> {
+    return currentConfig()
+  }
+}
+
+/**
+ * The config object the mounted plugin reads (its `current()` closure reads
+ * this exact reference). Reset between tests.
+ */
+let liveConfig: Record<string, unknown> = {}
+
+function currentConfig(): Record<string, unknown> {
+  return liveConfig
+}
+
+/** The live workbuddy section as the 0.1.7 `describe()` surface reports it —
+ * the descriptor's `value` is the resolved config. (0.1.7's `SettingsForms`
+ * has no `get()`; reading the section through `describe()` is the contract
+ * both the card and the harness use.) */
+async function settingsSection(ctx: Context): Promise<unknown> {
+  const descriptor = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
+  return descriptor?.value
+}
+
+/**
+ * Mount the plugin with a DIRECT `apply()` call, so the config object is fully
+ * under the test's control.
+ *
+ * `ctx.plugin(WorkBuddy, config)` is deliberately NOT used here: Cordis
+ * validates the raw config against the plugin's `Config` schema and hands the
+ * plugin a frozen resolved object, so the test could not mutate what the
+ * plugin reads. Calling `apply(ctx, config)` directly keeps one shared,
+ * mutable object — the same contract the plugin has on a real host, where the
+ * Loader commits volatile writes into the running config in place.
+ */
+async function mountWorkBuddy(ctx: Context, config: Record<string, unknown>): Promise<void> {
+  liveConfig = { ...stagingConfig, ...config }
+  stagingConfig = {}
+  WorkBuddy.apply(ctx, liveConfig as WorkBuddy.Config)
+  // `configure` is registered asynchronously via `ctx.inject(['settings'])`;
+  // give it a tick so the service records the call.
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
+
+/** Pre-existing user fields staged before mount (the restart case); merged into
+ * the live config by {@link mountWorkBuddy}. */
+let stagingConfig: Record<string, unknown> = {}
+function stageSection(fields: Record<string, unknown>): void {
+  stagingConfig = { ...stagingConfig, ...fields }
+}
+
+function mergeInto(base: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)
+      && typeof base[key] === 'object' && base[key] !== null && !Array.isArray(base[key])) {
+      mergeInto(base[key] as Record<string, unknown>, value as Record<string, unknown>)
+    } else {
+      base[key] = structuredClone(value)
+    }
+  }
+}
+
+/** Emit the 0.1.7 write announcement the plugin re-arms on.
+ *
+ * Cordis's `emit(...)` takes an OPTIONAL leading `this` (a filter object the
+ * Loader uses to target one fiber) — so `emit('loader/volatile-update', [])`
+ * would treat `[]` as the EVENT NAME and no listener fires. With one argument
+ * the name is dispatched on this context's event bus, which is where the
+ * plugin's listener is registered. */
+function emitVolatileUpdate(): void {
+  ;(context as unknown as { emit(name: string): void })?.emit('loader/volatile-update')
 }
 
 let context: Context | undefined
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
-  preloadedDocument = {}
+  liveConfig = {}
+  stagingConfig = {}
   configureCalls = []
 })
 
@@ -101,7 +189,7 @@ describe('WorkBuddy provider registration', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
     expect(ctx.llm.listConfigurableProviders()).toContainEqual({
@@ -136,7 +224,7 @@ describe('WorkBuddy provider registration', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
     // The pinned path does not exist yet — and neither does its directory.
-    await ctx.plugin(WorkBuddy, { authFile: join(root, 'auth', LIVE_FILE) })
+    await mountWorkBuddy(ctx, { authFile: join(root, 'auth', LIVE_FILE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
 
@@ -200,7 +288,7 @@ describe('WorkBuddy provider registration', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile: join(dir, 'workbuddy-desktop.info') })
+    await mountWorkBuddy(ctx, { authFile: join(dir, 'workbuddy-desktop.info') })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
 
@@ -248,7 +336,7 @@ describe('WorkBuddy provider registration', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile: join(dir, 'workbuddy-desktop-ai.info') })
+    await mountWorkBuddy(ctx, { authFile: join(dir, 'workbuddy-desktop-ai.info') })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
 
@@ -271,7 +359,7 @@ describe('WorkBuddy provider registration', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
     // Find the shim's port while the plugin is live.
@@ -323,14 +411,14 @@ describe('account selection through the settings seam', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile: join(root, AUTH_DIR, LIVE) })
+    await mountWorkBuddy(ctx, { authFile: join(root, AUTH_DIR, LIVE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
     // A stale selection would otherwise be indistinguishable from a real one.
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: 'orphaned-id' } })
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
 
-    const doc = readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS))
+    const doc = readSettings(await settingsSection(ctx))
     expect(doc.accounts?.cn).toBe('')
     // The plugin keeps serving both regions (no crash, no dead provider).
     expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
@@ -361,19 +449,19 @@ describe('account selection through the settings seam', () => {
     await ctx.plugin(MemorySettings)
     // The legacy field is the composition base, exactly as an upgraded user's
     // saved config arrives.
-    await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
+    await mountWorkBuddy(ctx, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
     // Let the startup attribution resolve while `accounts.cn` is still absent:
     // this is the window in which the legacy id becomes effective.
     await expect.poll(async () =>
-      readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)).accountId,
+      readSettings(await settingsSection(ctx)).accountId,
     ).toBe(legacyId)
 
     // Now the user clears the CN region.
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
 
-    const doc = readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)) as unknown as {
+    const doc = readSettings(await settingsSection(ctx)) as unknown as {
       accounts?: Record<string, string>
       accountId?: string
     }
@@ -415,12 +503,12 @@ describe('account selection through the settings seam', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     // Pre-existing user layer: the legacy field AND the CN clear, side by side.
-    preloadedDocument = { [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accountId: legacyId, accounts: { cn: '' } } }
+    stageSection({ accountId: legacyId, accounts: { cn: '' } })
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
+    await mountWorkBuddy(ctx, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
-    const doc = readSettings(await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)) as unknown as {
+    const doc = readSettings(await settingsSection(ctx)) as unknown as {
       accounts?: Record<string, string>
       accountId?: string
     }
@@ -472,7 +560,7 @@ describe('account selection through the settings seam', () => {
         })
       },
     })
-    await ctx.plugin(WorkBuddy, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
+    await mountWorkBuddy(ctx, { accountId: legacyId, authFile: join(root, AUTH_DIR, LIVE) })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
 
     const usage = captured.find(entry => entry.path === WORKBUDDY_USAGE_PATH)
@@ -698,42 +786,22 @@ describe('DSH 0.1.7 settings compatibility', () => {
     expect(typeof (nested.accounts as any).get).toBe('function')
   })
 
-  it('hands installSection a reference-free entry, so registration survives volatile marking', async () => {
-    // THE regression this guards. Once volatile marking is ACTIVE (schemastery
-    // 3.18.3+, i.e. what an npm install resolves), a volatile field holds a
-    // `{get(): T}` live reference. `installSection` validates and
-    // `structuredClone`s its `entry`, so forwarding the raw config threw
-    //
-    //     $.authFile expected string but got [object Object]
-    //
-    // and the namespace never registered — the card's settings vanished on the
-    // 0.1.5 line. Passing a deep-unwrapped entry is what makes both lines work.
-    //
-    // Skipped where volatile marking is a no-op (schemastery 3.18.2): there the
-    // entry is already plain and the bug cannot occur, which is exactly why it
-    // went unnoticed until the dependency was pinned high enough to enable it.
-    const dict = (WorkBuddy.Config as any).dict
-    const volatileActive = typeof dict?.regions?.volatile === 'function' && dict?.regions?.meta?.volatile === true
-
+  it('registers the settings namespace through configure(), the only 0.1.7 path', async () => {
+    // On 0.1.7 the namespace is served by `configure({auto}, owner)` — the
+    // pre-0.1.7 `installSection` no longer exists, so this is the ONLY
+    // registration path left. The observable contract is the same one the
+    // card binds to: the served namespace resolves.
     const authFile = await writeRegionFixtures()
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
 
-    // Registered either way: the namespace is what the card binds to.
     await expect.poll(() => ctx.settings.describe().some(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBe(true)
-    // And the entry reaching the service carried no live reference — asserted on
-    // the observable outcome (a schema-valid registration) rather than on the
-    // internal call, so an implementation change cannot fake it.
-    if (volatileActive) {
-      const descriptor = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
-      expect(descriptor).toBeDefined()
-      // `base` is the composition entry the service cloned and validated; a live
-      // reference here would have thrown before this point.
-      expect(descriptor?.base).toMatchObject({ accounts: {}, regions: {} })
-    }
+    // ...and it really did go through `configure`, which is what serves it.
+    expect(configureCalls).toHaveLength(1)
+    expect(configureCalls[0]?.auto).toBe(true)
   })
 })
 
@@ -744,7 +812,7 @@ describe('region on/off switch (issue #11-style region toggle)', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
 
@@ -775,7 +843,7 @@ describe('region on/off switch (issue #11-style region toggle)', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
 
@@ -796,7 +864,7 @@ describe('region on/off switch (issue #11-style region toggle)', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
   })
@@ -807,7 +875,7 @@ describe('region on/off switch (issue #11-style region toggle)', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
 
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
@@ -827,23 +895,18 @@ describe('region on/off switch (issue #11-style region toggle)', () => {
 })
 
 /**
- * The settings SERVICE CHANGED SHAPE between the two DSH lines, and the plugin
- * must mount on both:
- *
- *   - 0.1.5 ships `SettingsProvider`, whose `installSection(owner, ns, schema,
- *     entry, hooks)` registers the plugin's namespace;
- *   - 0.1.7 ships `SettingsForms`, which dropped `installSection` entirely and
- *     exposes `configure({auto}, owner)` instead.
+ * The settings service mounts the plugin through `configure({auto}, owner)`,
+ * the ONLY path since 2.1.0 (0.1.7-rc.1 and up). The pre-0.1.7
+ * `SettingsProvider.installSection` branch is gone with the line it served.
  *
  * The plugin used to call `installSection` unconditionally, so on 0.1.7 `apply()`
  * threw `ctx.settings.installSection is not a function` and the ENTIRE plugin
- * failed to mount — not a degraded card, no providers at all. That is the
- * regression these cases pin: the two lines are exercised separately, because a
- * suite that only ever mounts the 0.1.5 shape cannot see the 0.1.7 branch break.
+ * failed to mount — not a degraded card, no providers at all. This case pins
+ * the 0.1.7 path as the regression guard for that failure mode.
  */
-describe('settings-service shape compatibility (0.1.5 vs 0.1.7)', () => {
+describe('settings-service shape (0.1.7 configure path)', () => {
   /**
-   * The 0.1.7-alpha.2 shape: `configure()` present, `installSection()` gone.
+   * The 0.1.7 shape: `configure()` present, `installSection()` gone.
    *
    * Cordis mounts a plugin CLASS (`ctx.plugin(Klass)`) and constructs it, so the
    * shape is expressed as a class here — an instance is rejected outright
@@ -863,35 +926,22 @@ describe('settings-service shape compatibility (0.1.5 vs 0.1.7)', () => {
     apply(): void {}
   }
 
-  it('mounts on a 0.1.7-shaped service that has configure() but no installSection()', async () => {
+  it('mounts on a 0.1.7-shaped service through configure(), the only path', async () => {
     const authFile = await writeRegionFixtures()
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(FormsOnlySettings)
     // The pre-fix failure mode was a THROW here; awaiting it is the assertion.
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
 
     // Both providers still come up: the plugin degraded nothing, it took the
-    // other registration path.
+    // configure registration path.
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
     // ...and it really did go through `configure`, not silently skip settings.
     expect(configureCalls).toHaveLength(1)
     expect(configureCalls[0]?.auto).toBe(true)
-  })
-
-  it('still uses installSection() when the service has one (the 0.1.5 path)', async () => {
-    // The mirror image: a service that offers BOTH must keep taking the 0.1.5
-    // branch, or the namespace would never be registered on that line.
-    const authFile = await writeRegionFixtures()
-    const ctx = new Context()
-    context = ctx
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
-
-    await expect.poll(() => ctx.settings.describe().some(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBe(true)
   })
 })
 
@@ -939,7 +989,7 @@ describe('settingsNamespaceOf', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, { authFile })
+    await mountWorkBuddy(ctx, { authFile })
     // `ctx.plugin` has no Loader entry, so the fallback applies — the point is
     // that whatever the host serves is what gets advertised. Registration
     // settles asynchronously, so poll rather than sampling once.

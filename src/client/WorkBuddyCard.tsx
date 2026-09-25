@@ -24,7 +24,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
   nextRegionEnabled,
@@ -60,10 +59,19 @@ export interface WorkBuddyCardInjected {
   }
 }
 
-/** Props delivered by the Plugin configuration item slot. */
+/**
+ * Props delivered by the Plugin configuration slot.
+ *
+ * The slot keys this card registers against (`plugins.bundle.config` /
+ * `plugins.row.config`) are not enumerated in the 0.1.7 `SlotMap` types —
+ * they exist at runtime, but the shipped type table does not list them — so
+ * the props are typed from the injected surface rather than
+ * `PropsRuntime<'…'>`. The card also receives the host's `view`
+ * ('summary' | 'page').
+ */
 export type WorkBuddyCardProps =
-  PropsRuntime<'settings.plugin.item'>
-  & Partial<WorkBuddyCardInjected>
+  Partial<WorkBuddyCardInjected>
+  & { view?: string }
 
 const POLL_INTERVAL_MS = 60_000
 const WORKBUDDY_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-workbuddy'

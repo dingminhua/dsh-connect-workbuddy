@@ -42,17 +42,16 @@ import type { WorkBuddySettingsKey } from './locales.ts'
  * The browser-side plugin context this entry needs.
  *
  * `ClientContext` used to be re-exported by `@deepseek-ai/dsh-client-runtime/client`;
- * that package stopped at 0.1.1-rc.2 and is neither published nor bundled on the
- * 0.1.5 line, so it cannot serve as a type source spanning both host lines.
- * The `slots` / `locale` / `settingsScope` seats the card actually touches are
- * declared by the client subpath modules imported above, so naming the three
- * explicitly keeps this entry compilable on either line. Cordis' `Context`
- * already carries the `effect` fiber API.
+ * that package stopped at 0.1.1-rc.2 and is neither published nor bundled on
+ * the 0.1.7 line, so it cannot serve as a type source. The `slots` / `locale`
+ * seats the card actually touches are declared by the client subpath modules
+ * imported above, so naming them explicitly keeps this entry compilable.
+ * Cordis' `Context` already carries the `effect` fiber API. (The 0.1.5-only
+ * `settingsScope` service was removed with that line in 2.1.0.)
  */
 export type WorkBuddyClientContext = Context & {
   slots: Context['slots']
   locale: Context['locale']
-  settingsScope: Context['settingsScope']
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -97,12 +96,12 @@ export function apply(ctx: WorkBuddyClientContext): void {
           get(ns: string): WorkBuddyCardInjected['settingsScope']
         }
       | undefined
-    const legacy = softGet('settingsScope') as
-      | { bind(options: { namespace: string }): WorkBuddyCardInjected['settingsScope'] }
-      | undefined
+    // 0.1.7+ only: `configForms` is the client settings surface. The legacy
+    // `settingsScope` service was removed with the 0.1.5 line (2.1.0), so
+    // there is no fallback to bind.
     if (forms !== undefined) {
-      // 0.1.7: the namespace is the Host's Loader entry id, which the plugin
-      // cannot know in advance — the profile patch may mount it as
+      // The namespace is the Host's Loader entry id, which the plugin cannot
+      // know in advance — the profile patch may mount it as
       // `dsh-connect-workbuddy` or, as the live Desktop host does, as
       // `include:dsh-connect-workbuddy`. So ASK the mirror which namespace it
       // serves rather than assuming a name: the Host resolves a provider's
@@ -119,8 +118,6 @@ export function apply(ctx: WorkBuddyClientContext): void {
         if (served !== undefined) ns = served.ns
       } catch { /* mirror not ready: the declared id is still correct */ }
       settingsScope = forms.get(ns)
-    } else if (legacy !== undefined) {
-      settingsScope = legacy.bind({ namespace: WORKBUDDY_SETTINGS_NS })
     }
 
     const registerCard = (slotName: string, key: string): void => {
@@ -139,17 +136,14 @@ export function apply(ctx: WorkBuddyClientContext): void {
             : { t, settingsScope },
         }, WorkBuddyCard))
       } catch (error: unknown) {
-        // Isolated per slot on purpose: the two host lines declare disjoint
-        // slot sets (0.1.5 only settings.plugin.item; 0.1.7 only the
-        // plugins.* pair), so one line's registration must never take the
-        // other slots down with it.
+        // Isolated per slot on purpose: a failed registration must never take
+        // the other slots down with it.
         console.error(`[dsh-connect-workbuddy] card slot "${slotName}" failed to register (host provider unaffected):`, error)
       }
     }
 
     registerCard('plugins.bundle.config', 'dsh-connect-workbuddy')
     registerCard('plugins.row.config', 'dsh-connect-workbuddy#dsh-connect-workbuddy')
-    registerCard('settings.plugin.item', 'workbuddy')
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.

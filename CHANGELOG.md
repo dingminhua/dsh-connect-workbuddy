@@ -1,37 +1,42 @@
 # Changelog
 
-## 2.0.17 (2026-09-25)
+## 2.1.0 (2026-09-25)
+
+### ⚠️ 版本基线：仅支持 DSH 0.1.7-rc.1 及以上
+
+**自本版起，本插件只支持 DeepSeek Harness 0.1.7-rc.1 及以上的宿主**（`@deepseek-ai/dsh-*` peer 依赖的最低版本已从 `>=0.1.5-rc.1` 提高到 `>=0.1.7-rc.1`，旧版宿主将无法通过依赖解析安装本版）。
+
+- **0.1.5 双线分支已移除**：宿主的 `installSection` 回落、客户端的 `settingsScope` 分支、`settings.plugin.item` 槽位注册已全部删除——`configure({auto}, owner)` 与 `configForms` 是唯一路径。
+- 如果你仍在 0.1.5 宿主上，请停留在 **2.0.15**（最后一个支持 0.1.5 的 GA 版本；2.0.16 / 2.0.17 的缺陷修复已并入本版）。
 
 ### Bug Fixes
 
-- **插件管理页 / 市场页的 logo 显示不对**（默认占位/空白）。0.1.7 的插件管理页从插件包的 `package.json` 的 `icon` 字段读图标（`dsh-client-ui-plugin-manager` 渲染 `row.meta?.icon`，plugin-manager 契约含 `icon: z.string().optional()`），我们没有声明该字段 → 宿主无图可用。
-  - **修法**（照同级 `dsh-ldvh` 的做法）：新增 `icons/` 目录（64px + 128px 真实 PNG，其中 64px 与既有卡片内嵌 base64 逐字节一致——同族 LD logo），`package.json` 声明 `"icon": "icons/dsh-connect-workbuddy-128.png"`，并把 `icons` 加入 `files` 白名单随包分发。
-  - **验证**：`npm pack` 确认两个 PNG 进包（15 → 17 个文件）；desktop profile 的 link 安装下，`node_modules/dsh-connect-workbuddy/package.json` 已含该字段。
+#### provider 被宿主判定为「未配置」（DSH 0.1.7-rc.1）
 
-### Tests
+0.1.7 把设置模型整体重建（`SettingsProvider` → `SettingsForms`）后，**命名空间不再由插件自选**：宿主 `describe()` 以 **`ns: entry.options.id`**（Loader 条目 id）为键，而宿主按**精确匹配**查表 —— `namespaces.get(entry.settingsNs)`。我们此前硬编码 `settingsNs: 'workbuddy'`，而实测条目 id 是 **`include:dsh-connect-workbuddy`**，于是查表落空、provider 读作「未配置」，**不报错、只是静默失效**。
 
-- 349 → 349（无逻辑变更；图标字段为包元数据）。
+- **修法**：新增 `settingsNamespaceOf(ctx)`，采用一线插件的权威范式
+  `const settingsNs = ctx.fiber.entry?.options.id ?? NS`（见 `dsh-llm-pi-ai`），并把全部 6 处用法改为解析值。`ctx.fiber.entry` 由 Loader 注入（非 Cordis 公共类型），因此保留探测 + 回落，并在无 Loader 条目时回落到声明常量。
+- **常量移入 `src/status-paths.ts`**：浏览器侧也需要同一个回落值，而它不能 import Node-only 的宿主入口。该模块本就是 host↔client 的无 node 依赖桥梁。`src/index.ts` 继续导出，**公共 API 不变**。
+- **回归测试**（`tests/settings-integration.spec.ts`，+4 例）：采纳 Loader 条目 id、无条目/空 id/非字符串时回落、以及**目录实际宣告的就是解析值**（断言目录条目而非常量，否则恒过）。**变异验证**：忽略 entry id 恒用常量 → **1 例立即变红**。
 
-## 2.0.16 (2026-09-25)
+#### 插件管理页 / 市场页的 logo 显示不对
 
-### Bug Fixes
+0.1.7 的插件管理页从插件包的 `package.json` 的 `icon` 字段读图标（`dsh-client-ui-plugin-manager` 渲染 `row.meta?.icon`，plugin-manager 契约含 `icon: z.string().optional()`），我们没有声明该字段 → 宿主无图可用。
 
-- **DSH 0.1.7-rc.1：provider 被宿主判定为「未配置」，配置入口与模型发现静默失效**。0.1.7 把设置模型整体重建（`SettingsProvider` → `SettingsForms`）后，**命名空间不再由插件自选**：宿主 `describe()` 以 **`ns: entry.options.id`**（Loader 条目 id）为键，而宿主按**精确匹配**查表 —— `namespaces.get(entry.settingsNs)`。我们此前硬编码 `settingsNs: 'workbuddy'`，而实测条目 id 是 **`include:dsh-connect-workbuddy`**，于是查表落空、provider 读作「未配置」，**不报错、只是静默失效**。
+- **修法**（照同级 `dsh-ldvh` 的做法）：新增 `icons/` 目录（64px + 128px 真实 PNG，其中 64px 与既有卡片内嵌 base64 逐字节一致——同族 LD logo），`package.json` 声明 `"icon": "icons/dsh-connect-workbuddy-128.png"`，并把 `icons` 加入 `files` 白名单随包分发。
+- **验证**：`npm pack` 确认两个 PNG 进包（15 → 17 个文件）；desktop profile 的 link 安装下，`node_modules/dsh-connect-workbuddy/package.json` 已含该字段。
 
-  - **修法**：新增 `settingsNamespaceOf(ctx)`，采用一线插件的权威范式
-    `const settingsNs = ctx.fiber.entry?.options.id ?? NS`（见 `dsh-llm-pi-ai`），并把全部 6 处用法改为解析值。`ctx.fiber.entry` 由 Loader 注入（非 Cordis 公共类型），因此保留探测 + 回落，并在无 Loader 条目时回落到声明常量。
-  - **常量移入 `src/status-paths.ts`**：浏览器侧也需要同一个回落值，而它不能 import Node-only 的宿主入口。该模块本就是 host↔client 的无 node 依赖桥梁。`src/index.ts` 继续导出，**公共 API 不变**。
-  - **回归测试**（`tests/settings-integration.spec.ts`，+4 例）：采纳 Loader 条目 id、无条目/空 id/非字符串时回落、以及**目录实际宣告的就是解析值**（断言目录条目而非常量，否则恒过）。**变异验证**：忽略 entry id 恒用常量 → **1 例立即变红**。
+### Compatibility（对运行中 0.1.7-rc.1 宿主实测，非推测）
 
-### Compatibility
-
-- **实测确认在 0.1.7-rc.1 上可用的接缝**（对运行中宿主经 `cordis_inspect_*` 取证，非推测）：宿主已识别本插件 Config（`status: "schema"`、`limitations: []`）；`authFile` / `accounts` / `regions` 的 `"x-cordis": {"volatile": true}` 齐备；客户端卡片在 `plugins.bundle.config` 与 `plugins.row.config` **均已注册且 active**；`settings.configure/describe/mutate` 三个方法签名逐字匹配；`loader/volatile-update` 事件仍在。
-- **确认不受影响的破坏性变更**：`settings.plugin.item` 槽位删除（我们各自独立 try/catch，不牵连其他槽位）、`settingsScope` 客户端服务删除（已优先探测 `configForms`）、**`dsh-client-ui-primitives` 图标命名族改名**（本插件不从该包取任何具名图标，折叠箭头早已改为纯 CSS）、`agent/session-start` 删除（未监听）、会话格式 V3→V4（不读写会话文件）。
+- **可用接缝**：宿主已识别本插件 Config（`status: "schema"`、`limitations: []`）；`authFile` / `accounts` / `regions` 的 `"x-cordis": {"volatile": true}` 齐备；客户端卡片在 `plugins.bundle.config` 与 `plugins.row.config` **均已注册且 active**；`settings.configure/describe/mutate` 三个方法签名逐字匹配；`loader/volatile-update` 事件仍在。
+- **确认不受影响的破坏性变更**：`settings.plugin.item` 槽位删除（我们各自独立 try/catch，不牵连其他槽位）、`settingsScope` 客户端服务删除（改用 `configForms`）、**`dsh-client-ui-primitives` 图标命名族改名**（本插件不从该包取任何具名图标，折叠箭头早已改为纯 CSS）、`agent/session-start` 删除（未监听）、会话格式 V3→V4（不读写会话文件）。
 - 核对明细见 `.dsh-npm-cache/compat-017-audit.md`。
+- **测试基座改为手动 `apply(ctx, config)`**：`ctx.plugin(WorkBuddy, config)` 会让 Cordis 校验出 frozen 代理对象，测试无法再就地写入；改为直接调用 `apply()` 让 config 由测试与所选 settings 服务共享同一引用（模拟 0.1.7 Loader 的就地提交语义），`loader/volatile-update` 事件用正确的单参形式触发。
 
 ### Tests
 
-- 345 → 349（新增 4 例：设置命名空间必须与宿主所服务的一致）。
+- 349 → 348（删 2 例 0.1.5 形态用例：`installSection` 引用清理、0.1.5 回落；加 1 例 0.1.7 `configure` 唯一路径；命名空间 +4、其余不变）。
 
 ## 2.0.15 (2026-09-24)
 

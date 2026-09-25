@@ -54,6 +54,8 @@ Credentials are read (read-only) from the WorkBuddy desktop app's own auth file.
 
 ## Install
 
+> ⚠️ **Version requirement: DSH 0.1.7-rc.1 or newer.** Since v2.1.0 this plugin only supports hosts on DSH 0.1.7-rc.1 and above (older hosts cannot resolve the dependencies to install this version); hosts on 0.1.5 and earlier should stay on v2.0.15.
+
 Prerequisite: the WorkBuddy desktop app is installed and signed in (the plugin reuses the app's sign-in state).
 
 ```sh

@@ -207,18 +207,16 @@ export const inject = ['llm', 'settings']
 /**
  * Settings namespace for the plugin configuration card.
  *
- * On 0.1.5 this WAS the namespace: the plugin chose one and registered it via
- * `installSection(owner, ns, ...)`. On 0.1.7 the settings service derives the
- * namespace itself — `describe()` returns `ns: entry.options.id`, the Loader
- * entry id — so a plugin may no longer choose it. This constant is therefore
- * only the FALLBACK for a host that does not expose an entry id; the live value
- * comes from {@link settingsNamespaceOf}.
+ * (历史注记：0.1.5 线上插件自选命名空间并经 `installSection` 注册；自
+ * 2.1.0 起只支持 0.1.7 线，该路径已移除。) 0.1.7 的 settings 服务自行推导
+ * 命名空间 —— `describe()` 返回 `ns: entry.options.id`，即 Loader 条目 id
+ * —— 因此插件不再能自选。此常量仅作为「宿主不暴露条目 id」时的回落值；
+ * 实际生效值来自 {@link settingsNamespaceOf}。
  *
- * The distinction is not cosmetic. The harness looks a provider's namespace up
- * by EXACT match (`namespaces.get(entry.settingsNs)` in the models settings
- * page), so advertising `workbuddy` while the host serves
- * `include:dsh-connect-workbuddy` made our provider read as "not configured":
- * its configure affordance and model discovery both silently went dead.
+ * 这个区分不是装饰性的。宿主按**精确匹配**查表
+ * （模型设置页的 `namespaces.get(entry.settingsNs)`），所以宣告
+ * `workbuddy` 而宿主实际服务 `include:dsh-connect-workbuddy` 时，provider
+ * 会被判为「未配置」：配置入口与模型发现双双静默失效。
  */
 
 /**
@@ -703,55 +701,32 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  // Settings registration differs per DSH line, and the two are NOT
-  // interchangeable:
+  // Settings registration (0.1.7+ only).
   //
-  //   0.1.5  `SettingsProvider.installSection(owner, ns, schema, entry, hooks)`
-  //          registers this plugin's namespace;
-  //   0.1.7  `SettingsForms` dropped `installSection` and exposes
-  //          `configure({auto}, owner)` instead.
+  // `SettingsForms` dropped `installSection` entirely and exposes
+  // `configure({auto}, owner)`; calling the removed method unconditionally made
+  // `apply()` throw on 0.1.7 (`ctx.settings.installSection is not a function`)
+  // and took down the WHOLE plugin. Since 2.1.0 the plugin supports DSH
+  // 0.1.7-rc.1 and up only, so `configure` is the sole path and is called
+  // unconditionally — the pre-0.1.7 `SettingsProvider.installSection` branch
+  // is gone with the line it served.
   //
-  // Calling `installSection` unconditionally made `apply()` throw on 0.1.7
-  // (`ctx.settings.installSection is not a function`), which took down the
-  // WHOLE plugin — no providers, no card. So each call is probed for the
-  // method it needs.
-  //
-  // Both calls go through a narrow local type rather than a blanket `any`: the
+  // The call goes through a narrow local type rather than a blanket `any`: the
   // installed typings describe the 0.1.5 line only, so `configure` is not on
-  // `SettingsProvider` and the event name below is not in `Events`. Naming the
-  // shapes here keeps the widening honest and reviewable.
+  // `SettingsProvider` and the event names below are not in `Events`. Naming
+  // the shapes here keeps the widening honest and reviewable.
   interface SettingsShapes {
-    configure?: (presentation: { auto?: boolean }, owner?: unknown) => unknown
-    installSection?: (
-      owner: unknown,
-      ns: SettingsNamespace,
-      schema: unknown,
-      entry: unknown,
-      hooks: unknown,
-    ) => unknown
+    configure: (presentation: { auto?: boolean }, owner?: unknown) => () => void
   }
 
   // `inject` rather than a direct read: `settings` is an optional service, and
-  // the callback runs once it is actually present.
+  // the callback runs once it is actually present. `configure` returns a
+  // disposer that must be registered with the calling plugin's effects, or the
+  // presentation policy leaks past disposal (the first-party plugins do the
+  // same: `child.effect(() => child.settings.configure({ auto: false }, …))`).
   ctx.inject(['settings'], (sctx) => {
     const settings = sctx.settings as unknown as SettingsShapes
-    if (typeof settings.configure === 'function') {
-      settings.configure({ auto: true }, ctx.fiber)
-      return
-    }
-    if (typeof settings.installSection === 'function') {
-      // The entry is DEEP-unwrapped, not passed as-is. `installSection` validates
-      // and `structuredClone`s the whole object, so a live reference anywhere
-      // inside it fails validation (`$.authFile expected string but got [object
-      // Object]`). That is not hypothetical: it is what broke every field the
-      // moment volatile marking became active, and it is why this call may not
-      // simply forward `config`.
-      const entry = unwrapVolatileDeep(config)
-      settings.installSection(ctx, settingsNs, Config, entry, {
-        setSource(source: () => Config) { current = source },
-        onChange() { applySelection(current()) },
-      })
-    }
+    ctx.effect(() => settings.configure({ auto: true }, ctx.fiber))
   })
 
   // 0.1.7 hands volatile values back as live references and announces each
