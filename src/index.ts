@@ -161,6 +161,7 @@ import {
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_REGION_PARAM,
   WORKBUDDY_REGIONS,
+  WORKBUDDY_SETTINGS_NS,
   WORKBUDDY_USAGE_PATH,
   regionOfStatusUrl,
   toPersistedWorkBuddyModel,
@@ -186,6 +187,7 @@ export {
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_REGION_PARAM,
   WORKBUDDY_REGIONS,
+  WORKBUDDY_SETTINGS_NS,
   WORKBUDDY_USAGE_PATH,
   regionOfStatusUrl,
   toPersistedWorkBuddyModel,
@@ -202,8 +204,36 @@ export const name = 'dsh-connect-workbuddy'
 /** The model registry required before the provider can register. */
 export const inject = ['llm', 'settings']
 
-/** Settings namespace for the plugin configuration card. */
-export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
+/**
+ * Settings namespace for the plugin configuration card.
+ *
+ * On 0.1.5 this WAS the namespace: the plugin chose one and registered it via
+ * `installSection(owner, ns, ...)`. On 0.1.7 the settings service derives the
+ * namespace itself — `describe()` returns `ns: entry.options.id`, the Loader
+ * entry id — so a plugin may no longer choose it. This constant is therefore
+ * only the FALLBACK for a host that does not expose an entry id; the live value
+ * comes from {@link settingsNamespaceOf}.
+ *
+ * The distinction is not cosmetic. The harness looks a provider's namespace up
+ * by EXACT match (`namespaces.get(entry.settingsNs)` in the models settings
+ * page), so advertising `workbuddy` while the host serves
+ * `include:dsh-connect-workbuddy` made our provider read as "not configured":
+ * its configure affordance and model discovery both silently went dead.
+ */
+
+/**
+ * The namespace the HOST actually serves this plugin under.
+ *
+ * `ctx.fiber.entry` is added by the Loader, not by Cordis itself, so it is not
+ * in Cordis's public types and is absent on hosts that mount a plugin without a
+ * Loader entry (a test harness, or `ctx.plugin()` called directly). Hence the
+ * probe plus the documented fallback, mirroring the first-party plugins:
+ * `const settingsNs = ctx.fiber.entry?.options.id ?? NS`.
+ */
+export function settingsNamespaceOf(ctx: unknown): SettingsNamespace {
+  const id = (ctx as { fiber?: { entry?: { options?: { id?: unknown } } } })?.fiber?.entry?.options?.id
+  return typeof id === 'string' && id !== '' ? id as SettingsNamespace : WORKBUDDY_SETTINGS_NS as SettingsNamespace
+}
 
 /** One region's model directory and the user's selection within it. */
 export interface WorkBuddyRegionState {
@@ -479,6 +509,11 @@ export async function legacyAttributionRegion(
 export function apply(ctx: Context, config: Config): void {
   const client = new WorkBuddyUpstreamClient()
 
+  // The namespace the host actually serves (see `settingsNamespaceOf`). On
+  // 0.1.7 this is the Loader entry id, and the harness looks it up by EXACT
+  // match — advertising anything else makes our provider read as unconfigured.
+  const settingsNs = settingsNamespaceOf(ctx)
+
   const stacks = {} as Record<WorkBuddyRegion, WorkBuddyRegionStack>
   for (const region of REGION_KEYS) {
     // `authFile` is volatile on the 0.1.7 line: the raw config value is a live
@@ -638,7 +673,7 @@ export function apply(ctx: Context, config: Config): void {
       .map(region => ({
         provider: WORKBUDDY_PROVIDERS[region],
         displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES[region],
-        settingsNs: WORKBUDDY_SETTINGS_NS,
+        settingsNs,
         settingsPath: [],
         declared: false,
       })))
@@ -712,7 +747,7 @@ export function apply(ctx: Context, config: Config): void {
       // moment volatile marking became active, and it is why this call may not
       // simply forward `config`.
       const entry = unwrapVolatileDeep(config)
-      settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, entry, {
+      settings.installSection(ctx, settingsNs, Config, entry, {
         setSource(source: () => Config) { current = source },
         onChange() { applySelection(current()) },
       })
@@ -794,14 +829,14 @@ export function apply(ctx: Context, config: Config): void {
             {
               provider: WORKBUDDY_PROVIDER,
               displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES.cn,
-              settingsNs: WORKBUDDY_SETTINGS_NS,
+              settingsNs,
               settingsPath: [],
               declared: false,
             },
             {
               provider: WORKBUDDY_GLOBAL_PROVIDER,
               displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES.global,
-              settingsNs: WORKBUDDY_SETTINGS_NS,
+              settingsNs,
               settingsPath: [],
               declared: false,
             },
@@ -834,7 +869,7 @@ export function apply(ctx: Context, config: Config): void {
         // routes until this very call populates their handles.
         syncRegionRegistration(current())
 
-        ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request, signal) => {
+        ctx.llm.registerModelDiscovery(settingsNs, async (request, signal) => {
           const region = regionOfProvider(request.provider ?? '')
           if (region === undefined) return []
           // A switched-off region advertises nothing: its route is withdrawn, so

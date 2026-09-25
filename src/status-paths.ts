@@ -394,3 +394,18 @@ export function unwrapVolatileDeep<T>(value: T): T {
   }
   return out as T
 }
+
+/**
+ * The plugin's DECLARED settings namespace — the fallback name, not the value
+ * the host necessarily serves.
+ *
+ * On 0.1.7 the settings service keys every form by the plugin's Loader entry id
+ * (`describe()` returns `ns: entry.options.id`), and the harness resolves a
+ * provider's namespace by EXACT match. The entry id is chosen by the profile
+ * patch, so a plugin cannot know it in advance — the live Desktop host mounts
+ * this one as `include:dsh-connect-workbuddy`.
+ *
+ * Lives here, not in the Host entry, because the browser half needs the same
+ * fallback and must not import Node-only host code.
+ */
+export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as const

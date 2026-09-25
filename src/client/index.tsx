@@ -22,6 +22,7 @@
  * @module dsh-connect-workbuddy/client
  */
 
+import { WORKBUDDY_SETTINGS_NS } from '../status-paths.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
@@ -100,18 +101,26 @@ export function apply(ctx: WorkBuddyClientContext): void {
       | { bind(options: { namespace: string }): WorkBuddyCardInjected['settingsScope'] }
       | undefined
     if (forms !== undefined) {
-      // 0.1.7 line: pick the namespace the Host actually serves (the plugin
-      // may be mounted under a different entry id), falling back to the
-      // declared one when the mirror has not populated yet.
-      let ns = 'workbuddy'
+      // 0.1.7: the namespace is the Host's Loader entry id, which the plugin
+      // cannot know in advance — the profile patch may mount it as
+      // `dsh-connect-workbuddy` or, as the live Desktop host does, as
+      // `include:dsh-connect-workbuddy`. So ASK the mirror which namespace it
+      // serves rather than assuming a name: the Host resolves a provider's
+      // namespace by exact match, so guessing wrong makes the card bind to a
+      // namespace nothing serves.
+      //
+      // The name test is a substring, not equality, because the entry id is
+      // host-chosen; the declared name stays as the fallback for a mirror that
+      // has not populated yet.
+      let ns: string = WORKBUDDY_SETTINGS_NS
       try {
         const namespaces = forms.describe().getSnapshot().view?.namespaces ?? []
-        const served = namespaces.find(entry => entry.ns === 'workbuddy' || /workbuddy/i.test(entry.ns))
+        const served = namespaces.find(entry => entry.ns === WORKBUDDY_SETTINGS_NS || /workbuddy/i.test(entry.ns))
         if (served !== undefined) ns = served.ns
       } catch { /* mirror not ready: the declared id is still correct */ }
       settingsScope = forms.get(ns)
     } else if (legacy !== undefined) {
-      settingsScope = legacy.bind({ namespace: 'workbuddy' })
+      settingsScope = legacy.bind({ namespace: WORKBUDDY_SETTINGS_NS })
     }
 
     const registerCard = (slotName: string, key: string): void => {

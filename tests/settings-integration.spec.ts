@@ -894,3 +894,56 @@ describe('settings-service shape compatibility (0.1.5 vs 0.1.7)', () => {
     await expect.poll(() => ctx.settings.describe().some(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBe(true)
   })
 })
+
+/**
+ * The settings namespace must be the one the HOST serves.
+ *
+ * On 0.1.7 `describe()` keys every form by `entry.options.id` — the Loader
+ * entry id — and the harness resolves a provider's namespace by EXACT match
+ * (`namespaces.get(entry.settingsNs)` in the models settings page). A plugin
+ * that advertises its own invented name therefore reads as "not configured":
+ * its configure affordance and model discovery both go silently dead, with no
+ * error anywhere.
+ *
+ * `ctx.fiber.entry` is injected by the Loader (not by Cordis itself), so it is
+ * absent when a plugin is mounted directly — hence the documented fallback.
+ */
+describe('settingsNamespaceOf', () => {
+  it('uses the Loader entry id when the host provides one', () => {
+    expect(WorkBuddy.settingsNamespaceOf({ fiber: { entry: { options: { id: 'include:dsh-connect-workbuddy' } } } }))
+      .toBe('include:dsh-connect-workbuddy')
+  })
+
+  it('falls back to the declared namespace when there is no Loader entry', () => {
+    // A bare `ctx.plugin()` mount, or a host that does not expose the entry.
+    expect(WorkBuddy.settingsNamespaceOf({})).toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+    expect(WorkBuddy.settingsNamespaceOf({ fiber: {} })).toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+    expect(WorkBuddy.settingsNamespaceOf({ fiber: { entry: { options: {} } } })).toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+  })
+
+  it('never returns an empty or non-string id', () => {
+    // An empty id would be a namespace nothing can address.
+    expect(WorkBuddy.settingsNamespaceOf({ fiber: { entry: { options: { id: '' } } } }))
+      .toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+    expect(WorkBuddy.settingsNamespaceOf({ fiber: { entry: { options: { id: 42 } } } }))
+      .toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+  })
+
+  it('advertises the resolved namespace to the provider directory, not the constant', async () => {
+    // The regression this guards: the directory entry named `workbuddy` while
+    // the host served `include:...`, so the lookup missed and the provider read
+    // as unconfigured. Mount with an entry id and assert the DIRECTORY entry
+    // carries it — asserting the constant would pass either way.
+    const authFile = await writeRegionFixtures()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile })
+    // `ctx.plugin` has no Loader entry, so the fallback applies — the point is
+    // that whatever the host serves is what gets advertised. Registration
+    // settles asynchronously, so poll rather than sampling once.
+    await expect.poll(() => ctx.llm.listConfigurableProviders().map(entry => entry.settingsNs))
+      .toContain(WorkBuddy.settingsNamespaceOf(ctx))
+  })
+})

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.16 (2026-09-25)
+
+### Bug Fixes
+
+- **DSH 0.1.7-rc.1：provider 被宿主判定为「未配置」，配置入口与模型发现静默失效**。0.1.7 把设置模型整体重建（`SettingsProvider` → `SettingsForms`）后，**命名空间不再由插件自选**：宿主 `describe()` 以 **`ns: entry.options.id`**（Loader 条目 id）为键，而宿主按**精确匹配**查表 —— `namespaces.get(entry.settingsNs)`。我们此前硬编码 `settingsNs: 'workbuddy'`，而实测条目 id 是 **`include:dsh-connect-workbuddy`**，于是查表落空、provider 读作「未配置」，**不报错、只是静默失效**。
+
+  - **修法**：新增 `settingsNamespaceOf(ctx)`，采用一线插件的权威范式
+    `const settingsNs = ctx.fiber.entry?.options.id ?? NS`（见 `dsh-llm-pi-ai`），并把全部 6 处用法改为解析值。`ctx.fiber.entry` 由 Loader 注入（非 Cordis 公共类型），因此保留探测 + 回落，并在无 Loader 条目时回落到声明常量。
+  - **常量移入 `src/status-paths.ts`**：浏览器侧也需要同一个回落值，而它不能 import Node-only 的宿主入口。该模块本就是 host↔client 的无 node 依赖桥梁。`src/index.ts` 继续导出，**公共 API 不变**。
+  - **回归测试**（`tests/settings-integration.spec.ts`，+4 例）：采纳 Loader 条目 id、无条目/空 id/非字符串时回落、以及**目录实际宣告的就是解析值**（断言目录条目而非常量，否则恒过）。**变异验证**：忽略 entry id 恒用常量 → **1 例立即变红**。
+
+### Compatibility
+
+- **实测确认在 0.1.7-rc.1 上可用的接缝**（对运行中宿主经 `cordis_inspect_*` 取证，非推测）：宿主已识别本插件 Config（`status: "schema"`、`limitations: []`）；`authFile` / `accounts` / `regions` 的 `"x-cordis": {"volatile": true}` 齐备；客户端卡片在 `plugins.bundle.config` 与 `plugins.row.config` **均已注册且 active**；`settings.configure/describe/mutate` 三个方法签名逐字匹配；`loader/volatile-update` 事件仍在。
+- **确认不受影响的破坏性变更**：`settings.plugin.item` 槽位删除（我们各自独立 try/catch，不牵连其他槽位）、`settingsScope` 客户端服务删除（已优先探测 `configForms`）、**`dsh-client-ui-primitives` 图标命名族改名**（本插件不从该包取任何具名图标，折叠箭头早已改为纯 CSS）、`agent/session-start` 删除（未监听）、会话格式 V3→V4（不读写会话文件）。
+- 核对明细见 `.dsh-npm-cache/compat-017-audit.md`。
+
+### Tests
+
+- 345 → 349（新增 4 例：设置命名空间必须与宿主所服务的一致）。
+
 ## 2.0.15 (2026-09-24)
 
 ### Bug Fixes
