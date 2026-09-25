@@ -76,7 +76,7 @@ Config:
 | `credits` (`"x0.79 credits"`) | 积分倍率，需从字符串解析出数字 |
 | `supportsImages` | ~~多模态标记~~（已弃用，见下方「图片输入手动开关」） |
 | `reasoning.supportedEfforts` (`["low","high","xhigh"]`) | 可选推理档位（用户可选手动档位） |
-| `reasoning.effort` (`"high"` / `"medium"`) | 固定推理档位（上游只标默认强度，未给可选档位） |
+| `reasoning.effort` (`"high"` / `"medium"`) | 单数形态；折叠为全阶梯可选档位，该值作默认档（见下方「推理强度两态」） |
 | `reasoning.defaultEffort` | 默认档位 |
 | `descriptionZh` / `descriptionEn` | 中英文描述 |
 | `onlyReasoning` / `supportsToolCall` | 能力标记 |
@@ -85,7 +85,9 @@ Config:
 >
 > **图片输入手动开关**：`supportsImages` / `disabledMultimodal` 上游标记实测不可靠，图片支持改由用户勾选 `imageModelIds` 显式决定（默认不勾选），不再从上游能力标记推断。见 `src/index.ts` 的 `withImageSelection`。
 >
-> **推理强度两态（已知问题）**：上游 `reasoning` 有两种形态——(A) `supportedEfforts` 数组（可选手动档位，如 glm-5.3 的 low/high/xhigh）与 (B) `effort` 单值（固定档位，如 deepseek 的 high）。当前 `parseReasoning`（`src/upstream.ts`）只解析形态 A，形态 B 的 11 个 cli 模型（deepseek-v4-flash/pro、hy3、auto、glm-5.1/5.2、glm-5v-turbo、kimi-k3-1/k2.7/k2.6、minimax-m3）推理能力会被整体丢弃。详见 `docs/reasoning-investigation.md`。
+> **推理强度两态（已修复，issue #7 / 2.0.10）**：上游 `reasoning` 有两种形态——(A) `supportedEfforts` 数组（可选手动档位，如 glm-5.3 的 low/high/xhigh）与 (B) `effort` 单值（如 deepseek 的 high）。`parseReasoning`（`src/upstream.ts`）**两态都解析**：形态 A 逐字段透传，形态 B 由 `singularEffortLadder` 折叠为复数形态——`supportedEfforts` 展开为全阶梯 `low/medium/high/xhigh/max`、单数值折入 `defaultEffort`、`canDisableThinking` 视为 `true`；未识别的 `effort` 值按单档透传，交由 adapter 的已知档位过滤。
+>
+> 依据是**两网关实测**（CN `copilot.tencent.com` / 国际 `www.workbuddy.ai`）：单数 `effort` 是模型的**默认档而非唯一档**——`deepseek-v4.1-flash` 对 low/high/max 全部 200 且 `reasoning_content` 各异，`kimi-k3-1` 接受未声明的 high；而**不发 `reasoning_effort` 时上游零思考**。adapter / 卡片 / 持久化零改动即自动生效。调查过程见 `docs/reasoning-investigation.md`（该文「未修复」结论已过期，正文就地加了更正注）。
 
 ### 3.2 账号切换（实测可行，原版完全没有）
 

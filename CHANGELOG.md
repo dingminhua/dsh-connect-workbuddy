@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Docs
+
+- **修正两处已过期的「推理强度两态」表述**——文档还停在「未修复」，而代码早在 **2.0.10**（`4c39645`，issue #7）就已修复。纯文档纠正，**无代码改动**。
+  - `docs/DESIGN.md`：「推理强度两态（已知问题）」改为「已修复」，并补上实际实现（`parseReasoning` 两态解析、`singularEffortLadder` 折叠为全阶梯 `low/medium/high/xhigh/max`、单数值折入 `defaultEffort`、`canDisableThinking` 视为 `true`）与两网关实测依据；同节字段表里 `reasoning.effort` 的「固定推理档位」改为「折叠为全阶梯可选档位，该值作默认档」。
+  - `docs/reasoning-investigation.md`：状态由「调查完成，**未修复**」改为「已修复（issue #7，随 2.0.10）」，并**就地标注**其余过期处——第三节（根因）标为历史代码形态；第四节的推断「不发 `reasoning_effort` 时上游按默认 `effort` 运行、这些模型一直在思考」被修复时的实测**推翻**（实测为**零思考**，即默认思考关闭）；第七节「待决策」标为已决策（采纳「结合实测」一路）；第八节补「落地情况」列，如实区分已落地与未采纳（`supportsReasoning` / `onlyReasoning` 至今确实未解析，属拟议增强而非缺陷）；第九节改标各文件实际改动状态。
+  - 保留原文与就地注记，不删史——记录当时的推理路径，避免后人重复踩。
+
 ## 2.1.0 (2026-09-25)
 
 ### ⚠️ 版本基线：仅支持 DSH 0.1.7-rc.1 及以上
