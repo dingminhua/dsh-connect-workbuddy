@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.17 (2026-09-25)
+
+### Bug Fixes
+
+- **插件管理页 / 市场页的 logo 显示不对**（默认占位/空白）。0.1.7 的插件管理页从插件包的 `package.json` 的 `icon` 字段读图标（`dsh-client-ui-plugin-manager` 渲染 `row.meta?.icon`，plugin-manager 契约含 `icon: z.string().optional()`），我们没有声明该字段 → 宿主无图可用。
+  - **修法**（照同级 `dsh-ldvh` 的做法）：新增 `icons/` 目录（64px + 128px 真实 PNG，其中 64px 与既有卡片内嵌 base64 逐字节一致——同族 LD logo），`package.json` 声明 `"icon": "icons/dsh-connect-workbuddy-128.png"`，并把 `icons` 加入 `files` 白名单随包分发。
+  - **验证**：`npm pack` 确认两个 PNG 进包（15 → 17 个文件）；desktop profile 的 link 安装下，`node_modules/dsh-connect-workbuddy/package.json` 已含该字段。
+
+### Tests
+
+- 349 → 349（无逻辑变更；图标字段为包元数据）。
+
 ## 2.0.16 (2026-09-25)
 
 ### Bug Fixes
