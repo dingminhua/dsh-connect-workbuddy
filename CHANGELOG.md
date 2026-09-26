@@ -2,12 +2,33 @@
 
 ## Unreleased
 
-### Docs
+### Bug Fixes
 
-- **修正两处已过期的「推理强度两态」表述**——文档还停在「未修复」，而代码早在 **2.0.10**（`4c39645`，issue #7）就已修复。纯文档纠正，**无代码改动**。
-  - `docs/DESIGN.md`：「推理强度两态（已知问题）」改为「已修复」，并补上实际实现（`parseReasoning` 两态解析、`singularEffortLadder` 折叠为全阶梯 `low/medium/high/xhigh/max`、单数值折入 `defaultEffort`、`canDisableThinking` 视为 `true`）与两网关实测依据；同节字段表里 `reasoning.effort` 的「固定推理档位」改为「折叠为全阶梯可选档位，该值作默认档」。
-  - `docs/reasoning-investigation.md`：状态由「调查完成，**未修复**」改为「已修复（issue #7，随 2.0.10）」，并**就地标注**其余过期处——第三节（根因）标为历史代码形态；第四节的推断「不发 `reasoning_effort` 时上游按默认 `effort` 运行、这些模型一直在思考」被修复时的实测**推翻**（实测为**零思考**，即默认思考关闭）；第七节「待决策」标为已决策（采纳「结合实测」一路）；第八节补「落地情况」列，如实区分已落地与未采纳（`supportsReasoning` / `onlyReasoning` 至今确实未解析，属拟议增强而非缺陷）；第九节改标各文件实际改动状态。
-  - 保留原文与就地注记，不删史——记录当时的推理路径，避免后人重复踩。
+#### `dsh.client.inject` 仍依赖 `dsh-client-ui-primitives`
+
+`ddd11ed`（上游复审那次提交）第 6 条把卡片折叠箭头从宿主图标 `IconChevronDownOutline14` 改为**纯 CSS caret**，并删掉了该包在 `src/client/` 的最后一处导入——但 `package.json` 的 `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-ui-primitives` 留了下来。声明比代码活得久。
+
+- **为什么不是无害的多余声明**：`inject` 不是「仅供参考的清单」，但**它的作用范围比初看要窄**——两条机制各自加了一道限制，本条据实说明：
+  1. **它是加载/预取元数据**。内核在 `arriveGraphRow` 里沿它走 `arriveDependency`（`packages/client/modules/src/client/system.ts:268`），把该包列为「本行物化前必须先到」；`prune` 也把它当保留根（同文件 `:448`）。内核自己的注释把语义定得很明确：「`inject` names package rows whose factories must arrive before this row materializes」（`manifest.ts:47`），而 `ui-workspace` 的注释补了另一半：**「`dsh.client.inject` edges are informational (loading/prefetch metadata, never apply sequencing)」**（`packages/client/ui-workspace/src/client/index.ts:90`）。**不是 apply 顺序约束**。
+  2. **目标是 graph row 才成边**。`arriveGraphRow` 取依赖时带 `if (dependency !== undefined)` 守卫（`system.ts:269`），而 `graphRows` 只装入 `dsh.client` 声明过的包（`system.ts:133` ← `index.ts:837`）。`ui-primitives` **没有** `dsh.client` 声明，它是平台 seed 词（`packages/client/web/src/seed.ts:36`、`platform.ts:12`）——**因此它永远不在模块图里，这一条 inject 条目实际不产生任何加载边**。
+- **那么它为什么仍该删**：它是**过期声明**，不是运行时炸弹。真实成本是「声明与代码不一致」本身——保留一个零引用条目，等于向未来的维护者与工具谎称本插件依赖该包；一旦哪天该包被移出平台 seed 表（它并非不可能：该包在本区间改动 75 个文件、约 1500 行，且是唯一删除了导出 `OnboardingSurface` 的一个），这条就会从「无效」变成「生效的隐式依赖」，而那时没人记得它是怎么来的。清掉它，是让声明回到只描述真实依赖的状态。
+- **修法**：从 `inject` 删除该条目（`package.json` 的 `peerDependencies` / `devDependencies` / `tsdown.config.ts` 的 externals 保留——那是类型检查与构建所需，与运行时装配无关）。
+- 另：`src/client/WorkBuddyCard.tsx` 的文件头注释至今仍写着「`IconChevronDownOutline14` 的使用…来自该项目」，而该图标导入早在 `ddd11ed` 就已删除（改成纯 CSS caret）。本次一并更正该注释——它就是这条过期声明当初的同类残留。
+
+#### 卡片主题令牌名写错：`state-warning-primary` 在两条 0.1.7 线上都不存在
+
+加密凭据原因的着色用了 `--dsw-alias-state-warning-primary`，而宿主真实令牌是**缩写形** `--dsw-alias-state-warn-primary`（`packages/client/ui-theme/src/styles/design-platform.css`，在 rc.1 与 rc.2 上**都**只有缩写形）。
+
+- **为什么静默**：该声明带十六进制兜底色 `#e0a13a`。CSS 自定义属性名不存在时 `var()` 走兜底——规则从不空白，于是**兜底值在每一次渲染都生效**，宿主令牌从未被用上，颜色与设计系统彻底脱钩。写错一个词，不会有任何报错、告警或视觉空白来提示。
+- **修法**：令牌改为 `--dsw-alias-state-warn-primary`，兜底值改为该令牌的真实解析值 `#f59e0b`（`--dsw-static-amber-500`）。
+- **实际可见变化**：加密凭据那条原因的着色由 `#e0a13a` 变为 `#f59e0b`（宿主设计系统的 amber）。据实说明一点：`--dsw-static-amber-500` 在 light 与 dark 两处定义**同为 `rgb(245,158,11)`**，即该令牌是**主题不变量**——所以这次修复不是「颜色开始跟随主题」，而是「颜色回到宿主令牌这条正确的取值路径上」：取值此后由宿主决定，且兜底值与令牌一致，即便令牌缺失也不会再显示成一个无关的颜色。
+- 这不是 0.1.7-rc.2 引入的问题，是**既有缺陷**；rc.2 只是提供了发现它的时机。内核自己的决策记录点名过同一处混淆（`.agents/notes/implemented/architecture/2026-09-05-shared-client-control-primitives.md:71`）。
+
+### Tests
+
+- 新增 `tests/client-host-contract.spec.ts`（6 例）：上述两处都是**声明性**缺陷，因此测试读文件（`package.json` 与 `src/client/styles.ts`）而非导入它们——也让本套件不必拖入浏览器专属的 DSH 客户端包。用例覆盖：`inject` 不得出现客户端半边零引用的包；不得依赖 `ui-primitives`；四条真正参与组合的客户端包同时在册（防反向丢漏）；不得使用 `state-warning-primary` 长形；`state-*` 令牌必须落在宿主定义集内；兜底值必须是宿主 amber。
+- **变异验证**：把 `ui-primitives` 塞回 `inject` → **2 例变红**；把令牌改回 `state-warning-primary`/`#e0a13a` → **3 例变红**。两处缺陷各自单独还原都会被抓住。
+- 记录一条本次核实到的**反直觉事实**，避免后人写下错误的断言：`inject` **不是** value imports 的镜像。内核自身两个方向的反例都在——`ui-settings-plugins` 用裸 `import type {}` 做模块增强却照样 inject 那两个包（`src/client/index.ts:11,15`）；`ui-theme` 实际导入并使用 `ui-primitives` 的**组件**（`AppearanceRow.tsx:11`）却**不** inject 它。故本套件只断言「inject 里不得有零引用项」这一单向不变量，不碰反向。
 
 ## 2.1.0 (2026-09-25)
 
