@@ -11,7 +11,7 @@ import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
 /**
  * A settings scope that reproduces the Windows silent-failure shape.
  *
- * On Windows `settings.yaml` is replaced by writing a temp file and renaming it
+ * On Windows the profile's configuration file is replaced by writing a temp file and renaming it
  * over the target; an antivirus scanner, a sync client, or an open editor can
  * hold the file, and `@deepseek-ai/dsh-atomic-write` retries `EPERM`/`EBUSY`/
  * `EACCES` only on `win32`. When those retries are exhausted the client's

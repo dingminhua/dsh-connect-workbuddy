@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Features
+
+- **平台支持口径明确化：Windows 是一等目标平台。** 此前 README 只在**散落的五处**顺带提到 Windows（凭据路径、加密字段、`settings.yaml` 占用、路径未验证、CLI），**没有任何一处说「支持 Windows」**——读者要自己把五处拼起来才知道这是受支持平台。本次把它写成明示口径，并把「以后每次改动都要考虑 Windows」落到仓库里，而不是留在会话或记忆里。
+
+  - **`README.md` / `README.en.md` 新增「平台支持 / Platform support」一节**：一张三平台对照表（凭据默认目录、桌面 App 可执行文件的定位方式、心跳时间戳来源、设置写入的瞬时占用、CI 覆盖），加 Windows 上需要知道的三个具体点。表内每格都是**实现事实**（对应代码位置与测试已登记在 `docs/WINDOWS.md`），不是「尚未支持」的委婉说法。
+  - **新增 `docs/WINDOWS.md`（平台约束登记处）**：登记四个 Windows 专属分支（改错会怎样）、**证据分级 A/B/C/D**（真机取证 / CI 实测 / 约定推导 / 未验证，写结论时措辞必须与档位相称）、Windows 专有故障历史（2.0.6 / 2.0.11 / 2.0.12 / issue #11 #13 #15）、改动检查清单、尚未做的事。该文件随 npm 包分发（`files` 白名单），否则 README 里指向它的链接在 npm 上会是死链。
+  - **`RELEASING.md` 新增 §2.5「平台核对」**：每次发布前过一遍 `docs/WINDOWS.md` §4 的检查清单，并核对 CI 矩阵仍含 `windows-latest`、两条 README 的平台节与登记处三者一致。这是唯一**每次发布都必然被读到**的位置，因此把口径挂在这里。
+  - **`.gitattributes`（新增）**：仓库此前没有换行符约定，而文本文件在索引里都是 LF。Git for Windows 默认 `core.autocrlf=true` 会在检出时转成 CRLF，于是同一份测试在 Windows 与 POSIX 上读到的字节不同——本仓库的测试会直接读源码文本，这类断言必须跨平台稳定。现显式声明 `* text=auto eol=lf` 与各文本类型、并把图片等标为 `binary`。
+  - **为什么值得写进文件而不是只嘱咐一句**：这四个要素（CI 矩阵的 Windows 项、登记文件、两条 README 的平台节、发布清单）**每一个都是一行之差就会静静消失的东西**，而消失时不会有任何东西报错——CI 会继续全绿，构建会继续成功，README 会继续正常渲染。据此加了 `tests/platform-standing.spec.ts` 作为守卫。
+  - **`docs/WINDOWS.md` §7「在 Windows 真机上验证」**：一份可照做的操作手册——先跑 `doctor --json` 一次拿全四项证据（附字段→分支对照表），再逐项验 §1 的四个分支，重点是最值得实测的 §1-4（设置写入的瞬时占用，附可直接粘贴的 PowerShell 锁文件脚本），最后给出回报时应附的信息，以便把 §2 里那些 C 档结论升为 A 档。
+  - **顺带查实并改正一处事实错误：被写入的是 profile 配置，不是 `settings.yaml`。** 撰写 §7.3 的锁文件脚本时才发现，0.1.7 线上配置文档是 profile 目录下的 **`cordis.patch.yml`**（`config-editor` 的 `documentPath`；易失字段也经同一条 `edit()` 落在那里），而 `settings.yaml` 在该线**只用于一次性导入旧版本配置**，导入后即改名为 `settings.yaml.imported`。插件此前在**代码注释、README（两语）、以及一条面向用户的报错文案**里都写着 `settings.yaml`——在「Windows 上文件被占用」这个头号限制的场景里，这等于把用户指向一个不存在的文件。现已全部改正；面向用户的文案改为「当前 profile 的配置文件」并指向 `docs/WINDOWS.md`（不写死具体文件名，避免随 DSH 版本再次过期）。
+
 ### Bug Fixes
 
 #### `dsh.client.inject` 仍依赖 `dsh-client-ui-primitives`
@@ -29,6 +41,16 @@
 - 新增 `tests/client-host-contract.spec.ts`（6 例）：上述两处都是**声明性**缺陷，因此测试读文件（`package.json` 与 `src/client/styles.ts`）而非导入它们——也让本套件不必拖入浏览器专属的 DSH 客户端包。用例覆盖：`inject` 不得出现客户端半边零引用的包；不得依赖 `ui-primitives`；四条真正参与组合的客户端包同时在册（防反向丢漏）；不得使用 `state-warning-primary` 长形；`state-*` 令牌必须落在宿主定义集内；兜底值必须是宿主 amber。
 - **变异验证**：把 `ui-primitives` 塞回 `inject` → **2 例变红**；把令牌改回 `state-warning-primary`/`#e0a13a` → **3 例变红**。两处缺陷各自单独还原都会被抓住。
 - 记录一条本次核实到的**反直觉事实**，避免后人写下错误的断言：`inject` **不是** value imports 的镜像。内核自身两个方向的反例都在——`ui-settings-plugins` 用裸 `import type {}` 做模块增强却照样 inject 那两个包（`src/client/index.ts:11,15`）；`ui-theme` 实际导入并使用 `ui-primitives` 的**组件**（`AppearanceRow.tsx:11`）却**不** inject 它。故本套件只断言「inject 里不得有零引用项」这一单向不变量，不碰反向。
+
+- 新增 `tests/platform-standing.spec.ts`（11 例）：把「**Windows 是一等目标平台**」这条长期口径固化成可执行的守卫（见上方 Features 的说明）。守卫两头：**政策面**（CI 矩阵仍含 `windows-latest`、登记文件与两条 README 的平台节仍在且互相指得通、`RELEASING.md` 的平台核对仍在、`DESIGN.md` 仍指向登记处），以及**代码面**（`docs/WINDOWS.md` §1 登记的四个 `win32` 分支仍存在、生产源码不得把平台路径写成 POSIX 字面量）。**变异验证**：CI 矩阵去掉 `windows-latest` → 1 例变红；README 把「一等目标平台」改软 → 1 例变红；`auth.ts` 的 `win32` 分支改名 → 1 例变红。
+- 另新增 2 例（同文件）守卫本次顺带查实的事实：被写入的配置文档是 profile 的 `cordis.patch.yml`，不是 `settings.yaml`。**变异验证**：把用户文案改回 `settings.yaml` → 1 例变红；把 `docs/WINDOWS.md` §7.3 里「不是 `settings.yaml`」的澄清改掉 → 1 例变红。
+
+### Docs
+
+- **修正两处已过期的「推理强度两态」表述**——文档还停在「未修复」，而代码早在 **2.0.10**（`4c39645`，issue #7）就已修复。纯文档纠正，**无代码改动**。
+  - `docs/DESIGN.md`：「推理强度两态（已知问题）」改为「已修复」，并补上实际实现（`parseReasoning` 两态解析、`singularEffortLadder` 折叠为全阶梯 `low/medium/high/xhigh/max`、单数值折入 `defaultEffort`、`canDisableThinking` 视为 `true`）与两网关实测依据；同节字段表里 `reasoning.effort` 的「固定推理档位」改为「折叠为全阶梯可选档位，该值作默认档」。
+  - `docs/reasoning-investigation.md`：状态由「调查完成，**未修复**」改为「已修复（issue #7，随 2.0.10）」，并**就地标注**其余过期处——第三节（根因）标为历史代码形态；第四节的推断「不发 `reasoning_effort` 时上游按默认 `effort` 运行、这些模型一直在思考」被修复时的实测**推翻**（实测为**零思考**，即默认思考关闭）；第七节「待决策」标为已决策（采纳「结合实测」一路）；第八节补「落地情况」列，如实区分已落地与未采纳（`supportsReasoning` / `onlyReasoning` 至今确实未解析，属拟议增强而非缺陷）；第九节改标各文件实际改动状态。
+  - 保留原文与就地注记，不删史——记录当时的推理路径，避免后人重复踩。
 
 ## 2.1.0 (2026-09-25)
 

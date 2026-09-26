@@ -46,6 +46,7 @@
     "README.en.md",
     "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md",
+    "docs/WINDOWS.md",
     "LICENSE"
   ],
   "scripts": {

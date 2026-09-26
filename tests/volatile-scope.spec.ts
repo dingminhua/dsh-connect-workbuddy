@@ -27,7 +27,7 @@ function volatileScopeWith(initial: {
   accounts?: Record<string, string>
   regions?: Record<string, unknown>
 }): { scope: WorkBuddyAccountScope, document: () => Record<string, unknown> } {
-  // The stored document is PLAIN (that is what lands in settings.yaml)...
+  // The stored document is PLAIN (that is what lands in the profile patch)...
   let document: Record<string, unknown> = { ...initial }
   return {
     scope: {

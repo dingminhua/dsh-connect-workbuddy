@@ -42,6 +42,28 @@ grep -F "dsh-codex-connect" README.md README.en.md   # 唯一的 Apache-2.0 参�
 - [ ] 本轮新增/修改的源文件，头部注释标注了参考来源（见 `docs/DESIGN.md` 第 5.3 节）
 - [ ] 若引入了新的 WorkBuddy 相关依赖或复用了他人代码，`THIRD_PARTY_NOTICES.md` 已同步更新
 
+### 2.5 平台核对（Windows 是一等目标平台，**不得跳过**）
+
+每次发布前过一遍 [`docs/WINDOWS.md`](docs/WINDOWS.md) §4 的检查清单，并确认：
+
+```bash
+# CI 矩阵必须同时覆盖 windows-latest 与 ubuntu-latest
+grep -n "windows-latest\|ubuntu-latest" .github/workflows/ci.yml
+
+# 平台登记文件存在，且 README 的「平台支持」一节仍在
+ls docs/WINDOWS.md
+grep -n "## 平台支持" README.md
+grep -n "## Platform support" README.en.md
+```
+
+核对清单：
+
+- [ ] 本次改动未破坏 Windows 行为；若涉及 `docs/WINDOWS.md` §1 列出的四处分支，已在那里登记
+- [ ] 新增测试在任意主机上都能跑（注入 `platform`/`home`/`env`），未断言「跑测试的机器是什么平台」
+- [ ] 平台结论的措辞与 `docs/WINDOWS.md` §2 的证据档位相称（**C 档不得写成「已验证」**）
+- [ ] 两份 README 的「平台支持」表与本文件、`docs/WINDOWS.md` 三者一致
+- [ ] 若本次修复的是 Windows 专有故障：已在 `docs/WINDOWS.md` §3 的历史表补一行
+
 ### 3. 更新版本号
 
 手动改 `package.json` 的 `version` 字段。

@@ -355,9 +355,9 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * write made there does NOT update the browser settings mirror. Reading the
    * mirror therefore left the checkbox stuck ON after a successful disable —
    * "不能正确取消国际版/国内版" — even though `enabled: false` was already in
-   * settings.yaml. The Host sends the committed value it derives from its own
-   * config (`status.enabled`, see `deps.regionEnabled`), so the card renders
-   * that.
+   * the profile configuration. The Host sends the committed value it derives
+   * from its own config (`status.enabled`, see `deps.regionEnabled`), so the
+   * card renders that.
    *
    * The mirror stays as the FALLBACK: a host that predates the field, or a
    * status that has not loaded yet, still renders from the stored document
@@ -770,7 +770,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                     </span>
                     {/* A write that did not persist is stated, never swallowed.
                         Reaching this means `set()` resolved while the value is
-                        absent from the document (a locked settings.yaml on
+                        absent from the document (a locked profile configuration on
                         Windows), so the choice shown above is NOT the one in
                         effect and saying nothing would leave the user with a
                         picker that lies. */}

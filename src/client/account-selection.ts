@@ -197,7 +197,11 @@ export function configuredAccountsOf(configured: unknown): Record<string, string
  * Write one region's account slot, then confirm the value actually landed.
  *
  * `settingsScope.set()` resolving is NOT proof that anything was stored. The
- * Host's document is `settings.yaml`, replaced by writing a temp file and
+ * Host's document is the active profile's patch file (`cordis.patch.yml`, the
+ * `config-editor`'s `documentPath`; volatile fields land there too, through
+ * the same `edit()`. `settings.yaml` is NOT it on the 0.1.7 line — that file
+ * is imported once from earlier releases and renamed to
+ * `settings.yaml.imported`), replaced by writing a temp file and
  * renaming it over the target; on Windows an antivirus scanner, a sync client
  * (OneDrive, Dropbox), or an open editor can hold the file briefly.
  * `@deepseek-ai/dsh-atomic-write` retries `EPERM` / `EBUSY` / `EACCES` a

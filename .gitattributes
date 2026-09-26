@@ -1,0 +1,36 @@
+# 换行符与编码约定（Windows 是一等目标平台，见 docs/WINDOWS.md）
+#
+# 本项目在 Windows、macOS、Linux 上并列支持，且 CI 在 windows-latest 上跑完整套件。
+# 没有这份文件时，Git for Windows 的默认 `core.autocrlf=true` 会在检出时把文本文件
+# 转成 CRLF、提交时转回 LF —— 于是同一份测试在 Windows 与 POSIX 上读到的字节不同。
+# 本仓库的测试会直接读源码文本（如 tests/platform-standing.spec.ts、
+# tests/client-host-contract.spec.ts），这类断言必须跨平台稳定。
+#
+# 约定：仓库内的文本一律 LF（检出与提交都归一），二进制不做任何转换。
+# `eol=lf` 是显式的：它让 Windows 上的检出也保持 LF，而不是依赖各人的 autocrlf 设置。
+* text=auto eol=lf
+
+# 显式声明的文本类型（便于 diff 与归一）
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+
+# 二进制：禁止任何转换，也不要在 diff 里当作文本
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.zip   binary
+*.tgz   binary
+*.woff  binary
+*.woff2 binary
