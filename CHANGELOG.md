@@ -2,16 +2,42 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+#### Windows 宿主内每次进程存活判定都闪一个黑色控制台窗口
+
+`src/host-heartbeat.ts` 的 `processStartTimeMs()` 用 `execFileSync('powershell', …, { encoding: 'utf8' })` 启动子进程，**没有设 `windowsHide`**——而同一仓库的 `src/at-rest.ts` 在取 at-rest 密钥时设了。两处不一致，缺的那一处就是缺陷。
+
+- **为什么在 macOS 与终端里永远看不到**：Windows 只在**父进程没有控制台**时才给控制台程序子进程新建窗口。终端里父进程有控制台，子进程只是继承，现象根本不存在；`windowsHide` 在 POSIX 上又是无操作。所以这个缺陷对本地开发与现有测试**完全不可见**。
+- **而真实宿主正是会触发的形态**：`DSH NEXT.exe` 是 Electron GUI 进程，实测 `MainWindowHandle = 0`、无控制台。于是每次 `isHeartbeatProcessAlive()`（`status` / `doctor` 都会走到）都会在用户屏幕上新建并显示一个控制台窗口——即「黑框一闪」。
+- **真机取证**（Windows 11 22621，用 WMI 服务 `Win32_Process.Create` 造出与 GUI 宿主同为「无控制台」的父进程，再由子进程用 `kernel32!GetConsoleWindow` + `user32!IsWindowVisible` 自报它实际拥有的控制台）：
+
+  | 父进程形态 | 不设 `windowsHide` | 设 `windowsHide: true` |
+  | --- | --- | --- |
+  | 终端（有控制台） | 继承，无新窗口 | 继承，无新窗口 |
+  | WMI 服务创建（无控制台，等价于 GUI 宿主） | **`NEW-console hwnd=1573500 visible=True`** | `no-console` |
+
+- **同时排除一条错误判据**：不能用 `Get-Process powershell | MainWindowHandle` 观察。控制台窗口归 `conhost.exe` 所有，控制台程序自身的 `MainWindowHandle` 恒为 0——即使窗口正在屏幕上，该探针也报 0（本次实测中它先给出了假阴性）。
+- **修法**：抽出 `PROCESS_PROBE_OPTIONS`（`{ encoding: 'utf8', windowsHide: true }`）与 `processStartProbe(pid, platform)`。后者的 `platform` 可注入，与 `defaultDesktopAuthDirs()` / `workbuddyAppExecutableCandidates()` 同一套缝——使平台分支与启动选项**在任意主机上都可断言**，这是此类「Windows 专有、macOS 上不可能复现」缺陷唯一能被回归拦住的形态。
+- **守卫与变异验证**：`tests/host-heartbeat.spec.ts` 断言选项值与平台分支；`tests/platform-standing.spec.ts` 新增用例要求**两个** spawn 点都带 `windowsHide: true`。去掉该选项 → 对应用例变红（已实测）。`docs/WINDOWS.md` 登记为 §1-5 分支并附 A 档取证。
+
+#### `docs/WINDOWS.md` 里 issue #13 的「重试预算（200+600ms）」是错的
+
+该数字没有任何实现支撑。核对上游 `@deepseek-ai/dsh-atomic-write`（rc.1 与 rc.2 常量相同）后，真实预算是**延迟序列 20+40+80+160+200×4 ≈ 1100ms**（`initial 20ms` / `max 200ms` / `limit 8`）——**不存在 600ms 这一项**。
+
+- **真机实测**（同一台 Windows 11，逐一量持有期与结果）：持有 0 / 100 / 300 / 600 / 1000ms 后释放 → 写入**全部成功**（端到端 3 / 174 / 339 / 760 / 1165ms）；持有 60s（超出预算）→ `EPERM`，且目标文件**保持原内容**、不产生半写文件（已验证 `onDisk` 仍为原值）。
+- 现已按实测改写 `docs/WINDOWS.md` §3。这条属于**文档里的数字与实现脱节**：它不影响行为，但会误导后来者按错误的预算去调参或归因。
+
 ### Features
 
 - **平台支持口径明确化：Windows 是一等目标平台。** 此前 README 只在**散落的五处**顺带提到 Windows（凭据路径、加密字段、`settings.yaml` 占用、路径未验证、CLI），**没有任何一处说「支持 Windows」**——读者要自己把五处拼起来才知道这是受支持平台。本次把它写成明示口径，并把「以后每次改动都要考虑 Windows」落到仓库里，而不是留在会话或记忆里。
 
   - **`README.md` / `README.en.md` 新增「平台支持 / Platform support」一节**：一张三平台对照表（凭据默认目录、桌面 App 可执行文件的定位方式、心跳时间戳来源、设置写入的瞬时占用、CI 覆盖），加 Windows 上需要知道的三个具体点。表内每格都是**实现事实**（对应代码位置与测试已登记在 `docs/WINDOWS.md`），不是「尚未支持」的委婉说法。
-  - **新增 `docs/WINDOWS.md`（平台约束登记处）**：登记四个 Windows 专属分支（改错会怎样）、**证据分级 A/B/C/D**（真机取证 / CI 实测 / 约定推导 / 未验证，写结论时措辞必须与档位相称）、Windows 专有故障历史（2.0.6 / 2.0.11 / 2.0.12 / issue #11 #13 #15）、改动检查清单、尚未做的事。该文件随 npm 包分发（`files` 白名单），否则 README 里指向它的链接在 npm 上会是死链。
+  - **新增 `docs/WINDOWS.md`（平台约束登记处）**：登记 Windows 专属分支（初版四处，本次追加 §1-5 后为五处；改错会怎样）、**证据分级 A/B/C/D**（真机取证 / CI 实测 / 约定推导 / 未验证，写结论时措辞必须与档位相称）、Windows 专有故障历史（2.0.6 / 2.0.11 / 2.0.12 / issue #11 #13 #15）、改动检查清单、尚未做的事。该文件随 npm 包分发（`files` 白名单），否则 README 里指向它的链接在 npm 上会是死链。
   - **`RELEASING.md` 新增 §2.5「平台核对」**：每次发布前过一遍 `docs/WINDOWS.md` §4 的检查清单，并核对 CI 矩阵仍含 `windows-latest`、两条 README 的平台节与登记处三者一致。这是唯一**每次发布都必然被读到**的位置，因此把口径挂在这里。
   - **`.gitattributes`（新增）**：仓库此前没有换行符约定，而文本文件在索引里都是 LF。Git for Windows 默认 `core.autocrlf=true` 会在检出时转成 CRLF，于是同一份测试在 Windows 与 POSIX 上读到的字节不同——本仓库的测试会直接读源码文本，这类断言必须跨平台稳定。现显式声明 `* text=auto eol=lf` 与各文本类型、并把图片等标为 `binary`。
   - **为什么值得写进文件而不是只嘱咐一句**：这四个要素（CI 矩阵的 Windows 项、登记文件、两条 README 的平台节、发布清单）**每一个都是一行之差就会静静消失的东西**，而消失时不会有任何东西报错——CI 会继续全绿，构建会继续成功，README 会继续正常渲染。据此加了 `tests/platform-standing.spec.ts` 作为守卫。
-  - **`docs/WINDOWS.md` §7「在 Windows 真机上验证」**：一份可照做的操作手册——先跑 `doctor --json` 一次拿全四项证据（附字段→分支对照表），再逐项验 §1 的四个分支，重点是最值得实测的 §1-4（设置写入的瞬时占用，附可直接粘贴的 PowerShell 锁文件脚本），最后给出回报时应附的信息，以便把 §2 里那些 C 档结论升为 A 档。
+  - **`docs/WINDOWS.md` §7「在 Windows 真机上验证」**：一份可照做的操作手册——先跑 `doctor --json` 一次拿全四项证据（附字段→分支对照表），再逐项验 §1 的各分支，重点是最值得实测的 §1-4（设置写入的瞬时占用，附可直接粘贴的 PowerShell 锁文件脚本），最后给出回报时应附的信息，以便把 §2 里那些 C 档结论升为 A 档。本次已在真机执行过其中大部分，结果记录在 §7.0。
   - **顺带查实并改正一处事实错误：被写入的是 profile 配置，不是 `settings.yaml`。** 撰写 §7.3 的锁文件脚本时才发现，0.1.7 线上配置文档是 profile 目录下的 **`cordis.patch.yml`**（`config-editor` 的 `documentPath`；易失字段也经同一条 `edit()` 落在那里），而 `settings.yaml` 在该线**只用于一次性导入旧版本配置**，导入后即改名为 `settings.yaml.imported`。插件此前在**代码注释、README（两语）、以及一条面向用户的报错文案**里都写着 `settings.yaml`——在「Windows 上文件被占用」这个头号限制的场景里，这等于把用户指向一个不存在的文件。现已全部改正；面向用户的文案改为「当前 profile 的配置文件」并指向 `docs/WINDOWS.md`（不写死具体文件名，避免随 DSH 版本再次过期）。
 
 ### Bug Fixes
@@ -42,7 +68,7 @@
 - **变异验证**：把 `ui-primitives` 塞回 `inject` → **2 例变红**；把令牌改回 `state-warning-primary`/`#e0a13a` → **3 例变红**。两处缺陷各自单独还原都会被抓住。
 - 记录一条本次核实到的**反直觉事实**，避免后人写下错误的断言：`inject` **不是** value imports 的镜像。内核自身两个方向的反例都在——`ui-settings-plugins` 用裸 `import type {}` 做模块增强却照样 inject 那两个包（`src/client/index.ts:11,15`）；`ui-theme` 实际导入并使用 `ui-primitives` 的**组件**（`AppearanceRow.tsx:11`）却**不** inject 它。故本套件只断言「inject 里不得有零引用项」这一单向不变量，不碰反向。
 
-- 新增 `tests/platform-standing.spec.ts`（11 例）：把「**Windows 是一等目标平台**」这条长期口径固化成可执行的守卫（见上方 Features 的说明）。守卫两头：**政策面**（CI 矩阵仍含 `windows-latest`、登记文件与两条 README 的平台节仍在且互相指得通、`RELEASING.md` 的平台核对仍在、`DESIGN.md` 仍指向登记处），以及**代码面**（`docs/WINDOWS.md` §1 登记的四个 `win32` 分支仍存在、生产源码不得把平台路径写成 POSIX 字面量）。**变异验证**：CI 矩阵去掉 `windows-latest` → 1 例变红；README 把「一等目标平台」改软 → 1 例变红；`auth.ts` 的 `win32` 分支改名 → 1 例变红。
+- 新增 `tests/platform-standing.spec.ts`：把「**Windows 是一等目标平台**」这条长期口径固化成可执行的守卫（见上方 Features 的说明）。守卫两头：**政策面**（CI 矩阵仍含 `windows-latest`、登记文件与两条 README 的平台节仍在且互相指得通、`RELEASING.md` 的平台核对仍在、`DESIGN.md` 仍指向登记处），以及**代码面**（`docs/WINDOWS.md` §1 登记的 `win32` 分支仍存在、生产源码不得把平台路径写成 POSIX 字面量）。**变异验证**：CI 矩阵去掉 `windows-latest` → 1 例变红；README 把「一等目标平台」改软 → 1 例变红；`auth.ts` 的 `win32` 分支改名 → 1 例变红。本次追加 1 例（要求两个 spawn 点都带 `windowsHide: true`），并把心跳分支的断言改指向新缝 `processStartProbe(pid, platform)`——**变异验证**：去掉 `windowsHide` → 该例变红。
 - 另新增 2 例（同文件）守卫本次顺带查实的事实：被写入的配置文档是 profile 的 `cordis.patch.yml`，不是 `settings.yaml`。**变异验证**：把用户文案改回 `settings.yaml` → 1 例变红；把 `docs/WINDOWS.md` §7.3 里「不是 `settings.yaml`」的澄清改掉 → 1 例变红。
 
 ### Docs

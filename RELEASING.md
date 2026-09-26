@@ -58,8 +58,9 @@ grep -n "## Platform support" README.en.md
 
 核对清单：
 
-- [ ] 本次改动未破坏 Windows 行为；若涉及 `docs/WINDOWS.md` §1 列出的四处分支，已在那里登记
+- [ ] 本次改动未破坏 Windows 行为；若涉及 `docs/WINDOWS.md` §1 列出的五处分支，已在那里登记
 - [ ] 新增测试在任意主机上都能跑（注入 `platform`/`home`/`env`），未断言「跑测试的机器是什么平台」
+- [ ] 若新增了 spawn 子进程的代码：已设 `windowsHide: true`（宿主无控制台，漏设即闪黑框——**在终端里验证不出来**）
 - [ ] 平台结论的措辞与 `docs/WINDOWS.md` §2 的证据档位相称（**C 档不得写成「已验证」**）
 - [ ] 两份 README 的「平台支持」表与本文件、`docs/WINDOWS.md` 三者一致
 - [ ] 若本次修复的是 Windows 专有故障：已在 `docs/WINDOWS.md` §3 的历史表补一行

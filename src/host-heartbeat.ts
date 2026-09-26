@@ -41,6 +41,61 @@ export function workbuddyHostHeartbeatPath(): string {
 }
 
 /**
+ * Spawn options every external probe in this module is run with.
+ *
+ * `windowsHide` is REQUIRED here, not cosmetic. Windows hands a console-program
+ * child a brand-new console window whenever its PARENT has none — and the
+ * parent frequently has none: the DSH Desktop host is an Electron GUI process
+ * (`MainWindowHandle = 0`, verified on the live host), as are Task Scheduler
+ * jobs and CI services. That window is created VISIBLE, so every start-time
+ * probe would flash a black box on the user's screen.
+ *
+ * Evidence (real Windows 11, parent created console-less through the WMI
+ * service — the same condition as the Electron host; the child reports the
+ * console it actually owns):
+ *
+ *   - without `windowsHide`: `NEW-console hwnd=1573500 visible=True`
+ *   - with `windowsHide: true`: `no-console`
+ *
+ * Invoked from a terminal the parent HAS a console and the child simply
+ * inherits it (no new window), which is why this never showed up in local
+ * runs — the same blind spot `docs/WINDOWS.md` §0 describes. The sibling call
+ * site `src/at-rest.ts` (the at-rest key fetch) already sets this option; this
+ * module did not, and that inconsistency is what the test pins.
+ *
+ * On POSIX the option is ignored.
+ */
+export const PROCESS_PROBE_OPTIONS = { encoding: 'utf8', windowsHide: true } as const
+
+/**
+ * The command one start-time probe runs, per platform.
+ *
+ * Split out as a value so the spawn can be asserted WITHOUT a Windows machine:
+ * `tests/host-heartbeat.spec.ts` checks the platform branch and the options
+ * object directly, which is the only way a Windows-only spawn defect here can
+ * be caught on the macOS development machine (§0: not "unreproduced" but
+ * "impossible to reproduce").
+ *
+ * `platform` is injectable for the same reason, in the same spirit as
+ * `defaultDesktopAuthDirs()` and `workbuddyAppExecutableCandidates()`.
+ */
+export function processStartProbe(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): { file: string, args: string[] } {
+  if (platform === 'win32') {
+    return {
+      file: 'powershell',
+      args: [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().ToString('o')`,
+      ],
+    }
+  }
+  return { file: 'ps', args: ['-o', 'lstart=', '-p', String(pid)] }
+}
+
+/**
  * Process start time in epoch milliseconds; undefined when unavailable.
  *
  * POSIX reads `ps -o lstart=`; Windows has no such command, so the creation
@@ -50,12 +105,8 @@ export function workbuddyHostHeartbeatPath(): string {
  */
 export function processStartTimeMs(pid: number): number | undefined {
   try {
-    const output = process.platform === 'win32'
-      ? execFileSync('powershell', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().ToString('o')`,
-      ], { encoding: 'utf8' })
-      : execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' })
+    const probe = processStartProbe(pid)
+    const output = execFileSync(probe.file, probe.args, PROCESS_PROBE_OPTIONS)
     const parsed = Date.parse(output.trim())
     return Number.isFinite(parsed) ? parsed : undefined
   } catch {

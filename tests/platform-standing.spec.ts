@@ -105,8 +105,26 @@ describe('Windows code paths stay present', () => {
 
   it('keeps the Windows heartbeat timestamp source', () => {
     const heartbeat = read('src/host-heartbeat.ts')
-    expect(heartbeat).toContain("process.platform === 'win32'")
+    // The platform branch now lives in `processStartProbe(pid, platform)` —
+    // an injected seam rather than a bare `process.platform` read, so the
+    // branch stays assertable on any host. The requirement is unchanged: the
+    // win32 path must go through PowerShell, and it must not come back as an
+    // unconditional `ps` call.
+    expect(heartbeat).toContain("platform === 'win32'")
     expect(heartbeat).toContain('powershell')
+  })
+
+  it('hides the console window on every Windows child-process spawn', () => {
+    // A console-program child gets a NEW, VISIBLE console window on Windows
+    // whenever its parent has none — and the DSH Desktop host is exactly that
+    // (an Electron GUI process, `MainWindowHandle = 0`). Both modules that
+    // spawn a child therefore have to set `windowsHide: true`; `at-rest.ts`
+    // always did, `host-heartbeat.ts` did not, and the omission is invisible
+    // on macOS because the option is ignored there. Real-Windows evidence and
+    // the reproduction are registered in `docs/WINDOWS.md` §1-3.
+    for (const file of ['src/host-heartbeat.ts', 'src/at-rest.ts']) {
+      expect(read(file), `${file} spawns a child without windowsHide`).toContain('windowsHide: true')
+    }
   })
 
   it('never hard-codes a POSIX separator in a path this project builds', () => {

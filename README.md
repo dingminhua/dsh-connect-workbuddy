@@ -96,13 +96,14 @@ dsh plugin --profile dsh-tui add dsh-connect-workbuddy # TUI
 | 凭据默认目录 | `%LOCALAPPDATA%` / `%APPDATA%` 优先，未设时回落 `<home>\AppData`（重定向配置文件仍可解析） | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth` | `$XDG_CONFIG_HOME` 优先，未设时回落 `~/.config` |
 | 桌面 App 可执行文件 | `%LOCALAPPDATA%\Programs\WorkBuddy`、`%LOCALAPPDATA%\WorkBuddy`、两个 `Program Files`（按 `WorkBuddy.exe` 定位） | 读 bundle 的 `Info.plist` 取 `CFBundleExecutable`（真实值 **`Electron`**，不是按 App 名猜）；含国际版 `WorkBuddy AI.app` 与 `/Applications` 下的子目录 | 不适用（加密凭据场景下 Linux 无对应 App；用 `WORKBUDDY_AUTH_FILE` 指定凭据） |
 | 进程心跳的时间戳来源 | PowerShell `Get-Process` 的 `StartTime`（POSIX 无 `ps -lstart` 等价物） | `ps -o lstart=` | `ps -o lstart=` |
+| 子进程的窗口 | **必须 `windowsHide`**：宿主本身没有控制台（GUI 进程），漏设会让每次探测都在屏幕上闪一个可见的黑框 | 不适用（该选项仅 Windows 生效） | 不适用 |
 | 设置写入的瞬时占用 | **会踩到**：profile 的配置文件 `cordis.patch.yml` 被杀毒软件 / OneDrive / 编辑器短暂锁定会拒绝 rename 覆盖，`@deepseek-ai/dsh-atomic-write` 的重试**只在 `win32` 生效** | 不踩：POSIX 的 rename 直接替换，同一段代码不进重试分支 | 同 macOS |
 | CI 覆盖 | `windows-latest` 跑完整套件 | 开发者本机（macOS） | `ubuntu-latest` 跑完整套件 |
 
 **Windows 上需要知道的三个具体点**：
 
 1. **账号改动可能保存失败**（profile 的配置文件 `cordis.patch.yml` 被占用）。插件会在写入后**回读校验**：确认落盘才显示「已清除」，失败则明确报错并保留原选择。遇到提示时关闭占用该文件的程序后重试。详见[已知限制](#已知限制)。
-2. **凭据路径未经真机逐项验证**。候选列表按平台约定推导并有单元测试钉住（含 `LOCALAPPDATA` / `APPDATA` 缺省与空白串两种回落），但**开发机是 macOS，Windows 专有的写入失败在 macOS 上不是「没复现」而是「不可能复现」**——同一段代码在 POSIX 上根本不进重试分支。因此若你的凭据不在默认位置，用 `WORKBUDDY_AUTH_FILE` 指定实际路径，并欢迎回报现场。
+2. **凭据路径已部分经真机验证**。候选列表按平台约定推导并有单元测试钉住（含 `LOCALAPPDATA` / `APPDATA` 缺省与空白串两种回落）。已在真实 Windows 11 上确认：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth` 与 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe` **命中**，加密凭据的 `keyId` 与登记向量逐字一致。**其余候选仍未经真机逐项验证**——若你的凭据或 App 不在默认位置，用 `WORKBUDDY_AUTH_FILE` / `WORKBUDDY_APP_EXECUTABLE` 指定，并欢迎回报现场。
 3. **加密凭据（5.6.0 起）需要桌面 App 在场**，Windows 与 macOS 同样如此；App 装在自定义目录（如 `E:\WorkBuddy\WorkBuddy.exe`）时用 `WORKBUDDY_APP_EXECUTABLE` 指定。
 
 ## 命令行
@@ -152,7 +153,7 @@ dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
   - 显式选择的账号若在本机消失（App 更换登录或清理备份文件），插件**不会**静默改选其他账号——那样会让账单落到另一个账号上。卡片会明确说明「保存的账号已不存在」，此时重新选择一个账号，或点「跟随 App 当前登录」清除该选择即可恢复。**重新登录桌面端 App 无法修复这种状态**：凭据本身是好的，失效的只是保存下来的账号标识。
   - 从 2.0.0 之前的版本升级而来的用户，设置里可能仍留有旧版的顶层 `accountId`（迁移来源）。它只作用于其所属区域，且**该区域被显式清除（`accounts.<区域> = ""`）后即不再生效**——否则清除掉的账号会在下次启动时被静默恢复。卡片会显示每个区域当前是「使用保存的账号」还是「跟随 App 当前登录」：清除后回到的默认账号往往与刚清掉的账号是同一个，没有这行提示就无法分辨清除是否生效。
 - **Windows：profile 的配置文件 `cordis.patch.yml` 被占用时，账号改动可能无法保存**。DSH 用「写临时文件 + 覆盖替换」的方式更新该文件，而杀毒软件、OneDrive 等同步盘或正在打开该文件的编辑器会短暂锁住它；重试耗尽后，写入失败**不会**让 `set()` 报错。插件因此会在写入后回读校验：**确认落盘才显示「已清除」**，失败则给出明确错误并保留原来的选择（不会显示一个旧选择默默反驳的假确认）。遇到该提示时，关闭占用该文件的程序后重试即可。
-- Windows / Linux 的凭据默认路径为按平台约定推导，未经真机验证；必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
+- Windows / Linux 的凭据默认路径按平台约定推导。已在真实 Windows 11 上确认 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth` 与 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe` 命中，**其余候选与 Linux 路径仍未经真机验证**；必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
 - **加密凭据依赖桌面 App 在场**：新版桌面端（**5.6.0 起，macOS 与 Windows 同样如此**）加密了 auth 文件里的 token 字段，插件需要调用该 App 自身的原生绑定才能取回字段密钥。因此 App 若未安装、被卸载，或安装在探测路径之外（用 `WORKBUDDY_APP_EXECUTABLE` 指定），加密文件就读不出来——此时账号会显示为未登录，而**不会**退化成读出一个残缺的 token。`doctor` 会报告这项能力是否可用。该密钥是构建期常量，随 App 版本可能轮换；插件每次向本机 App 现取，不缓存到磁盘，所以 App 升级后无需升级插件。
   - **App 可执行文件按 bundle 自身声明定位，不按 App 名猜**：WorkBuddy 的 macOS bundle 里 `CFBundleExecutable` 是 `Electron`（不是 `WorkBuddy`），因此插件读取 bundle 的 `Info.plist` 来决定二进制名。国内版 `WorkBuddy.app` 与国际版 `WorkBuddy AI.app` 都在候选内；App 被归入 `/Applications` 子目录（如 `/Applications/IDE/WorkBuddy.app`）时，插件还会向下扫一层并用 bundle id 确认身份后才使用——**不会**因为同名的其他 Electron 应用而误启动它。
   - **「未登录」与「登录信息读不出来」是两件事**：加密文件读不出时，插件给出的建议是「安装桌面 App / 用 `WORKBUDDY_APP_EXECUTABLE` 指定其位置」，而**不是**「重新登录一次」——后者对这种情况无效（凭据本身是好的，缺的是密钥）。
