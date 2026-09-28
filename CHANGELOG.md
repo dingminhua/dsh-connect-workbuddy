@@ -1,5 +1,64 @@
 # Changelog
 
+## 2.1.2 (2026-09-29)
+
+### ⚠️ 兼容性修复：peer 上界 `<0.2.0` 会在 0.2.0 落地时把整个组合包静默判死
+
+本版**无功能改动**，只修一处**声明**——但这是一处会在下一个 DSH 版本落地那一刻生效、且**用户侧完全无提示**的缺陷。
+
+#### 缺陷
+
+10 条 `dsh-*` peer 此前写作 `>=0.1.7-rc.1 <0.2.0`。这个上界在写下的当时是对的，但它有一个**只在下一个版本线落地时才显形**的形状：
+
+- `0.2.0-rc.1 < 0.2.0` 成立 → 整条 0.2.0 **预发布**线被放行（所以 0.2.0-rc.1 上一切正常）
+- `0.2.0 < 0.2.0` 不成立 → 正式版一发布，**10 条 peer 全部失败**
+
+DSH 的随包门禁 `evaluatePluginCompatibility`（`packages/boot/app-boot/src/plugin-compatibility.ts`）逐条判定这 10 条；**只要一条不满足，整个组合包就被 `loadProfileDirectory` 跳过**，只写进 `skippedBundles` 并由 `reportSkippedBundles` 打到 stderr。它不是崩溃，是**静默消失**：provider 不注册、卡片不出现、模型列表清空，页面上没有任何报错。
+
+- **取证方式**：把 0.2.0-rc.1 tag 里的 `plugin-compatibility.ts` **原样取出**，喂进本插件真实的 `package.json`。`0.2.0` / `0.2.1` / `0.3.0-rc.1` 全部 `DENIED(10/10 peers fail)`，而 `0.2.0-rc.1` / `0.2.0-rc.2` 通过——即「预发布能用、正式版不能用」的悬崖。
+- **这条路径并非假想**：同机实测，profile 里 `dsh-rewind-plugin`（`^0.1.7-rc.2`）、`dsh-free-search`（`^0.1.7-rc.1`）、`dsh-better-reasoning-effort`、`@changfenhuang/dsh-genui` 四个组合包**已经**因同样的原因没有出现在实时组合里——`listConfigs` 共 203 条，其中无一条来自它们；同 profile 内 peer 全通过的包则全部在场。
+
+#### 修法：上界改为 `<0.3.0-0`
+
+**为什么带 `-0`**：DSH 至今 **23 个 tag 全部是预发布**（`-alpha.N` / `-rc.N`），从未发过 GA。因此：
+
+- `<0.3.0` 只挡 `0.3.0` GA——而 GA 永远不来——上界**永不生效**，同时静默放行 `0.3.0-alpha.1` / `0.3.0-rc.1` 整条从未验证过的线。**这正是今天这个缺陷的形状：看起来是围栏，实际不挡任何东西。**
+- `<0.3.0-0` 显式挡掉 `0.3.0-0`（含）以上的一切预发布与 GA，围栏真的会响。
+
+`-0` 是 semver 里「该版本线的最小可能预发布」，所以 `<0.3.0-0` 意为「0.3.0 线一个都不放」。同作者同架构的 `dsh-connect-trae` 2.3.0 对同一处缺陷的处置与此一致。
+
+| 宿主 | 改前 | 改后 |
+| --- | --- | --- |
+| `0.1.7-rc.1` / `0.1.7-rc.2` | admitted | admitted（**不回归**） |
+| `0.2.0-rc.1` / `0.2.0-rc.9` / **`0.2.0`** / `0.2.1` / `0.2.99` | rc 通过、**GA 被拒** | admitted |
+| `0.3.0-0` / `0.3.0-alpha.1` / `0.3.0-rc.1` / `0.3.0` | — | **DENIED**（下一线仍未验证，符合原意） |
+
+`0.1.7-alpha.1/alpha.2` 改前改后都是 DENIED（`>=0.1.7-rc.1` 下界所限），属既有行为，不是本次引入的回归。
+
+#### 顺带移除一处过期声明：`@deepseek-ai/dsh-client-runtime`
+
+该包停在 `0.1.1-rc.2`、不在任何受支持主机的捆绑集内，且 **源码零引用**（`src/` 里只有两处注释提到它；构建产物 `lib/client.js` 的 `require` 只有 `react` / `react/jsx-runtime`）。它此前作为「旧主机行的类型来源」被保留，但那条线已随 2.1.0 移除。现连同 **devDependency、pnpm override、tsdown 的 `neverBundle` external** 一并删除——保留一个零引用的 override 只会让清单与 lockfile 继续声称一份并不存在的依赖。
+
+#### Tests
+
+新增 `tests/dsh-line.spec.ts`（9 例）：守卫上下界口径、**上界真的挡得住**、下界不放松、两个客户端包不掉队、过期 devDependency 不回流。
+
+- **关键设计**：边界断言**对声明本身求值**，而不是对测试里另写一遍的字面量求值——否则清单与断言各自漂移也能全绿，那正是本套件要防的「看起来是围栏、实际不挡」缺陷换了一层。为此自带一个小而完整的 semver 序比较（本仓库无 `semver` 依赖），并附一条**比较器自检**用例：它错了，整套守卫就是装饰品。
+- **变异验证**（5 处，逐一实测变红）：改回 `<0.2.0` → 3 例红；`<0.3.0-0` 改成 `<0.3.0` → 3 例红；下界抬到 `>=0.2.0-rc.1` → 3 例红；**只让 10 条里的一条漂移** → 4 例红；把 `dsh-client-runtime` 塞回 devDependencies → 2 例红。对照组（未变异）9 例全绿。
+
+#### Docs
+
+- `README.md` / `README.en.md`：「版本要求」一节补上**当前验证窗口**（`0.1.7-rc.1` ~ `0.2.x`）与新增的「受支持的宿主范围」表（含 0.3.0 线被明确拒绝），并就地说明 `<0.3.0-0` 与 `<0.3.0` 的区别。两语一致。
+- README 里指向 `tests/` 的引用写成代码体而非 Markdown 链接：`tests/` 不在 npm `files` 白名单内，写成链接在 npm 上会是死链——与 2.1.1 处理 `docs/WINDOWS.md` 时同一考量。
+
+#### 复核结论：对 0.2.0-rc.1 零代码改动
+
+除上述声明外，**代码一行未改**。逐包核对 0.2.0-rc.1 tag，本插件触碰的 12 个内核包其 `src/` 树与 0.1.7-rc.2 **逐字节相同**（`git rev-parse <tag>:<path>/src` 树哈希相等）：
+
+`dsh-llm`、`dsh-llm-pi-ai`、`dsh-settings`、`dsh-host-webserver`、`dsh-atomic-write`、`dsh-home-paths`、`dsh-attachment`、`dsh-client-ui-settings`、`dsh-client-ui-slots`、`dsh-client-ui-renderer`、`dsh-client-ui-settings-plugins`、`dsh-client-locale` —— 仅 `package.json` 的 `version` 字段由 `0.1.7-rc.2` 变为 `0.2.0-rc.1`。
+
+运行时契约同步核对：`plugins.bundle.config` / `plugins.row.config` 两个槽位仍在且分发点未变（`renderSlot(..., { entryKey })` 三行未改动）；客户端 `configForms` 服务与 `PluginConfigViewProps` 契约未变；主题令牌只增未减（插件使用的 `--dsw-alias-state-error-primary` / `-warn-primary` 均在）。实机状态：0.2.0-rc.1 宿主上 `/plugins/dsh-connect-workbuddy/usage` 返回 **200** 真实数据，两个槽位均由 `dsh-connect-workbuddy-client` 占用且 `active: true`，宿主 Config 条目 `include:dsh-connect-workbuddy` 状态为 `schema`。
+
 ## 2.1.1 (2026-09-26)
 
 ### Features

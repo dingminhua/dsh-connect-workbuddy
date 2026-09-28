@@ -65,6 +65,26 @@ grep -n "## Platform support" README.en.md
 - [ ] 两份 README 的「平台支持」表与本文件、`docs/WINDOWS.md` 三者一致
 - [ ] 若本次修复的是 Windows 专有故障：已在 `docs/WINDOWS.md` §3 的历史表补一行
 
+### 2.6 宿主范围核对（peer 上界，**不得跳过**）
+
+每次发布前确认声明的宿主范围与当前 DSH 线一致。**上界写错不会让任何构建或测试失败**——它只在下一个 DSH 版本落地那一刻生效，且用户侧表现为插件**静默消失**（组合包被 `loadProfileDirectory` 跳过，只打到 stderr），详见 CHANGELOG 的 2.1.2 一节。
+
+```bash
+# 所有 dsh-* peer 必须是同一条范围，且上界带 -0（DSH 至今只发预发布）
+grep -c '">=0.1.7-rc.1 <0.3.0-0"' package.json
+
+# 宿主线是否已经前进？有 0.3.x 的 tag 就说明该复核上界了
+git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
+```
+
+核对清单：
+
+- [ ] `package.json` 里全部 `dsh-*` peer 范围完全一致（`tests/dsh-line.spec.ts` 会强制这一点）
+- [ ] 上界仍是 `<0.3.0-0`；若 DSH 已进入 0.3.x 线，先在真机或 tag 上复核再决定是否放宽，**不要只改数字**
+- [ ] 上界带 `-0` 后缀（写成 `<0.3.0` 等于不挡：DSH 至今全部 tag 都是预发布，围栏会静默失效）
+- [ ] 两条 README 的「受支持的宿主范围」表与 `package.json` 三者一致
+- [ ] 若本次放宽了上界，已在 `CHANGELOG.md` 说明**依据**（哪些包、如何复核），而不是只写「支持新版本」
+
 ### 3. 更新版本号
 
 手动改 `package.json` 的 `version` 字段。

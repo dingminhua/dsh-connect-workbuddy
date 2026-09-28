@@ -54,7 +54,20 @@ Credentials are read (read-only) from the WorkBuddy desktop app's own auth file.
 
 ## Install
 
-> ⚠️ **Version requirement: DSH 0.1.7-rc.1 or newer.** Since v2.1.0 this plugin only supports hosts on DSH 0.1.7-rc.1 and above (older hosts cannot resolve the dependencies to install this version); hosts on 0.1.5 and earlier should stay on v2.0.15.
+> ⚠️ **Version requirement: DSH 0.1.7-rc.1 or newer (current window: `0.1.7-rc.1` – `0.2.x`).** Since v2.1.0 this plugin only supports hosts on DSH 0.1.7-rc.1 and above (older hosts cannot resolve the dependencies to install this version); hosts on 0.1.5 and earlier should stay on v2.0.15. Since v2.1.2 the upper bound is **`<0.3.0-0`**: the **whole 0.2.0 line, GA included, is verified**; the 0.3.0 line is explicitly refused. See [Supported host range](#supported-host-range) below.
+
+### Supported host range
+
+DSH's shipped gate (`evaluatePluginCompatibility` in `packages/boot/app-boot/src/plugin-compatibility.ts`) checks every declared `dsh-*` peer range; **one unsatisfied peer skips the entire bundle** (it lands in `skippedBundles` and is only printed to stderr) — no provider is registered, no card appears, the model list goes empty, and the page shows no error at all.
+
+| Host version | Verdict |
+| --- | --- |
+| `0.1.7-rc.1` – `0.1.7-rc.2` | ✅ supported |
+| `0.2.0-rc.1` – `0.2.x` (`0.2.0` GA included) | ✅ supported (verified from 2.1.2) |
+| `0.3.0-0` and above | ❌ explicitly refused (that line is unverified) |
+| `0.1.6` and earlier | ❌ explicitly refused (0.1.5 users should stay on v2.0.15) |
+
+> The upper bound is written `<0.3.0-0`, not `<0.3.0`: **every DSH tag to date is a prerelease** (`-alpha.N` / `-rc.N`), so `<0.3.0` alone would admit the entire unverified `0.3.0-alpha.1` / `0.3.0-rc.1` line, leaving the guardrail inert — exactly the defect shape 2.1.2 fixes. `tests/dsh-line.spec.ts` guards this contract.
 
 > 🪟 **Platform support: Windows, macOS, and Linux are supported side by side.** **Windows is a first-class target**, not an afterthought: CI runs the full suite on `windows-latest`, and four areas carry Windows-specific branches with their own tests — credential paths, process heartbeat, desktop-app executable lookup, and settings writes. **When fixing a defect that only reproduces on Windows, the Windows reporter's field evidence and an encryption vector captured from a real Windows install are what the fix is judged against** (see the 2.0.6 / 2.0.11 / 2.0.12 sections of [CHANGELOG](CHANGELOG.md)). See the [Platform support](#platform-support) section for the per-platform differences and known limitations.
 

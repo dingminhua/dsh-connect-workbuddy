@@ -39,11 +39,12 @@ overrides:
   # 导出，并有一条不依赖安装版本的确定性用例（用不带 volatile() 的 schema 断言恒等）。
   '@deepseek-ai/schemastery': 3.18.4
   '@earendil-works/pi-ai': 0.85.1
-  # dsh-client-runtime 在 0.1.1-rc.2 之后停止发布，且不在 0.1.5 桌面捆绑集内
-  # （其槽位/会话服务迁至 dsh-client-ui-renderer/client）。仅作旧主机行的
-  # 类型来源保留，绝不参与 0.1.5 运行时。
-  '@deepseek-ai/dsh-client-runtime': 0.1.1-rc.2
-  # Transitive peers of the 0.1.5 line (published on the next tag)
+  # `dsh-client-runtime` 已于 0.1.1-rc.2 后停止发布，且不在任何受支持主机的捆绑集内
+  # （槽位/会话服务迁至 `dsh-client-ui-renderer/client`）。它此前仅作为旧主机行的类型
+  # 来源保留，但没有任何源文件引用它，故 2.1.2 起连同其 override、devDependency 与
+  # tsdown external 一并移除——保留一个零引用的 override 只会让 lockfile 与清单
+  # 继续声称一份并不存在的依赖。
+  # Transitive peers of the 0.1.7 line (published on the next tag)
   '@deepseek-ai/dsh-brand': 0.1.7-rc.1
   '@deepseek-ai/dsh-timeout': 0.1.7-rc.1
   '@deepseek-ai/dsh-fs': 0.1.7-rc.1
