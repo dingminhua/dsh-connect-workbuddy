@@ -201,6 +201,14 @@ export interface WorkBuddyWebModel {
   nativeContextWindow: number
   maxTokens: number
   creditMultiplier?: number
+  /**
+   * Upstream's own image-input default from the latest refresh. Used ONLY to
+   * pre-fill the image checkboxes when "Refresh from WorkBuddy" overwrites the
+   * draft; it is not the effective capability. Persisted inside `lastCatalog`
+   * (it rides along in the saved entries) but never read as the runtime flag —
+   * that stays `imageModelIds` → stamped `multimodal`.
+   */
+  supportsImages?: boolean
   multimodal?: boolean
   reasoning?: {
     supportedEfforts?: readonly string[]

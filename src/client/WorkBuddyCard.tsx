@@ -40,6 +40,7 @@ import {
 } from '../status-paths.ts'
 import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from '../status-paths.ts'
 import { writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
+import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import { searchReasonLabel, searchedView, signedOutNotice, signedOutText } from './searched-paths.ts'
@@ -77,6 +78,21 @@ export type WorkBuddyCardProps =
 
 const POLL_INTERVAL_MS = 60_000
 const WORKBUDDY_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-workbuddy'
+
+/**
+ * Tooltip for one model's image checkbox. The box is pre-checked only for
+ * models the vendored vendor table documents as natively multimodal, so the
+ * two other outcomes need to say WHY they are off — otherwise a documented
+ * text-only model and an unverified one look identically broken next to their
+ * checked siblings.
+ */
+function imageCheckboxHint(model: { id: string }, t: Translate): string {
+  switch (nativeModalityOf(model.id)) {
+    case 'multimodal': return t('row.modelImage')
+    case 'text': return t('row.modelImageText')
+    default: return t('row.modelImageUnverified')
+  }
+}
 
 /** One region's unsaved model edits; switching tabs never drops these. */
 interface WorkBuddyDraft {
@@ -454,11 +470,18 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       if (!response.ok || !Array.isArray(body.models)) throw new Error(`HTTP ${response.status}`)
       const fresh = body.models
       const freshIds = new Set(fresh.map(model => model.id))
-      // Re-map the user's CURRENT selections (draft first, then saved) onto the
+      // Re-map the user's CURRENT enabled choices and context budgets onto the
       // fresh catalog by model id, so renames and additions never silently lose
-      // enabled choices, image opt-ins, or context budgets.
+      // them. The IMAGE checkboxes are deliberately OVERWRITTEN with the
+      // VENDOR-VERIFIED default: only models documented natively multimodal are
+      // pre-checked (`imageDefaultFor`). NOT the platform's `supportsImages`
+      // flag — that one is true for nearly the whole roster, including
+      // text-only models, so it is not a capability answer. The user can still
+      // adjust the boxes before saving; only another refresh re-syncs.
       const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
-      const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
+      const upstreamImages = fresh
+        .filter(model => imageDefaultFor(model))
+        .map(model => model.id)
       const stillBudgets: Record<string, number> = {}
       for (const id of freshIds) {
         const budget = activeContextBudgets[id]
@@ -469,7 +492,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         [activeRegion]: {
           models: fresh,
           enabledIds: new Set(stillEnabled),
-          imageIds: new Set(stillImages),
+          imageIds: new Set(upstreamImages),
           contextBudgets: stillBudgets,
         },
       }))
@@ -927,7 +950,10 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                   </span>
                                 </span>
                               </label>
-                              <label className="dsm-workbuddy-model-image" title={t('row.modelImage')}>
+                              <label
+                                className="dsm-workbuddy-model-image"
+                                title={imageCheckboxHint(model, t)}
+                              >
                                 <input
                                   type="checkbox"
                                   checked={activeImageIds.has(model.id)}

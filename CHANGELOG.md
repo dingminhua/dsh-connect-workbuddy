@@ -1,5 +1,39 @@
 # Changelog
 
+## 2.2.0 (2026-09-29)
+
+### Features
+
+#### 图片输入：刷新时按**厂商核验表**覆盖勾选
+
+此前图片支持完全由用户手动勾选（默认全关），**上游声明支持的模型也要用户自己一个个找出来勾上**。现在改为：点「从 WorkBuddy 刷新」时，卡片按**厂商核验表**覆盖图片勾选，保存后写入 `imageModelIds`；用户仍可随时手动纠正，只有下一次刷新才会再次覆盖。
+
+**关键区分：上游的 `supportsImages` 不是「模型能不能看图」。** 它是**平台侧**的图片输入声明。2026-09-29 用插件自身的凭据路径只读实测（不消耗积分）：
+
+| 网关 | CLI 模型 | `supportsImages=true` | `=false` | 缺失 |
+|---|---|---|---|---|
+| CN `copilot.tencent.com` | 16 | 15 | 1（仅 `glm-5.1`） | 0 |
+| 国际 `www.workbuddy.ai` | 23 | **23（全部）** | 0 | 0 |
+
+拿它当能力答案，就会把纯文本模型也标成能看图。**这个错误本项目犯过一次，姊妹项目 `workbuddy-manager` 也犯过并已修正**——其 CHANGELOG 1.0.70 原文：「此前直接把腾讯的『平台支持图片』开关当成模型的原生能力，于是 GLM-5.3 这类纯文本模型也被标成多模态。现在按厂商文档逐条核对（记录来源与核验日期）……**未核实的新型号显示『待核实』而不猜**」。本版采用同一口径。
+
+- **核验表** `NATIVE_MODALITY_BY_MODEL_ID`（新增 `src/native-modality.ts`）：13 条，全部核验于 2026-09-25，取自 `workbuddy-manager` 的 `server/services/native_modalities.json`。`glm-5.3` / `glm-5.2` / `glm-5.1` / `hy3` / `hy4-preview` / `deepseek-v4-pro` = `text`；`glm-5.3-flash` / `glm-5v-turbo` / `deepseek-v4.1-flash` / `minimax-m3` / `kimi-k2.6` / `kimi-k2.7` / `kimi-k3-1` = `multimodal`。逐条来源见 `docs/DESIGN.md` 的「图片输入」。
+- **刷新判定** `imageDefaultFor`：只有核验为 `multimodal` 才预勾选。`text` 不勾；`unknown`（含 `auto` 路由器与所有未收录的新模型）**也不勾**——「不猜」正是这张表存在的理由，上游声明不参与判定。平台显式 `false` 保留一票否决。
+- **不做前缀/族匹配**：`glm-5.3` 是 `text` 而 `glm-5.3-flash` 是 `multimodal`，前缀规则必然错一个；`hy3` 是 `text` 而 `hy3-x` 无来源，不能用族关系传递结论。表按**精确 id** 匹配。
+- **分工**：`supportsImages`（平台声明，仍解析并随 `lastCatalog` 持久化）= 展示用；`native_modality`（厂商核验）= 刷新默认值；`multimodal`（运行时生效值）= **只来自保存的 `imageModelIds`**（`src/index.ts` 的 `withImageSelection` 盖章）。解析器从不设置 `multimodal`——刷新目录不会越过用户保存去改运行时，勾选仍是「刷新 = 草稿、保存 = 生效」。
+- **本机实测影响面**：CN 16 个里 **7 个**会预勾选；被排除的纯文本有 `glm-5.3`、`glm-5.2`、`hy3`、`hy4-preview`、`deepseek-v4-pro`（上游对前五个全报 `true`）。国际 23 个里只有 **3 个**有厂商来源，其余 17 个（`gpt-5.x`、`gemini-3.5-flash`、`grok-4.7`、自建别名 `default-model`/`fast-model` 等）都是 `unknown`，默认不勾——这是「不猜」的代价，也是它的意义。
+- **卡片 tooltip**：勾选框按三种情形给出说明（已核验多模态 / 文档为纯文本 / 未核实），否则一排勾选中间夹着两个空框会显得像 bug。
+- **改动面**：`src/upstream.ts` 解析 `supportsImages`（平台声明，仅展示）；`src/native-modality.ts`（新）承载核验表与判定；`src/status-paths.ts` / `src/web-status.ts` 透传给卡片；`src/client/WorkBuddyCard.tsx` 的 `refreshModels` 用它覆盖 `imageIds`。**Host 侧运行时逻辑零改动**。
+- **维护负担**：核验表是**快照而非实时同步**，且与 `workbuddy-manager` 仓库各存一份，两边更新需手动同步。新增 id 必须附厂商来源与核验日期。
+- **边界**：静态 fallback 目录不参与判定，新装用户首次刷新并保存后即获得默认勾选；已保存过目录的老用户，勾选状态在下次刷新前保持不变。
+
+### Tests
+
+- `tests/native-modality.spec.ts`（新增）：锁定核验表为唯一判据——`text` 不勾（即便平台报 `true`）、`multimodal` 勾、`unknown`/`router` 不勾、精确 id 匹配（`glm-5.3` vs `glm-5.3-flash`、`hy3` vs `hy3-x` 不得互相传递）、平台显式 `false` 保留否决、表条目数固定为 13 以防 id 悄悄漂入。
+- `tests/upstream.spec.ts`：新增「解析平台声明」一例（true / false / 否决 / 缺失即未知四态），并保留原「解析器不推断 `multimodal`」一例。
+- `tests/web-status.spec.ts`：新增刷新路由一例，确认 `models/refresh` 逐模型带回 `supportsImages`、未声明的条目不带该字段。
+- `tests/persisted-model.spec.ts`：新增一例，确认 `supportsImages` 随 `lastCatalog` 持久化、而 `multimodal` 仍被按 KEY 剥离（严格 JSON codec 兼容）。
+
 ## 2.1.2 (2026-09-29)
 
 ### ⚠️ 兼容性修复：peer 上界 `<0.2.0` 会在 0.2.0 落地时把整个组合包静默判死

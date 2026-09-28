@@ -74,7 +74,7 @@ Config:
 | `id` / `name` | 模型名与 id |
 | `maxInputTokens` / `maxOutputTokens` | 上下文 / 最大输出 |
 | `credits` (`"x0.79 credits"`) | 积分倍率，需从字符串解析出数字 |
-| `supportsImages` | ~~多模态标记~~（已弃用，见下方「图片输入手动开关」） |
+| `supportsImages` | **平台**图片输入声明（**不是**模型能力，不参与默认勾选，见下方「图片输入」） |
 | `reasoning.supportedEfforts` (`["low","high","xhigh"]`) | 可选推理档位（用户可选手动档位） |
 | `reasoning.effort` (`"high"` / `"medium"`) | 单数形态；折叠为全阶梯可选档位，该值作默认档（见下方「推理强度两态」） |
 | `reasoning.defaultEffort` | 默认档位 |
@@ -83,7 +83,53 @@ Config:
 
 > 原版把这些**全丢了**，只留 id/name/tokens。这是最可惜的一处。
 >
-> **图片输入手动开关**：`supportsImages` / `disabledMultimodal` 上游标记实测不可靠，图片支持改由用户勾选 `imageModelIds` 显式决定（默认不勾选），不再从上游能力标记推断。见 `src/index.ts` 的 `withImageSelection`。
+> **图片输入（2.2.0）**：点「从 WorkBuddy 刷新」时，卡片用**厂商核验表**覆盖图片勾选，保存后写入 `imageModelIds`；用户仍可随时修改，只有下一次刷新才会再次覆盖。运行时生效值仍由 `src/index.ts` 的 `withImageSelection` 从 `imageModelIds` 盖章为 `multimodal`——刷新目录本身不会越过用户保存直接改运行时。
+>
+> 三层含义必须分清（这是本改动最核心的一条）：
+>
+> | 字段 | 含义 | 谁说了算 |
+> |---|---|---|
+> | `supportsImages` | 上游**平台侧**的图片输入声明 | 上游目录接口 |
+> | `native_modality` | 模型**原生**输入模态 | 厂商核验表（`src/native-modality.ts`） |
+> | `multimodal` | 运行时**生效**值 | 用户保存的 `imageModelIds` |
+>
+> **`supportsImages` 不等于「模型能看图」**——它是平台声明。2026-09-29 用插件自身的凭据路径只读实测（不消耗积分）：
+>
+> | 网关 | CLI 模型 | `supportsImages=true` | `=false` | 缺失 |
+> |---|---|---|---|---|
+> | CN `copilot.tencent.com` | 16 | 15 | 1（仅 `glm-5.1`） | 0 |
+> | 国际 `www.workbuddy.ai` | 23 | **23（全部）** | 0 | 0 |
+>
+> 即它对几乎整份名册都报 true。拿它当能力答案就会把纯文本模型也标成能看图——**这个错误本项目犯过一次，姊妹项目 `workbuddy-manager` 也犯过并已修正**（其 CHANGELOG 1.0.70：「此前直接把腾讯的『平台支持图片』开关当成模型的原生能力，于是 GLM-5.3 这类纯文本模型也被标成多模态」）。
+>
+> **核验表**（`src/native-modality.ts` 的 `NATIVE_MODALITY_BY_MODEL_ID`，13 条，全部核验于 2026-09-25，数据取自 `workbuddy-manager` 的 `server/services/native_modalities.json`）：
+>
+> | id | kind | 来源 |
+> |---|---|---|
+> | `glm-5.3` / `glm-5.2` / `glm-5.1` | `text` | <https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3.md> 等（「仅支持文本」） |
+> | `glm-5.3-flash` | `multimodal` | <https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash.md>（原生多模态，图片/视频/文本） |
+> | `glm-5v-turbo` | `multimodal` | <https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo.md> |
+> | `deepseek-v4-pro` | `text` | <https://api-docs.deepseek.com/quick_start/pricing>（V4-Pro 的 Vision：Not supported） |
+> | `deepseek-v4.1-flash` | `multimodal` | 同上（V4.1-Flash 支持 Vision） |
+> | `minimax-m3` | `multimodal` | <https://platform.minimax.io/docs/guides/text-generation.md> |
+> | `kimi-k2.6` / `kimi-k2.7` | `multimodal` | <https://platform.moonshot.cn/docs/overview> |
+> | `kimi-k3-1` | `multimodal` | <https://github.com/MoonshotAI/Kimi-K3> |
+> | `hy3` / `hy4-preview` | `text` | <https://huggingface.co/tencent/Hy3>、`.../Hy4-preview`（模型卡 `pipeline_tag: text-generation`） |
+>
+> **刷新时的判定（`imageDefaultFor`）**：只有核验为 `multimodal` 的才预勾选。`text` 不勾（文档说它读不了图）；`unknown` 也**不勾**——「不猜」正是这张表存在的理由，上游声明在这里不参与判定（否则又回到"报 true 就勾"的老路）。平台显式 `false` 保留一票否决，因此核验为多模态的模型也不会违逆平台的明确拒绝。
+>
+> **不做前缀/族匹配**：`glm-5.3` 是 `text` 而 `glm-5.3-flash` 是 `multimodal`，前缀规则必然错一个；`hy3` 是 `text` 而 `hy3-x` 无来源，不能用族关系把结论传下去。表按**精确 id** 匹配，未列出的新模型一律 `unknown`。
+>
+> **本机实测影响面**（用真实名册跑判定）：
+>
+> - CN 16 个里 **7 个**会预勾选（`glm-5.3-flash`、`glm-5v-turbo`、`deepseek-v4.1-flash`、`kimi-k2.6/2.7/k3-1`、`minimax-m3`）；被排除的纯文本有 `glm-5.3`、`glm-5.2`、`hy3`、`hy4-preview`、`deepseek-v4-pro`（上游对前五个全报 true）。
+> - 国际 23 个里只有 **3 个**有厂商来源（`glm-5.3-flash`、`deepseek-v4.1-flash`、`kimi-k2.6`），其余 17 个（`gpt-5.x`、`gemini-3.5-flash`、`grok-4.7`、自建别名 `default-model`/`fast-model` 等）都是 `unknown`，默认不勾。这是「不猜」的代价，也是它的意义。
+>
+> **维护负担**：这张表是**快照而非实时同步**，且与 `workbuddy-manager` 仓库各存一份。新增 id 必须附厂商来源与核验日期；两边更新时需手动同步。表在卡片上体现为勾选框 tooltip（`row.modelImageText` / `row.modelImageUnverified`），否则一排勾选中间夹着两个空框会显得像 bug。
+>
+> 名单在卡片上带 tooltip（`row.modelImageUntrusted`）说明原因，否则它夹在一排已勾选的模型中间会显得像 bug。
+>
+> 此前（≤2.1.2）图片支持完全由用户手动勾选 `imageModelIds`（默认不勾选），上游标记实测不可靠故不采信。这套「默认全关」的代价是：上游明明声明支持的模型也要用户自己一个个找出来勾上。改为刷新覆盖后，默认状态跟随上游，用户只需纠正错的那几个。
 >
 > **推理强度两态（已修复，issue #7 / 2.0.10）**：上游 `reasoning` 有两种形态——(A) `supportedEfforts` 数组（可选手动档位，如 glm-5.3 的 low/high/xhigh）与 (B) `effort` 单值（如 deepseek 的 high）。`parseReasoning`（`src/upstream.ts`）**两态都解析**：形态 A 逐字段透传，形态 B 由 `singularEffortLadder` 折叠为复数形态——`supportedEfforts` 展开为全阶梯 `low/medium/high/xhigh/max`、单数值折入 `defaultEffort`、`canDisableThinking` 视为 `true`；未识别的 `effort` 值按单档透传，交由 adapter 的已知档位过滤。
 >

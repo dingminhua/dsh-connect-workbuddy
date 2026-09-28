@@ -329,6 +329,7 @@ describe('parseUpstreamModel', () => {
       maxTokens: 48_000,
       creditMultiplier: 0.79,
       descriptionZh: '能力均衡',
+      supportsImages: true,
     })
     expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
   })
@@ -352,8 +353,9 @@ describe('parseUpstreamModel', () => {
   })
 
   it('never infers multimodal from the upstream image flags', () => {
-    // The upstream `supportsImages`/`disabledMultimodal` flags are not reliable,
-    // so image input is decided by the user's explicit opt-in (imageModelIds).
+    // `multimodal` is the RUNTIME capability, stamped from the saved
+    // `imageModelIds`; the parser must never set it, or a stale upstream flag
+    // would silently re-enable image input the user had switched off.
     expect(parseUpstreamModel({
       id: 'a',
       maxInputTokens: 1,
@@ -378,6 +380,27 @@ describe('parseUpstreamModel', () => {
       maxInputTokens: 1,
       maxOutputTokens: 1,
     })?.multimodal).toBeUndefined()
+  })
+
+  it('parses the upstream image default into supportsImages', () => {
+    // The value only pre-fills the card's image checkboxes on refresh; the
+    // effective capability still comes from the saved selection.
+    const parsed = (extra: Record<string, unknown>): boolean | undefined => parseUpstreamModel({
+      id: 'x',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+      ...extra,
+    })?.supportsImages
+    expect(parsed({ supportsImages: true })).toBe(true)
+    expect(parsed({ supportsImages: false })).toBe(false)
+    // `disabledMultimodal: true` is a hard veto even alongside
+    // `supportsImages: true`. Live data has never shown that conflict (CN
+    // 2026-09-29: 0 of 30 entries), so this is a defensive rule: when upstream
+    // does contradict itself, err on the side of NOT sending images.
+    expect(parsed({ supportsImages: true, disabledMultimodal: true })).toBe(false)
+    expect(parsed({ disabledMultimodal: true })).toBe(false)
+    // Absent flags stay unknown rather than becoming an implicit `false`.
+    expect(parsed({})).toBeUndefined()
   })
 
   it('rejects disabled models and models without token limits', () => {

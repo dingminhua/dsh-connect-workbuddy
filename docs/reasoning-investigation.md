@@ -143,9 +143,11 @@ shim 原样透传（`prepareChatBody` 不处理 effort）。当时**推断**：W
 | `reasoning.effort` | 不解析（丢弃） | 解析并保留 | 11 个形态 B 模型 | ✅ 已落地（折叠为全阶梯 + 默认档） |
 | `supportsReasoning` | 不解析 | 解析 | 全部 16 个 | ❌ 未落地（`thinkingLevelMap` 已够用，未采纳） |
 | `onlyReasoning` | 不解析 | 解析 | 全部 16 个 | ❌ 未落地（同上） |
-| `disabledMultimodal` | 不解析（图片已改手动） | 可选解析，不影响图片逻辑 | — | ❌ 未采纳（图片改手动勾选） |
+| `disabledMultimodal` | 不解析（图片已改手动） | 作为 `supportsImages` 的一票否决 | 见下（实测无矛盾条目） | ✅ 已落地（2.2.0，随图片默认勾选一起解析） |
 
 > 后三行是**当时拟议的增强**，非缺陷——`reasoning` 档位已由 `parseReasoning` 全权决定，`supportsReasoning` / `onlyReasoning` 至今确实未被解析（全库 grep 无引用），这不影响档位呈现。
+>
+> **更正注（2.2.0）**：末行的「未采纳」已过期。图片输入改为「刷新时用上游 `supportsImages` 覆盖默认勾选」后，`disabledMultimodal` 已被解析为**一票否决**。该否决是**防御性**的：2026-09-29 只读实测 CN 的 30 个条目，仅 12 个带该字段、6 个为 `true`（均为不在 CLI 名册内的旧模型如 `glm-5.0` / `glm-4.7` / `hunyuan-*`），而 `supportsImages: true && disabledMultimodal: true` 的矛盾条目为 **0**——即「两个标记矛盾」并非实测结论，只是冲突时的取向。
 
 ---
 

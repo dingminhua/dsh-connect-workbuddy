@@ -57,9 +57,23 @@ export interface WorkBuddyUpstreamModel {
   /** Credit multiplier parsed from the upstream `credits` string. */
   creditMultiplier?: number
   /**
-   * Image-input support decided by the user's explicit selection (imageModelIds),
-   * not inferred from the upstream `supportsImages`/`disabledMultimodal` flags,
-   * which proved insufficiently reliable. See `catalog.ts` / `index.ts`.
+   * Upstream's OWN image-input default, parsed from `supportsImages` with
+   * `disabledMultimodal: true` as a veto. This is only a PRE-FILL for the
+   * card's image checkboxes on "Refresh from WorkBuddy" (the refreshed draft
+   * overwrites the saved image selection with the models advertising this):
+   * it is not itself the runtime capability.
+   *
+   * The effective flag stays {@link multimodal}, stamped at runtime from the
+   * user's saved `imageModelIds` — so a user can still uncheck an upstream-
+   * advertised model, and the checked state only changes on an explicit
+   * refresh/save.
+   */
+  supportsImages?: boolean
+  /**
+   * Effective image-input support at runtime, decided by the saved
+   * `imageModelIds` (which a model refresh pre-fills from {@link supportsImages}
+   * but the user can edit before saving). Never inferred directly by the
+   * catalog parser — see `withImageSelection` in `index.ts`.
    */
   multimodal?: boolean
   reasoning?: WorkBuddyReasoning
@@ -560,12 +574,24 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
   const creditMultiplier = parseCreditMultiplier(raw['credits'])
   const reasoning = parseReasoning(raw['reasoning'])
   const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
+  // Upstream's image-input default. `disabledMultimodal: true` is a hard veto
+  // whenever `supportsImages` is true. That pair has not been seen to conflict
+  // on live data (CN 2026-09-29: 0 contradictory entries of 30), so the veto is
+  // defensive — it only decides which way to lean if upstream ever does. The
+  // value pre-fills the card's checkboxes on refresh; the effective capability
+  // stays the saved `imageModelIds`.
+  const supportsImages = raw['disabledMultimodal'] === true
+    ? false
+    : typeof raw['supportsImages'] === 'boolean'
+      ? raw['supportsImages']
+      : undefined
   return {
     id,
     name,
     contextWindow: input,
     maxTokens: output,
     ...creditMultiplier === undefined ? {} : { creditMultiplier },
+    ...supportsImages === undefined ? {} : { supportsImages },
     ...reasoning === undefined ? {} : { reasoning },
     ...descriptionZh === undefined ? {} : { descriptionZh },
     ...descriptionEn === undefined ? {} : { descriptionEn },

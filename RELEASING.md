@@ -7,6 +7,7 @@
 - npm 已登录：`npm whoami` 应显示 `dmh2002`（若报 `need auth`，先 `npm login`）。
 - 账号若开启 2FA（两步验证）：`npm publish` 时需**在浏览器确认一步**。
 - GitHub 仓库：`https://github.com/dingminhua/dsh-connect-workbuddy`（默认分支 `main`）。
+- `gh` 已登录且带 `repo` 权限：`gh auth status` 应显示 `Logged in to github.com account dingminhua`、scope 含 `repo`（第 9 步要用）。
 
 ## 每次发布的完整步骤
 
@@ -106,6 +107,8 @@ git push origin vX.Y.Z
 ```
 
 > ⚠️ **tag 必须指向包含本次代码的提交**。若目标 tag 已存在且指向旧提交，需先删除并强制移动，修正后用 `git rev-list -n1 vX.Y.Z` 确认指向当前 HEAD。
+>
+> 这里的 `-m` 用**冒号**（`vX.Y.Z: <一句话>`），第 9 步 Release 的 `--title` 用**破折号**（`vX.Y.Z — <一句话>`）——两者措辞可以不同，但都必须是同一件事的一句话说明。**打完 tag 别忘了第 9 步。**
 
 ### 6. 发布到 npm
 
@@ -147,10 +150,62 @@ curl -s --noproxy '*' -H "Cache-Control: no-cache" https://registry.npmjs.org/ds
 >
 > 刚发布后 registry 读缓存也可能有短暂延迟，稍等重查即可。
 
+### 9. 创建 GitHub Release（**最容易漏，本次就差点漏掉**）
+
+**npm 发布成功不等于发布完成。** 自 `v1.4.0` 起每个版本都在 GitHub 上有一份 Release——它是用户从 GitHub 进入时的第一屏，也是 tag 对外的说明。但本文件此前**没写这一步**，历史上已经漏过三次（`v2.0.0`、`v2.0.16`、`v2.0.17`），`v2.1.1` 的 Release 也比 npm 发布**晚了将近两天**才补上。做完第 8 步请立刻做这一步。
+
+```bash
+gh release create vX.Y.Z \
+  --title "vX.Y.Z — <一句话说明>" \
+  --notes-file /tmp/release-X.Y.Z.md \
+  --verify-tag
+```
+
+- **`--verify-tag`（务必带上）**：tag 必须已存在（第 5 步推过）。漏了它，命令会在 tag 不存在时**悄悄新建一个指向当前 HEAD 的 tag**——那可能不是你发布的那次提交。
+- **`--title` 的形态是 `vX.Y.Z — <一句话>`**（破折号 `—`，**不是** tag message 里的冒号 `:`）。这样与 `gh release list` 里历史各版的形态一致，且标题比 tag 那一行可以稍长一点。
+- **`--notes-file` 指向临时文件**。不要用 `--notes-from-tag`（tag message 只有一行，正文会空得离谱），也不要用 `--generate-notes`（那是自动生成的 commit 列表，历史各版没有一个是这个形态）。
+- 不加 `--draft`、不加 `--prerelease`：历史各版都是正式发布。
+- **不附任何构建产物**：本插件经 npm 分发，不通过 Release 发二进制。历史所有 Release 的 `assets` 都是空的，不要在这一步突然开始塞 `.tgz`。
+
+**正文的形态**（注意：它与 `CHANGELOG.md` 里那一节**不是同一份文本**）：
+
+```markdown
+# <一个主题 emoji> vX.Y.Z — <比 --title 再完整一档的一句>
+
+<本版主线，一到两段；有两条主线就点名。>
+
+---
+
+## 一、<主题>
+## 二、<主题>
+```
+
+- H1 带一个主题 emoji（如 2.1.1 用的 🪟），副标题比 `--title` 更长一档。
+- 正文按 **`## 一、` `## 二、` 主题**分节，而不是照抄 CHANGELOG 的 Features / Fixes / Docs 分组：CHANGELOG 是逐条变更记录，Release 是**可独立阅读的发布公告**，可以更展开（贴真机取证、对照表、失败判据、修法）。历史各版正文在 90–100 行。
+- 允许表格、引用块、行内代码、`---` 分隔线。
+
+核对清单（**做完逐条勾掉**）：
+
+- [ ] `gh release list` 里能看到本次版本，标题以 `vX.Y.Z — ` 开头（破折号）
+- [ ] Release 指向的 tag 与第 5 步推的是同一个：`gh release view vX.Y.Z --json tagName`
+- [ ] 不是 draft、不是 prerelease
+- [ ] `assets` 为空（与历史一致）
+- [ ] 正文不是 CHANGELOG 的复制粘贴，单独读也讲得通
+
+```bash
+# 一次确认以上五点
+gh release view vX.Y.Z --json name,tagName,isDraft,isPrerelease,assets
+```
+
+> **为什么这一步必须写进文件**：它对 CI、对 npm、对测试**都没有任何影响**，所以漏掉时不会有任何东西报错——这正是它历史上漏了三次的原因。它只能靠「发布清单里写着」来保证。
+
 ## 常见问题
 
 - **`npm publish` 报 EOTP**：账号开启了 2FA，**按第 7 步在浏览器授权**（npm CLI 给出的 URL），不要用 `--otp=<码>` 命令行方式——本项目账号绑定的是浏览器授权。链接 404 就重跑 `npm publish` 生成新链接。
 - **发布后 `npm view ... version` 还是旧版本 / 甚至 `@新版本` 报 404**：**先别断定发布失败**。本机 `~/.npmrc` 的本地代理会缓存 registry 响应——用第 8 步的 `curl --noproxy '*'` 直连命令复核，或 `npm view --prefer-online`。v1.4.0 发布时就是这样被误判过一次。真正的失败特征是：`npm publish` 输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行。
 - **`npm whoami` 报 E401**：说明 `~/.npmrc` 里的 `_authToken` 已失效（注意 `npm whoami` 偶尔会回显**缓存**的上一次结果，别被它迷惑）。先 `npm login --auth-type=web` 重新登录再发布。
 - **本地开发与发布的关系**：本地开发用 `link:` 安装，与 npm 发布互不影响；npm 发布的包是 `lib/`、README 等静态文件，同一份源码。
+- **GitHub 上没有本次 Release / `gh release list` 看不到新版本**：第 9 步漏了。npm 与 GitHub 是两条独立的发布通道，**`npm publish` 成功不会自动创建 Release**，CI 也不会——本仓库没有 release 自动化（`.github/workflows/` 只有 `ci.yml`）。补做即可：版本、tag、正文都还在仓库里，事后补建与当时创建完全等效，只是 GitHub 上的时间戳会晚。历史上 `v2.0.0`、`v2.0.16`、`v2.0.17` 就是这样漏掉的。
+- **`gh release create` 报 `tag not found`**：tag 还没推。先完成第 5 步的 `git push origin vX.Y.Z`。**不要**为了让它通过就去掉 `--verify-tag`——那会让 gh 新建一个指向当前 HEAD 的 tag，可能覆盖或偏离你实际发布的提交。
+- **`gh` 报 `HTTP 403` / `Resource not accessible`**：token 缺 `repo` scope。`gh auth status` 确认 scopes；需要时 `gh auth refresh -s repo`。
 - **LICENSE 版权被改动**：发布前 `grep -F "Copyright (c) 2026 LaoDing" LICENSE` 必须命中；若被改成其他名称，先还原再发布。

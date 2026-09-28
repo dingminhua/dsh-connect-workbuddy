@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { workBuddyWebStatus } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
-import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
+import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { WorkBuddyCredentialRejectedError } from '../src/upstream.ts'
@@ -443,6 +443,42 @@ describe('registerWorkBuddyStatusRoute', () => {
       '/plugins/dsh-connect-workbuddy/models/refresh',
       '/plugins/dsh-connect-workbuddy/__save',
     ])
+  })
+
+  /** Mount the status routes; return the model-refresh handler. */
+  async function mountRefreshHandler(
+    options: Partial<WorkBuddyStatusRouteOptions> = {},
+  ): Promise<CapturedEntry['handler']> {
+    const captured = await mountRoutes(options)
+    const refresh = captured.find(entry => entry.path === WORKBUDDY_MODELS_REFRESH_PATH)
+    if (refresh === undefined) throw new Error('model refresh route was not registered')
+    return refresh.handler
+  }
+
+  it('hands the refreshed rows upstream\'s own image default', async () => {
+    // The card overwrites its image checkboxes from this, so the refreshed
+    // document must carry the upstream answer per model. `multimodal` stays
+    // absent: the effective flag is the saved selection, not a live read.
+    const handler = await mountRefreshHandler({
+      discoverModels: async () => [
+        { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, supportsImages: true },
+        { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, maxTokens: 50_000, supportsImages: false },
+        { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
+      ],
+    })
+    const { res, status, body } = response()
+    await handler(request(), res)
+    expect(status()).toBe(200)
+    const models = (body() as { models?: { id: string; supportsImages?: boolean }[] }).models ?? []
+    expect(models.map(model => model.id)).toEqual(['glm-5.3', 'deepseek-v4-pro', 'hy3'])
+    const [glm, deepseek, hy3] = models
+    if (glm === undefined || deepseek === undefined || hy3 === undefined) throw new Error('refresh returned no models')
+    expect(glm.supportsImages).toBe(true)
+    expect(deepseek.supportsImages).toBe(false)
+    // An upstream entry that says nothing must not read as "supports": the
+    // checkbox has to stay unchecked rather than being pre-checked on a guess.
+    expect(hy3.supportsImages).toBeUndefined()
+    expect('supportsImages' in hy3).toBe(false)
   })
 
   it('routes the region query to that region\'s store, defaulting to cn', async () => {

@@ -41,4 +41,15 @@ describe('toPersistedWorkBuddyModel', () => {
       expect(JSON.parse(JSON.stringify(persisted))).toEqual(persisted)
     }
   })
+
+  it('keeps the upstream image default while still dropping the stamped flag', () => {
+    // `supportsImages` is upstream's own answer and belongs in the stored
+    // directory (it travels with the entry like the credit multiplier), while
+    // `multimodal` is the runtime value stamped from the saved selection and
+    // must never be written back — re-reading it would resurrect an opt-in the
+    // user later removed.
+    const persisted = toPersistedWorkBuddyModel({ ...webModel(), supportsImages: true })
+    expect(persisted.supportsImages).toBe(true)
+    expect('multimodal' in persisted).toBe(false)
+  })
 })

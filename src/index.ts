@@ -75,6 +75,12 @@ export {
   type WorkBuddyModelInfo,
 } from './catalog.ts'
 export {
+  imageDefaultFor,
+  NATIVE_MODALITY_BY_MODEL_ID,
+  nativeModalityOf,
+  type WorkBuddyNativeModality,
+} from './native-modality.ts'
+export {
   authFileName,
   defaultDesktopAuthCandidates,
   defaultDesktopAuthDirs,

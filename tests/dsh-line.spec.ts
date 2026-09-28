@@ -263,6 +263,43 @@ describe('host-range policy is written down where releases read it', () => {
   })
 })
 
+describe('the GitHub Release step stays in the release flow', () => {
+  /**
+   * POLICY assertions, not behaviour assertions. 创建 GitHub Release 对 CI、对
+   * npm、对测试**都没有任何影响**，所以漏掉它时不会有任何东西报错——历史上
+   * `v2.0.0` / `v2.0.16` / `v2.0.17` 就是这么漏掉的，`v2.1.1` 的 Release 也比
+   * npm 发布晚了将近两天才补上。它只能靠「发布清单里写着」来保证，因此这里
+   * 盯住清单里那几步与那两条形态约定是否还在。
+   */
+  function read(relativePath: string): string {
+    return readFileSync(fileURLToPath(new URL(relativePath, repoRoot)), 'utf8')
+  }
+
+  it('keeps the create-release step documented', () => {
+    const releasing = read('RELEASING.md')
+    expect(releasing).toContain('创建 GitHub Release')
+    // The two halves that make the step reproducible rather than improvised.
+    expect(releasing).toContain('gh release create')
+    expect(releasing).toContain('--verify-tag')
+  })
+
+  it('keeps the title/body conventions the historical releases follow', () => {
+    const releasing = read('RELEASING.md')
+    // The historical name shape is `vX.Y.Z — <一句话>` (em dash), NOT the colon
+    // the tag message uses; drift here makes every future release look different
+    // from the 16 already published.
+    expect(releasing).toContain('vX.Y.Z — ')
+    // The body is a curated announcement — never a copy of the CHANGELOG
+    // section, and never gh's auto-generated commit list.
+    expect(releasing).toContain('--notes-file')
+    expect(releasing).toContain('--generate-notes')
+  })
+
+  it('declares the gh prerequisite the step depends on', () => {
+    expect(read('RELEASING.md')).toContain('gh auth status')
+  })
+})
+
 describe('version-comparator self-check', () => {
   // 上面全部断言都建立在 compareVersions 上；它自己错了，整套守卫就是装饰品。
   it('orders prereleases below their release and compares numeric segments', () => {

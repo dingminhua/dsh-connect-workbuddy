@@ -145,6 +145,7 @@ function toWebModel(
     nativeContextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
+    ...model.supportsImages === undefined ? {} : { supportsImages: model.supportsImages },
     ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
     ...model.reasoning === undefined ? {} : {
       reasoning: {
