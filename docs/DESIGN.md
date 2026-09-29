@@ -135,6 +135,41 @@ Config:
 >
 > 依据是**两网关实测**（CN `copilot.tencent.com` / 国际 `www.workbuddy.ai`）：单数 `effort` 是模型的**默认档而非唯一档**——`deepseek-v4.1-flash` 对 low/high/max 全部 200 且 `reasoning_content` 各异，`kimi-k3-1` 接受未声明的 high；而**不发 `reasoning_effort` 时上游零思考**。adapter / 卡片 / 持久化零改动即自动生效。调查过程见 `docs/reasoning-investigation.md`（该文「未修复」结论已过期，正文就地加了更正注）。
 
+#### 模型可用性测试（2.3.0）
+
+每个模型行一个**测试**按钮，模型区顶部一个**测试已勾选**。每个模型发一条最小请求（`max_tokens: 1`），报告此刻能否使用。
+
+**实测数据（本机真实账号，2026-09-29）**：
+
+| 网关 | 抽样 | 结果 | 单次耗时 | `credit` |
+|---|---|---|---|---|
+| CN `copilot.tencent.com` | `auto` / `hy4-preview` / `hy3` / `glm-5.3` / `minimax-m3` | 全部 200 | 0.8～3.4s | 0～0.01 |
+| 国际 `www.workbuddy.ai` | `default-model` / `fast-model` / `balanced-model` | 全部 200 | 1.0～2.1s | 0 |
+
+一次探测前后查余额：**933 → 933，不变**。同一名册正常一次回答为 0.79x 起，所以探测的代价可忽略。
+
+**两个必须写下来的实测结论：**
+
+1. **首条消息必须是 system。** 国际网关对 `[{role:'user',content:'hi'}]` 一律回 HTTP 400 / 业务码 `11128`（`first message is not system prompt`，附 `displayMsg`「请求被安全策略拦截」）。若照国内版只发一条 user 消息去探测，**整个国际版会被误报为全部不可用**。加上 system 消息后立即 200。故 `probeRequestBody` 恒带一条 system 消息。
+2. **上游不提供限流元数据。** 200 响应头只有 `x-request-id` / `traceid` / `eo-log-uuid` / `server: APISIX/3.9.1` 一类，**无 `Retry-After`、无 `X-RateLimit-*`**；对 `minimax-m3` **连续快速打 12 次全部 200**，未触发限流。429 是否附带 `Retry-After` 未能实测到（未触发），因此解析器按 RFC 9110 同时接受**秒数**与 **HTTP-date** 两形态，并拒绝 0 / 负数 / 已过期的值——「立即重试」不是冷却时间，把它当冷却显示比不显示更糟。
+
+**因此「多久之后可以再次使用」的取值只有两个真实来源**，由 `cooldownOf` 强制：
+
+| 来源 | 适用 | 说明 |
+|---|---|---|
+| `Retry-After` 响应头 | 任何失败 | 上游为该次请求明确给出的时间，优先 |
+| 月周期包 `refreshAtMs`（CapacityType 4） | **仅** `out-of-credit` | 该服务唯一主动声明的时间点 |
+
+**限流绝不借用月周期刷新时间**：那会让用户为几秒的限流去等几周。上游两者都没给时，卡片显示「上游未给出何时恢复」——**不编造倒计时**。这是本功能最核心的一条约束：一个看起来像上游答案、实际是本地猜测的倒计时，会让人去等一个毫无意义的时刻。
+
+**架构**：探测在 Host 侧发起（`src/probe.ts` 构造与解读 → `WorkBuddyUpstreamClient.probeChat` 传输 → `/plugins/dsh-connect-workbuddy/probe` 路由）。浏览器只发模型 id、只收回结论，**凭据绝不跨到页面**。
+
+**路由逐模型串行**：并发扇出正是制造限流最直接的办法，那样测出来的是插件自己的负载而非上游的限制。批次上限 64，空列表 / 非数组一律 400（空成功会让卡片把「没跑」渲染成「全绿」）。
+
+**与保存状态无关**：探测不写任何设置，因此不受 `dirty` / `canWrite` 限制，也可在只读卡片上使用；但需要已登录（无凭据时只可能是「被拒」）。结果不落盘、不影响 `enabledModelIds` / `imageModelIds`。
+
+**失败分类复用 `classifyUpstreamError`**，使探测与真实 chat 对同一上游应答不可能得出不同结论；`401/403` 单独成一类（要的是重新登录/换账号，不是等待）。
+
 ### 3.2 账号切换（实测可行，原版完全没有）
 
 **原版问题**：只认 `workbuddy-desktop.info` 单文件，账号切换只能靠在 WorkBuddy App 里重新登录。

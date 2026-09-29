@@ -33,12 +33,19 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_PROBE_PATH,
   WORKBUDDY_REGIONS,
   WORKBUDDY_USAGE_PATH,
   toPersistedWorkBuddyModel,
   withWorkBuddyRegion,
 } from '../status-paths.ts'
-import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from '../status-paths.ts'
+import type {
+  WorkBuddyWebModel,
+  WorkBuddyWebProbeResult,
+  WorkBuddyWebRegion,
+  WorkBuddyWebSearchPath,
+  WorkBuddyWebUsage,
+} from '../status-paths.ts'
 import { writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
@@ -221,6 +228,60 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
   return { background: color }
 }
 
+/**
+ * The sentence a probe result gets, and how it should be coloured.
+ *
+ * The cooldown wording is the part that had to be got right. The upstream names
+ * a "use again" time in exactly two situations — a `Retry-After` header, or an
+ * exhausted monthly quota whose refresh point it declares — and its 200s and
+ * 429s carry NO rate-limit metadata at all (measured: no `Retry-After`, no
+ * `X-RateLimit-*`, and 12 rapid requests to one model all succeeded). So a
+ * limited result WITHOUT a stated time must say that plainly. Substituting a
+ * locally invented countdown would be the single most misleading thing this
+ * feature could do: it would look like an upstream answer while being a guess,
+ * and the user would wait for a moment that means nothing.
+ */
+function probeResultView(
+  result: WorkBuddyWebProbeResult,
+  t: Translate,
+): { text: string, tone: 'ok' | 'warn' | 'bad' } {
+  switch (result.outcome) {
+    case 'ok': {
+      const elapsed = result.elapsedMs === undefined ? undefined : `${String(result.elapsedMs / 1000)}s`
+      return {
+        text: elapsed === undefined ? t('row.probeOk') : t('row.probeOkMs', { ms: elapsed }),
+        tone: 'ok',
+      }
+    }
+    case 'rate-limited':
+      return {
+        text: result.retryAtMs === undefined
+          ? t('row.probeRateLimitedUnknown')
+          : t('row.probeRateLimitedAt', { at: formatDate(result.retryAtMs) }),
+        tone: 'warn',
+      }
+    case 'out-of-credit':
+      // Only a quota-reset answer is a real time; without one, the honest text
+      // is the same "no time given" the rate-limit branch uses.
+      return {
+        text: result.retryAtMs === undefined
+          ? t('row.probeOutOfCreditUnknown')
+          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) }),
+        tone: 'bad',
+      }
+    case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }
+    case 'not-found': return { text: t('row.probeNotFound'), tone: 'bad' }
+    case 'unavailable': return { text: t('row.probeUnavailable'), tone: 'bad' }
+    default:
+      return {
+        text: result.status === undefined
+          ? t('row.probeFailed')
+          : t('row.probeFailedStatus', { status: String(result.status) }),
+        tone: 'bad',
+      }
+  }
+}
+
 /** Render WorkBuddy sign-in state, credits, and model selection as one card. */
 export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & { view?: string }) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
@@ -254,6 +315,18 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   const [checkinActionError, setCheckinActionError] = useState<string | undefined>(undefined)
   /** Region whose on/off checkbox write is in flight, so its box can't race. */
   const [togglingRegion, setTogglingRegion] = useState<WorkBuddyWebRegion | undefined>(undefined)
+  /**
+   * Probe results, keyed by region then model id.
+   *
+   * Kept per region for the same reason drafts are: the two tabs are separate
+   * provider stacks, so a test run on one tab must not be clobbered — or shown —
+   * as the other tab's answer.
+   */
+  const [probes, setProbes] = useState<Partial<Record<WorkBuddyWebRegion, Record<string, WorkBuddyWebProbeResult>>>>({})
+  /** Model ids with a probe in flight, so each row's button can disable itself. */
+  const [probing, setProbing] = useState<Record<string, boolean>>({})
+  /** Probe failure that is not attributable to one model (a dead route, say). */
+  const [probeError, setProbeError] = useState<string | undefined>(undefined)
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -539,6 +612,8 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * A bound scope is therefore all that is required to accept an edit.
    */
   const canWrite = settingsScope !== undefined
+  /** Whether any row's probe is in flight, so the batch button reflects it. */
+  const anyProbing = Object.keys(probing).length > 0
 
   const editDraft = (edit: (current: WorkBuddyDraft) => WorkBuddyDraft): void => {
     setDrafts(prev => ({
@@ -581,6 +656,64 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       delete next[activeRegion]
       return next
     })
+  }
+
+  /**
+   * Probe one or more models with a single minimal request each.
+   *
+   * The Host owns the request: the browser half sends only model ids and gets
+   * outcomes back, because the credential must never cross to the page. The
+   * route runs the batch sequentially and this waits for the whole answer, which
+   * is what lets the card report every row at once — a per-row response would
+   * race the shared `probing` map and make the batch button's state unknowable.
+   *
+   * Probing is deliberately independent of `dirty`: a test answers "does this
+   * model work right now", which is true of the SAVED selection and the draft
+   * alike, and blocking it on unsaved edits would make the button dead exactly
+   * when the user is deciding what to keep.
+   */
+  const probeModels = async (modelIds: readonly string[]): Promise<void> => {
+    if (modelIds.length === 0) return
+    setProbeError(undefined)
+    setProbing(previous => {
+      const next = { ...previous }
+      for (const id of modelIds) next[id] = true
+      return next
+    })
+    try {
+      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_PROBE_PATH, activeRegion), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ modelIds }),
+      })
+      const body = await response.json().catch(() => undefined) as
+        | { results?: WorkBuddyWebProbeResult[]; error?: string }
+        | undefined
+      if (!response.ok || !Array.isArray(body?.results)) {
+        throw new Error(body?.error ?? `HTTP ${String(response.status)}`)
+      }
+      if (!mounted.current) return
+      setProbes(previous => {
+        const regionResults = { ...(previous[activeRegion] ?? {}) }
+        for (const result of body.results as WorkBuddyWebProbeResult[]) {
+          regionResults[result.modelId] = result
+        }
+        return { ...previous, [activeRegion]: regionResults }
+      })
+    } catch (error: unknown) {
+      if (mounted.current) setProbeError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) {
+        // Clear the in-flight markers for exactly the rows this run touched, so
+        // a concurrent single-row test on another model keeps its spinner.
+        setProbing(previous => {
+          const next = { ...previous }
+          for (const id of modelIds) delete next[id]
+          return next
+        })
+      }
+    }
   }
 
   const saveModels = async (): Promise<void> => {
@@ -922,15 +1055,34 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                           <h3 className="dsm-workbuddy-models-title">{t('row.modelsTitle')}</h3>
                           <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                         </div>
-                        <button
-                          type="button"
-                          className="dsm-btn dsm-btn-outline"
-                          disabled={busy}
-                          onClick={() => { void refreshModels() }}
-                        >
-                          {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
-                        </button>
+                        <div className="dsm-workbuddy-models-head-actions">
+                          {/* Tests the ENABLED models — the ones the user keeps
+                              around and therefore cares about. Probing the whole
+                              directory would spend a request on every model the
+                              user already declined. */}
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={activeEnabledIds.size === 0 || anyProbing}
+                            title={t('row.probeAllHint')}
+                            onClick={() => { void probeModels([...activeEnabledIds]) }}
+                          >
+                            {anyProbing ? t('row.probing') : t('row.probeAll')}
+                          </button>
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy}
+                            onClick={() => { void refreshModels() }}
+                          >
+                            {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
+                          </button>
+                        </div>
                       </div>
+                      {probeError === undefined ? null
+                        : <p className="dsm-workbuddy-model-probe-result dsm-workbuddy-model-probe-result-bad" role="alert">
+                            {t('row.probeError', { message: probeError })}
+                          </p>}
                       <div className="dsm-workbuddy-model-list">
                         {visibleModels.map(model => (
                           <div className={`dsm-workbuddy-model${activeEnabledIds.has(model.id) ? '' : ' dsm-workbuddy-model-disabled'}`} key={model.id}>
@@ -986,15 +1138,44 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                   <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
                                 </label>
                               </fieldset>
-                            </div>
-                            <div className="dsm-workbuddy-model-details">
-                              <div className="dsm-workbuddy-model-meta">
-                                <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
-                                <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens, t('row.modelUnknown')) })}</span>
-                                {model.reasoning === undefined || model.reasoning.supportedEfforts === undefined ? null
-                                  : <span>{t('row.modelReasoning', { efforts: model.reasoning.supportedEfforts.join(' / ') })}</span>}
+                                {/* Test button. Deliberately NOT gated on `canWrite`
+                                    or `saving`: a probe writes no settings, so it
+                                    works on a read-only card and while a save is
+                                    in flight. It IS gated on being signed in,
+                                    because without a credential the only possible
+                                    answer is "rejected". */}
+                                <button
+                                  type="button"
+                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
+                                  disabled={probing[model.id] === true || status.status !== 'signed-in'}
+                                  title={t('row.probeHint')}
+                                  onClick={() => { void probeModels([model.id]) }}
+                                >
+                                  {probing[model.id] === true ? t('row.probing') : t('row.probe')}
+                                </button>
                               </div>
-                            </div>
+                              <div className="dsm-workbuddy-model-details">
+                                <div className="dsm-workbuddy-model-meta">
+                                  <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
+                                  <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens, t('row.modelUnknown')) })}</span>
+                                  {model.reasoning === undefined || model.reasoning.supportedEfforts === undefined ? null
+                                    : <span>{t('row.modelReasoning', { efforts: model.reasoning.supportedEfforts.join(' / ') })}</span>}
+                                </div>
+                              </div>
+                              {(() => {
+                                const result = probes[activeRegion]?.[model.id]
+                                if (result === undefined) return null
+                                const view = probeResultView(result, t)
+                                return (
+                                  <p
+                                    className={`dsm-workbuddy-model-probe-result dsm-workbuddy-model-probe-result-${view.tone}`}
+                                    role="status"
+                                  >
+                                    {view.text}
+                                    {result.message === undefined ? null : ' · ' + result.message}
+                                  </p>
+                                )
+                              })()}
                           </div>
                         ))}
                       </div>

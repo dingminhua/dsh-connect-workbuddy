@@ -1,0 +1,315 @@
+/**
+ * The minimal-request model probe: what it sends, what an answer means, and
+ * what (if anything) can honestly be said about a cooldown.
+ *
+ * 参考：本仓库 `src/upstream.ts` 的错误分类（`classifyUpstreamError` 的中英文额度
+ *   标记、`soft_rate` / `hard_credit` 两态）被直接复用，不另起一套判定。
+ * 改动：把「一次最小请求」的构造与解读单独成模块，因为卡片和 Host 路由两边
+ *   都要用它，而这些规则必须能被单元测试直接钉住 —— 它们包含两个**实测得到、
+ *   猜不出来**的结论：
+ *
+ *   1. **首条消息必须是 system。** 国际网关（`www.workbuddy.ai`）对
+ *      `[{role:'user'}]` 一律返回 HTTP 400 / 业务码 11128
+ *      (`first message is not system prompt`)。按国内版那样只发一条 user 消息
+ *      去探测，会把**整个国际版误报成全部不可用**。所以探测请求总是带一条
+ *      system 消息，两个网关都接受。
+ *   2. **上游不提供限流元数据。** 实测 200 响应头里没有 `Retry-After`，也没有
+ *      `X-RateLimit-*`；连续快速打同一模型 12 次全部成功。因此
+ *      {@link cooldownOf} 只在上游**真的说了**的时候给出一个时间，否则如实
+ *      返回「上游未给出」—— 绝不编造倒计时。
+ *
+ * @module dsh-connect-workbuddy/probe
+ */
+
+import type { WorkBuddyCredential } from './auth.ts'
+import { classifyUpstreamError } from './upstream.ts'
+
+/**
+ * The system message every probe carries.
+ *
+ * Not decoration: the international gateway rejects a conversation that does not
+ * start with a system message (see the module note). A probe that omitted it
+ * would report every global model as broken.
+ */
+export const PROBE_SYSTEM_PROMPT = 'You are a connectivity check. Reply with a single word.'
+
+/** The one-word user turn; the smallest thing a chat endpoint accepts. */
+export const PROBE_USER_PROMPT = 'ping'
+
+/**
+ * Output cap for a probe. One token is enough to prove the model answers, and
+ * keeps the cost negligible: live measurements of `max_tokens: 1` probes
+ * reported `credit` between 0 and 0.01, and one such probe left the credit
+ * balance unchanged (933 → 933). For scale, a model on that roster bills 0.79+
+ * per real reply. The point of the feature is to learn whether a model works
+ * while spending as close to nothing as the service allows.
+ */
+export const PROBE_MAX_TOKENS = 1
+
+/**
+ * Build the request body for one probe.
+ *
+ * `stream` is forced because the upstream rejects non-streaming chat requests;
+ * `prepareChatBody` enforces that too, but sending it explicitly keeps this
+ * function's output valid on its own.
+ */
+export function probeRequestBody(modelId: string): string {
+  return JSON.stringify({
+    model: modelId,
+    messages: [
+      { role: 'system', content: PROBE_SYSTEM_PROMPT },
+      { role: 'user', content: PROBE_USER_PROMPT },
+    ],
+    max_tokens: PROBE_MAX_TOKENS,
+    stream: true,
+  })
+}
+
+/**
+ * How one probe ended.
+ *
+ * `rate-limited` is split out from a generic failure because it is the one
+ * outcome the feature exists for: it means "this model works, but not right
+ * now". Everything else is a real, actionable failure or a success.
+ */
+export type WorkBuddyProbeOutcome =
+  | 'ok'
+  | 'rate-limited'
+  | 'out-of-credit'
+  | 'credential-rejected'
+  | 'unavailable'
+  | 'not-found'
+  | 'failed'
+
+/**
+ * One probe result, as the card renders it.
+ *
+ * `retryAtMs` is present ONLY when the upstream actually stated a time (a
+ * `Retry-After` header, or the region's quota refresh point when the failure is
+ * an exhausted quota). Its absence is meaningful and must be rendered as "the
+ * upstream did not say", never as a locally invented countdown.
+ */
+export interface WorkBuddyProbeResult {
+  modelId: string
+  outcome: WorkBuddyProbeOutcome
+  /** Round-trip time in ms, for a successful probe. */
+  elapsedMs?: number
+  /** HTTP status the upstream answered with; 0 means the request never landed. */
+  status?: number
+  /** Upstream's own words, redacted. Present on failures. */
+  message?: string
+  /** A time the upstream named, in ms. Absent when it named none. */
+  retryAtMs?: number
+  /** Where a supplied `retryAtMs` came from, so the card can say so. */
+  retrySource?: 'retry-after' | 'quota-refresh'
+}
+
+/**
+ * Parse a `Retry-After` header value into an absolute time.
+ *
+ * Both RFC 9110 forms are accepted: delay-seconds (`120`) and an HTTP-date
+ * (`Wed, 21 Oct 2026 07:28:00 GMT`). Returns undefined for anything else,
+ * including the negative/zero delays some gateways emit — a "retry now" is not
+ * a cooldown and reporting it as one would be worse than saying nothing.
+ *
+ * `nowMs` is injected so the delay-seconds branch is testable without a clock.
+ */
+export function parseRetryAfter(value: string | null, nowMs: number): number | undefined {
+  if (value === null) return undefined
+  const trimmed = value.trim()
+  if (trimmed === '') return undefined
+  if (/^\d+$/u.test(trimmed)) {
+    const seconds = Number(trimmed)
+    if (!Number.isFinite(seconds) || seconds <= 0) return undefined
+    return nowMs + seconds * 1_000
+  }
+  const parsed = Date.parse(trimmed)
+  if (Number.isNaN(parsed)) return undefined
+  // An HTTP-date already in the past is not a cooldown either.
+  if (parsed <= nowMs) return undefined
+  return parsed
+}
+
+/**
+ * The cooldown the upstream stated, if it stated one.
+ *
+ * Two sources, in order of authority:
+ *
+ * 1. `Retry-After` on the failure response. This is the upstream naming a time
+ *    for THIS request, so it wins.
+ * 2. The region's monthly quota refresh point, but ONLY for an out-of-credit
+ *    outcome. A quota that resets at a known time is the one case where "when
+ *    can I use this again" has a real answer even without a header — and it is
+ *    the answer for the most common real limit on this service.
+ *
+ * A `rate-limited` outcome with neither source returns `{}`, which the card
+ * renders as "the upstream did not say when". That is the honest answer: the
+ * live probes found no rate-limit metadata in any response at all, so inventing
+ * a number here would be pure fiction.
+ */
+export function cooldownOf(input: {
+  outcome: WorkBuddyProbeOutcome
+  retryAfter: string | null
+  nowMs: number
+  /** The region's next monthly quota refresh, when the upstream declares one. */
+  quotaRefreshAtMs?: number
+}): Pick<WorkBuddyProbeResult, 'retryAtMs' | 'retrySource'> {
+  const fromHeader = parseRetryAfter(input.retryAfter, input.nowMs)
+  if (fromHeader !== undefined) return { retryAtMs: fromHeader, retrySource: 'retry-after' }
+  if (input.outcome === 'out-of-credit' && input.quotaRefreshAtMs !== undefined) {
+    return { retryAtMs: input.quotaRefreshAtMs, retrySource: 'quota-refresh' }
+  }
+  return {}
+}
+
+/**
+ * Classify one failed probe into the card's outcome vocabulary.
+ *
+ * Built on `classifyUpstreamError` rather than re-testing status codes, so a
+ * probe and a real chat request can never disagree about what the same upstream
+ * answer means. The extra split here is `credential-rejected`, which the
+ * upstream signals with a non-JSON 401/403 edge page and which needs completely
+ * different advice (re-auth, not "wait").
+ */
+export function outcomeOfFailure(status: number, body: string): WorkBuddyProbeOutcome {
+  if (status === 401 || status === 403) return 'credential-rejected'
+  switch (classifyUpstreamError(status, body)) {
+    case 'soft_rate': return 'rate-limited'
+    case 'hard_credit': return 'out-of-credit'
+    case 'session_dead': return 'credential-rejected'
+    case 'not_found': return 'not-found'
+    default: return status === 0 || status >= 500 ? 'unavailable' : 'failed'
+  }
+}
+
+/**
+ * Read the credit this probe consumed out of an SSE stream, when the upstream
+ * reports it.
+ *
+ * Purely informational — the card shows it so a user can see how little a probe
+ * actually costs rather than having to trust a claim. Absent when the stream
+ * carried no `usage` block.
+ */
+export function creditOfStream(text: string): number | undefined {
+  const match = /"credit"\s*:\s*(-?[0-9]*\.?[0-9]+)/u.exec(text)
+  if (match === null) return undefined
+  const value = Number(match[1])
+  return Number.isFinite(value) ? value : undefined
+}
+
+/** Whether a probe outcome means the model answered. */
+export function probeSucceeded(outcome: WorkBuddyProbeOutcome): boolean {
+  return outcome === 'ok'
+}
+
+/** What one probe needs from the upstream client. */
+export interface WorkBuddyProbeClient {
+  probeChat(
+    credential: WorkBuddyCredential,
+    bodyJson: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    ok: boolean
+    status: number
+    retryAfter: string | null
+    body?: string
+    response?: Response
+  }>
+}
+
+/** Max characters of upstream text kept for display, after redaction. */
+const PROBE_MESSAGE_LIMIT = 300
+
+/**
+ * Redact token-shaped content out of upstream text before it is stored or sent.
+ *
+ * Duplicated from the route layer on purpose rather than imported: this module
+ * is the one that reads raw failure bodies, so the redaction belongs at the
+ * point of capture. A probe failure body is the one place a raw upstream string
+ * from an arbitrary endpoint enters the plugin's data flow.
+ */
+function redact(text: string): string {
+  return text
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[redacted token]')
+    .replace(/(\b(?:code|token|refresh_token|access_token)=)[^&\s]+/giu, '$1[redacted]')
+    .slice(0, PROBE_MESSAGE_LIMIT)
+}
+
+/**
+ * Run one probe for one model and reduce it to the card's row.
+ *
+ * The successful path drains the SSE stream purely to read the `credit` figure
+ * the upstream reports, then discards the rest: the probe's question is "did
+ * this model answer", and `max_tokens: 1` means there is nothing else in the
+ * stream worth keeping.
+ *
+ * Never throws. A probe is a diagnostic the user asked for, so every failure is
+ * a RESULT — one dead model must not abort the batch and hide the other rows.
+ */
+export async function probeModel(input: {
+  client: WorkBuddyProbeClient
+  credential: WorkBuddyCredential
+  modelId: string
+  nowMs: number
+  /** The region's next monthly quota refresh, when known. */
+  quotaRefreshAtMs?: number
+  signal?: AbortSignal
+}): Promise<WorkBuddyProbeResult> {
+  let answer
+  const startedAt = Date.now()
+  try {
+    answer = await input.client.probeChat(
+      input.credential,
+      probeRequestBody(input.modelId),
+      input.signal,
+    )
+  } catch (error: unknown) {
+    return {
+      modelId: input.modelId,
+      outcome: 'unavailable',
+      message: redact(error instanceof Error ? error.message : String(error)),
+    }
+  }
+  const elapsedMs = Date.now() - startedAt
+
+  if (answer.ok) {
+    let credit: number | undefined
+    if (answer.response !== undefined) {
+      try {
+        credit = creditOfStream(await answer.response.text())
+      } catch {
+        // A truncated stream still proves the model answered; the credit figure
+        // is informational, so its absence must not turn a success into a fail.
+      }
+    }
+    return {
+      modelId: input.modelId,
+      outcome: 'ok',
+      elapsedMs: Date.now() - startedAt,
+      status: answer.status,
+      ...credit === undefined ? {} : { message: `credit ${credit}` },
+      ...cooldownOf({
+        outcome: 'ok',
+        retryAfter: answer.retryAfter,
+        nowMs: input.nowMs,
+        ...input.quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs: input.quotaRefreshAtMs },
+      }),
+    }
+  }
+
+  const body = answer.body ?? ''
+  const outcome = outcomeOfFailure(answer.status, body)
+  return {
+    modelId: input.modelId,
+    outcome,
+    elapsedMs,
+    status: answer.status,
+    ...body === '' ? {} : { message: redact(body) },
+    ...cooldownOf({
+      outcome,
+      retryAfter: answer.retryAfter,
+      nowMs: input.nowMs,
+      ...input.quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs: input.quotaRefreshAtMs },
+    }),
+  }
+}

@@ -6,6 +6,7 @@ import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { WorkBuddyCredentialRejectedError } from '../src/upstream.ts'
+import type { WorkBuddyRegion } from '../src/upstream.ts'
 
 const CREDENTIAL: WorkBuddyCredential = {
   accessToken: 'access',
@@ -434,13 +435,14 @@ describe('registerWorkBuddyStatusRoute', () => {
     return captured
   }
 
-  it('mounts the usage, account, check-in, model, and save routes', async () => {
+  it('mounts the usage, account, check-in, model, probe, and save routes', async () => {
     const captured = await mountRoutes()
     expect(captured.map(entry => entry.path)).toEqual([
       '/plugins/dsh-connect-workbuddy/usage',
       '/plugins/dsh-connect-workbuddy/accounts/refresh',
       '/plugins/dsh-connect-workbuddy/checkin',
       '/plugins/dsh-connect-workbuddy/models/refresh',
+      '/plugins/dsh-connect-workbuddy/probe',
       '/plugins/dsh-connect-workbuddy/__save',
     ])
   })
@@ -932,5 +934,182 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
     expect(first).toBeDefined()
     const value = (first as { value: Record<string, unknown> }).value as Record<string, unknown>
     expect(value).toMatchObject({ cn: { contextBudgets: { 'glm-5.3': 1_000_000 } } })
+  })
+})
+
+/**
+ * The model probe route.
+ *
+ * A probe is a real request against a metered service, so the route's contract
+ * matters as much as its happy path: an empty list and an oversized list are
+ * both refused, and the batch runs SEQUENTIALLY — firing N requests at once is
+ * the surest way to create the very rate limit the probe exists to measure.
+ */
+describe('registerWorkBuddyStatusRoute probe route', () => {
+  interface CapturedEntry {
+    path: string
+    handler: (req: unknown, res: unknown) => Promise<void> | void
+  }
+
+  /** A request double carrying a JSON body, mimicking the node IncomingMessage. */
+  function probeReq(payload: unknown, url = '/plugins/dsh-connect-workbuddy/probe') {
+    const chunks = [Buffer.from(JSON.stringify(payload))]
+    return {
+      method: 'POST',
+      url,
+      headers: { origin: 'http://127.0.0.1' },
+      on: (ev: string, cb: (c: Buffer) => void) => {
+        if (ev === 'data') for (const c of chunks) cb(c)
+        if (ev === 'end') (cb as unknown as { (): void }).call(undefined)
+      },
+    }
+  }
+
+  function probeResponse(): {
+    res: { writeHead: (status: number, headers?: Record<string, string>) => void, end: (payload?: string) => void }
+    status: () => number
+    body: () => unknown
+  } {
+    let statusCode = 0
+    let payload = ''
+    return {
+      res: {
+        writeHead: (status: number) => { statusCode = status },
+        end: (body?: string) => { payload = body ?? '' },
+      },
+      status: () => statusCode,
+      body: () => JSON.parse(payload),
+    }
+  }
+
+  /** Mount the routes against a fake webServer, capturing handlers. */
+  async function mount(
+    options: Partial<WorkBuddyStatusRouteOptions>,
+    /** Drop the probe dependency entirely, to exercise the 503 branch. */
+    withoutProbe = false,
+  ): Promise<{
+    handler: CapturedEntry['handler']
+    seen: { region: string, modelIds: readonly string[] }[]
+  }> {
+    const captured: CapturedEntry[] = []
+    const seen: { region: string, modelIds: readonly string[] }[] = []
+    const FakeWebServer = {
+      name: 'webServer',
+      inject: [] as const,
+      apply(ctx: Context) {
+        ctx.provide('webServer', {
+          register: (entry: { path: string }) => {
+            captured.push(entry as CapturedEntry)
+            return () => {}
+          },
+        })
+      },
+    }
+    const ctx = new Context()
+    await ctx.plugin(FakeWebServer)
+    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
+    registerWorkBuddyStatusRoute(ctx, deps({
+      ...withoutProbe ? {} : {
+        probeModels: async (region: WorkBuddyRegion, modelIds: readonly string[]) => {
+          seen.push({ region, modelIds })
+          return modelIds.map(modelId => ({ modelId, outcome: 'ok' as const, elapsedMs: 1 }))
+        },
+      },
+      ...options,
+    }))
+    await ctx.fiber.dispose()
+    const probe = captured.find(entry => entry.path === '/plugins/dsh-connect-workbuddy/probe')
+    if (probe === undefined) throw new Error('probe route was not registered')
+    return { handler: probe.handler, seen }
+  }
+
+  it('probes each named model and answers one result per model', async () => {
+    const { handler, seen } = await mount({})
+    const { res, status, body } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3', 'hy3'] }), res)
+    expect(status()).toBe(200)
+    const results = (body() as { results: { modelId: string }[] }).results
+    expect(results.map(result => result.modelId)).toEqual(['glm-5.3', 'hy3'])
+    // Sequential, one call per model: a parallel fan-out would manufacture the
+    // rate limit being measured.
+    expect(seen).toEqual([
+      { region: 'cn', modelIds: ['glm-5.3'] },
+      { region: 'cn', modelIds: ['hy3'] },
+    ])
+  })
+
+  it('routes the region query to that region', async () => {
+    const { handler, seen } = await mount({})
+    const { res } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'] }, '/plugins/dsh-connect-workbuddy/probe?region=global'), res)
+    expect(seen[0]?.region).toBe('global')
+  })
+
+  it('refuses an empty model list instead of reporting a finished batch', async () => {
+    // An empty success would let the card render "done" for a batch that never
+    // ran, which is indistinguishable from a real all-clear.
+    const { handler } = await mount({})
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: [] }), res)
+    expect(status()).toBe(400)
+  })
+
+  it('refuses a non-array model list', async () => {
+    const { handler } = await mount({})
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: 'glm-5.3' }), res)
+    expect(status()).toBe(400)
+  })
+
+  it('refuses an oversized batch', async () => {
+    const { handler } = await mount({})
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: Array.from({ length: 65 }, (_, i) => `m${String(i)}`) }), res)
+    expect(status()).toBe(400)
+  })
+
+  it('answers 503 when the host offers no probe capability', async () => {
+    const { handler } = await mount({}, true)
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'] }), res)
+    expect(status()).toBe(503)
+  })
+
+  it('refuses a non-loopback origin', async () => {
+    const { handler } = await mount({})
+    const { res, status } = probeResponse()
+    await handler({
+      method: 'POST',
+      url: '/plugins/dsh-connect-workbuddy/probe',
+      headers: { origin: 'http://evil.example' },
+      on: () => {},
+    }, res)
+    expect(status()).toBe(403)
+  })
+
+  it('refuses a non-POST method', async () => {
+    const { handler } = await mount({})
+    const { res, status } = probeResponse()
+    await handler({ method: 'GET', url: '/plugins/dsh-connect-workbuddy/probe', headers: {}, on: () => {} }, res)
+    expect(status()).toBe(405)
+  })
+
+  it('refuses an unknown region rather than guessing', async () => {
+    const { handler } = await mount({})
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'] }, '/plugins/dsh-connect-workbuddy/probe?region=mars'), res)
+    expect(status()).toBe(400)
+  })
+
+  it('reports a thrown probe as a 500 without leaking a token', async () => {
+    const { handler } = await mount({
+      probeModels: async () => {
+        throw new Error('upstream said access_token=supersecretvalue')
+      },
+    })
+    const { res, status, body } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'] }), res)
+    expect(status()).toBe(500)
+    expect(JSON.stringify(body())).not.toContain('supersecretvalue')
   })
 })

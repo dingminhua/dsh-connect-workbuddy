@@ -36,11 +36,24 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_PROBE_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
-import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebSearchPath, WorkBuddyWebUsage } from './status-paths.ts'
+import type {
+  WorkBuddyWebAccount,
+  WorkBuddyWebCredits,
+  WorkBuddyWebProbeResult,
+  WorkBuddyWebSearchPath,
+  WorkBuddyWebUsage,
+} from './status-paths.ts'
 
-export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
+export {
+  WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_CHECKIN_PATH,
+  WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_PROBE_PATH,
+  WORKBUDDY_USAGE_PATH,
+}
 export type { WorkBuddyWebUsage }
 
 /** Constructor dependencies. */
@@ -69,6 +82,28 @@ export interface WorkBuddyStatusRouteOptions {
    * committed settings value rather than a local guess.
    */
   regionEnabled(region: WorkBuddyRegion): boolean
+  /**
+   * Send one minimal request to each named model of a region and report what
+   * came back.
+   *
+   * Optional: it is the only dependency the card's test button needs, so a Host
+   * built without it (or a route mounted for a status-only consumer) simply
+   * answers 503 and the button reports that instead of failing the card.
+   */
+  probeModels?(
+    region: WorkBuddyRegion,
+    modelIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<readonly WorkBuddyWebProbeResult[]>
+  /**
+   * The region's next monthly quota refresh, when the upstream declares one.
+   *
+   * Used ONLY to answer "when can I use this again" for an out-of-credit
+   * outcome, which is the one cooldown the service actually states: a monthly
+   * resource that resets at a known time. Every other limited outcome has no
+   * time from any source and must be reported as such.
+   */
+  quotaRefreshAtMs?(region: WorkBuddyRegion): number | undefined
   /**
    * Report whether a region still has at least one local sign-in.
    *
@@ -102,6 +137,54 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
   res.end(payload)
+}
+
+/**
+ * Cap on how many models one probe request may name.
+ *
+ * A probe is a real (if tiny) request against a metered service, and the batch
+ * runs sequentially, so an unbounded list would let one click hold the route for
+ * minutes. The card never sends more than the models on its own screen.
+ */
+const PROBE_BATCH_LIMIT = 64
+
+/** Request-body cap for the probe route: model ids only, never content. */
+const PROBE_BODY_LIMIT = 64 * 1024
+
+/**
+ * Read a small JSON request body.
+ *
+ * Bounded, unlike the settings route's reader: this endpoint takes a list of
+ * model ids and has no legitimate use for a large payload, so an oversized body
+ * is refused rather than buffered.
+ */
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > PROBE_BODY_LIMIT) {
+        reject(new Error('request body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      try {
+        const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          reject(new Error('request body must be a JSON object'))
+          return
+        }
+        resolve(parsed as Record<string, unknown>)
+      } catch (error: unknown) {
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+    req.on('error', reject)
+  })
 }
 
 /** Loopback browser origins only; other devices are refused until trusted origins exist. */
@@ -449,6 +532,41 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposeProbe = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_PROBE_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        if (deps.probeModels === undefined) return json(res, 503, { error: 'model probe unavailable' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        try {
+          const body = await readJsonBody(req) as { modelIds?: unknown }
+          const modelIds = Array.isArray(body.modelIds)
+            ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
+            : []
+          // An empty list is a client bug, not "nothing to report": answering an
+          // empty success would let the card render a finished batch that never
+          // ran. Refuse it so the failure is visible.
+          if (modelIds.length === 0) return json(res, 400, { error: 'modelIds must be a non-empty array of strings' })
+          if (modelIds.length > PROBE_BATCH_LIMIT) {
+            return json(res, 400, { error: `at most ${String(PROBE_BATCH_LIMIT)} models per probe` })
+          }
+          // The batch is sequential on purpose. A probe exists to discover rate
+          // limits, and firing N requests at once is the surest way to CREATE
+          // one — the measurement would then report the plugin's own load as the
+          // upstream's limit.
+          const results: WorkBuddyWebProbeResult[] = []
+          for (const modelId of modelIds) {
+            results.push(...await deps.probeModels(region, [modelId]))
+          }
+          json(res, 200, { results })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
     const disposeDiagWrite = ctx.webServer.register({
       kind: 'exact',
       path: '/plugins/dsh-connect-workbuddy/__save',
@@ -510,6 +628,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       disposeCheckin()
       disposeAccounts()
       disposeUsage()
+      disposeProbe()
       disposeDiagWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')

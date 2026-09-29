@@ -46,6 +46,7 @@ import {
 } from './adapter.ts'
 import type { WorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
+import { probeModel } from './probe.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
@@ -157,6 +158,21 @@ export {
 } from './host-heartbeat.ts'
 export { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 export {
+  cooldownOf,
+  creditOfStream,
+  outcomeOfFailure,
+  parseRetryAfter,
+  probeModel,
+  probeRequestBody,
+  probeSucceeded,
+  PROBE_MAX_TOKENS,
+  PROBE_SYSTEM_PROMPT,
+  PROBE_USER_PROMPT,
+  type WorkBuddyProbeClient,
+  type WorkBuddyProbeOutcome,
+  type WorkBuddyProbeResult,
+} from './probe.ts'
+export {
   registerWorkBuddyStatusRoute,
   workBuddyWebStatus,
   type WorkBuddyStatusRouteOptions,
@@ -165,6 +181,7 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_PROBE_PATH,
   WORKBUDDY_REGION_PARAM,
   WORKBUDDY_REGIONS,
   WORKBUDDY_SETTINGS_NS,
@@ -191,6 +208,7 @@ export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_PROBE_PATH,
   WORKBUDDY_REGION_PARAM,
   WORKBUDDY_REGIONS,
   WORKBUDDY_SETTINGS_NS,
@@ -700,6 +718,47 @@ export function apply(ctx: Context, config: Config): void {
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
     regionEnabled: region => regionEnabled(current(), region),
+    /**
+     * One minimal request per named model, through the region's own credential.
+     *
+     * Resolved here rather than in the route so the browser half never touches a
+     * token: the route passes only model ids and receives only outcomes.
+     *
+     * `quotaRefreshAtMs` is the region's nearest monthly refresh point, read from
+     * the SAME credit answer the card displays. It is the only cooldown this
+     * service ever states — an exhausted monthly resource that resets at a known
+     * time — so it is what makes "when can I use this again" answerable for an
+     * out-of-credit result. Every other limited outcome has no time anywhere, and
+     * the probe reports exactly that instead of inventing one.
+     */
+    async probeModels(region, modelIds, signal) {
+      let credential
+      try {
+        credential = await stacks[region].store.resolve()
+      } catch (error: unknown) {
+        // No usable credential is a batch-wide, actionable answer: report it as
+        // each requested model's outcome rather than failing the whole route, so
+        // the card can show WHICH problem it hit.
+        return modelIds.map(modelId => ({
+          modelId,
+          outcome: 'credential-rejected' as const,
+          message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+        }))
+      }
+      const quotaRefreshAtMs = await quotaRefreshOf(region, credential)
+      const results = []
+      for (const modelId of modelIds) {
+        results.push(await probeModel({
+          client,
+          credential,
+          modelId,
+          nowMs: Date.now(),
+          ...quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs },
+          ...signal === undefined ? {} : { signal },
+        }))
+      }
+      return results
+    },
     // The card re-reads this on every poll and rescan, so a sign-in the user
     // performs after startup brings the region's models back without a restart.
     regionUsable(region, usable) {
@@ -707,8 +766,31 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
+  /**
+   * The region's nearest monthly quota refresh, or undefined when unknown.
+   *
+   * The monthly resource (`CapacityType 4`) is the one package that never
+   * expires and resets on a cycle, so its `refreshAtMs` is a real answer to
+   * "when can I use this again" after the quota runs out. The probe passes it
+   * through; a failure to read it is not an error, because a probe without a
+   * cooldown is still a useful probe.
+   */
+  const quotaRefreshOf = async (
+    region: WorkBuddyRegion,
+    credential: Awaited<ReturnType<WorkBuddyCredentialStore['resolve']>>,
+  ): Promise<number | undefined> => {
+    try {
+      const credits = await client.fetchCredits(credential)
+      const refreshes = credits.packages
+        .filter(pack => pack.monthly && pack.refreshAtMs !== undefined)
+        .map(pack => pack.refreshAtMs as number)
+      return refreshes.length === 0 ? undefined : Math.min(...refreshes)
+    } catch {
+      return undefined
+    }
+  }
+
   // Settings registration (0.1.7+ only).
-  //
   // `SettingsForms` dropped `installSection` entirely and exposes
   // `configure({auto}, owner)`; calling the removed method unconditionally made
   // `apply()` throw on 0.1.7 (`ctx.settings.installSection is not a function`)

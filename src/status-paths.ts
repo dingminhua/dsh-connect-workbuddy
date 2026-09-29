@@ -20,6 +20,15 @@ export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/mod
 export const WORKBUDDY_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/accounts/refresh'
 /** Plugin-owned daily check-in action endpoint. */
 export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
+/**
+ * Plugin-owned model probe endpoint.
+ *
+ * Sends one minimal chat request per named model so the card can answer "is
+ * this model usable right now, and if it is limited, when can it be used
+ * again?". Lives on the Host because the credential must never reach the
+ * browser half.
+ */
+export const WORKBUDDY_PROBE_PATH = '/plugins/dsh-connect-workbuddy/probe'
 
 /** Query parameter naming the region a card request addresses. */
 export const WORKBUDDY_REGION_PARAM = 'region'
@@ -364,6 +373,52 @@ export type WorkBuddyWebUsage =
     contextBudgets?: Record<string, number>
   }
   | { status: 'error'; message: string }
+
+/**
+ * Outcome vocabulary of one model probe, shared by the Host and the card.
+ *
+ * Mirrors `WorkBuddyProbeOutcome` in `./probe.ts`; kept as its own declaration
+ * here because this module is the node-free bridge and must not import the
+ * Host-side probe module (which pulls in the credential type).
+ */
+export type WorkBuddyWebProbeOutcome =
+  | 'ok'
+  | 'rate-limited'
+  | 'out-of-credit'
+  | 'credential-rejected'
+  | 'unavailable'
+  | 'not-found'
+  | 'failed'
+
+/** One model's probe result, as the card renders it. */
+export interface WorkBuddyWebProbeResult {
+  modelId: string
+  outcome: WorkBuddyWebProbeOutcome
+  /** Round-trip time in ms; present once the request landed. */
+  elapsedMs?: number
+  /** HTTP status the upstream answered with; 0 means it never landed. */
+  status?: number
+  /** Upstream's own words, already redacted. */
+  message?: string
+  /**
+   * A time the upstream named for using this model again, in ms.
+   *
+   * ABSENT means the upstream named none, and the card must say exactly that.
+   * The live probes that shaped this feature found no rate-limit metadata in
+   * any response — no `Retry-After`, no `X-RateLimit-*` — so a client-invented
+   * countdown here would be fiction. Only two sources ever fill this:
+   * a real `Retry-After`, or (for an exhausted quota) the region's own quota
+   * refresh point, which the upstream does declare.
+   */
+  retryAtMs?: number
+  /** Which of those two sources supplied {@link retryAtMs}. */
+  retrySource?: 'retry-after' | 'quota-refresh'
+}
+
+/** The probe endpoint's answer document. */
+export interface WorkBuddyWebProbeAnswer {
+  results: readonly WorkBuddyWebProbeResult[]
+}
 
 /**
  * Deep copy of a settings value with every `{get(): T}` live reference replaced

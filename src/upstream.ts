@@ -140,6 +140,26 @@ export type WorkBuddyChatResult =
   | { ok: true; response: Response }
   | { ok: false; status: number; kind: UpstreamErrorKind; message: string }
 
+/**
+ * Chat answer that also carries the response headers.
+ *
+ * Used by the model probe, whose whole point is to ask "is this usable right
+ * now, and if not, when?" — and the only place an upstream ever names a
+ * cooldown is the `Retry-After` header, which {@link WorkBuddyChatResult}
+ * deliberately does not surface. Returning a separate shape keeps the ordinary
+ * chat path (and its callers) untouched.
+ */
+export interface WorkBuddyProbeAnswer {
+  ok: boolean
+  status: number
+  /** Raw `Retry-After`, when the upstream sent one; null otherwise. */
+  retryAfter: string | null
+  /** Failure body excerpt, only when `ok` is false. */
+  body?: string
+  /** The live stream, only when `ok` is true. The caller drains and discards it. */
+  response?: Response
+}
+
 const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
@@ -663,6 +683,43 @@ export class WorkBuddyUpstreamClient {
       kind: classifyUpstreamError(response.status, text),
       message: text,
     }
+  }
+
+  /**
+   * Send one minimal chat request for `bodyJson` and report the RAW answer.
+   *
+   * Shares {@link chatHeaders} and the chat base with {@link chatStream} on
+   * purpose: a probe is only meaningful if it reaches the same endpoint with the
+   * same authentication as a real request. The differences are deliberate and
+   * narrow — it returns the headers (for `Retry-After`) and the failure body
+   * (for classification) instead of a pre-classified error, so the probe module
+   * owns the interpretation and the network layer stays a transport.
+   *
+   * The caller MUST drain {@link WorkBuddyProbeAnswer.response}; an unread body
+   * holds the connection open.
+   */
+  async probeChat(
+    credential: WorkBuddyCredential,
+    bodyJson: string,
+    signal?: AbortSignal,
+  ): Promise<WorkBuddyProbeAnswer> {
+    let response: Response
+    try {
+      response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
+        method: 'POST',
+        headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
+        body: bodyJson,
+        ...signal === undefined ? {} : { signal },
+      })
+    } catch (error: unknown) {
+      // status 0 is the transport-failure convention the shim already maps to
+      // its `server` class; reusing it keeps one meaning for one number.
+      return { ok: false, status: 0, retryAfter: null, body: `transport error: ${String(error)}` }
+    }
+    const retryAfter = response.headers.get('retry-after')
+    if (response.ok) return { ok: true, status: response.status, retryAfter, response }
+    const body = (await response.text()).slice(0, ERROR_BODY_LIMIT)
+    return { ok: false, status: response.status, retryAfter, body }
   }
 
   /** POST the token-refresh endpoint; the caller merges the outcome. */
