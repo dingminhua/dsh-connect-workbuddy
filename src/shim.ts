@@ -104,6 +104,7 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   hard_credit: 402,
   soft_rate: 429,
   session_dead: 401,
+  policy_reject: 403,
   not_found: 502,
   server: 502,
   client: 400,
@@ -115,8 +116,14 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-function writeOpenAIError(res: ServerResponse, status: number, kind: string, message: string): void {
-  writeJson(res, status, { error: { message, type: kind, code: kind } })
+function writeOpenAIError(
+  res: ServerResponse,
+  status: number,
+  kind: string,
+  message: string,
+  code?: string,
+): void {
+  writeJson(res, status, { error: { message, type: kind, code: code ?? kind } })
 }
 
 /** Read a request body with a size cap; over-limit bodies fail the request. */
@@ -251,6 +258,24 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const result = await client.chatStream(credential, prepared, controller.signal)
 
     if (!result.ok) {
+      if (result.kind === 'policy_reject') {
+        const detail = result.detail
+        const lead = detail?.displayMsg ?? result.message.slice(0, 200)
+        const meta = ['服务端策略拒绝']
+        if (detail?.upstreamCode !== undefined) meta.push(`code ${detail.upstreamCode}`)
+        if (detail?.requestId !== undefined) meta.push(`requestId ${detail.requestId}`)
+        const message =
+          `${lead}（${meta.join('，')}）。该请求被 WorkBuddy 服务端策略拒绝，重新登录不会解决；` +
+          '可在 WorkBuddy 桌面端用同一账号验证，或切换区域/账号后重试'
+        writeOpenAIError(
+          res,
+          KIND_STATUS[result.kind],
+          result.kind,
+          message,
+          detail?.upstreamCode === undefined ? undefined : String(detail.upstreamCode),
+        )
+        return
+      }
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],

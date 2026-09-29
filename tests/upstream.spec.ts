@@ -5,11 +5,23 @@ import {
   classifyUpstreamError,
   parseCreditMultiplier,
   parseReasoning,
+  parseUpstreamErrorDetail,
   parseUpstreamModel,
   prepareChatBody,
   regionOf,
   globalBase,
 } from '../src/upstream.ts'
+
+const POLICY_REJECT_BODY = JSON.stringify({
+  code: 11140,
+  msg: 'request illegal',
+  requestId: '3498bf50-98a9-4746-962e-c14016b8c578',
+  displayMsg: {
+    en: 'The content did not pass the safety review. Please adjust and retry.',
+    zh: '内容未通过安全审核，请调整后重试。',
+  },
+  actions: ['SUBMIT_FEEDBACK', 'COPY_ERROR', 'EDIT_INPUT'],
+})
 
 describe('prepareChatBody', () => {
   it('forces streaming and flattens object tool_choice', () => {
@@ -59,6 +71,34 @@ describe('classifyUpstreamError', () => {
     expect(classifyUpstreamError(429, '')).toBe('soft_rate')
     expect(classifyUpstreamError(503, '')).toBe('server')
     expect(classifyUpstreamError(404, '')).toBe('not_found')
+  })
+
+  it('maps the 11140 policy rejection ahead of generic client errors', () => {
+    expect(classifyUpstreamError(403, POLICY_REJECT_BODY)).toBe('policy_reject')
+    expect(classifyUpstreamError(403, '{"code":11140,"msg":"request illegal"}')).toBe('policy_reject')
+  })
+
+  it('keeps a benign 403 a generic client error', () => {
+    expect(classifyUpstreamError(403, 'forbidden')).toBe('client')
+  })
+})
+
+describe('parseUpstreamErrorDetail', () => {
+  it('lifts code, requestId, and the Chinese display message out of a 11140 body', () => {
+    const detail = parseUpstreamErrorDetail(POLICY_REJECT_BODY)
+    expect(detail?.upstreamCode).toBe(11140)
+    expect(detail?.requestId).toBe('3498bf50-98a9-4746-962e-c14016b8c578')
+    expect(detail?.displayMsg).toBe('内容未通过安全审核，请调整后重试。')
+  })
+
+  it('falls back to msg when the body carries no display message', () => {
+    const detail = parseUpstreamErrorDetail('{"code":11140,"msg":"request illegal"}')
+    expect(detail?.displayMsg).toBe('request illegal')
+    expect(detail?.requestId).toBeUndefined()
+  })
+
+  it('returns undefined rather than guessing on a non-JSON body', () => {
+    expect(parseUpstreamErrorDetail('<html>403</html>')).toBeUndefined()
   })
 })
 

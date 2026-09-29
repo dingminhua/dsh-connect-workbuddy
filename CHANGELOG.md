@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+#### 403「request illegal」（11140）不再伪装成登录故障
+
+国际网关的真实失败（2026-09-29 抓包）：同一凭据下 `GET /v3/config` 返回 200，聊天 `POST /v2/chat/completions` 却被 403 拒绝，响应体逐字为：
+
+```json
+{"code":11140,"msg":"request illegal","requestId":"3498bf50-98a9-4746-962e-c14016b8c578","displayMsg":{"en":"The content did not pass the safety review. Please adjust and retry.","zh":"内容未通过安全审核，请调整后重试。"},"actions":["SUBMIT_FEEDBACK","COPY_ERROR","EDIT_INPUT"]}
+```
+
+- **根因**：`classifyUpstreamError` 只认积分、会话失效、限流三类标记，11140 落进兜底的 `client`；shim 把 `client` 映射成 400，DSH 侧进一步归为 AUTH。用户看到的是「登录坏了」——实际是服务端内容策略拒绝，重新登录、刷新 token 都不会有效。
+- **改动**：
+  - `upstream.ts` 新增 `policy_reject` 分类（标记 `request illegal` / `"code":11140`，在通用 4xx 之前判定）与 `parseUpstreamErrorDetail()`（从 JSON 失败体提取 `code` / `requestId` / `displayMsg`，非 JSON 返回 `undefined`，不猜）；chat 失败结果附带 `detail`。
+  - `shim.ts` 把 `policy_reject` 映射回 403，错误消息从解析字段合成：官方文案（zh 优先，回落 en、`msg`）+ `code 11140` + `requestId` +「重新登录不会解决；可在桌面端用同一账号验证，或切换区域/账号后重试」；`error.code` 透传上游码，不再把整段原始 JSON 嵌进 message。
+  - 探针 `outcomeOfFailure` 在 401/403 一刀切**之前**先判 `policy_reject`，卡片新增「服务端按内容策略拒绝」文案（中英）。探针与真实请求复用同一分类函数，对同一响应的判定不会分歧。
+- **守卫（先红后绿）**：`upstream.spec` / `shim.spec` / `probe.spec` 新增 8 例——分类（完整/最小 403 体 → `policy_reject`）、字段解析（zh 优先、缺 `displayMsg` 回落 `msg`、非 JSON 为 `undefined`）、shim 端到端（重放上面那段真实 403 体，断言 403 + `policy_reject` + `code 11140` + 官方文案 + requestId，而不是 400）、探针（11140 → `policy-rejected`）。7 例先在未修复代码上跑红、实现后转绿；1 例良性对照（良性 403 / HTML 403 仍判 `client` / `credential-rejected`）双向保持绿——防止修复把无辜的 403 一起吞掉。
+
 ## 2.3.1 (2026-09-29)
 
 ### Features

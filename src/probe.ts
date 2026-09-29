@@ -123,6 +123,7 @@ export type WorkBuddyProbeOutcome =
   | 'rate-limited'
   | 'out-of-credit'
   | 'credential-rejected'
+  | 'policy-rejected'
   | 'unavailable'
   | 'not-found'
   | 'failed'
@@ -283,12 +284,16 @@ export function cooldownOf(input: {
  *
  * Built on `classifyUpstreamError` rather than re-testing status codes, so a
  * probe and a real chat request can never disagree about what the same upstream
- * answer means. The extra split here is `credential-rejected`, which the
+ * answer means. The extra splits here are `credential-rejected`, which the
  * upstream signals with a non-JSON 401/403 edge page and which needs completely
- * different advice (re-auth, not "wait").
+ * different advice (re-auth, not "wait"), and `policy-rejected`, a JSON 403
+ * content-policy refusal where re-auth advice would be actively misleading.
  */
 export function outcomeOfFailure(status: number, body: string): WorkBuddyProbeOutcome {
-  if (status === 401 || status === 403) return 'credential-rejected'
+  if (status === 401 || status === 403) {
+    if (classifyUpstreamError(status, body) === 'policy_reject') return 'policy-rejected'
+    return 'credential-rejected'
+  }
   switch (classifyUpstreamError(status, body)) {
     case 'soft_rate': return 'rate-limited'
     case 'hard_credit': return 'out-of-credit'

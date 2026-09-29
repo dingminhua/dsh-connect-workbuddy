@@ -386,6 +386,7 @@ export type WorkBuddyWebProbeOutcome =
   | 'rate-limited'
   | 'out-of-credit'
   | 'credential-rejected'
+  | 'policy-rejected'
   | 'unavailable'
   | 'not-found'
   | 'failed'

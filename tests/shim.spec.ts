@@ -4,6 +4,7 @@ import { WorkBuddyCatalog } from '../src/catalog.ts'
 import { createWorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
+import { parseUpstreamErrorDetail } from '../src/upstream.ts'
 import type { WorkBuddyChatResult } from '../src/upstream.ts'
 
 let shim: WorkBuddyShim | undefined
@@ -18,6 +19,17 @@ const CREDENTIAL: WorkBuddyCredential = {
   source: 'desktop',
   filePath: '/tmp/auth.info',
 }
+
+const POLICY_REJECT_BODY = JSON.stringify({
+  code: 11140,
+  msg: 'request illegal',
+  requestId: '3498bf50-98a9-4746-962e-c14016b8c578',
+  displayMsg: {
+    en: 'The content did not pass the safety review. Please adjust and retry.',
+    zh: '内容未通过安全审核，请调整后重试。',
+  },
+  actions: ['SUBMIT_FEEDBACK', 'COPY_ERROR', 'EDIT_INPUT'],
+})
 
 const store = {
   resolve: async () => CREDENTIAL,
@@ -173,11 +185,38 @@ describe('shim inbound hardening', () => {
     expect(response.body).toContain('hard_credit')
   })
 
+  it('reports a 11140 policy rejection as 403 with the server message, not a 400 client error', async () => {
+    shim = makeShim({
+      chatStream: async () => ({
+        ok: false,
+        status: 403,
+        kind: 'policy_reject',
+        message: POLICY_REJECT_BODY,
+        detail: parseUpstreamErrorDetail(POLICY_REJECT_BODY),
+      }),
+    })
+    await shim.ready
+    const response = await request(shim, {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: await authed(shim, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ model: 'glm-5.3', messages: [] }),
+    })
+    expect(response.status).toBe(403)
+    const parsed = JSON.parse(response.body) as { error: { message: string; type: string; code: string } }
+    expect(parsed.error.type).toBe('policy_reject')
+    expect(parsed.error.code).toBe('11140')
+    expect(parsed.error.message).toContain('内容未通过安全审核，请调整后重试。')
+    expect(parsed.error.message).toContain('3498bf50-98a9-4746-962e-c14016b8c578')
+    expect(parsed.error.message).toContain('服务端策略拒绝')
+  })
+
   it('maps a dead session to HTTP 401 and a rate limit to 429', async () => {
     const cases: [import('../src/upstream.ts').UpstreamErrorKind, number][] = [
       ['session_dead', 401],
       ['soft_rate', 429],
       ['server', 502],
+      ['policy_reject', 403],
     ]
     for (const [kind, expected] of cases) {
       shim = makeShim({ chatStream: async () => ({ ok: false, status: 500, kind, message: 'x' }) })

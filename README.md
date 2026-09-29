@@ -173,6 +173,7 @@ dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 - **加密凭据依赖桌面 App 在场**：新版桌面端（**5.6.0 起，macOS 与 Windows 同样如此**）加密了 auth 文件里的 token 字段，插件需要调用该 App 自身的原生绑定才能取回字段密钥。因此 App 若未安装、被卸载，或安装在探测路径之外（用 `WORKBUDDY_APP_EXECUTABLE` 指定），加密文件就读不出来——此时账号会显示为未登录，而**不会**退化成读出一个残缺的 token。`doctor` 会报告这项能力是否可用。该密钥是构建期常量，随 App 版本可能轮换；插件每次向本机 App 现取，不缓存到磁盘，所以 App 升级后无需升级插件。
   - **App 可执行文件按 bundle 自身声明定位，不按 App 名猜**：WorkBuddy 的 macOS bundle 里 `CFBundleExecutable` 是 `Electron`（不是 `WorkBuddy`），因此插件读取 bundle 的 `Info.plist` 来决定二进制名。国内版 `WorkBuddy.app` 与国际版 `WorkBuddy AI.app` 都在候选内；App 被归入 `/Applications` 子目录（如 `/Applications/IDE/WorkBuddy.app`）时，插件还会向下扫一层并用 bundle id 确认身份后才使用——**不会**因为同名的其他 Electron 应用而误启动它。
   - **「未登录」与「登录信息读不出来」是两件事**：加密文件读不出时，插件给出的建议是「安装桌面 App / 用 `WORKBUDDY_APP_EXECUTABLE` 指定其位置」，而**不是**「重新登录一次」——后者对这种情况无效（凭据本身是好的，缺的是密钥）。
+- **403「request illegal」（code 11140）是服务端策略拒绝，不是登录问题**：聊天网关有时会按内容策略直接拒绝一次请求，响应体形如 `{"code":11140,"msg":"request illegal","requestId":"…","displayMsg":{"zh":"内容未通过安全审核，请调整后重试。"}}`。此前插件把它归为通用 `client` 错误返回 400，DSH 侧又显示成 AUTH 异常——看起来像「登录坏了」，但**重新登录解决不了它**：凭据本身是好的，被拒的是这一次请求。现在这类拒绝按 403 原样透传，消息里带官方文案、`code 11140` 和 `requestId`（联系官方支持时提供）；模型行的「测试」也显示「服务端按内容策略拒绝」而非「token 被拒」。遇到时的两个出口：在 WorkBuddy 桌面端用同一账号发同样的内容验证（桌面端同样被拒，说明限制在账号/内容侧）；或切换区域/账号后重试。
 
 ## 免责声明
 
