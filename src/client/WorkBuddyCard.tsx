@@ -612,8 +612,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * A bound scope is therefore all that is required to accept an edit.
    */
   const canWrite = settingsScope !== undefined
-  /** Whether any row's probe is in flight, so the batch button reflects it. */
-  const anyProbing = Object.keys(probing).length > 0
 
   const editDraft = (edit: (current: WorkBuddyDraft) => WorkBuddyDraft): void => {
     setDrafts(prev => ({
@@ -672,7 +670,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * alike, and blocking it on unsaved edits would make the button dead exactly
    * when the user is deciding what to keep.
    */
-  const probeModels = async (modelIds: readonly string[], heavy = false): Promise<void> => {
+  const probeModels = async (modelIds: readonly string[]): Promise<void> => {
     if (modelIds.length === 0) return
     setProbeError(undefined)
     setProbing(previous => {
@@ -685,7 +683,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ modelIds, ...heavy ? { heavy: true } : {} }),
+        body: JSON.stringify({ modelIds }),
       })
       const body = await response.json().catch(() => undefined) as
         | { results?: WorkBuddyWebProbeResult[]; error?: string }
@@ -1056,19 +1054,10 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                           <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                         </div>
                         <div className="dsm-workbuddy-models-head-actions">
-                          {/* Tests the ENABLED models — the ones the user keeps
-                              around and therefore cares about. Probing the whole
-                              directory would spend a request on every model the
-                              user already declined. */}
-                          <button
-                            type="button"
-                            className="dsm-btn dsm-btn-outline"
-                            disabled={activeEnabledIds.size === 0 || anyProbing}
-                            title={t('row.probeAllHint')}
-                            onClick={() => { void probeModels([...activeEnabledIds]) }}
-                          >
-                            {anyProbing ? t('row.probing') : t('row.probeAll')}
-                          </button>
+                          {/* No "test selected" batch: every probe now sends a
+                              real-volume request and therefore costs real
+                              credits, so a whole-roster sweep would be a large
+                              spend from one click. Testing is per model only. */}
                           <button
                             type="button"
                             className="dsm-btn dsm-btn-outline"
@@ -1144,7 +1133,16 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                     works on a read-only card and while a save is
                                     in flight. It IS gated on being signed in,
                                     because without a credential the only possible
-                                    answer is "rejected". */}
+                                    answer is "rejected".
+
+                                    It sends a REAL-VOLUME request (see
+                                    PROBE_INPUT_TOKENS in src/probe.ts), because
+                                    the upstream's 6004 throttle fires on request
+                                    size: a tiny probe would report "usable" while
+                                    every real request in a long conversation is
+                                    refused. That also means it costs real
+                                    credits, so it is per-model and manual only —
+                                    there is deliberately no batch button. */}
                                 <button
                                   type="button"
                                   className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
@@ -1153,28 +1151,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                   onClick={() => { void probeModels([model.id]) }}
                                 >
                                   {probing[model.id] === true ? t('row.probing') : t('row.probe')}
-                                </button>
-                                {/* Volume probe. TEMPORARY DIAGNOSTIC (see the
-                                    heavy-probe note in src/probe.ts for why it
-                                    exists and how to delete it).
-
-                                    It exists because the minimal probe cannot
-                                    see the upstream's 6004 throttle: that fires
-                                    on request SIZE (~25k+ input tokens), so a
-                                    model can pass the 1-token test and still
-                                    refuse every real request in a long session.
-                                    Deliberately per-row and manual only — it
-                                    sends a real-volume request and therefore
-                                    costs real credits, which is exactly why it
-                                    is NOT offered as a batch button. */}
-                                <button
-                                  type="button"
-                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
-                                  disabled={probing[model.id] === true || status.status !== 'signed-in'}
-                                  title={t('row.probeVolumeHint')}
-                                  onClick={() => { void probeModels([model.id], true) }}
-                                >
-                                  {t('row.probeVolume')}
                                 </button>
                                 </div>
                               </div>

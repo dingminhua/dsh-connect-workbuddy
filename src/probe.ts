@@ -1,11 +1,11 @@
 /**
- * The minimal-request model probe: what it sends, what an answer means, and
+ * The real-volume model probe: what it sends, what an answer means, and
  * what (if anything) can honestly be said about a cooldown.
  *
  * 参考：本仓库 `src/upstream.ts` 的错误分类（`classifyUpstreamError` 的中英文额度
  *   标记、`soft_rate` / `hard_credit` 两态）被直接复用，不另起一套判定。
- * 改动：把「一次最小请求」的构造与解读单独成模块，因为卡片和 Host 路由两边
- *   都要用它，而这些规则必须能被单元测试直接钉住 —— 它们包含两个**实测得到、
+ * 改动：把「一次探测请求」的构造与解读单独成模块，因为卡片和 Host 路由两边
+ *   都要用它，而这些规则必须能被单元测试直接钉住 —— 它们包含三个**实测得到、
  *   猜不出来**的结论：
  *
  *   1. **首条消息必须是 system。** 国际网关（`www.workbuddy.ai`）对
@@ -20,6 +20,9 @@
  *      显示「上游未给出何时恢复」，而时间其实就在眼前。因此
  *      {@link parseUpstreamResetAt} 从响应体解析，{@link cooldownOf} 只在三处都
  *      没有时才如实返回「上游未给出」—— 绝不编造倒计时。
+ *   3. **限流按请求体积触发。** 极小请求永远「可用」，而长会话里的真实请求会越过
+ *      阈值被拒 —— 这正是「测试通过、实际被限」的成因。所以探测**故意发真实体积**
+ *      的请求，见 {@link PROBE_INPUT_TOKENS} 的实测表。
  *
  * @module dsh-connect-workbuddy/probe
  */
@@ -36,18 +39,53 @@ import { classifyUpstreamError } from './upstream.ts'
  */
 export const PROBE_SYSTEM_PROMPT = 'You are a connectivity check. Reply with a single word.'
 
-/** The one-word user turn; the smallest thing a chat endpoint accepts. */
-export const PROBE_USER_PROMPT = 'ping'
-
 /**
- * Output cap for a probe. One token is enough to prove the model answers, and
- * keeps the cost negligible: live measurements of `max_tokens: 1` probes
- * reported `credit` between 0 and 0.01, and one such probe left the credit
- * balance unchanged (933 → 933). For scale, a model on that roster bills 0.79+
- * per real reply. The point of the feature is to learn whether a model works
- * while spending as close to nothing as the service allows.
+ * Output cap for a probe. One token is enough to prove the model answers.
+ *
+ * The probe's cost comes from its INPUT, not its output (see
+ * {@link PROBE_INPUT_TOKENS}), so paying for a long completion would add money
+ * without adding signal.
  */
 export const PROBE_MAX_TOKENS = 1
+
+/**
+ * How much input a probe sends, in tokens.
+ *
+ * This is the whole point of the probe, and it is NOT a free choice. The
+ * upstream's rate limit (business code 6004) fires on request SIZE, measured on
+ * 2026-09-29 by varying only the input against one account and one model:
+ *
+ *   | input     | prompt_tokens the upstream counted | result |
+ *   | ---       | ---                                | ---    |
+ *   | ~10       | 38                                 | ok     |
+ *   | ~1,000    | 1,138                              | ok     |
+ *   | ~10,000   | 11,138                             | ok     |
+ *   | ~18,000   | 20,018                             | ok     |
+ *   | ~25,000   | 25,023                             | ok     |
+ *   | ~30,000   | ~32k                               | **429 / 6004** |
+ *
+ * So the threshold sits between 20k and 30k, a SINGLE large request is enough to
+ * trip it (it is not a running total), and each account reports its own reset
+ * time (two accounts at the same moment: `22:20:33` and `00:32:51`).
+ *
+ * A probe that sent a handful of tokens answered "usable" while every real
+ * request in a long conversation was refused — the probe was asking too small a
+ * question. 25k is sized to be a realistic long-conversation payload.
+ */
+export const PROBE_INPUT_TOKENS = 25_000
+
+/**
+ * Characters per token for the filler text, measured.
+ *
+ * Filling with a fixed English sentence, the upstream counted about 4.5
+ * characters per token. An estimate rather than a bundled tokenizer: the body
+ * only needs to be the right SIZE CLASS, and the target has ample margin over
+ * the measured threshold, so estimate error cannot change the verdict.
+ */
+const CHARS_PER_TOKEN = 4.5
+
+/** Neutral filler; carries no user content, only volume. */
+const FILLER_LINE = 'The quick brown fox jumps over the lazy dog. '
 
 /**
  * Build the request body for one probe.
@@ -55,74 +93,13 @@ export const PROBE_MAX_TOKENS = 1
  * `stream` is forced because the upstream rejects non-streaming chat requests;
  * `prepareChatBody` enforces that too, but sending it explicitly keeps this
  * function's output valid on its own.
+ *
+ * Measured on the built artifact: 112,713 bytes of body, and the upstream
+ * counted `prompt_tokens: 25023` at a cost of `credit: 0.72`.
  */
 export function probeRequestBody(modelId: string): string {
-  return JSON.stringify({
-    model: modelId,
-    messages: [
-      { role: 'system', content: PROBE_SYSTEM_PROMPT },
-      { role: 'user', content: PROBE_USER_PROMPT },
-    ],
-    max_tokens: PROBE_MAX_TOKENS,
-    stream: true,
-  })
-}
-
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * 真实体积测试（heavy probe）——**临时诊断，可整体删除**
- *
- * 为什么需要它：上游的限流（业务码 6004）**按请求体积触发**，而普通探针只发
- * `max_tokens: 1` + `ping`（约 38 token），永远够不到那条线。2026-09-29 在真机
- * 上量化（同一账号、同一模型，只改输入体积）：
- *
- *   | 输入 | 上游实际计到的 prompt_tokens | 结果 |
- *   | --- | --- | --- |
- *   | ~10 | 38 | ok |
- *   | ~1,000 | 1,138 | ok |
- *   | ~10,000 | 11,138 | ok |
- *   | ~18,000 | 20,018 | ok |
- *   | ~30,000（干净账号只发这一次） | ~32k | **429 / 6004** |
- *
- * 即：**阈值在 20k 与 30k 之间**，且**单次大请求就足以触发**（不是累计），
- * 每个账号各有自己的重置时间。长会话里的真实请求会越过这条线，而小探针不会
- * ——这正是「测试通过、实际被限」的成因。
- *
- * 因此这个探测**故意发一个 ~25k token 的真实体积请求**，回答「这个模型能不能
- * 承接我的长对话」。已实测（2026-09-29，构建产物直连）：请求体 112,713 B →
- * 上游计到 **prompt_tokens 25,023**，报 credit **0.72**；而最小探针是 192 B /
- * 18 tokens / credit 0。代价高两个数量级，所以它**只对单个模型、只由人手点击**，
- * 绝不进批量。
- *
- * 删除方式：删掉本段与 `heavyProbeRequestBody` 的引用（router / 卡片 / 测试），
- * 其余功能不受影响。
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
-/** 目标输入体积（token）。25k 落在实测阈值（20k 成功 / 30k 失败）之上。 */
-export const PROBE_HEAVY_INPUT_TOKENS = 25_000
-
-/**
- * 填充文本的「字符 / token」比，实测得出。
- *
- * 用固定英文句子填充时，上游实测 prompt_tokens 与字符数的比值约 4.5。这里写一个
- * 估算值而不是内嵌真实 tokenizer：只需要「够大」，不需要精确——目标体积离阈值有
- * 足够余量，估算偏差不影响结论。
- */
-const HEAVY_CHARS_PER_TOKEN = 4.5
-
-/** 填充用的中性句子；不含任何用户内容，只占体积。 */
-const HEAVY_FILLER_LINE = 'The quick brown fox jumps over the lazy dog. '
-
-/**
- * Build the request body for one heavy (real-volume) probe.
- *
- * The OUTPUT stays at {@link PROBE_MAX_TOKENS}: the throttle is triggered by the
- * input, so paying for a large completion would add cost without adding signal.
- */
-export function heavyProbeRequestBody(modelId: string): string {
-  const targetChars = Math.ceil(PROBE_HEAVY_INPUT_TOKENS * HEAVY_CHARS_PER_TOKEN)
-  const filler = HEAVY_FILLER_LINE.repeat(Math.ceil(targetChars / HEAVY_FILLER_LINE.length))
+  const targetChars = Math.ceil(PROBE_INPUT_TOKENS * CHARS_PER_TOKEN)
+  const filler = FILLER_LINE.repeat(Math.ceil(targetChars / FILLER_LINE.length))
   return JSON.stringify({
     model: modelId,
     messages: [
@@ -378,9 +355,9 @@ function redact(text: string): string {
  * Run one probe for one model and reduce it to the card's row.
  *
  * The successful path drains the SSE stream purely to read the `credit` figure
- * the upstream reports, then discards the rest: the probe's question is "did
- * this model answer", and `max_tokens: 1` means there is nothing else in the
- * stream worth keeping.
+ * the upstream reports, then discards the rest: the question is whether this
+ * model answers a real-sized request, and `max_tokens: 1` means there is nothing
+ * else in the stream worth keeping.
  *
  * Never throws. A probe is a diagnostic the user asked for, so every failure is
  * a RESULT — one dead model must not abort the batch and hide the other rows.
@@ -393,21 +370,13 @@ export async function probeModel(input: {
   /** The region's next monthly quota refresh, when known. */
   quotaRefreshAtMs?: number
   signal?: AbortSignal
-  /**
-   * Send a real-volume request instead of the minimal one.
-   *
-   * The upstream's 6004 throttle fires on request SIZE (measured: ~20k tokens
-   * pass, ~30k are refused), so the minimal probe cannot see it. Only ever set
-   * for a single, human-initiated model — see the heavy-probe note above.
-   */
-  heavy?: boolean
 }): Promise<WorkBuddyProbeResult> {
   let answer
   const startedAt = Date.now()
   try {
     answer = await input.client.probeChat(
       input.credential,
-      input.heavy === true ? heavyProbeRequestBody(input.modelId) : probeRequestBody(input.modelId),
+      probeRequestBody(input.modelId),
       input.signal,
     )
   } catch (error: unknown) {

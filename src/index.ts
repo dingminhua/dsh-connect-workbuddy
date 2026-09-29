@@ -165,11 +165,9 @@ export {
   probeModel,
   probeRequestBody,
   probeSucceeded,
-  heavyProbeRequestBody,
-  PROBE_HEAVY_INPUT_TOKENS,
+  PROBE_INPUT_TOKENS,
   PROBE_MAX_TOKENS,
   PROBE_SYSTEM_PROMPT,
-  PROBE_USER_PROMPT,
   type WorkBuddyProbeClient,
   type WorkBuddyProbeOutcome,
   type WorkBuddyProbeResult,
@@ -757,7 +755,6 @@ export function apply(ctx: Context, config: Config): void {
           nowMs: Date.now(),
           ...quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs },
           ...options?.signal === undefined ? {} : { signal: options.signal },
-          ...options?.heavy === true ? { heavy: true } : {},
         }))
       }
       return results

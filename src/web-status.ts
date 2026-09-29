@@ -83,24 +83,20 @@ export interface WorkBuddyStatusRouteOptions {
    */
   regionEnabled(region: WorkBuddyRegion): boolean
   /**
-   * Send one minimal request to each named model of a region and report what
+   * Send one real-volume request to each named model of a region and report what
    * came back.
    *
    * Optional: it is the only dependency the card's test button needs, so a Host
    * built without it (or a route mounted for a status-only consumer) simply
    * answers 503 and the button reports that instead of failing the card.
+   *
+   * Every request costs real credits (measured `credit: 0.72` for one probe), so
+   * the card drives this ONE model per click and never as a batch.
    */
   probeModels?(
     region: WorkBuddyRegion,
     modelIds: readonly string[],
-    options?: {
-      signal?: AbortSignal
-      /**
-       * Send a real-volume (~25k input token) request instead of the minimal
-       * one, to expose the size-based 6004 throttle. Single model, opt-in.
-       */
-      heavy?: boolean
-    },
+    options?: { signal?: AbortSignal },
   ): Promise<readonly WorkBuddyWebProbeResult[]>
   /**
    * The region's next monthly quota refresh, when the upstream declares one.
@@ -145,15 +141,6 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
   res.end(payload)
 }
-
-/**
- * Cap on how many models one probe request may name.
- *
- * A probe is a real (if tiny) request against a metered service, and the batch
- * runs sequentially, so an unbounded list would let one click hold the route for
- * minutes. The card never sends more than the models on its own screen.
- */
-const PROBE_BATCH_LIMIT = 64
 
 /** Request-body cap for the probe route: model ids only, never content. */
 const PROBE_BODY_LIMIT = 64 * 1024
@@ -549,7 +536,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         const region = requestRegion(req, res)
         if (region === undefined) return
         try {
-          const body = await readJsonBody(req) as { modelIds?: unknown, heavy?: unknown }
+          const body = await readJsonBody(req) as { modelIds?: unknown }
           const modelIds = Array.isArray(body.modelIds)
             ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
             : []
@@ -557,26 +544,19 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           // empty success would let the card render a finished batch that never
           // ran. Refuse it so the failure is visible.
           if (modelIds.length === 0) return json(res, 400, { error: 'modelIds must be a non-empty array of strings' })
-          if (modelIds.length > PROBE_BATCH_LIMIT) {
-            return json(res, 400, { error: `at most ${String(PROBE_BATCH_LIMIT)} models per probe` })
+          // Every probe now sends a real-volume request, which costs real credits
+          // (measured `credit: 0.72` each). The card drives one model per click,
+          // so a request naming more than one is NOT the card — and refusing it
+          // is what keeps a stale bundle or a hand-rolled client from turning a
+          // button into a spend loop over a whole roster.
+          if (modelIds.length > 1) {
+            return json(res, 400, { error: 'a probe accepts exactly one model' })
           }
-          // A heavy probe sends a real-volume request (tens of thousands of
-          // input tokens) to trip the size-based 6004 throttle the minimal probe
-          // cannot see. It costs real credits, so it is restricted to exactly
-          // one model and never offered as a batch — the UI only exposes it as a
-          // per-row button, and this guard is what keeps a stale or hand-rolled
-          // client from turning it into a spend loop.
-          const heavy = body.heavy === true
-          if (heavy && modelIds.length !== 1) {
-            return json(res, 400, { error: 'a volume probe accepts exactly one model' })
-          }
-          // The batch is sequential on purpose. A probe exists to discover rate
-          // limits, and firing N requests at once is the surest way to CREATE
-          // one — the measurement would then report the plugin's own load as the
-          // upstream's limit.
+          // Still sequential: a probe exists to discover rate limits, and firing
+          // requests at once is the surest way to create one.
           const results: WorkBuddyWebProbeResult[] = []
           for (const modelId of modelIds) {
-            results.push(...await deps.probeModels(region, [modelId], { heavy }))
+            results.push(...await deps.probeModels(region, [modelId]))
           }
           json(res, 200, { results })
         } catch (error: unknown) {

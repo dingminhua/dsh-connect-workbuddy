@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   cooldownOf,
   creditOfStream,
-  heavyProbeRequestBody,
   outcomeOfFailure,
   parseRetryAfter,
   parseUpstreamResetAt,
   probeModel,
   probeRequestBody,
   probeSucceeded,
+  PROBE_INPUT_TOKENS,
   PROBE_MAX_TOKENS,
   PROBE_SYSTEM_PROMPT,
 } from '../src/probe.ts'
@@ -74,8 +74,9 @@ describe('probeRequestBody', () => {
   })
 
   it('caps output at one token and forces streaming', () => {
-    // One token is what makes a probe free in practice: a live measurement saw
-    // "credit": 0 and an unchanged balance. Non-streaming is rejected upstream.
+    // The cost lives in the INPUT now (see the volume block below), so the
+    // output stays at one token: a long completion would add money without
+    // adding signal. Non-streaming is rejected upstream.
     const body = JSON.parse(probeRequestBody('glm-5.3')) as { max_tokens: number, stream: boolean }
     expect(body.max_tokens).toBe(PROBE_MAX_TOKENS)
     expect(body.max_tokens).toBe(1)
@@ -87,41 +88,31 @@ describe('probeRequestBody', () => {
   })
 })
 
-describe('heavyProbeRequestBody', () => {
-  it('carries a real-volume input, not a minimal one', () => {
-    // The whole point: the upstream's 6004 throttle fires on request SIZE
-    // (measured ~20k tokens pass, ~30k are refused), so a minimal probe cannot
-    // see it. Asserted as a size CLASS rather than an exact byte count — the
-    // filler constant is an estimate and must stay free to move.
-    const body = heavyProbeRequestBody('deepseek-v4.1-flash')
+describe('probe input volume', () => {
+  it('carries a real-volume input, not a token one', () => {
+    // The whole point of the probe. The upstream's 6004 throttle fires on
+    // request SIZE (measured: about 20k tokens pass, about 30k are refused), so
+    // a handful-of-tokens request reports "usable" while every real request in a
+    // long conversation is refused — the "test passes but I am limited" report.
+    // Asserted as a size CLASS rather than an exact byte count: the filler
+    // constant is an estimate and must stay free to move.
+    const body = probeRequestBody('deepseek-v4.1-flash')
     const parsed = JSON.parse(body) as {
       model: string
       messages: { role: string, content: string }[]
-      max_tokens: number
-      stream: boolean
     }
     expect(parsed.model).toBe('deepseek-v4.1-flash')
-    // Far larger than the minimal probe (hundreds of bytes) and comfortably
-    // above the measured threshold.
-    expect(body.length).toBeGreaterThan(100_000)
-    expect(parsed.messages[0]?.role).toBe('system')
     expect(parsed.messages[1]?.content.length).toBeGreaterThan(100_000)
+    // Sized for a real long-conversation payload, not a rounding-error request.
+    expect(PROBE_INPUT_TOKENS).toBeGreaterThanOrEqual(25_000)
   })
 
-  it('keeps the output at one token and forces streaming', () => {
-    // The throttle is triggered by the INPUT, so a large completion would add
-    // cost without adding signal.
-    const parsed = JSON.parse(heavyProbeRequestBody('glm-5.3')) as { max_tokens: number, stream: boolean }
-    expect(parsed.max_tokens).toBe(PROBE_MAX_TOKENS)
-    expect(parsed.stream).toBe(true)
-  })
-
-  it('is strictly larger than the minimal body', () => {
-    // Guards the relationship, not the numbers: whatever the filler becomes,
-    // the heavy body must remain the big one.
-    const heavy = heavyProbeRequestBody('hy3')
-    const minimal = probeRequestBody('hy3')
-    expect(heavy.length).toBeGreaterThan(minimal.length * 100)
+  it('scales the body with the declared target', () => {
+    // Guards the relationship rather than the numbers: if the target is raised,
+    // the body must follow it, or the probe would stop measuring what it claims.
+    const body = probeRequestBody('hy3')
+    const fillerChars = body.length
+    expect(fillerChars).toBeGreaterThan(PROBE_INPUT_TOKENS * 3)
   })
 })
 
@@ -363,24 +354,21 @@ describe('probeModel', () => {
     expect(sent.messages[0]?.role).toBe('system')
   })
 
-  it('sends the real-volume body instead when heavy is set', async () => {
-    // Opt-in and off by default: the minimal body must stay the default so the
-    // cheap test does not silently start spending credits.
+  it('always sends the real-volume body through the client', async () => {
+    // Every probe is a real-volume request now: the minimal one was removed
+    // because it could not see the size-based throttle and reported "usable"
+    // while every real request was refused.
     const client = clientAnswering({ ok: true, status: 200, stream: 'data: [DONE]\n\n' })
-    await probeModel({ client, credential: CREDENTIAL, modelId: 'hy3', nowMs: Date.now(), heavy: true })
+    await probeModel({ client, credential: CREDENTIAL, modelId: 'hy3', nowMs: Date.now() })
     expect(client.seen).toHaveLength(1)
     expect((client.seen[0] as string).length).toBeGreaterThan(100_000)
   })
 
-  it('reports a size-based throttle the minimal probe would have missed', async () => {
-    // The user-visible case this exists for: the same model answers a 1-token
-    // probe and refuses a real-volume one, with the reset time in the body.
-    const minimal = clientAnswering({ ok: true, status: 200, stream: 'data: [DONE]\n\n' })
-    expect((await probeModel({ client: minimal, credential: CREDENTIAL, modelId: 'hy3', nowMs: Date.now() })).outcome)
-      .toBe('ok')
-
-    const heavy = clientAnswering({ ok: false, status: 429, body: LIVE_RATE_LIMIT_BODY })
-    const limited = await probeModel({ client: heavy, credential: CREDENTIAL, modelId: 'hy3', nowMs: Date.now(), heavy: true })
+  it('reports the size-based throttle with the time its body states', async () => {
+    // The user-visible case: the upstream refuses the real-volume request and
+    // names the reset time in the failure body.
+    const client = clientAnswering({ ok: false, status: 429, body: LIVE_RATE_LIMIT_BODY })
+    const limited = await probeModel({ client, credential: CREDENTIAL, modelId: 'hy3', nowMs: Date.now() })
     expect(limited.outcome).toBe('rate-limited')
     expect(limited.retryAtMs).toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
   })
