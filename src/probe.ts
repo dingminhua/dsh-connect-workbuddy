@@ -13,10 +13,13 @@
  *      (`first message is not system prompt`)。按国内版那样只发一条 user 消息
  *      去探测，会把**整个国际版误报成全部不可用**。所以探测请求总是带一条
  *      system 消息，两个网关都接受。
- *   2. **上游不提供限流元数据。** 实测 200 响应头里没有 `Retry-After`，也没有
- *      `X-RateLimit-*`；连续快速打同一模型 12 次全部成功。因此
- *      {@link cooldownOf} 只在上游**真的说了**的时候给出一个时间，否则如实
- *      返回「上游未给出」—— 绝不编造倒计时。
+ *   2. **上游把限流恢复时间写在响应体里，不在响应头里。** 实测 200 响应头里没有
+ *      `Retry-After`，也没有 `X-RateLimit-*`；但**被限流的 429 响应体里明确写着**
+ *      `{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-30 02:30:30
+ *      UTC+8 重置，…"}`。只看响应头就会得出「上游不给数据」的错误结论，卡片于是
+ *      显示「上游未给出何时恢复」，而时间其实就在眼前。因此
+ *      {@link parseUpstreamResetAt} 从响应体解析，{@link cooldownOf} 只在三处都
+ *      没有时才如实返回「上游未给出」—— 绝不编造倒计时。
  *
  * @module dsh-connect-workbuddy/probe
  */
@@ -101,7 +104,7 @@ export interface WorkBuddyProbeResult {
   /** A time the upstream named, in ms. Absent when it named none. */
   retryAtMs?: number
   /** Where a supplied `retryAtMs` came from, so the card can say so. */
-  retrySource?: 'retry-after' | 'quota-refresh'
+  retrySource?: 'retry-after' | 'upstream-message' | 'quota-refresh'
 }
 
 /**
@@ -131,31 +134,101 @@ export function parseRetryAfter(value: string | null, nowMs: number): number | u
 }
 
 /**
+ * The upstream's reset sentence, as its Chinese gateway writes it.
+ *
+ * Measured on a live 429 (code 6004), verbatim:
+ *
+ *   `您的使用量已超出频率限制，将在 2026-09-30 02:30:30 UTC+8 重置，您也可以切换其他模型继续使用。`
+ *
+ * The two halves are captured separately because the second one is the whole
+ * reason this parser exists: the upstream DOES name a time, and the plugin was
+ * showing "the upstream gave no time" while the answer was sitting right there
+ * in the body. The earlier note in this module ("the upstream provides no
+ * rate-limit metadata") was drawn from the RESPONSE HEADERS alone — true as far
+ * as it went, and wrong as a conclusion, because the time is in the body text.
+ *
+ * Deliberately loose about the surrounding wording (`[\s\S]*?` on both sides)
+ * and strict about the parts that must not be guessed: the keyword 重置, the
+ * timestamp shape, and an explicit UTC offset. A message that merely mentions
+ * 重置 without a parsable offset yields no time, which is the honest answer.
+ */
+const UPSTREAM_RESET_PATTERN
+  = /将在?\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})\s*UTC\s*([+-])(\d{1,2})(?::?(\d{2}))?[\s\S]*?重置/u
+
+/**
+ * Parse the reset time out of an upstream failure message.
+ *
+ * Returns epoch ms, or undefined when the message names no parsable time — the
+ * caller must then say "the upstream gave no time", never invent one.
+ *
+ * THE OFFSET IS HONOURED, NOT ASSUMED. `2026-09-30 02:30:30 UTC+8` is 18:30:30
+ * UTC the previous day, and `Date.parse` on the bare string would read it as
+ * LOCAL time — on a machine set to UTC+8 that happens to be right, and on any
+ * other machine it is silently wrong by the offset. So the components are
+ * assembled with `Date.UTC` and the stated offset subtracted, which is correct
+ * on every host regardless of its own zone.
+ *
+ * A whole-second resolution is what the upstream prints; sub-second precision
+ * would be fiction in the other direction.
+ */
+export function parseUpstreamResetAt(message: string): number | undefined {
+  const match = UPSTREAM_RESET_PATTERN.exec(message)
+  if (match === null) return undefined
+  const [, year, month, day, hour, minute, second, sign, offsetHours, offsetMinutes] = match
+  const offsetTotalMinutes
+    = (sign === '-' ? -1 : 1) * (Number(offsetHours) * 60 + Number(offsetMinutes ?? '0'))
+  const utcMs = Date.UTC(
+    Number(year), Number(month) - 1, Number(day),
+    Number(hour), Number(minute), Number(second),
+  )
+  // `Date.UTC` normalizes overflow (month 13, day 32) instead of failing, so a
+  // nonsense timestamp would silently become a real-but-wrong moment. Reject it.
+  const parsed = new Date(utcMs)
+  if (parsed.getUTCFullYear() !== Number(year)
+    || parsed.getUTCMonth() !== Number(month) - 1
+    || parsed.getUTCDate() !== Number(day)
+    || parsed.getUTCHours() !== Number(hour)
+    || parsed.getUTCMinutes() !== Number(minute)
+    || parsed.getUTCSeconds() !== Number(second)) {
+    return undefined
+  }
+  if (Math.abs(offsetTotalMinutes) > 14 * 60) return undefined
+  return utcMs - offsetTotalMinutes * 60_000
+}
+
+/**
  * The cooldown the upstream stated, if it stated one.
  *
- * Two sources, in order of authority:
+ * Three sources, in order of authority:
  *
  * 1. `Retry-After` on the failure response. This is the upstream naming a time
  *    for THIS request, so it wins.
- * 2. The region's monthly quota refresh point, but ONLY for an out-of-credit
+ * 2. The reset time the upstream writes into its own failure body (see
+ *    {@link parseUpstreamResetAt}). This is the case that actually fires on
+ *    this service: a 429 from the Chinese gateway carries code 6004 and a
+ *    `将在 … 重置` sentence, with no `Retry-After` header at all.
+ * 3. The region's monthly quota refresh point, but ONLY for an out-of-credit
  *    outcome. A quota that resets at a known time is the one case where "when
  *    can I use this again" has a real answer even without a header — and it is
  *    the answer for the most common real limit on this service.
  *
- * A `rate-limited` outcome with neither source returns `{}`, which the card
- * renders as "the upstream did not say when". That is the honest answer: the
- * live probes found no rate-limit metadata in any response at all, so inventing
- * a number here would be pure fiction.
+ * A limited outcome with none of the three returns `{}`, which the card renders
+ * as "the upstream did not say when". That remains the honest answer for a
+ * genuinely timeless failure; inventing a number here would be pure fiction.
  */
 export function cooldownOf(input: {
   outcome: WorkBuddyProbeOutcome
   retryAfter: string | null
   nowMs: number
+  /** The upstream's own failure text, where a reset sentence may live. */
+  body?: string
   /** The region's next monthly quota refresh, when the upstream declares one. */
   quotaRefreshAtMs?: number
 }): Pick<WorkBuddyProbeResult, 'retryAtMs' | 'retrySource'> {
   const fromHeader = parseRetryAfter(input.retryAfter, input.nowMs)
   if (fromHeader !== undefined) return { retryAtMs: fromHeader, retrySource: 'retry-after' }
+  const fromBody = input.body === undefined ? undefined : parseUpstreamResetAt(input.body)
+  if (fromBody !== undefined) return { retryAtMs: fromBody, retrySource: 'upstream-message' }
   if (input.outcome === 'out-of-credit' && input.quotaRefreshAtMs !== undefined) {
     return { retryAtMs: input.quotaRefreshAtMs, retrySource: 'quota-refresh' }
   }
@@ -309,6 +382,10 @@ export async function probeModel(input: {
       outcome,
       retryAfter: answer.retryAfter,
       nowMs: input.nowMs,
+      // The upstream writes its reset time into the failure body, so the body
+      // has to reach the cooldown reader — without it the card says "no time
+      // given" while the answer sits in the text (the defect this fixes).
+      body,
       ...input.quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs: input.quotaRefreshAtMs },
     }),
   }

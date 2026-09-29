@@ -404,15 +404,15 @@ export interface WorkBuddyWebProbeResult {
    * A time the upstream named for using this model again, in ms.
    *
    * ABSENT means the upstream named none, and the card must say exactly that.
-   * The live probes that shaped this feature found no rate-limit metadata in
-   * any response — no `Retry-After`, no `X-RateLimit-*` — so a client-invented
-   * countdown here would be fiction. Only two sources ever fill this:
-   * a real `Retry-After`, or (for an exhausted quota) the region's own quota
-   * refresh point, which the upstream does declare.
+   * A client-invented countdown here would be fiction. Three sources fill it:
+   * a real `Retry-After` header; the reset sentence the upstream writes into
+   * its own failure BODY (`将在 … UTC+8 重置`, which is where this service
+   * actually puts it — its 429s carry no rate-limit header at all); or, for an
+   * exhausted quota, the region's own quota refresh point.
    */
   retryAtMs?: number
-  /** Which of those two sources supplied {@link retryAtMs}. */
-  retrySource?: 'retry-after' | 'quota-refresh'
+  /** Which of those three sources supplied {@link retryAtMs}. */
+  retrySource?: 'retry-after' | 'upstream-message' | 'quota-refresh'
 }
 
 /** The probe endpoint's answer document. */

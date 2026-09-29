@@ -232,14 +232,14 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
  * The sentence a probe result gets, and how it should be coloured.
  *
  * The cooldown wording is the part that had to be got right. The upstream names
- * a "use again" time in exactly two situations — a `Retry-After` header, or an
- * exhausted monthly quota whose refresh point it declares — and its 200s and
- * 429s carry NO rate-limit metadata at all (measured: no `Retry-After`, no
- * `X-RateLimit-*`, and 12 rapid requests to one model all succeeded). So a
- * limited result WITHOUT a stated time must say that plainly. Substituting a
- * locally invented countdown would be the single most misleading thing this
- * feature could do: it would look like an upstream answer while being a guess,
- * and the user would wait for a moment that means nothing.
+ * a "use again" time in three situations: a `Retry-After` header, the reset
+ * sentence it writes into its own failure BODY (where this service actually
+ * puts it — its 429s carry no rate-limit header at all), or an exhausted
+ * monthly quota whose refresh point it declares. So a limited result WITHOUT
+ * any stated time must say that plainly. Substituting a locally invented
+ * countdown would be the single most misleading thing this feature could do: it
+ * would look like an upstream answer while being a guess, and the user would
+ * wait for a moment that means nothing.
  */
 function probeResultView(
   result: WorkBuddyWebProbeResult,

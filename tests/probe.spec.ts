@@ -4,6 +4,7 @@ import {
   creditOfStream,
   outcomeOfFailure,
   parseRetryAfter,
+  parseUpstreamResetAt,
   probeModel,
   probeRequestBody,
   probeSucceeded,
@@ -130,10 +131,35 @@ describe('cooldownOf', () => {
     expect(result.retrySource).toBe('retry-after')
   })
 
+  it('reads the reset time out of the upstream failure body', () => {
+    // The defect this covers: the upstream's 429 body DOES name a reset time
+    // (`将在 … 重置`) while carrying no `Retry-After` header, so a reader that
+    // only consulted headers reported "the upstream gave no time" with the
+    // answer sitting in the text. Captured verbatim from a live 429.
+    const result = cooldownOf({
+      outcome: 'rate-limited',
+      retryAfter: null,
+      nowMs: NOW,
+      body: LIVE_RATE_LIMIT_BODY,
+    })
+    expect(result.retryAtMs).toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
+    expect(result.retrySource).toBe('upstream-message')
+  })
+
+  it('lets a Retry-After header win over the body text', () => {
+    const result = cooldownOf({
+      outcome: 'rate-limited',
+      retryAfter: '60',
+      nowMs: NOW,
+      body: LIVE_RATE_LIMIT_BODY,
+    })
+    expect(result.retryAtMs).toBe(NOW + 60_000)
+    expect(result.retrySource).toBe('retry-after')
+  })
+
   it('falls back to the quota refresh point for an exhausted quota', () => {
-    // The one cooldown this service actually declares: a monthly resource that
-    // resets on a known cycle. This is the honest answer to "when can I use it
-    // again" when the upstream sent no header.
+    // The one cooldown a monthly resource declares: a known reset cycle. This is
+    // the honest answer to "when can I use it again" when nothing else said.
     const result = cooldownOf({
       outcome: 'out-of-credit',
       retryAfter: null,
@@ -145,12 +171,11 @@ describe('cooldownOf', () => {
   })
 
   it('invents NO time for a rate limit the upstream did not time', () => {
-    // This is the load-bearing assertion of the whole feature. Live probes found
-    // no rate-limit metadata in any response — no Retry-After, no X-RateLimit-*
-    // — and 12 rapid requests to one model all succeeded. So a limited result
-    // with no stated time MUST stay timeless; a client-side countdown would look
-    // like an upstream answer while being fiction.
-    const result = cooldownOf({ outcome: 'rate-limited', retryAfter: null, nowMs: NOW })
+    // The load-bearing assertion of the whole feature, still: when the upstream
+    // states no time ANYWHERE — no header, no reset sentence in the body — the
+    // result MUST stay timeless. A client-side countdown would look like an
+    // upstream answer while being fiction.
+    const result = cooldownOf({ outcome: 'rate-limited', retryAfter: null, nowMs: NOW, body: '{"code":6004}' })
     expect(result.retryAtMs).toBeUndefined()
     expect(result.retrySource).toBeUndefined()
     expect('retryAtMs' in result).toBe(false)
@@ -172,6 +197,59 @@ describe('cooldownOf', () => {
   it('reports nothing for a successful probe', () => {
     const result = cooldownOf({ outcome: 'ok', retryAfter: null, nowMs: NOW })
     expect('retryAtMs' in result).toBe(false)
+  })
+})
+
+/**
+ * The exact 429 body the Chinese gateway returned on 2026-09-29, kept verbatim
+ * as the fixture the parsing rules are pinned against. Trimming it to a
+ * convenient shape would let the parser drift away from what the service
+ * actually sends — the failure mode this whole change is about.
+ */
+const LIVE_RATE_LIMIT_BODY
+  = '{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-30 02:30:30 UTC+8 重置，您也可以切换其他模型继续使用。","requestId":"fd51dd8c-1f48-4a72-a79d-4cf80003f1d4"}'
+
+describe('parseUpstreamResetAt', () => {
+  it('reads the shipped UTC offset instead of assuming the host zone', () => {
+    // `Date.parse` on the bare string would read 02:30:30 as LOCAL time: right
+    // on a machine set to UTC+8, silently wrong by the offset anywhere else.
+    // So the assertion is on the absolute instant, which is what the card
+    // formats — and it must hold whatever zone the test host runs in.
+    expect(parseUpstreamResetAt(LIVE_RATE_LIMIT_BODY)).toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
+  })
+
+  it('accepts an ISO-style T separator and a compact offset', () => {
+    expect(parseUpstreamResetAt('将在 2026-09-30T02:30:30 UTC+8 重置'))
+      .toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
+    expect(parseUpstreamResetAt('将在 2026-09-30 02:30:30 UTC+0800 重置'))
+      .toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
+  })
+
+  it('honours a negative offset', () => {
+    expect(parseUpstreamResetAt('将在 2026-09-30 02:30:30 UTC-5 重置'))
+      .toBe(Date.UTC(2026, 8, 30, 7, 30, 30))
+  })
+
+  it('returns undefined rather than guessing when the time is incomplete', () => {
+    // Each of these is a message a careless regex would turn into a WRONG time,
+    // and a wrong time is worse than none: the card would count down to a
+    // moment that means nothing.
+    expect(parseUpstreamResetAt('{"msg":"您的使用量已超出频率限制"}')).toBeUndefined()
+    expect(parseUpstreamResetAt('将在 2026-09-30 02:30:30 重置')).toBeUndefined() // no offset
+    expect(parseUpstreamResetAt('将在 2026-09-30 02:30:30 UTC+8 恢复')).toBeUndefined() // no 重置
+    expect(parseUpstreamResetAt('请在 2026-09-30 02:30:30 UTC+8 重置')).toBeUndefined() // not a reset
+  })
+
+  it('rejects an impossible calendar date instead of normalizing it', () => {
+    // `Date.UTC` rolls month 13 into the next year and day 32 into the next
+    // month, so an unchecked parse would fabricate a real-but-wrong instant.
+    expect(parseUpstreamResetAt('将在 2026-13-30 02:30:30 UTC+8 重置')).toBeUndefined()
+    expect(parseUpstreamResetAt('将在 2026-09-32 02:30:30 UTC+8 重置')).toBeUndefined()
+    expect(parseUpstreamResetAt('将在 2026-02-30 02:30:30 UTC+8 重置')).toBeUndefined()
+  })
+
+  it('rejects an out-of-range offset', () => {
+    expect(parseUpstreamResetAt('将在 2026-09-30 02:30:30 UTC+99 重置')).toBeUndefined()
   })
 })
 
@@ -257,6 +335,37 @@ describe('probeModel', () => {
     expect(result.outcome).toBe('rate-limited')
     expect(result.retryAtMs).toBeUndefined()
     expect(result.status).toBe(429)
+  })
+
+  it('surfaces the reset time a real 429 body carries', async () => {
+    // End-to-end through the shape that matters: the upstream's own 429 body,
+    // with NO Retry-After header, must reach the card as a real time. This is
+    // the whole user-visible defect — the card said "the upstream gave no time"
+    // while this sentence was in the response all along.
+    const client = clientAnswering({ ok: false, status: 429, body: LIVE_RATE_LIMIT_BODY })
+    const result = await probeModel({
+      client,
+      credential: CREDENTIAL,
+      modelId: 'deepseek-v4.1-flash',
+      nowMs: Date.now(),
+    })
+    expect(result.outcome).toBe('rate-limited')
+    expect(result.retryAtMs).toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
+    expect(result.retrySource).toBe('upstream-message')
+  })
+
+  it('keeps a stated time even when the failure is NOT a rate limit', async () => {
+    // `cooldownOf` reads the body regardless of outcome, so a quota failure that
+    // happens to carry the same sentence still yields a time rather than falling
+    // through to "no time given".
+    const client = clientAnswering({ ok: false, status: 400, body: LIVE_RATE_LIMIT_BODY })
+    const result = await probeModel({
+      client,
+      credential: CREDENTIAL,
+      modelId: 'glm-5.3',
+      nowMs: Date.now(),
+    })
+    expect(result.retryAtMs).toBe(Date.UTC(2026, 8, 29, 18, 30, 30))
   })
 
   it('stamps the quota refresh time onto an out-of-credit result', async () => {
