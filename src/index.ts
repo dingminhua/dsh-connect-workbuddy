@@ -165,6 +165,8 @@ export {
   probeModel,
   probeRequestBody,
   probeSucceeded,
+  heavyProbeRequestBody,
+  PROBE_HEAVY_INPUT_TOKENS,
   PROBE_MAX_TOKENS,
   PROBE_SYSTEM_PROMPT,
   PROBE_USER_PROMPT,
@@ -731,7 +733,7 @@ export function apply(ctx: Context, config: Config): void {
      * out-of-credit result. Every other limited outcome has no time anywhere, and
      * the probe reports exactly that instead of inventing one.
      */
-    async probeModels(region, modelIds, signal) {
+    async probeModels(region, modelIds, options) {
       let credential
       try {
         credential = await stacks[region].store.resolve()
@@ -754,7 +756,8 @@ export function apply(ctx: Context, config: Config): void {
           modelId,
           nowMs: Date.now(),
           ...quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs },
-          ...signal === undefined ? {} : { signal },
+          ...options?.signal === undefined ? {} : { signal: options.signal },
+          ...options?.heavy === true ? { heavy: true } : {},
         }))
       }
       return results

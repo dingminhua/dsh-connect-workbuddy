@@ -93,7 +93,14 @@ export interface WorkBuddyStatusRouteOptions {
   probeModels?(
     region: WorkBuddyRegion,
     modelIds: readonly string[],
-    signal?: AbortSignal,
+    options?: {
+      signal?: AbortSignal
+      /**
+       * Send a real-volume (~25k input token) request instead of the minimal
+       * one, to expose the size-based 6004 throttle. Single model, opt-in.
+       */
+      heavy?: boolean
+    },
   ): Promise<readonly WorkBuddyWebProbeResult[]>
   /**
    * The region's next monthly quota refresh, when the upstream declares one.
@@ -542,7 +549,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         const region = requestRegion(req, res)
         if (region === undefined) return
         try {
-          const body = await readJsonBody(req) as { modelIds?: unknown }
+          const body = await readJsonBody(req) as { modelIds?: unknown, heavy?: unknown }
           const modelIds = Array.isArray(body.modelIds)
             ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
             : []
@@ -553,13 +560,23 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           if (modelIds.length > PROBE_BATCH_LIMIT) {
             return json(res, 400, { error: `at most ${String(PROBE_BATCH_LIMIT)} models per probe` })
           }
+          // A heavy probe sends a real-volume request (tens of thousands of
+          // input tokens) to trip the size-based 6004 throttle the minimal probe
+          // cannot see. It costs real credits, so it is restricted to exactly
+          // one model and never offered as a batch — the UI only exposes it as a
+          // per-row button, and this guard is what keeps a stale or hand-rolled
+          // client from turning it into a spend loop.
+          const heavy = body.heavy === true
+          if (heavy && modelIds.length !== 1) {
+            return json(res, 400, { error: 'a volume probe accepts exactly one model' })
+          }
           // The batch is sequential on purpose. A probe exists to discover rate
           // limits, and firing N requests at once is the surest way to CREATE
           // one — the measurement would then report the plugin's own load as the
           // upstream's limit.
           const results: WorkBuddyWebProbeResult[] = []
           for (const modelId of modelIds) {
-            results.push(...await deps.probeModels(region, [modelId]))
+            results.push(...await deps.probeModels(region, [modelId], { heavy }))
           }
           json(res, 200, { results })
         } catch (error: unknown) {

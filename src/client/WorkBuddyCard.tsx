@@ -672,7 +672,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * alike, and blocking it on unsaved edits would make the button dead exactly
    * when the user is deciding what to keep.
    */
-  const probeModels = async (modelIds: readonly string[]): Promise<void> => {
+  const probeModels = async (modelIds: readonly string[], heavy = false): Promise<void> => {
     if (modelIds.length === 0) return
     setProbeError(undefined)
     setProbing(previous => {
@@ -685,7 +685,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ modelIds }),
+        body: JSON.stringify({ modelIds, ...heavy ? { heavy: true } : {} }),
       })
       const body = await response.json().catch(() => undefined) as
         | { results?: WorkBuddyWebProbeResult[]; error?: string }
@@ -1138,6 +1138,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                   <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
                                 </label>
                               </fieldset>
+                                <div className="dsm-workbuddy-model-actions-buttons">
                                 {/* Test button. Deliberately NOT gated on `canWrite`
                                     or `saving`: a probe writes no settings, so it
                                     works on a read-only card and while a save is
@@ -1153,6 +1154,29 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                 >
                                   {probing[model.id] === true ? t('row.probing') : t('row.probe')}
                                 </button>
+                                {/* Volume probe. TEMPORARY DIAGNOSTIC (see the
+                                    heavy-probe note in src/probe.ts for why it
+                                    exists and how to delete it).
+
+                                    It exists because the minimal probe cannot
+                                    see the upstream's 6004 throttle: that fires
+                                    on request SIZE (~25k+ input tokens), so a
+                                    model can pass the 1-token test and still
+                                    refuse every real request in a long session.
+                                    Deliberately per-row and manual only — it
+                                    sends a real-volume request and therefore
+                                    costs real credits, which is exactly why it
+                                    is NOT offered as a batch button. */}
+                                <button
+                                  type="button"
+                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
+                                  disabled={probing[model.id] === true || status.status !== 'signed-in'}
+                                  title={t('row.probeVolumeHint')}
+                                  onClick={() => { void probeModels([model.id], true) }}
+                                >
+                                  {t('row.probeVolume')}
+                                </button>
+                                </div>
                               </div>
                               <div className="dsm-workbuddy-model-details">
                                 <div className="dsm-workbuddy-model-meta">

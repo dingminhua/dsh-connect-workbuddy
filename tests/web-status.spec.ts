@@ -989,7 +989,7 @@ describe('registerWorkBuddyStatusRoute probe route', () => {
     withoutProbe = false,
   ): Promise<{
     handler: CapturedEntry['handler']
-    seen: { region: string, modelIds: readonly string[] }[]
+    seen: { region: string, modelIds: readonly string[], heavy?: boolean }[]
   }> {
     const captured: CapturedEntry[] = []
     const seen: { region: string, modelIds: readonly string[] }[] = []
@@ -1010,8 +1010,18 @@ describe('registerWorkBuddyStatusRoute probe route', () => {
     const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
     registerWorkBuddyStatusRoute(ctx, deps({
       ...withoutProbe ? {} : {
-        probeModels: async (region: WorkBuddyRegion, modelIds: readonly string[]) => {
-          seen.push({ region, modelIds })
+        probeModels: async (
+          region: WorkBuddyRegion,
+          modelIds: readonly string[],
+          options?: { heavy?: boolean },
+        ) => {
+          seen.push({
+            region,
+            modelIds,
+            // Only recorded when set, so the existing sequential-batch
+            // assertions keep matching exactly.
+            ...options?.heavy === true ? { heavy: true } : {},
+          })
           return modelIds.map(modelId => ({ modelId, outcome: 'ok' as const, elapsedMs: 1 }))
         },
       },
@@ -1066,6 +1076,43 @@ describe('registerWorkBuddyStatusRoute probe route', () => {
     const { res, status } = probeResponse()
     await handler(probeReq({ modelIds: Array.from({ length: 65 }, (_, i) => `m${String(i)}`) }), res)
     expect(status()).toBe(400)
+  })
+
+  it('passes heavy through to the probe for a single model', async () => {
+    // The volume probe sends a real-volume request and therefore spends real
+    // credits; the flag has to reach the Host for the button to mean anything.
+    const { handler, seen } = await mount({})
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'], heavy: true }), res)
+    expect(status()).toBe(200)
+    expect(seen).toEqual([{ region: 'cn', modelIds: ['glm-5.3'], heavy: true }])
+  })
+
+  it('leaves heavy unset for an ordinary probe', async () => {
+    // Default must stay cheap: a missing flag is what keeps the batch button
+    // from turning into a spend loop.
+    const { handler, seen } = await mount({})
+    const { res } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'] }), res)
+    expect(seen[0]?.heavy).toBeUndefined()
+  })
+
+  it('refuses a volume probe naming more than one model', async () => {
+    // The cost guard. A hand-rolled or stale client could otherwise ask for a
+    // whole roster at real-volume size, which is a large uncontrolled spend.
+    const { handler, seen } = await mount({})
+    const { res, status } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3', 'hy3'], heavy: true }), res)
+    expect(status()).toBe(400)
+    expect(seen).toEqual([])
+  })
+
+  it('refuses a volume probe with a non-boolean flag', async () => {
+    // Only a literal `true` opts in; a truthy string must not spend credits.
+    const { handler, seen } = await mount({})
+    const { res } = probeResponse()
+    await handler(probeReq({ modelIds: ['glm-5.3'], heavy: 'yes' }), res)
+    expect(seen[0]?.heavy).toBeUndefined()
   })
 
   it('answers 503 when the host offers no probe capability', async () => {
