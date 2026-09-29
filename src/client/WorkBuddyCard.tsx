@@ -296,6 +296,7 @@ function probeResultView(
         tone: 'bad',
       }
     case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }
+    case 'policy-rejected': return { text: t('row.probePolicyRejected'), tone: 'bad' }
     case 'not-found': return { text: t('row.probeNotFound'), tone: 'bad' }
     case 'unavailable': return { text: t('row.probeUnavailable'), tone: 'bad' }
     default:

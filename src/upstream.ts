@@ -37,6 +37,7 @@ export type UpstreamErrorKind =
   | 'hard_credit'
   | 'soft_rate'
   | 'session_dead'
+  | 'policy_reject'
   | 'not_found'
   | 'server'
   | 'client'
@@ -138,7 +139,14 @@ export interface WorkBuddyRefreshOutcome {
 /** Chat answer: either a live SSE response or a classified failure. */
 export type WorkBuddyChatResult =
   | { ok: true; response: Response }
-  | { ok: false; status: number; kind: UpstreamErrorKind; message: string }
+  | {
+      ok: false
+      status: number
+      kind: UpstreamErrorKind
+      message: string
+      /** Structured fields lifted from a JSON failure body, when there were any. */
+      detail?: UpstreamErrorDetail | undefined
+    }
 
 /**
  * Chat answer that also carries the response headers.
@@ -229,6 +237,13 @@ const HARD_CREDIT_MARKERS: readonly string[] = [
 /** Session-invalidation markers that mean "sign in again in the WorkBuddy app". */
 const SESSION_DEAD_MARKERS: readonly string[] = ['Offline user session not found', '12153']
 
+/**
+ * Content-policy refusal markers from the chat gateway. The quoted-key form
+ * avoids substring hits inside unrelated values (request ids are hex and can
+ * contain `11140` by coincidence).
+ */
+const POLICY_REJECT_MARKERS: readonly string[] = ['request illegal', '"code":11140']
+
 /** Classify an upstream failure from its HTTP status and body excerpt. */
 export function classifyUpstreamError(status: number, body: string): UpstreamErrorKind {
   if (status === 402) return 'hard_credit'
@@ -239,11 +254,54 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   for (const marker of SESSION_DEAD_MARKERS) {
     if (body.includes(marker)) return 'session_dead'
   }
+  for (const marker of POLICY_REJECT_MARKERS) {
+    if (body.includes(marker)) return 'policy_reject'
+  }
   if (status === 429) return 'soft_rate'
   if (status === 404) return 'not_found'
   if (status >= 500) return 'server'
   if (status >= 400) return 'client'
   return 'client'
+}
+
+/** Structured fields lifted out of a JSON upstream failure body. */
+export interface UpstreamErrorDetail {
+  /** Numeric upstream error code, e.g. 11140 for a content-policy refusal. */
+  upstreamCode?: number
+  /** Upstream request id — the handle support asks for. */
+  requestId?: string
+  /** Best human-facing message: `displayMsg.zh`, falling back to `.en`, then `msg`. */
+  displayMsg?: string
+}
+
+/**
+ * Parse the known-good fields out of an upstream failure body. Non-JSON
+ * bodies (HTML error pages, empty strings) yield undefined rather than a guess.
+ */
+export function parseUpstreamErrorDetail(body: string): UpstreamErrorDetail | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const raw = parsed as Record<string, unknown>
+  let displayMsg: string | undefined
+  const display = raw.displayMsg
+  if (typeof display === 'string') {
+    displayMsg = display
+  } else if (typeof display === 'object' && display !== null) {
+    const localized = display as Record<string, unknown>
+    const pick = localized.zh ?? localized.en
+    if (typeof pick === 'string') displayMsg = pick
+  }
+  if (displayMsg === undefined && typeof raw.msg === 'string') displayMsg = raw.msg
+  const detail: UpstreamErrorDetail = {}
+  if (typeof raw.code === 'number') detail.upstreamCode = raw.code
+  if (typeof raw.requestId === 'string') detail.requestId = raw.requestId
+  if (displayMsg !== undefined) detail.displayMsg = displayMsg
+  return detail
 }
 
 /**
@@ -825,6 +883,7 @@ export class WorkBuddyUpstreamClient {
       status: response.status,
       kind: classifyUpstreamError(response.status, text),
       message: text,
+      detail: parseUpstreamErrorDetail(text),
     }
   }
 
