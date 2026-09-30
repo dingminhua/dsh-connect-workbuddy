@@ -21,9 +21,17 @@
 
 **为什么不动 macOS**：该合并只在「客户端漏发了某个键」时才有差别；macOS 上的槽位是完整的，因此对它是恒等操作。
 
-守卫：`tests/web-status.spec.ts` 新增 3 例——① 只发 `{cn:{pool}}` 时 `contextBudgets`/`enabled` 必须survive（**这条直接复现本次数据丢失**）；② 显式发空数组仍能清空；③ `accounts` 的账号 id 是字符串，不得被对象化。**变异验证**：把合并改回一层展开 → 第 ① 条变红（已实测）。
+守卫：`tests/web-status.spec.ts` 新增 4 例——① 只发 `{cn:{pool}}` 时 `contextBudgets`/`enabled` 必须存活（**这条直接复现本次数据丢失**）；② 国际版同理（`{global:{pool}}` 不得删掉 global 的目录与预算）；③ 显式发空数组仍能清空；④ `accounts` 的账号 id 是字符串，不得被对象化。**变异验证**：把合并改回一层展开 → ① 与 ② 同时变红（已实测）。
 
 **即时补救**：卡片上的「切回自动」会把目标换成该区域的免费模型（`hy3`，静态目录里也有），立即可用；被删掉的模型勾选与上下文预算需在「模型管理」里重新保存一次以重建 `lastCatalog`。
+
+**国际版（global）同样已覆盖，而且它更需要这个修复**：
+
+- **为什么覆盖**：合并遍历的是**字段自己的键**，不认区域名——`{cn:{…}}` 与 `{global:{…}}` 走的是同一段代码，没有区域分支。有专门用例钉住（`preserves omitted fields in the INTERNATIONAL region too`）。
+- **为什么它更需要**：同一个删除在国际版**不表现出任何症状**。`displayModels` 在 `lastCatalog` 为空时回落到静态目录，而**国际版静态目录里有 `deepseek-v4.1-flash`（`src/catalog.ts:59`，倍率 0）**，国内版静态目录没有（只有 `deepseek-v4-flash`，L39）。所以国际版用户的目标模型照旧解析成功——目录、勾选、上下文预算**被默默删掉却毫无提示**。国内版至少还会喊「已下架」。
+- 这条区域差异已用 `tests/catalog.spec.ts` 的断言钉住（`cn.has('deepseek-v4.1-flash') === false` 且 `cn.has('deepseek-v4-flash') === true`），避免日后改动任一份目录时悄悄改变「哪些故障可见」。
+
+**另说明**：本次两处修复都不区分区域。`isFileContentionWriteError` 是**平台**维度的（只在 Windows 上会命中 `EPERM/EBUSY/EACCES`），两条区域共用同一段客户端代码，因此国际版的保存失败提示也一并改善。
 
 - **Windows 上文件被占用时，两条保存路径只甩原始 EPERM、不给做法**（模型列表与账号池；账号路径本来就有）。真机实测（3.0.0 宿主 + 锁住 profile 的 `cordis.patch.yml`）：写入返回 HTTP 500，报文是
   `EPERM: operation not permitted, rename 'C:\…\cordis.patch.yml.79498ff8fb27.tmp' -> '…\cordis.patch.yml'`

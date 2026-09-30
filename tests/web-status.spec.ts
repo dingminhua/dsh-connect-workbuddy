@@ -840,7 +840,11 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
    * volatile fields, exactly as the pinned schemastery resolves them.
    * `mutate` replicates the real JSON-compatibility gate.
    */
-  async function mountSaveRoutes(options: Partial<WorkBuddyStatusRouteOptions> = {}) {
+  async function mountSaveRoutes(
+    options: Partial<WorkBuddyStatusRouteOptions> = {},
+    /** Overrides the Host's resolved `regions` value; defaults to a CN slot. */
+    regionsValue?: Record<string, unknown>,
+  ) {
     // Returns the LIVE context plus the captured handler. The handler must be
     // invoked BEFORE the fiber is disposed: `__save` reads `ctx.get('settings')`
     // at request time, and after `fiber.dispose()` every service is gone (the
@@ -876,7 +880,9 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
       },
     }
     // A live reference with the same {get()} shape a volatile field resolves to.
-    const $regionsRef = () => ({ get: () => ({ cn: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } } }) })
+    const $regionsRef = () => ({
+      get: () => regionsValue ?? ({ cn: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } } }),
+    })
 
     await ctx.plugin(FakeWebServer)
     await ctx.plugin(FakeSettings)
@@ -971,6 +977,42 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
     dispose()
     const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
     expect(ops[0]?.value).toMatchObject({ cn: { enabled: false, contextBudgets: {}, lastCatalog: [] } })
+  })
+
+  it('preserves omitted fields in the INTERNATIONAL region too', async () => {
+    // The merge keys off the FIELD's keys, not off a region name, so the fix is
+    // region-agnostic by construction. This pins that: a global pool save that
+    // mentions only `pool` must not delete the global model directory either.
+    //
+    // It matters more than the CN case, not less: the GLOBAL static fallback
+    // DOES contain the id the user had saved, so here the same deletion produced
+    // no visible symptom at all — a silent loss is the worse failure.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes({}, {
+      cn: { enabled: true },
+      global: {
+        enabled: true,
+        lastCatalog: [{ id: 'deepseek-v4.1-flash' }],
+        enabledModelIds: ['deepseek-v4.1-flash'],
+        contextBudgets: { 'gpt-5.5': 1_000_000 },
+      },
+    })
+    const { res, status } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { global: { pool: { enabled: true } } } }), res)
+    dispose()
+    expect(status()).toBe(200)
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toMatchObject({ global: { pool: { enabled: true } } })
+    expect(value).toMatchObject({
+      global: {
+        enabled: true,
+        lastCatalog: [{ id: 'deepseek-v4.1-flash' }],
+        enabledModelIds: ['deepseek-v4.1-flash'],
+        contextBudgets: { 'gpt-5.5': 1_000_000 },
+      },
+    })
+    // The region that was not saved keeps its own value untouched.
+    expect(value).toMatchObject({ cn: { enabled: true } })
   })
 
   it('does not turn an account-id string into an object', async () => {

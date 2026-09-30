@@ -142,6 +142,14 @@ describe('fallbackModelsFor', () => {
     expect(cn.has('deepseek-v4-pro')).toBe(true)
     expect(global.has('deepseek-v4-pro')).toBe(false)
     expect(global.has('deepseek-v4.1-flash')).toBe(true)
+    // The CN roster does NOT carry that id, and that asymmetry decided which
+    // region SCREAMED when a save wiped `lastCatalog` and the display fell back
+    // to these lists: the CN user's saved target vanished from the fallback and
+    // the card said "已下架", while the global user's target still resolved and
+    // the same deletion went unannounced. Pinned so a future edit to either
+    // roster does not silently change which failures are visible.
+    expect(cn.has('deepseek-v4.1-flash')).toBe(false)
+    expect(cn.has('deepseek-v4-flash')).toBe(true)
   })
 
   it('carries the captured credit multipliers on the global roster', () => {
