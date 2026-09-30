@@ -4,6 +4,27 @@
 
 ### Bug Fixes
 
+#### 保存账号池会把该区域的模型目录整段删掉，于是「保存后目标模型就下架了」
+
+**用户报告**：在账号池里点保存后，目标模型立刻显示「已下架」，并且「一键测试所有账号」被停用；**macOS 上不出现**。
+
+**根因（真机取证）**：`__save` 的路由此前做的是 `{ ...current, ...incoming }` —— **区域级整体替换**。而客户端只能按自己的 settings 镜像拼出槽位，这个镜像**本仓库自己注释过对本命名空间不可靠**（经本端点写入不会刷新它，在 0.1.7 线上可长期陈旧）。于是：
+
+1. 保存账号池时客户端 POST 的是 `{ cn: { pool } }`；
+2. Host 用这一个键**替换掉整个 cn 槽** → `lastCatalog`、`enabledModelIds`、`imageModelIds`、`contextBudgets`、`enabled` **全被删除**；
+3. `displayModels` 见 `lastCatalog` 为空即回落到**静态 CN 目录**（`src/catalog.ts`），而它只有 `deepseek-v4-flash`（第 39 行），**没有 `deepseek-v4.1-flash`**（那在第 59 行，属国际版）；
+4. 于是判「已下架」，`resolveTargetModel` 返回 `stale`，测试随之停用。
+
+**证据**：同一 profile 下留有 1:58 的配置备份（20711 B，`cn.lastCatalog` 含 `auto`/`hy4-preview`/… 完整清单），而当前配置（14873 B）的 `cn` 槽**只剩 `pool`**——差出的约 6 KB 正是被删掉的目录。本项目审计 `docs/audit/D-verification.md` L-4 记录过同一机制（当时是 `toggleRegion` 的过期整槽写入），但只修了写入交错，没有修「整体替换」这一步。
+
+**修法**：`__save` 的合并**下沉一层**——字段的键做一层（保兄弟区域），被触及区域槽内的键再做一层。**只保留客户端未提及的键**；客户端显式发来的字段（含空数组）依旧覆盖，因此「主动清空」不受影响。刻意不再更深：`contextBudgets` 这类嵌套 map 由其所有者整体发送，继续递归会让单个条目无法删除。
+
+**为什么不动 macOS**：该合并只在「客户端漏发了某个键」时才有差别；macOS 上的槽位是完整的，因此对它是恒等操作。
+
+守卫：`tests/web-status.spec.ts` 新增 3 例——① 只发 `{cn:{pool}}` 时 `contextBudgets`/`enabled` 必须survive（**这条直接复现本次数据丢失**）；② 显式发空数组仍能清空；③ `accounts` 的账号 id 是字符串，不得被对象化。**变异验证**：把合并改回一层展开 → 第 ① 条变红（已实测）。
+
+**即时补救**：卡片上的「切回自动」会把目标换成该区域的免费模型（`hy3`，静态目录里也有），立即可用；被删掉的模型勾选与上下文预算需在「模型管理」里重新保存一次以重建 `lastCatalog`。
+
 - **Windows 上文件被占用时，两条保存路径只甩原始 EPERM、不给做法**（模型列表与账号池；账号路径本来就有）。真机实测（3.0.0 宿主 + 锁住 profile 的 `cordis.patch.yml`）：写入返回 HTTP 500，报文是
   `EPERM: operation not permitted, rename 'C:\…\cordis.patch.yml.79498ff8fb27.tmp' -> '…\cordis.patch.yml'`
   ——只报了一个临时文件路径，**没有说明原因、也没告诉用户怎么办**。而 `row.accountsWriteFailed` 早就把「杀毒软件/同步盘占用 → 关闭占用者后重试」写进了文案。

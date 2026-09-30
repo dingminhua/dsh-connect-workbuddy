@@ -225,6 +225,11 @@ function safeMessage(error: unknown): string {
     .slice(0, 500)
 }
 
+/** A non-null, non-array object: the only shape the slot merge applies to. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
@@ -929,11 +934,38 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           // merge never carries a function.
           const current = unwrapVolatileDeep(row.value?.[field] ?? {}) as Record<string, unknown>
           const incoming = (body.value ?? {}) as Record<string, unknown>
-          // Merge per-region/per-field layers, not a flat top-level spread: a
-          // shallow `{ ...current, ...incoming }` would replace the WHOLE
-          // regions map with just the incoming region's slot, dropping every
-          // other region.
-          const merged = { ...current, ...incoming }
+          // Merge TWO levels, and the second level is what stops a save from
+          // DELETING data.
+          //
+          // Level 1 (keys of the field) keeps sibling regions alive.
+          //
+          // Level 2 (keys of a touched region's slot) exists because the client
+          // can only send the slot it knows, and its settings mirror is
+          // explicitly documented as unreliable for this namespace (a write made
+          // through this very endpoint does not refresh it, and on 0.1.7 it can
+          // stay stale outright). A one-level `{ ...current, ...incoming }`
+          // replaces the WHOLE region slot with whatever the client happened to
+          // hold, so every field it did not mention is dropped. Measured on a
+          // real Windows profile: saving pool preferences posted `{ cn: { pool } }`,
+          // which deleted `cn.lastCatalog` (a ~6 KB model directory),
+          // `enabledModelIds`, `contextBudgets` and `enabled`. The card then
+          // resolved the saved target model against the STATIC fallback catalog,
+          // which does not contain it, and reported the model as withdrawn
+          // ("已下架") with testing disabled — a save that silently destroyed
+          // settings while reporting success.
+          //
+          // Only OMITTED keys are preserved: a field the client does send still
+          // wins, including an explicit empty array, so clearing a selection
+          // remains possible. Deliberately not deeper than the slot: a nested
+          // map such as `contextBudgets` is sent whole by its owner, and
+          // recursing further would make it impossible to remove an entry.
+          const merged: Record<string, unknown> = { ...current }
+          for (const [key, slot] of Object.entries(incoming)) {
+            const prior = current[key]
+            merged[key] = isPlainRecord(prior) && isPlainRecord(slot)
+              ? { ...prior, ...slot }
+              : slot
+          }
           await settings.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
           // Hand the AUTHORITATIVE merged field back to the caller. The client
           // used to rebuild the field from its own browser mirror to refresh

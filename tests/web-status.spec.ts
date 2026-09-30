@@ -936,6 +936,55 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
     const value = (first as { value: Record<string, unknown> }).value as Record<string, unknown>
     expect(value).toMatchObject({ cn: { contextBudgets: { 'glm-5.3': 1_000_000 } } })
   })
+
+  it('does NOT delete region fields the caller omitted (the pool-save data loss)', async () => {
+    // THE regression. Saving pool preferences posts only what the client knows:
+    // `{ cn: { pool } }`. A one-level spread replaced the WHOLE cn slot, so a
+    // real Windows profile lost `cn.lastCatalog` (a ~6 KB model directory),
+    // `contextBudgets` and `enabled` — and the card then resolved the saved
+    // target model against the static fallback catalog, which does not contain
+    // it, reporting the model as withdrawn with testing disabled.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes()
+    const { res, status } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { pool: { enabled: true } } } }), res)
+    dispose()
+    expect(status()).toBe(200)
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    // The posted field wins...
+    expect(value).toMatchObject({ cn: { pool: { enabled: true } } })
+    // ...and everything it did not mention survives.
+    expect(value).toMatchObject({ cn: { enabled: true, contextBudgets: { 'glm-5.3': 1_000_000 } } })
+  })
+
+  it('still lets a caller CLEAR a field by sending it explicitly', async () => {
+    // The merge must not make a deliberate clear impossible: an explicit value,
+    // including an empty array, still wins over the stored one. Otherwise the
+    // fix for the deletion above would trap users with a selection they cannot
+    // remove.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes()
+    const { res } = saveResponse()
+    await handler(saveReq({
+      field: 'regions',
+      value: { cn: { enabled: false, contextBudgets: {}, lastCatalog: [] } },
+    }), res)
+    dispose()
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    expect(ops[0]?.value).toMatchObject({ cn: { enabled: false, contextBudgets: {}, lastCatalog: [] } })
+  })
+
+  it('does not turn an account-id string into an object', async () => {
+    // `accounts` values are account-id STRINGS, not slots. The slot merge keys
+    // off "both sides are plain records", so a string must pass through
+    // untouched — turning it into `{ 0: 'a' }` would corrupt every account
+    // selection.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes()
+    const { res } = saveResponse()
+    await handler(saveReq({ field: 'accounts', value: { cn: 'a' } }), res)
+    dispose()
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    expect(ops[0]?.value).toEqual({ cn: 'a' })
+  })
 })
 
 /**
