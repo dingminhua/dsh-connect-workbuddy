@@ -104,13 +104,19 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-models{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
 .dsm-workbuddy-models-fold{display:flex;flex-direction:column;gap:10px}
 /* The head doubles as the <details> summary. list-style:none plus the marker
-   rule removes the native triangle in every engine that draws one, so the
-   collapsed header looks identical to the row it replaced; the pointer and the
-   title attribute (expand or collapse) are what signal it is clickable. */
+   rule removes the NATIVE triangle, because the chevron below is drawn instead;
+   without this the header would show two indicators in opposite corners. */
 .dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none;user-select:none}
 .dsm-workbuddy-models-head::-webkit-details-marker{display:none}
 .dsm-workbuddy-models-head::marker{content:""}
 .dsm-workbuddy-models-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:3px;border-radius:6px}
+.dsm-workbuddy-models-title-row{display:flex;align-items:center;gap:6px;min-width:0}
+/* The chevron points RIGHT when collapsed and rotates to DOWN when expanded.
+   The rotation keys off the details element's own open attribute, so it needs
+   no state and cannot disagree with what the browser actually shows. */
+.dsm-workbuddy-models-chevron{display:inline-flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px;color:var(--dsw-alias-label-tertiary,#999);transition:transform .16s}
+.dsm-workbuddy-models-fold[open] .dsm-workbuddy-models-chevron{transform:rotate(90deg)}
+.dsm-workbuddy-models-head:hover .dsm-workbuddy-models-chevron{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
 /* Unsaved-changes marker. It sits in the HEADER, outside the fold, because the
    save/discard buttons are inside it: without this the user could collapse the

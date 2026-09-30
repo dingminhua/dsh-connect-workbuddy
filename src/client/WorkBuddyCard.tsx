@@ -1196,12 +1196,33 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                           }}
                         >
                           <div>
-                            <h3 className="dsm-workbuddy-models-title">
-                              {t('row.modelsTitle')}
-                              {dirty
-                                ? <span className="dsm-workbuddy-models-dirty">{t('row.modelsDirty')}</span>
-                                : null}
-                            </h3>
+                            <div className="dsm-workbuddy-models-title-row">
+                              {/* A visible disclosure affordance, because a
+                                  header that merely reacts to a click does not
+                                  LOOK clickable. Decorative only — the
+                                  <details> element already announces the
+                                  expanded/collapsed state — so it is hidden
+                                  from assistive tech and the rotation is pure
+                                  CSS off the element's own `open` attribute. */}
+                              <span className="dsm-workbuddy-models-chevron" aria-hidden="true">
+                                <svg viewBox="0 0 12 12" width="12" height="12" focusable="false">
+                                  <path
+                                    d="M4.5 2.5 L8 6 L4.5 9.5"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.6"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </span>
+                              <h3 className="dsm-workbuddy-models-title">
+                                {t('row.modelsTitle')}
+                                {dirty
+                                  ? <span className="dsm-workbuddy-models-dirty">{t('row.modelsDirty')}</span>
+                                  : null}
+                              </h3>
+                            </div>
                             <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                           </div>
                           <div className="dsm-workbuddy-models-head-actions">

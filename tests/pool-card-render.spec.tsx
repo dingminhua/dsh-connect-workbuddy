@@ -273,6 +273,26 @@ describe('the model list folds, and the fold cannot hide unsaved edits', () => {
     await m.unmount()
   })
 
+  it('draws a chevron, and the open ATTRIBUTE it rotates on tracks the state', async () => {
+    // The chevron itself is CSS: it points right when closed and rotates to
+    // down under `.dsm-workbuddy-models-fold[open]`. That selector keys off the
+    // ATTRIBUTE, not the `open` property, so a change that kept the fold
+    // working while dropping the attribute would leave the icon permanently
+    // pointing right — the fold would work but stop looking foldable. Both are
+    // therefore asserted.
+    const m = await openCard()
+    const chevron = summaryOf(m).querySelector('.dsm-workbuddy-models-chevron')
+    expect(chevron).not.toBeNull()
+    // Decorative: the <details> element already announces the state, so the
+    // icon must stay out of the accessibility tree.
+    expect(chevron?.getAttribute('aria-hidden')).toBe('true')
+    expect(chevron?.querySelector('svg')).not.toBeNull()
+    expect(foldOf(m).hasAttribute('open')).toBe(true)
+    await m.click(summaryOf(m))
+    expect(foldOf(m).hasAttribute('open')).toBe(false)
+    await m.unmount()
+  })
+
   it('refreshing does NOT also fold the list', async () => {
     // The refresh button lives INSIDE <summary>, and a click anywhere inside a
     // summary activates the disclosure — so without the guard in the summary's
