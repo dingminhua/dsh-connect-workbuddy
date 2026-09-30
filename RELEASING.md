@@ -128,6 +128,8 @@ npm pack --dry-run
 
 > **本项目约定：用浏览器授权，不用 `--otp` 方式。** `npm publish` 若提示 EOTP，按 npm CLI 给出的 URL 在浏览器登录确认即可，终端内的 `npm publish` 会自动继续。**不要**用 `npm publish --otp=<6位验证码>` 绕过——那是命令行验证码方式，本项目账号绑定的是浏览器授权。
 
+> ⚠️ **这一步必须在交互式终端里做。** npm 在 stdout 不是 TTY 时（管道 `| tail`、重定向、后台任务、CI、agent 的 shell）会**印出被遮蔽的授权链接**（`…/auth/cli/***`，日志里也捞不回来）并**立刻退出**，不会等待浏览器确认——于是既拿不到链接、也没有进程接着上传。需要 2FA 的发布会话请直接在自己的终端跑 `npm publish`。详见[常见问题](#常见问题)里那条 EOTP 条目。
+
 若浏览器打开的验证 URL 失效（404），重跑一次 `npm publish` 让 npm 生成新的授权链接，再在浏览器确认。
 
 ### 8. 验证发布成功
@@ -202,6 +204,16 @@ gh release view vX.Y.Z --json name,tagName,isDraft,isPrerelease,assets
 ## 常见问题
 
 - **`npm publish` 报 EOTP**：账号开启了 2FA，**按第 7 步在浏览器授权**（npm CLI 给出的 URL），不要用 `--otp=<码>` 命令行方式——本项目账号绑定的是浏览器授权。链接 404 就重跑 `npm publish` 生成新链接。
+- **`npm publish` 报 EOTP，但拿不到授权链接、而且它一闪就退出了**：这一步**必须在交互式终端里跑**。npm 只在 stdout 是 TTY 时才**自动打开浏览器**、并**留在原地等待**授权；一旦进了管道、重定向或后台任务（`| tail`、`> log 2>&1 &`、CI、agent 的 shell），这条路径会有两处直接断掉：
+  - 授权链接被**npm 自己**印成 `https://www.npmjs.com/auth/cli/***`——`***` 是 npm 遮蔽的，不是终端或日志工具的加工；`~/.npm/_logs/*-debug-0.log` 里同样只有 `***`，事后也捞不回来；
+  - 它**不等待**，打印完 `EOTP` 立刻退出，浏览器里确认完也没有进程接着上传。
+
+  所以：**需要 2FA 的发布会话，请直接在自己的终端执行 `npm publish`**，别在管道 / 后台 / 自动化里跑；也不要为了让输出好看而加 `| tail`。判断是否真的发布成功，仍以第 8 步为准（`npm publish` 输出里的 `+ dsh-connect-workbuddy@X.Y.Z` 一行，加上 `curl --noproxy '*'` 直连复核）。v3.0.0、v3.0.1 发布时都撞到这一点。
+- **`npm publish` 报 409，但两种报文的含义完全相反，别混为一谈**：
+  - `Cannot publish over previously staged version "X.Y.Z"` —— 该版本在 registry 上处于**暂存（staged）未提交**状态。它**不是**「已发布」：此时 `latest` 与 packument 里**都还看不到**这个版本。常见来源是需要 2FA 而中途没走完的那次发布请求。**先别急着改版本号**——稍等重试，或在 npm 网站上批准/丢弃这次暂存，它就可能被提交掉。
+  - `You cannot publish over the previously published versions: X.Y.Z` —— 这才是**已经发布成功**。此时第 8 步的直连核验会显示 `latest: X.Y.Z`，tarball 也能下载。
+
+  有一条很实用的判据：**报错从「staged」变成「previously published」，说明中间那次其实已经成功落地**。v3.0.0 发布时就是这样——先看到 staged 的 409，再看到 published 的 409，而 registry 上的发布时间戳正好落在两次尝试之间（即另有一次发布在窗口内完成）。因此**任何时刻都以第 8 步的直连核验为准**，不要凭 `npm publish` 的退出码或某一次报文下结论；两次发布若来自不同的人/会话，只要比对 tarball 的 shasum 一致，就说明发的是同一个构建，没有版本分叉。
 - **发布后 `npm view ... version` 还是旧版本 / 甚至 `@新版本` 报 404**：**先别断定发布失败**。本机 `~/.npmrc` 的本地代理会缓存 registry 响应——用第 8 步的 `curl --noproxy '*'` 直连命令复核，或 `npm view --prefer-online`。v1.4.0 发布时就是这样被误判过一次。真正的失败特征是：`npm publish` 输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行。
 - **`npm whoami` 报 E401**：说明 `~/.npmrc` 里的 `_authToken` 已失效（注意 `npm whoami` 偶尔会回显**缓存**的上一次结果，别被它迷惑）。先 `npm login --auth-type=web` 重新登录再发布。
 - **本地开发与发布的关系**：本地开发用 `link:` 安装，与 npm 发布互不影响；npm 发布的包是 `lib/`、README 等静态文件，同一份源码。
