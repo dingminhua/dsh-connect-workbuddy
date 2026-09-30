@@ -47,7 +47,7 @@ import {
   rotationLockState,
   usableMemberIds,
 } from './pool-state.ts'
-import { writePoolPreferences } from './account-selection.ts'
+import { isFileContentionWriteError, writePoolPreferences } from './account-selection.ts'
 import type { WorkBuddyAccountScope } from './account-selection.ts'
 
 /** One line in the pool's activity log. */
@@ -563,7 +563,10 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       // be kept. (A failed RE-READ does not land here: it resolves `false`, and
       // is handled above.)
       if (mounted.current) {
-        setSaveError(error instanceof Error ? error.message : t('row.requestFailed'))
+        const reason = error instanceof Error ? error.message : t('row.requestFailed')
+        // A contention refusal needs the remedy appended: the raw message names
+        // a temp file and no cause. See `isFileContentionWriteError`.
+        setSaveError(isFileContentionWriteError(error) ? `${reason}${t('row.saveContentionHint')}` : reason)
       }
     } finally {
       if (committed) discard()

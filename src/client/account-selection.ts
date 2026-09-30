@@ -58,6 +58,32 @@ export class WorkBuddySettingsWriteError extends Error {
 }
 
 /**
+ * Whether a save failure is a FILE-CONTENTION refusal.
+ *
+ * On Windows, replacing a file that another process holds open fails with
+ * `EPERM` / `EBUSY` / `EACCES` — an antivirus scanner, a sync client (OneDrive),
+ * or an editor with the profile's patch file open. POSIX `rename` replaces
+ * outright regardless of open handles, so this branch effectively never fires
+ * on macOS/Linux: the diagnosis is Windows-shaped because the failure is.
+ *
+ * It exists so a save failure can say WHAT TO DO. Without it the card pasted the
+ * raw error at the user — `EPERM: operation not permitted, rename
+ * 'C:\…\cordis.patch.yml.79498ff8fb27.tmp' -> '…\cordis.patch.yml'` — which
+ * names a temp path and no remedy. Measured live against the 3.0.0 host with the
+ * file held open: both the `regions` and `accounts` writes came back HTTP 500
+ * with exactly that text.
+ *
+ * Deliberately matched on the message rather than on `WorkBuddySettingsWriteError`
+ * alone: a validation refusal is also that class but has nothing to do with file
+ * contention, and telling such a user to close their editor would send them
+ * chasing a cause that is not there.
+ */
+export function isFileContentionWriteError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /\b(?:EPERM|EBUSY|EACCES)\b/u.test(message)
+}
+
+/**
  * Read one settings field's current object value from the scope snapshot.
  *
  * The snapshot holds the RESOLVED section, where a volatile field

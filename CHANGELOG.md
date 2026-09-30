@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- **Windows 上文件被占用时，两条保存路径只甩原始 EPERM、不给做法**（模型列表与账号池；账号路径本来就有）。真机实测（3.0.0 宿主 + 锁住 profile 的 `cordis.patch.yml`）：写入返回 HTTP 500，报文是
+  `EPERM: operation not permitted, rename 'C:\…\cordis.patch.yml.79498ff8fb27.tmp' -> '…\cordis.patch.yml'`
+  ——只报了一个临时文件路径，**没有说明原因、也没告诉用户怎么办**。而 `row.accountsWriteFailed` 早就把「杀毒软件/同步盘占用 → 关闭占用者后重试」写进了文案。
+  - **修法**：新增 `isFileContentionWriteError()`（匹配 `EPERM`/`EBUSY`/`EACCES` 三个**词边界**标记——正是 `dsh-atomic-write` 在 win32 上重试的那三个），命中时在原因后追加 `row.saveContentionHint`；模型列表与账号池两条路径接上。
+  - **只对文件占用生效，不做无条件提示**：校验类失败走的是同一个 catch，对那种失败说「去关闭占用文件的程序」会把用户引向不存在的原因。有专门用例钉住「无关失败不得出现该提示」。
+  - **macOS 行为不变**：POSIX 的 `rename` 无论目标是否被打开都直接替换，所以这三个错误码在 macOS/Linux 上基本不会出现——检测器天然只在 Windows 上生效。
+- **顺带记录的核验结论：Windows 保存逻辑本身没有「静默成功」**。锁住文件时 `regions` 与 `accounts` 两条写入都返回 500 并带 `EPERM`，客户端随即抛 `WorkBuddySettingsWriteError`，卡片明确报错并**保留草稿/原选择**（三条保存路径都不会丢弃用户改动）。回退路径的回读校验读的是「被拒后重新加载的 Host 状态」，不会把乐观写入误判为已落盘。因此本次修的是**报错文案的可操作性**，不是落盘判定。
+
 ### Docs
 
 - **改正 3.0.0 里一处过期的免费模型举例**（README 两份 + 上方 3.0.0 条目）：原文写「该区域倍率为 0 的免费模型（**国内版即 `deepseek-v4.1-flash`**）」。2026-09-30 在真机上核对 live catalog（16 个模型）后，`deepseek-v4.1-flash` 的倍率是 **0.11**，国内版**唯一**倍率为 0 的是 **`hy3`**（ctx 192000）。

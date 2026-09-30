@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   configuredAccountsOf,
+  isFileContentionWriteError,
   WorkBuddySettingsWriteError,
   writeAccountSlot,
   writeRegionEnabled,
@@ -8,6 +9,48 @@ import {
   writePoolPreferences,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
+
+/**
+ * Whether a save failure is the Windows locked-file refusal.
+ *
+ * The distinction decides which message the user sees: the contention hint tells
+ * them to close the program holding the file, which is useless advice for any
+ * other failure. The strings below are the ones actually observed — the first
+ * was captured live from the 3.0.0 host with the profile's patch file held open.
+ */
+describe('isFileContentionWriteError', () => {
+  it('recognises the refusal a Windows file lock produces', () => {
+    const live = new WorkBuddySettingsWriteError(
+      'regions',
+      "Host save refused: Error EPERM: operation not permitted, rename "
+      + "'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml.79498ff8fb27.tmp' "
+      + "-> 'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml'",
+    )
+    expect(isFileContentionWriteError(live)).toBe(true)
+  })
+
+  it('accepts the other two codes Windows uses for the same condition', () => {
+    // `dsh-atomic-write` retries exactly EACCES/EBUSY/EPERM on win32, so these
+    // are the three spellings this refusal can arrive as.
+    expect(isFileContentionWriteError(new Error('EBUSY: resource busy or locked'))).toBe(true)
+    expect(isFileContentionWriteError(new Error('EACCES: permission denied'))).toBe(true)
+  })
+
+  it('does not fire for a failure that has nothing to do with the file', () => {
+    // Otherwise the hint sends the user hunting for a program holding a file
+    // that no one is holding.
+    expect(isFileContentionWriteError(new Error('value must be an integer'))).toBe(false)
+    expect(isFileContentionWriteError(new Error('workbuddy: settings field "regions" was not persisted by the settings write'))).toBe(false)
+    expect(isFileContentionWriteError(undefined)).toBe(false)
+    expect(isFileContentionWriteError('boom')).toBe(false)
+  })
+
+  it('matches the code token, not a substring of another word', () => {
+    // Word boundaries, so an unrelated identifier cannot smuggle the hint in.
+    expect(isFileContentionWriteError(new Error('XEPERMZ'))).toBe(false)
+    expect(isFileContentionWriteError(new Error('myEBUSYvalue'))).toBe(false)
+  })
+})
 
 /**
  * A settings scope that reproduces the Windows silent-failure shape.

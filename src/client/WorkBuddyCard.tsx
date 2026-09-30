@@ -46,7 +46,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
+import { isFileContentionWriteError, writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
 import { AccountPool } from './AccountPool.tsx'
 // `createLatestWins` is the same tested latest-wins factory the Host uses for
 // rotation, imported rather than re-implemented: the rule has one definition
@@ -841,7 +841,12 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
     } catch (error: unknown) {
       // Drafts stay dirty on failure, so the button remains pressable for a
       // retry; the reason is shown instead of a silent unhandled rejection.
-      if (mounted.current) setSaveError(error instanceof Error ? error.message : t('row.requestFailed'))
+      // A contention refusal gets the remedy appended — the raw message names
+      // only a temp file (see `isFileContentionWriteError`).
+      if (mounted.current) {
+        const reason = error instanceof Error ? error.message : t('row.requestFailed')
+        setSaveError(isFileContentionWriteError(error) ? `${reason}${t('row.saveContentionHint')}` : reason)
+      }
     } finally {
       if (mounted.current) setSaving(false)
     }

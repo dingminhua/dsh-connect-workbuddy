@@ -139,6 +139,45 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     expect(onSaved).not.toHaveBeenCalled()
     await m.unmount()
   })
+
+  it('explains a locked-file refusal instead of pasting a raw EPERM', async () => {
+    // Measured live against the 3.0.0 host with the profile's patch file held
+    // open: the write came back HTTP 500 with
+    //   EPERM: operation not permitted, rename '…cordis.patch.yml.<hex>.tmp' -> '…'
+    // which names a temp file and no remedy. The account-save path already
+    // appended advice for this case; the pool path did not, so a Windows user
+    // hitting antivirus/OneDrive contention got an unactionable error.
+    const onSaved = vi.fn(async () => true)
+    const scope = fakeScope({}, true)
+    stubFetch(() => ({
+      status: 500,
+      body: { errorName: 'Error', error: "EPERM: operation not permitted, rename 'C:\\u\\.dsh\\p\\cordis.patch.yml.79498ff8fb27.tmp' -> 'C:\\u\\.dsh\\p\\cordis.patch.yml'" },
+    }))
+    const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved }))
+    await m.type('45')
+    await m.click(m.button('row.poolSaved'))
+    // The remedy is shown...
+    expect(m.text()).toContain('row.saveContentionHint')
+    // ...the draft survives (the hint promises it does)...
+    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.input().value).toBe('45')
+    // ...and the raw reason is still there for diagnosis.
+    expect(m.text()).toContain('EPERM')
+    await m.unmount()
+  })
+
+  it('does NOT claim file contention for an unrelated save failure', async () => {
+    // The hint sends the user to close their editor. Showing it for a validation
+    // refusal would send them chasing a cause that is not present.
+    const scope = fakeScope({}, true)
+    stubFetch(() => ({ status: 500, body: { errorName: 'Error', error: 'value must be an integer' } }))
+    const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved: vi.fn(async () => true) }))
+    await m.type('45')
+    await m.click(m.button('row.poolSaved'))
+    expect(m.text()).toContain('value must be an integer')
+    expect(m.text()).not.toContain('row.saveContentionHint')
+    await m.unmount()
+  })
 })
 
 describe('a batch refreshes the card exactly once, only on success (M-4)', () => {
