@@ -17,7 +17,7 @@
  */
 
 import { createProvider } from '@earendil-works/pi-ai'
-import type { Api, AuthContext, CredentialStore, Model, Provider } from '@earendil-works/pi-ai'
+import type { Api, AuthContext, Context, CredentialStore, Message, Model, Provider, ProviderStreams } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -172,6 +172,96 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string
 }
 
 /**
+ * Rewrite a pi-ai 0.87-shaped context into the 0.85 shape this plugin's pi-ai
+ * understands.
+ *
+ * WHY THIS EXISTS (issue #24). pi-ai 0.87's `normalizeContext` moves the system
+ * prompt INTO `messages` as `{ role: 'system', content: '<string>' }`. pi-ai
+ * 0.85's own `Message` union has no `system` variant
+ * (`UserMessage | AssistantMessage | ToolResultMessage`), so its
+ * `estimateMessageTokens` has no branch for one: `for (const block of
+ * message.content)` iterates the CONTENT STRING character by character, `block`
+ * is a single character, and `block.name.length` throws
+ * `Cannot read properties of undefined (reading 'length')`.
+ *
+ * That crash happens inside the library, in `buildBaseOptions ->
+ * clampMaxTokensToContext -> estimateContextTokens`, i.e. BEFORE any request is
+ * built — so every model fails instantly and no upstream traffic is sent. A
+ * host running 0.87 hands us the normalized transcript while our own provider
+ * is 0.85, and the plugin cannot patch the library. What it CAN do is not hand
+ * a 0.87 transcript to a 0.85 API object: fold the system text back into
+ * `Context.systemPrompt`, which is where 0.85 expects it.
+ *
+ * Deliberately SHAPE-based, not version-based: it asks "does this context carry
+ * a system message inside `messages`?" rather than "which pi-ai version is
+ * loaded?". A version check would be wrong the moment either side moves, and
+ * this plugin has to survive both host generations.
+ *
+ * Returns the SAME object when there is nothing to adapt — in particular when
+ * `systemPrompt` is already set (the native 0.85 shape), so the ordinary path
+ * is byte-for-byte untouched.
+ */
+export function adaptLegacyPiAiContext(context: Context): Context {
+  if (context === null || typeof context !== 'object') return context
+  if (context.systemPrompt !== undefined) return context
+  const messages = Array.isArray(context.messages) ? context.messages : undefined
+  if (messages === undefined) return context
+
+  const systemTexts: string[] = []
+  const rest: Message[] = []
+  let sawSystemMessage = false
+  for (const message of messages) {
+    const role = (message as { role?: unknown } | null)?.role
+    if (role !== 'system') {
+      rest.push(message)
+      continue
+    }
+    sawSystemMessage = true
+    const text = systemTextOf(message)
+    if (text !== '') systemTexts.push(text)
+  }
+  if (!sawSystemMessage) return context
+
+  // Dropped from `messages` even when no text could be extracted: leaving it
+  // there is precisely what crashes 0.85, and a system entry with no text has
+  // nothing to lose. `systemPrompt` stays ABSENT rather than '' so a provider
+  // never receives an empty system message.
+  return {
+    ...context,
+    ...systemTexts.length === 0 ? {} : { systemPrompt: systemTexts.join('\n\n') },
+    messages: rest,
+  }
+}
+
+/** The text of one system message, whether it is a string or text blocks. */
+function systemTextOf(message: Message): string {
+  const content = (message as { content?: unknown }).content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  const texts: string[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    const candidate = block as { type?: unknown, text?: unknown }
+    if (candidate.type === 'text' && typeof candidate.text === 'string') texts.push(candidate.text)
+  }
+  return texts.join('\n\n')
+}
+
+/**
+ * Wrap one pi-ai API module so both stream entry points receive a context this
+ * build can actually consume (see {@link adaptLegacyPiAiContext}).
+ *
+ * The deferred-fetch entry points take no context and are passed through as-is.
+ */
+function withLegacyContext(api: ProviderStreams): ProviderStreams {
+  return {
+    ...api,
+    stream: (model, context, options) => api.stream(model, adaptLegacyPiAiContext(context), options),
+    streamSimple: (model, context, options) => api.streamSimple(model, adaptLegacyPiAiContext(context), options),
+  }
+}
+
+/**
  * Assemble the adapter. The provider's `getModels` reads the live catalog,
  * and every model's `baseUrl` is re-resolved per read so the shim's
  * ephemeral port applies from the first snapshot after startup.
@@ -204,7 +294,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
       },
     },
     models: buildModels(),
-    api: openAICompletionsApi(),
+    api: withLegacyContext(openAICompletionsApi()),
   })
 
   // `getModels` is delegated to a live read (the reuse-catalog pattern from

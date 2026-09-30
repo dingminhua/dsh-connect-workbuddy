@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- **修复 issue #24：宿主 pi-ai 0.87 下所有 WorkBuddy 模型立即失败**（`Cannot read properties of undefined (reading 'length')`）。
+  - **根因**：pi-ai 0.87 的 `normalizeContext` 把 system 提示词搬进 `messages`，成了 `{ role: 'system', content: '<字符串>' }`。而 pi-ai 0.85 的 `Message` 联合类型里**根本没有 `system` 变体**（只有 `UserMessage | AssistantMessage | ToolResultMessage`），于是它的 `estimateMessageTokens` 没有对应分支：`for (const block of message.content)` 会把**字符串逐字符**迭代，`block` 变成单个字符，`block.name.length` 抛错。崩溃发生在 `buildBaseOptions → clampMaxTokensToContext → estimateContextTokens`，即**构造请求体之前**——所以每个模型都在十几毫秒内失败，且**没有任何上游请求发出**。
+  - **修法**：新增 `adaptLegacyPiAiContext()`，在把 context 交给本插件的 pi-ai 之前，把 `messages` 里的 system 消息折回 `Context.systemPrompt`（0.85 期望的位置），并用 `withLegacyContext()` 包住 `openAICompletionsApi()` 的 `stream`/`streamSimple` 两个入口。
+  - **按形状适配，不按版本判断**：判断依据是「context 里有没有 system 消息」，不是「加载的是哪个 pi-ai 版本」。版本判断会在任一侧升级时立刻失效；本插件必须在**两代宿主**下都能活。对原生 0.85 形状（已有 `systemPrompt`）返回**同一个对象**，原路径零改动。
+  - **实测**（用插件真正加载的那份 pi-ai 0.85.1）：修复前 0.87 形状 → `Cannot read properties of undefined (reading 'length')`；修复后 → `Connection error.`（走到传输层，即请求已构造完成）。旧形状恒等，`system` 用 block 内容时也能正确合并。
+  - **守卫**：`tests/adapter.spec.ts` 新增 8 例，其中**接线用例**（`vi.mock` 掉 stream API，断言 provider 收到的 context 已被折平）是必要的——只测纯函数时，把修复从 provider 上摘掉的变异**不会被打红**（已实测），等于留了一个「修复被摘掉而测试全绿」的缺口。变异验证：去掉 `withLegacyContext` → 该用例变红。
+  - **顺带核实**：宿主 asar 声明 `@earendil-works/pi-ai ^0.87.1` 且含 `normalizeContext`；磁盘上四份 pi-ai（profiles / 插件嵌套 / 仓库 / 旧安装树）**全是 0.85.1**。issue 建议的「插件包内放一份 0.87.1」绕行在本机并未生效——嵌套副本是 0.85.1，漂移依旧，只是被当前加载的旧 `dsh-llm-pi-ai`（0.1.5-rc.2，不含 `normalizeContext`）掩盖了。
+
 ## 3.0.1 (2026-09-30)
 
 ### Bug Fixes
