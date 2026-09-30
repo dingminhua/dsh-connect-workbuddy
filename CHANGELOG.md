@@ -11,6 +11,7 @@
   - **实测**（用插件真正加载的那份 pi-ai 0.85.1）：修复前 0.87 形状 → `Cannot read properties of undefined (reading 'length')`；修复后 → `Connection error.`（走到传输层，即请求已构造完成）。旧形状恒等，`system` 用 block 内容时也能正确合并。
   - **守卫**：`tests/adapter.spec.ts` 新增 8 例，其中**接线用例**（`vi.mock` 掉 stream API，断言 provider 收到的 context 已被折平）是必要的——只测纯函数时，把修复从 provider 上摘掉的变异**不会被打红**（已实测），等于留了一个「修复被摘掉而测试全绿」的缺口。变异验证：去掉 `withLegacyContext` → 该用例变红。
   - **顺带核实**：宿主 asar 声明 `@earendil-works/pi-ai ^0.87.1` 且含 `normalizeContext`；磁盘上四份 pi-ai（profiles / 插件嵌套 / 仓库 / 旧安装树）**全是 0.85.1**。issue 建议的「插件包内放一份 0.87.1」绕行在本机并未生效——嵌套副本是 0.85.1，漂移依旧，只是被当前加载的旧 `dsh-llm-pi-ai`（0.1.5-rc.2，不含 `normalizeContext`）掩盖了。
+  - **peer 范围放宽**：`@earendil-works/pi-ai` 由 `>=0.85.0 <0.86.0` 改为 `>=0.85.0 <0.88.0`（peer 与 dev 两处）。原范围**不承认 0.87**，与实际已验证的兼容性不符：适配按形状生效，代码在 0.85 与 0.87 下都已验证可用。放宽后 `pnpm install` 报 "Lockfile is up to date"，未产生 lockfile 变更。
 
 ## 3.0.1 (2026-09-30)
 
