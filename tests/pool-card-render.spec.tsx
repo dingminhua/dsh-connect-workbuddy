@@ -226,3 +226,81 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     await m.unmount()
   })
 })
+
+describe('the model list folds, and the fold cannot hide unsaved edits', () => {
+  const foldOf = (m: { container: HTMLElement }): HTMLDetailsElement => {
+    const found = m.container.querySelector('details.dsm-workbuddy-models-fold')
+    if (found === null) throw new Error('the model section is not rendered as a <details> fold')
+    return found as HTMLDetailsElement
+  }
+  const summaryOf = (m: { container: HTMLElement }): HTMLElement => {
+    const found = foldOf(m).querySelector('summary')
+    if (found === null) throw new Error('the fold has no summary')
+    return found
+  }
+  const modelCheckbox = (m: { container: HTMLElement }): HTMLInputElement => {
+    const found = m.container.querySelector<HTMLInputElement>('.dsm-workbuddy-model-enabled input[type=checkbox]')
+    if (found === null) throw new Error('no model checkbox rendered')
+    return found
+  }
+  const openCard = async (): Promise<Awaited<ReturnType<typeof mount>>> => {
+    routeFetch([['*', () => ({ body: usageOf() })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    return m
+  }
+
+  it('starts EXPANDED — the list users already see must not move behind a click', async () => {
+    const m = await openCard()
+    // The header keeps the title and the count OUTSIDE the fold, so a collapsed
+    // section still says what it contains and how many are enabled.
+    expect(summaryOf(m).textContent).toContain('row.modelsTitle')
+    expect(summaryOf(m).textContent).toContain('row.modelsSummary|count=1')
+    expect(foldOf(m).open).toBe(true)
+    await m.unmount()
+  })
+
+  it('toggles when the header itself is clicked', async () => {
+    // Asserted on `open`, not on rendered text: jsdom keeps a closed
+    // <details>' descendants in the DOM (it does not implement the UA's
+    // closed-content rendering), so a textContent assertion would pass whether
+    // or not the fold works at all. `open` is what a browser acts on.
+    const m = await openCard()
+    await m.click(summaryOf(m))
+    expect(foldOf(m).open).toBe(false)
+    await m.click(summaryOf(m))
+    expect(foldOf(m).open).toBe(true)
+    await m.unmount()
+  })
+
+  it('refreshing does NOT also fold the list', async () => {
+    // The refresh button lives INSIDE <summary>, and a click anywhere inside a
+    // summary activates the disclosure — so without the guard in the summary's
+    // onClick, pressing "Refresh from WorkBuddy" would also collapse the list, a
+    // side effect of an unrelated control. This is what the guard exists for, so
+    // it is pinned rather than trusted.
+    const m = await openCard()
+    await m.click(m.button('row.modelsRefresh'))
+    expect(foldOf(m).open).toBe(true)
+    // And the fold must still work for a click that did NOT land on the button.
+    await m.click(summaryOf(m))
+    expect(foldOf(m).open).toBe(false)
+    await m.unmount()
+  })
+
+  it('says so in the header when there are unsaved edits (the fold cannot hide them)', async () => {
+    // The save/discard buttons are inside the fold and are only enabled while
+    // `dirty`. Without a marker in the header a user could tick a model and
+    // collapse the list, hiding their own pending edit with nothing on screen
+    // saying so — the "looks settled, is not" shape this card avoids.
+    const m = await openCard()
+    expect(summaryOf(m).textContent).not.toContain('row.modelsDirty')
+    await m.click(modelCheckbox(m))
+    expect(summaryOf(m).textContent).toContain('row.modelsDirty')
+    // Still true while collapsed — which is the whole point.
+    await m.click(summaryOf(m))
+    expect(foldOf(m).open).toBe(false)
+    expect(summaryOf(m).textContent).toContain('row.modelsDirty')
+    await m.unmount()
+  })
+})

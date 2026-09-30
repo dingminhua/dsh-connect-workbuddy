@@ -102,8 +102,20 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-checkin-error{color:var(--dsw-alias-state-error-primary,#ef4444);font-size:11px;line-height:16px;text-align:center}
 @media (max-width:760px){.dsm-workbuddy-credits-panels{grid-template-columns:1fr}.dsm-workbuddy-credit-panel-total{align-items:flex-start;text-align:left}.dsm-workbuddy-credit-total-body{align-items:flex-start}}
 .dsm-workbuddy-models{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
-.dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dsm-workbuddy-models-fold{display:flex;flex-direction:column;gap:10px}
+/* The head doubles as the <details> summary. list-style:none plus the marker
+   rule removes the native triangle in every engine that draws one, so the
+   collapsed header looks identical to the row it replaced; the pointer and the
+   title attribute (expand or collapse) are what signal it is clickable. */
+.dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none;user-select:none}
+.dsm-workbuddy-models-head::-webkit-details-marker{display:none}
+.dsm-workbuddy-models-head::marker{content:""}
+.dsm-workbuddy-models-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:3px;border-radius:6px}
 .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
+/* Unsaved-changes marker. It sits in the HEADER, outside the fold, because the
+   save/discard buttons are inside it: without this the user could collapse the
+   list and hide their own pending edits with nothing on screen saying so. */
+.dsm-workbuddy-models-dirty{margin-left:8px;padding:1px 6px;border-radius:6px;background:var(--dsw-alias-state-warn-primary,#f59e0b);color:#1b1d22;font-size:11px;font-weight:600;line-height:16px;vertical-align:1px;white-space:nowrap}
 .dsm-workbuddy-models-summary{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 .dsm-workbuddy-model-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;overflow:hidden}
 .dsm-workbuddy-model{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;padding:10px 12px;background:var(--dsw-alias-bg-layer-2,#232529);transition:opacity .16s}

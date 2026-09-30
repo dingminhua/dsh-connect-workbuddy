@@ -79,6 +79,11 @@ export const en = {
   'row.selectionLostMessage': 'The account saved for this region is no longer among the local sign-ins (WorkBuddy replaced its login or cleaned up backups). Your other sign-ins are fine — pick a current one from the list above. Signing in again in the desktop app will not fix this.',
   'row.modelsTitle': 'Models',
   'row.modelsSummary': '{count} enabled',
+  // Shown in the section header while the list is COLLAPSED. The save/discard
+  // buttons live inside the fold, so without this a user could hide their own
+  // unsaved edits behind it with nothing on screen saying so.
+  'row.modelsDirty': 'unsaved changes',
+  'row.modelsFoldHint': 'Expand or collapse the model list',
   'row.modelsRefresh': 'Refresh from WorkBuddy',
   'row.modelsRefreshing': 'Refreshing models…',
   'row.discard': 'Discard changes',
@@ -277,6 +282,10 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.selectionLostMessage': '该区域保存的账号已不在本机登录列表中（WorkBuddy 更换了登录或清理了备份文件）。本机其他登录仍然可用——请在上方列表中重新选择一个当前账号。重新登录桌面端 App 无法修复此问题。',
   'row.modelsTitle': '模型',
   'row.modelsSummary': '已启用 {count} 个',
+  // 折叠态显示在标题行。保存/放弃按钮在折叠区里面，没有这个提示，用户会把
+  // 自己未保存的改动藏到折叠后面，而界面上什么都不说。
+  'row.modelsDirty': '有未保存的修改',
+  'row.modelsFoldHint': '展开或折叠模型列表',
   'row.modelsRefresh': '从 WorkBuddy 刷新',
   'row.modelsRefreshing': '正在刷新模型…',
   'row.discard': '放弃修改',
