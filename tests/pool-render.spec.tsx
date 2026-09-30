@@ -382,8 +382,13 @@ describe('every timestamp is a 24-hour clock (no AM/PM)', () => {
     // therefore fails the LAST assertion below rather than this one.
     expect(text).toContain('13:23')
     expect(text).toContain('05:20')
-    expect(text).toMatch(/row\.poolTestedAt\|at=\d{2}\/\d{2}, \d{2}:\d{2}/u)
-    expect(text).toMatch(/row\.poolRetryAt\|at=\d{2}\/\d{2}, \d{2}:\d{2}/u)
+    // The date/time SEPARATOR is locale-dependent (`Intl` with an undefined
+    // locale emits `09/30, 13:23` under en-US and `09/30 13:23` under zh-CN/ja),
+    // so only the digits are pinned here. Asserting the comma would have made
+    // this test pass on an en-US machine and fail on the very locale the product
+    // is written for.
+    expect(text).toMatch(/row\.poolTestedAt\|at=\d{2}\/\d{2}[,、]?\s?\d{2}:\d{2}/u)
+    expect(text).toMatch(/row\.poolRetryAt\|at=\d{2}\/\d{2}[,、]?\s?\d{2}:\d{2}/u)
     // The assertion with teeth: `Intl`'s locale default is the only thing that
     // can put a meridiem on screen, so its absence pins `hourCycle: 'h23'`.
     expect(text).not.toMatch(/\d{2}:\d{2}[ \u00a0]?(?:AM|PM)/u)
