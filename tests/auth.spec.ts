@@ -946,3 +946,82 @@ describe('resolve() distinguishes an unreadable credential from being signed out
     expect((error as Error).message).toContain('no signed-in WorkBuddy account found')
   })
 })
+
+/**
+ * The account pool's runtime rotation override.
+ *
+ * These pin the ONE guarantee that makes rotation safe to offer: it decides who
+ * serves at runtime and can NEVER rewrite the user's saved choice, so switching
+ * rotation off restores exactly what the user picked.
+ */
+describe('WorkBuddyCredentialStore rotation override', () => {
+  /** Two local accounts: the live sign-in (Alpha) and a backup (Beta). */
+  async function twoAccounts(): Promise<WorkBuddyCredentialStore> {
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    await writeAuth('workbuddy-desktop.2026-07-01T00-00-00-000Z.info', accountDoc({
+      account: { uid: 'uid-2', uin: '100000000002', nickname: 'Beta' },
+      auth: { accessToken: 'token-beta', refreshToken: 'r2', expiresAt: Date.now() + 86_400_000 },
+    }))
+    return new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+  }
+
+  it('bills the rotated account while an override is set', async () => {
+    const store = await twoAccounts()
+    const accounts = await store.accounts()
+    const beta = accounts.find(account => account.accountName === 'Beta')
+    store.setRotatedAccount(beta?.id)
+    expect((await store.current())?.nickname).toBe('Beta')
+  })
+
+  it('does NOT change the user\'s saved selection', async () => {
+    // The whole point: rotation is a runtime decision, not a settings write.
+    const store = await twoAccounts()
+    const accounts = await store.accounts()
+    const beta = accounts.find(account => account.accountName === 'Beta')
+    store.selectAccount(beta?.id)
+    store.setRotatedAccount(beta?.id)
+    // Clearing the override must land back on the user's own choice, which is
+    // only true because rotation never touched `accountId`.
+    store.setRotatedAccount(undefined)
+    expect((await store.current())?.nickname).toBe('Beta')
+
+    // And a user choice of Alpha is restored even after rotating to Beta.
+    const alpha = accounts.find(account => account.accountName === 'Alpha')
+    store.selectAccount(alpha?.id)
+    store.setRotatedAccount(beta?.id)
+    expect((await store.current())?.nickname).toBe('Beta')
+    store.setRotatedAccount(undefined)
+    expect((await store.current())?.nickname).toBe('Alpha')
+  })
+
+  it('falls back to the normal selection when the rotated account disappears', async () => {
+    const store = await twoAccounts()
+    store.setRotatedAccount('an-account-that-does-not-exist')
+    // A vanished account cannot be billed whatever the reason, so this must not
+    // leave the region with no credential at all.
+    expect((await store.current())?.nickname).toBe('Alpha')
+  })
+
+  it('reports the rotated account it was given', async () => {
+    const store = await twoAccounts()
+    expect(store.rotatedAccount()).toBeUndefined()
+    store.setRotatedAccount('some-id')
+    expect(store.rotatedAccount()).toBe('some-id')
+    store.setRotatedAccount(undefined)
+    expect(store.rotatedAccount()).toBeUndefined()
+  })
+
+  it('leaves a region with no rotated account exactly as it was', async () => {
+    // Rotating nothing must be indistinguishable from the feature being off.
+    const store = await twoAccounts()
+    expect((await store.current())?.nickname).toBe('Alpha')
+    store.setRotatedAccount(undefined)
+    expect((await store.current())?.nickname).toBe('Alpha')
+  })
+})

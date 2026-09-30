@@ -435,7 +435,7 @@ describe('registerWorkBuddyStatusRoute', () => {
     return captured
   }
 
-  it('mounts the usage, account, check-in, model, probe, and save routes', async () => {
+  it('mounts the usage, account, check-in, model, probe, pool, and save routes', async () => {
     const captured = await mountRoutes()
     expect(captured.map(entry => entry.path)).toEqual([
       '/plugins/dsh-connect-workbuddy/usage',
@@ -443,6 +443,7 @@ describe('registerWorkBuddyStatusRoute', () => {
       '/plugins/dsh-connect-workbuddy/checkin',
       '/plugins/dsh-connect-workbuddy/models/refresh',
       '/plugins/dsh-connect-workbuddy/probe',
+      '/plugins/dsh-connect-workbuddy/pool',
       '/plugins/dsh-connect-workbuddy/__save',
     ])
   })

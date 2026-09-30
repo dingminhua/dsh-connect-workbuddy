@@ -30,18 +30,29 @@ import { Config, unwrapVolatileDeep } from './index.ts'
 import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
 import { isCredentialRejectedError } from './upstream.ts'
+import { effectiveMembersOf, rankPool, resolveTargetModel } from './account-pool.ts'
+import type { WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
+import type {
+  WorkBuddyPoolCheckinRow,
+  WorkBuddyPoolTestRow,
+} from './account-pool-run.ts'
 import { regionOfStatusUrl } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
+  poolActionOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
 import type {
   WorkBuddyWebAccount,
   WorkBuddyWebCredits,
+  WorkBuddyWebPool,
+  WorkBuddyWebPoolAccount,
+  WorkBuddyWebProbeOutcome,
   WorkBuddyWebProbeResult,
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
@@ -51,6 +62,7 @@ export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_USAGE_PATH,
 }
@@ -126,6 +138,83 @@ export interface WorkBuddyStatusRouteOptions {
    * probe.
    */
   accountUsable?(region: WorkBuddyRegion, account: WorkBuddyRecoveryCandidate): Promise<boolean>
+  /**
+   * The region's account pool, assembled on the Host.
+   *
+   * Optional as a whole: a Host built without pool support simply omits it, and
+   * the card then renders no pool section rather than an empty, confusing one.
+   * Inside it, `test` is in turn optional because a batch test is the one part
+   * that needs a working probe dependency.
+   */
+  pool?: WorkBuddyPoolDeps
+}
+
+/**
+ * What the pool route needs from the Host.
+ *
+ * Everything is region-scoped because the two regions are parallel stacks: one
+ * region's pool must never see, rank, or bill the other region's accounts.
+ */
+export interface WorkBuddyPoolDeps {
+  /** The region's stored preferences, resolved from the Host config. */
+  preferences(region: WorkBuddyRegion): {
+    enabled: boolean
+    rotateByCredits: boolean
+    autoTestIntervalMinutes: number
+    targetModelId: string
+    memberAccountIds: readonly string[]
+  }
+  /** One region's CHECKED accounts, plus their credits and last measurements. */
+  members(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolMember[]>
+  /**
+   * The checked accounts that actually RESOLVE to a local sign-in.
+   *
+   * Cheap by contract (a local scan, no upstream calls), unlike {@link members}
+   * which fetches credits per account. The route's empty-pool guard uses this
+   * so a ghost id — a saved member whose sign-in is gone — is refused with
+   * `no-live-members` (distinct from `no-members`, which means nothing was ever
+   * checked) instead of passing the guard and running a batch over nothing.
+   */
+  effectiveMemberAccountIds?(region: WorkBuddyRegion): Promise<readonly string[]>
+  /**
+   * The account rotation last redirected billing to, when it did.
+   *
+   * Reported so the card can log a switch that happened on the Host (possibly
+   * on a timer) — without it, "every switch leaves a record" is a promise the
+   * browser half has no way to keep.
+   */
+  rotatedToAccountId?(region: WorkBuddyRegion): Promise<string | undefined>
+  /**
+   * Today's check-in state per account id.
+   *
+   * Read for the pool's table so the card can state it. Absent (or a missing
+   * entry) means "not read", which the card renders as unknown rather than as a
+   * definite "not checked in" — a claim that would contradict the check-in the
+   * user just performed.
+   */
+  checkedInToday?(region: WorkBuddyRegion): Promise<Readonly<Record<string, boolean>>>
+  /**
+   * Every local sign-in the pool does NOT cover, so the card can offer them to
+   * check in. Absent means the card lists only pool members.
+   */
+  otherAccounts?(region: WorkBuddyRegion): Promise<readonly { id: string, accountName: string }[]>
+  /** The account currently billing traffic for the region, when known. */
+  currentAccountId?(region: WorkBuddyRegion): Promise<string | undefined>
+  /**
+   * Claim the daily reward for every account of one region.
+   *
+   * Absent means the action answers 503 — the same contract as {@link
+   * WorkBuddyStatusRouteOptions.probeModels}, so a Host without the dependency
+   * reports "unavailable" instead of appearing to succeed.
+   */
+  checkin?(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolCheckinRow[]>
+  /** Test every account of one region against the resolved target model. */
+  test?(
+    region: WorkBuddyRegion,
+    modelId: string,
+  ): Promise<readonly WorkBuddyPoolTestRow[]>
+  /** The region's live catalog, used to resolve the free target model. */
+  catalog?(region: WorkBuddyRegion): readonly WorkBuddyModelInfo[]
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -425,6 +514,142 @@ export async function workBuddyWebStatus(
       : { checkinError: safeMessage(checkinResult.reason) },
     ...!rejected ? {} : { credentialRejected: true },
     ...recovery === undefined ? {} : { recovery },
+    // The pool is assembled last and never allowed to fail the document: it is
+    // an enhancement, and a credits read that failed inside it must not take
+    // the whole status route down with it (the card would then show nothing at
+    // all, including the account picker the user needs to recover).
+    ...await poolSectionOf(deps, region),
+  }
+}
+
+/** The pool block for a status document, or nothing when it cannot be built. */
+async function poolSectionOf(
+  deps: WorkBuddyStatusRouteOptions,
+  region: WorkBuddyRegion,
+): Promise<{ pool?: WorkBuddyWebPool }> {
+  if (deps.pool === undefined) return {}
+  try {
+    const pool = await workBuddyWebPool(deps, region)
+    return pool === undefined ? {} : { pool }
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Assemble one region's pool state for the card.
+ *
+ * The ranking is computed HERE, on the Host, and shipped as an ordered,
+ * annotated list. The card therefore never re-derives "who is eligible" — it
+ * renders the Host's answer, so the account the user sees marked as current is
+ * decided by the same rule that would actually bill.
+ *
+ * `current` is answered by the Host too (`currentAccountId`), not inferred from
+ * the ranking, because those are different questions: the ranking says who
+ * SHOULD serve, `current` says who IS serving. Marking the winner as current
+ * would make the card claim a switch that may not have been applied yet.
+ */
+async function workBuddyWebPool(
+  deps: WorkBuddyStatusRouteOptions,
+  region: WorkBuddyRegion,
+): Promise<WorkBuddyWebPool | undefined> {
+  const pool = deps.pool
+  if (pool === undefined) return undefined
+  const preferences = pool.preferences(region)
+  const members = await pool.members(region)
+  const nowMs = Date.now()
+  const ranked = rankPool(members, nowMs)
+  const catalog = pool.catalog?.(region) ?? []
+  const target = resolveTargetModel(catalog, preferences.targetModelId)
+  const currentAccountId = await pool.currentAccountId?.(region)
+  const byId = new Map(members.map(member => [member.account.id, member]))
+  const rankedIds = new Set(ranked.map(row => row.account.id))
+
+  // Ranked members first (they can actually serve), then every other local
+  // sign-in the user could still check in. Unchecked accounts are listed so
+  // membership can be granted from the card — an opt-in nobody can see is not
+  // an opt-in. They carry no credits or measurement, because neither has been
+  // read for an account the pool does not cover.
+  const others = await pool.otherAccounts?.(region) ?? []
+  // Best-effort: a failure here leaves the column UNKNOWN, which is honest,
+  // rather than asserting a state nobody read.
+  const rotatedTo = await pool.rotatedToAccountId?.(region).catch(() => undefined)
+  const checkedIn: Readonly<Record<string, boolean>> =
+    await pool.checkedInToday?.(region).catch(() => ({} as Record<string, boolean>))
+    ?? {} as Record<string, boolean>
+  const rows: readonly {
+    account: { id: string, accountName: string }
+    member: boolean
+    ranked?: (typeof ranked)[number]
+  }[] = [
+    ...ranked.map(row => ({
+      account: row.account,
+      member: true,
+      ranked: row,
+    })),
+    ...others
+      .filter(account => !rankedIds.has(account.id))
+      .map(account => ({ account, member: false })),
+  ]
+
+  const accounts: WorkBuddyWebPoolAccount[] = rows.map(({ account, member, ranked: row }) => {
+    const measured = byId.get(account.id)
+    return {
+      accountId: account.id,
+      accountName: account.accountName,
+      ...measured?.credits === undefined ? {} : {
+        credits: measured.credits.total,
+        expiringSoon: measured.credits.expiringSoon,
+        ...measured.credits.nearestExpiryMs === undefined
+          ? {}
+          : { nearestExpiryMs: measured.credits.nearestExpiryMs },
+      },
+      ...measured?.probe === undefined ? {} : {
+        probe: {
+          outcome: measured.probe.outcome as WorkBuddyWebProbeOutcome,
+          atMs: measured.probe.atMs,
+          ...measured.probe.retryAtMs === undefined ? {} : { retryAtMs: measured.probe.retryAtMs },
+        },
+      },
+      ...row?.excludedBy === undefined ? {} : { excludedBy: row.excludedBy },
+      current: account.id === currentAccountId,
+      member,
+      ...checkedIn[account.id] === undefined ? {} : { checkedInToday: checkedIn[account.id] as boolean },
+    }
+  })
+
+  return {
+    enabled: preferences.enabled,
+    rotateByCredits: preferences.rotateByCredits,
+    autoTestIntervalMinutes: preferences.autoTestIntervalMinutes,
+    ...target.modelId === undefined ? {} : { targetModelId: target.modelId },
+    ...target.staleModelId === undefined ? {} : { staleTargetModelId: target.staleModelId },
+    targetModelSource: target.source,
+    // The SAVED list, verbatim. Deliberately not rewritten to the effective
+    // set: silently dropping ids would destroy the user's record of what they
+    // chose, and a login can come back (the desktop app re-adds it) in which
+    // case the saved id should apply again.
+    memberAccountIds: preferences.memberAccountIds,
+    // The ids that actually resolve to a listed account, i.e. what a batch will
+    // run on. Sent explicitly so the card never has to re-derive it: deriving
+    // it in the browser is what let the UI claim "1 of 1 selected" while the
+    // Host ran on zero accounts.
+    effectiveMemberAccountIds: effectiveMembersOf(
+      accounts.map(account => account.accountId),
+      new Set(preferences.memberAccountIds),
+    ),
+    ...rotatedTo === undefined ? {} : { rotatedToAccountId: rotatedTo },
+    accounts,
+    // The same displayed roster the model table uses, so the pool's manual
+    // picker can never offer a model id the rest of the card does not know —
+    // but TRIMMED to the three fields the picker renders. The model table
+    // already ships the full records in this same document, and the card
+    // re-reads it every 60 seconds.
+    catalog: deps.displayModels(region).map(model => ({
+      id: model.id,
+      name: model.name,
+      ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
+    })),
   }
 }
 
@@ -564,6 +789,109 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposePool = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_POOL_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        // Both actions are writes: check-in claims a reward on the user's real
+        // account, and a test spends real credits. So POST + loopback, the same
+        // guards the card's other mutations carry.
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        const action = poolActionOf(req.url ?? '/')
+        if (action === undefined) {
+          return json(res, 400, { error: 'action must be checkin or test' })
+        }
+        const pool = deps.pool
+        if (pool === undefined) {
+          return json(res, 503, { reason: 'pool-unavailable', error: 'account pool unavailable' })
+        }
+        try {
+          // The pool's own switch is enforced HERE, not only in the card: a
+          // hidden or stale card must not be able to run batches the user has
+          // switched off. This is the same reasoning as the probe route's
+          // one-model limit.
+          if (!pool.preferences(region).enabled) {
+            return json(res, 409, {
+              // Structured cause, not just prose: the card localizes this
+              // rather than echoing the English sentence into a Chinese UI.
+              reason: 'pool-disabled',
+              error: 'account pool is disabled for this region',
+            })
+          }
+          // Membership is an explicit opt-in, so an empty pool runs NOTHING.
+          // Enforced here as well as in the card: "no accounts checked" must
+          // never degrade into "then do all of them" — that is the one reading
+          // which would spend credits the user never authorized.
+          //
+          // Judged on RESOLVABLE members, not the saved list. A saved id whose
+          // sign-in has gone resolves to no credential, so a batch over it would
+          // touch nothing while reporting success — the exact "announced a test
+          // that never happened" symptom. A host that cannot answer (older
+          // build) falls back to the saved list, which is no worse than before.
+          const savedMembers = pool.preferences(region).memberAccountIds
+          const effective = await pool.effectiveMemberAccountIds?.(region)
+            .catch(() => undefined)
+          const runnable = effective ?? savedMembers
+          if (runnable.length === 0) {
+            // Two causes, two different fixes: "you never checked anything" vs
+            // "everything you checked has lost its local sign-in". They must be
+            // separate REASONS, not merely separate English sentences — the card
+            // PREFERS `reason` over `error` (AccountPool.tsx:585) and only falls
+            // back to `error` when no reason is sent, so folding them into one
+            // reason made this distinction dead code and told a user with ghost
+            // members to "check at least one account" when the real fix is to
+            // sign in again (or save to drop them).
+            const noneChecked = savedMembers.length === 0
+            return json(res, 409, {
+              reason: noneChecked ? 'no-members' : 'no-live-members',
+              error: noneChecked
+                ? 'no accounts are checked into this region\'s pool'
+                : 'no checked account still has a local sign-in',
+            })
+          }
+          if (action === 'checkin') {
+            if (pool.checkin === undefined) {
+              return json(res, 503, { reason: 'pool-unavailable', error: 'pool check-in unavailable' })
+            }
+            const rows = await pool.checkin(region)
+            return json(res, 200, { action: 'checkin', rows })
+          }
+          if (pool.test === undefined) {
+            return json(res, 503, { reason: 'pool-unavailable', error: 'pool test unavailable' })
+          }
+          const target = resolveTargetModel(
+            pool.catalog?.(region) ?? [],
+            pool.preferences(region).targetModelId,
+          )
+          if (target.modelId === undefined) {
+            // Two distinct causes, each with its own fix, and the card shows the
+            // matching one. NOT a silent fallback to a paid model: the whole
+            // point of resolving a free target is that a batch test stays free.
+            return json(res, 409, {
+              action: 'test',
+              modelId: undefined,
+              rows: [],
+              // A machine-readable cause so the card can localize it rather
+              // than echoing this English sentence to a Chinese UI.
+              reason: target.source === 'stale' ? 'target-model-stale' : 'no-free-model',
+              error: target.source === 'stale'
+                ? 'the saved target model is no longer offered by this region; pick another or switch back to automatic'
+                : 'no zero-multiplier model in this region; refresh the catalog or set a target model',
+            })
+          }
+          const rows = await pool.test(region, target.modelId)
+          // Measurements are persisted by the Host's own `test` implementation,
+          // alongside the rotation they feed. Doing it here as well would write
+          // the same facts twice and could interleave with a concurrent batch.
+          return json(res, 200, { action: 'test', modelId: target.modelId, rows })
+        } catch (error: unknown) {
+          json(res, 500, { reason: 'pool-failed', error: safeMessage(error) })
+        }
+      },
+    })
     const disposeDiagWrite = ctx.webServer.register({
       kind: 'exact',
       path: '/plugins/dsh-connect-workbuddy/__save',
@@ -626,6 +954,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       disposeAccounts()
       disposeUsage()
       disposeProbe()
+      disposePool()
       disposeDiagWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')

@@ -65,7 +65,14 @@ describe('settings scope delivering volatile fields as live references', () => {
     const regions = document()['regions'] as Record<string, unknown>
     // The user's report: saving one region loses the other.
     expect(Object.keys(regions)).toContain('global')
-    expect(regions.cn).toEqual(payload)
+    // The write MERGES onto the existing slot rather than replacing it, so
+    // `enabled: true` from the stored slot survives alongside the payload.
+    // That is the fix for the save-conflict defect: the slot also holds the
+    // pool's preferences, and a replace would have deleted them — saving the
+    // model list would silently wipe a pool configuration made elsewhere in
+    // the card. A caller that omits `enabled` now keeps the committed value
+    // instead of silently re-opening a provider the user switched off.
+    expect(regions.cn).toEqual({ ...payload, enabled: true })
   })
 
   it('writeRegionModels must never store the reference FUNCTION', async () => {

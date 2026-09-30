@@ -675,6 +675,16 @@ export class WorkBuddyCredentialStore {
   private desktopPathOverride: string | undefined
   private accountId: string | undefined
   private inflight: Promise<WorkBuddyCredential> | undefined
+  /**
+   * A RUNTIME account override from the pool's rotation, or undefined.
+   *
+   * Deliberately separate from {@link accountId}, which is the user's persisted
+   * choice. Rotation decides who serves *now*; it must never rewrite what the
+   * user picked, or "turn rotation off" could not restore their selection and
+   * the plugin would be unable to tell the two apart afterwards. Nothing here
+   * is ever written to settings.
+   */
+  private rotatedAccountId: string | undefined
 
   constructor(options: WorkBuddyStoreOptions) {
     this.refresh = options.refresh
@@ -945,6 +955,18 @@ export class WorkBuddyCredentialStore {
   /** The freshest stored credential for the current selection, no refresh. */
   async current(): Promise<WorkBuddyCredential | undefined> {
     const credentials = await this.readAll()
+    // The pool's rotation wins WHILE IT IS SET, and only while it names an
+    // account that still exists locally. It is consulted FIRST because it
+    // exists precisely to override the default choice at runtime — but it is
+    // never allowed to silently fall back either: a rotated id whose account
+    // disappeared falls through to the normal selection, since a vanished
+    // account cannot be billed whatever the reason.
+    if (this.rotatedAccountId !== undefined) {
+      const rotated = credentials.find(
+        credential => workbuddyAccountId(credential) === this.rotatedAccountId,
+      )
+      if (rotated !== undefined) return rotated
+    }
     if (this.accountId === undefined) return this.preferred(credentials)
     // A saved account can disappear when WorkBuddy replaces its login or
     // cleans up backups. Do NOT silently fall back to a different account: that
@@ -952,6 +974,22 @@ export class WorkBuddyCredentialStore {
     // undefined so the caller surfaces "no signed-in account" and the user can
     // re-select instead of the plugin quietly switching accounts.
     return credentials.find(credential => workbuddyAccountId(credential) === this.accountId)
+  }
+
+  /**
+   * Set (or clear) the pool's RUNTIME account override.
+   *
+   * Never persists and never touches {@link accountId}: the user's saved choice
+   * is what `clear` restores, which is the whole reason this lives in its own
+   * field. Rotation is off when this is called with `undefined`.
+   */
+  setRotatedAccount(accountId: string | undefined): void {
+    this.rotatedAccountId = accountId
+  }
+
+  /** The account the pool is currently rotating to, if any. */
+  rotatedAccount(): string | undefined {
+    return this.rotatedAccountId
   }
 
   /**

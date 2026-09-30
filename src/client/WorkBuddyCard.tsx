@@ -47,6 +47,11 @@ import type {
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
 import { writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
+import { AccountPool } from './AccountPool.tsx'
+// `createLatestWins` is the same tested latest-wins factory the Host uses for
+// rotation, imported rather than re-implemented: the rule has one definition
+// and one set of tests.
+import { createLatestWins } from '../account-pool.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
@@ -202,13 +207,22 @@ function formatNumber(value: number): string {
 function formatDateTime(value: number): string {
   return new Intl.DateTimeFormat(undefined, {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    hourCycle: 'h23',
   }).format(new Date(value))
 }
 
-/** Compact package-date rendering with time, e.g. 08/25 14:44. */
+/**
+ * Compact package-date rendering with time, e.g. `08/25 14:44`.
+ *
+ * `hourCycle: 'h23'` is what makes that example TRUE. Without it `Intl` defers
+ * to the browser locale, and en-US produced `08/25, 02:44 PM` — 12-hour, with a
+ * comma the template never asked for. `h23` (not `hour12: false`) keeps midnight
+ * at `00:00` instead of `24:00`, and matches DSH's own clock cycle.
+ */
 function formatDate(value: number): string {
   return new Intl.DateTimeFormat(undefined, {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    hourCycle: 'h23',
   }).format(new Date(value))
 }
 
@@ -309,6 +323,22 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   /** Save failure surfaced next to the buttons; cleared by the next attempt. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
+  /**
+   * Whether the account pool's rotation currently owns this region's choice.
+   *
+   * Reported up by the pool section. While true, the manual account dropdown is
+   * disabled: both would write the same slot, and letting them disagree is how
+   * the card ends up showing one account while another is billed. The pool
+   * shows the reason and an inline way to switch rotation off.
+   */
+  const [poolRotationLocked, setPoolRotationLocked] = useState(false)
+  /**
+   * Whether the account pool's save is in flight. Both sections write into one
+   * region slot and the Host merges per-region, so two concurrent saves can
+   * interleave on a stale base and revert each other while both report success
+   * — the two save buttons are serialized to make that impossible.
+   */
+  const [poolBusy, setPoolBusy] = useState(false)
   /** A refused account write (silently unpersisted settings on a locked file). */
   const [accountError, setAccountError] = useState<string | undefined>(undefined)
   const [checkingIn, setCheckingIn] = useState(false)
@@ -336,10 +366,43 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
 
   useEffect(() => settingsScope?.subscribe(() => { setSettingsRevision(value => value + 1) }), [settingsScope])
 
+  /**
+   * Per-region latest-wins guard for the usage fetch.
+   *
+   * Two refreshes can overlap — the 60s poll, a save, a batch action, the
+   * account re-scan — and they are plain `fetch`es with no ordering guarantee.
+   * Without a guard the SLOWER response wins, so a snapshot taken before a
+   * check-in could land after one taken after it and overwrite the newer
+   * credits. The guard makes "the last request started" the one that is applied,
+   * whatever order the responses arrive in.
+   *
+   * Keyed by region, not global: the card deliberately fetches BOTH regions at
+   * once (`for (const region of WORKBUDDY_REGIONS)` below), so a single shared
+   * counter would make each of those two calls cancel the other and leave one
+   * tab permanently stale.
+   *
+   * The rule itself is the tested `createLatestWins` factory, not a second
+   * implementation written here.
+   *
+   * `begin()` returns a probe that reports **stale**: `true` once a newer call
+   * has claimed the same region (see `src/account-pool.ts`). So the variable is
+   * named `stale` and the bail-out is `if (stale())` — the same polarity as the
+   * Host's rotation guard in `src/index.ts`. Naming it `fresh` and writing
+   * `if (!fresh())` inverts the poll: every response that is NOT superseded —
+   * i.e. every response in the single-fetch case — gets discarded, and the card
+   * renders its placeholder forever. That defect shipped once; the polarity is
+   * now pinned by a rendered assertion rather than by the spelling of the
+   * identifier.
+   */
+  const usageGuard = useRef(createLatestWins<WorkBuddyWebRegion>())
+
   const refreshUsage = useCallback(async (
     region: WorkBuddyWebRegion,
     signal?: AbortSignal,
   ): Promise<WorkBuddyWebUsage | undefined> => {
+    // Claimed BEFORE the fetch: any request that starts later supersedes this
+    // one, even if this one's response arrives after it.
+    const stale = usageGuard.current.begin(region)
     try {
       const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region), {
         headers: { accept: 'application/json' },
@@ -349,16 +412,39 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       const value: unknown = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const usage = value as WorkBuddyWebUsage
+      // Superseded while in flight: applying now would clobber a newer snapshot.
+      if (stale()) return undefined
       if (mounted.current && signal?.aborted !== true) {
         setStatusByRegion(prev => ({ ...prev, [region]: usage }))
       }
       return usage
     } catch (error: unknown) {
+      // The error path is guarded too: a stale failure would otherwise replace
+      // a newer successful snapshot with an error banner.
+      if (stale()) return undefined
       if (mounted.current && signal?.aborted !== true) {
-        setStatusByRegion(prev => ({
-          ...prev,
-          [region]: { status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') },
-        }))
+        const message = error instanceof Error ? error.message : t('row.requestFailed')
+        // Do NOT collapse the region into the union's `{ status: 'error' }`
+        // variant when we already have data. That variant carries NO fields —
+        // no `accounts`, `pool`, `credits` or `models` — and the whole panel
+        // body is gated on `status === 'signed-in'`, so replacing a healthy
+        // snapshot with it blanks the account picker, the credits panel, the
+        // model directory AND the account pool because one refresh failed. A
+        // user midway through editing pool settings would watch their panel
+        // vanish after pressing Save, which reads as data loss.
+        //
+        // Keeping the last good snapshot with a `refreshError` overlay shows
+        // the same information the failure would have hidden, plus the reason —
+        // the pattern `creditsError` and `checkinError` already use per section.
+        setStatusByRegion(prev => {
+          const previous = prev[region]
+          if (previous !== undefined && previous.status === 'signed-in') {
+            return { ...prev, [region]: { ...previous, refreshError: message } }
+          }
+          // Nothing to preserve: this region never loaded, so the bare error
+          // state is the honest answer (it drives the sign-in guidance).
+          return { ...prev, [region]: { status: 'error', message } }
+        })
       }
       return undefined
     }
@@ -570,9 +656,15 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         },
       }))
     } catch (error: unknown) {
+      // Same merge-not-replace rule as the usage fetch above: a failed model
+      // refresh must not wipe the pool, credits and account list.
       if (mounted.current) setStatusByRegion(prev => ({
         ...prev,
-        [activeRegion]: { status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') },
+        [activeRegion]: {
+          ...prev[activeRegion],
+          status: 'error',
+          message: error instanceof Error ? error.message : t('row.requestFailed'),
+        } as WorkBuddyWebUsage,
       }))
     } finally {
       if (mounted.current) setBusy(false)
@@ -732,9 +824,11 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       //
       // Verified write, because a save DISCARDS the draft: if the write did not
       // persist, throwing the user's edits away while reporting success would
-      // be unrecoverable — the draft is the only copy. `enabled` rides along
-      // too: `writeRegionModels` replaces the whole region slot, so omitting it
-      // would silently re-open a provider the user had switched off.
+      // be unrecoverable — the draft is the only copy. `writeRegionModels`
+      // MERGES onto the existing region slot, so this save cannot delete the
+      // pool preferences living in that same slot; `enabled` is still passed
+      // explicitly because it is the committed value the card renders, and the
+      // merge keeps whatever the slot already had for any field left absent.
       await writeRegionModels(settingsScope, status.region, {
         enabled: activeRegionOn,
         lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
@@ -834,7 +928,14 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         <input
                           type="checkbox"
                           checked={regionOnState}
-                          disabled={togglingRegion === region || !canWrite}
+                          /* Serialized with the two SAVE writers. All three
+                             write the SAME region slot, and the Host's
+                             `__save` merges PER REGION (`{ ...current,
+                             ...incoming }`), so a toggle carrying a stale
+                             snapshot can roll back a concurrent save — and vice
+                             versa. Gating only two of the three left exactly
+                             that window open. */
+                          disabled={togglingRegion === region || !canWrite || saving || poolBusy}
                           aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
                           onChange={(event) => { void toggleRegion(region, event.target.checked) }}
                         />
@@ -894,7 +995,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                            The list is the one source that distinguishes "no
                            account in effect" from "signed in". */
                         value={status.accounts.find(account => account.selected)?.id ?? ''}
-                        disabled={switchingAccount || !canWrite}
+                        disabled={switchingAccount || !canWrite || poolRotationLocked}
                         onChange={event => { void switchAccount(event.currentTarget.value) }}
                       >
                         {/* Shown while no row is in effect — an orphaned saved
@@ -1047,6 +1148,8 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       : null}
                     {status.creditsError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
+                    {status.refreshError === undefined ? null
+                      : <p className="dsm-workbuddy-usage-error" role="alert">{t('row.requestFailedHint', { message: status.refreshError })}</p>}
                     <section className="dsm-workbuddy-models" aria-label={t('row.modelsTitle')}>
                       <div className="dsm-workbuddy-models-head">
                         <div>
@@ -1193,15 +1296,47 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         {saveError === undefined ? null
                           : <span className="dsm-workbuddy-model-save-error">{t('row.saveError', { message: saveError })}</span>}
                         <div className="dsm-workbuddy-model-actions-buttons">
-                          <button type="button" className="dsm-btn dsm-btn-outline" disabled={!dirty || saving} onClick={discardModels}>
+                          <button type="button" className="dsm-btn dsm-btn-outline" disabled={!dirty || saving || poolBusy || togglingRegion !== undefined} onClick={discardModels}>
                             {t('row.discard')}
                           </button>
-                          <button type="button" className="dsm-btn dsm-btn-primary" disabled={!dirty || saving || activeEnabledIds.size === 0} onClick={() => { void saveModels() }}>
+                          <button type="button" className="dsm-btn dsm-btn-primary" disabled={!dirty || saving || poolBusy || togglingRegion !== undefined || activeEnabledIds.size === 0} onClick={() => { void saveModels() }}>
                             {saving ? t('row.saving') : t('row.save')}
                           </button>
                         </div>
                       </div>
                     </section>
+                    {/* The account pool. Rendered only when the Host reports
+                        pool state, so an older Host shows an unmodified card.
+                        It owns the rotation-vs-manual conflict: while rotation
+                        is on it reports `locked` and the account picker above
+                        is disabled, because two writers deciding the same slot
+                        is how "shows A, bills B" happens. The two sections'
+                        save buttons are also serialized (`siblingBusy` /
+                        `onBusyChange`): both write into ONE region slot and the
+                        Host merges per-region, so concurrent saves could revert
+                        each other. */}
+                    <AccountPool
+                      t={t}
+                      region={activeRegion}
+                      {...status.pool === undefined ? {} : { pool: status.pool }}
+                      {...settingsScope === undefined ? {} : { settingsScope }}
+                      siblingBusy={saving || togglingRegion !== undefined}
+                      onBusyChange={setPoolBusy}
+                      // Returns the promise so the pool section can AWAIT the
+                      // fresh props before discarding its draft (A-8). With
+                      // `void` here the await resolved immediately and the
+                      // window stayed open.
+                      //
+                      // And it answers with a BOOLEAN: `refreshUsage` reports a
+                      // failed fetch by RESOLVING (undefined) rather than
+                      // throwing, so the section cannot infer "the fresh props
+                      // arrived" from "it did not throw". `true` only when the
+                      // snapshot was actually applied; a superseded or failed
+                      // re-read resolves `false` and the draft is kept.
+                      onSaved={async () => (await refreshUsage(activeRegion)) !== undefined}
+                      onRefresh={() => { void refreshUsage(activeRegion) }}
+                      onRotationChange={setPoolRotationLocked}
+                    />
                   </>
                 : null}
               {status.status === 'signed-out'

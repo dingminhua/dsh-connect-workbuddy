@@ -29,6 +29,7 @@ A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bund
 
   **Two things to know.** ① **It really does spend credits** — one measured probe reported `credit` 0.02 (a refused one 429s and costs almost nothing). So testing is **manual and per-model only**: there is deliberately no “Test selected” batch button, because sweeping the whole list from one click is an uncontrolled spend — and the Host enforces the same rule, **accepting a single model only** and refusing multi-model requests. ② The upstream advertises a 1M context yet throttles far below it, and the plugin advertises up to 200K to DSH, so DSH compacts very late — hitting the throttle in a long session follows directly from that.
 - **Local account switching** — discovers the multiple sign-in credentials WorkBuddy's desktop app leaves behind and lets you switch per region. Tokens are never written to DSH settings.
+- **Account pool: batch actions across several accounts, plus credit-aware rotation** — tick the accounts you want into a pool and you get **one-click check-in for every account**, **one-click testing of every account against a model you choose** (defaulting to the region's zero-multiplier free model), and — when you want it — **rotation by credits**, letting the plugin pick which pool member gets billed. Membership starts **empty and is an explicit opt-in**: "signed in on this machine" is not the same as "spend this account's credits and claim its rewards". Rotation and manual selection are **mutually exclusive** and the card says why, in place; rotation only decides who serves at runtime and **never writes back your manual choice**, so switching it off restores that choice verbatim. Testing reuses the model rows' real-volume probe, so it **does cost real credits**; **automatic check-in is deliberately not offered** — a check-in claims real rewards, so it only ever runs when you press the button. See [Account pool](#account-pool).
 - **Actionable advice when a credential is refused** — when the upstream rejects the selected account's token, the plugin actually **probes** the other local sign-ins: if one still answers, it tells you to switch to it (with a one-click switch) instead of vaguely asking you to sign in again — re-authenticating fixes nothing while you are pinned to a revoked backup. Only when there is genuinely no other local account does it ask you to sign in again.
 - **Read-only credits overview** — remaining credit aggregated per package, plus each model's credit multiplier. Queries consume no credits.
 - **Multi-candidate credential paths** — probes the platform defaults for macOS / Windows / Linux in turn, overridable by environment variable or directly in the card. **When nothing is found, the card lists which paths were probed and why each one failed**: five distinct reasons (absent / unreadable / no usable token / encrypted with no key available / belongs to the other region), so the easiest case to misdiagnose — signed in, but the desktop app is not present — says the app must be there instead of telling you to sign in again. The **belongs to the other region** reason is different in kind: that sign-in is real and usable, it is simply filed under the other tab, so the card states the fix outright — switch tabs, no need to sign in again. The list says it once: the paragraph states the conclusion, the collapsed list supplies the per-path detail, and the two never repeat each other.
@@ -54,6 +55,64 @@ The model catalog comes from each region's correct source: CN reads `/v2/enterpr
 Credentials are read (read-only) from the WorkBuddy desktop app's own auth file. Refreshed tokens are kept per region in `$DSH_HOME/.workbuddy-auth.cn.json` and `$DSH_HOME/.workbuddy-auth.global.json` (two simultaneously signed-in accounts never overwrite each other; the legacy single file `.workbuddy-auth.json` is still read as a migration source); the desktop app's file is never written.
 
 **Encrypted credential fields**: newer desktop builds (Windows first) replace the auth file's `accessToken` / `refreshToken` strings with an AES-256-GCM envelope (`{"$wbEncrypted":1,"envelope":"…"}`), and the account's **display name (`nickname`) is encrypted the same way** — left unopened it degrades to a bare uin number. The envelope is sealed with a field key **compiled into the app itself**, not a user secret — so the plugin ships no key copy. When it meets an encrypted document it runs the installed app with `ELECTRON_RUN_AS_NODE` and calls that app's own native binding (`electron_browser_workbuddy_storage.loggerGet()`) to fetch the same payload and derive the key locally: it asks the very build that wrote the file. The key is cached in process memory only — never on disk, never in logs. Plain-string documents (macOS, older Windows builds) take the original path and never spawn a child process. `account.phoneNumber` is encrypted there too, and the plugin deliberately **neither reads nor displays it**. If the app lives somewhere unusual, point `WORKBUDDY_APP_EXECUTABLE` at its executable.
+
+## Account pool
+
+<p align="center">
+  <img src="docs/assets/dsh-connect-workbuddy-account-pool.png" width="900" alt="dsh-connect-workbuddy account pool: check-in all, test all, membership selection and credit-aware rotation" />
+</p>
+
+A machine usually carries more than one WorkBuddy sign-in. The **account pool** turns that into a single click: tick the accounts you want into the pool, then press **Check in all accounts** or **Test all accounts**; open **rotation by credits** when you want the plugin to choose the billed account for you.
+
+**Each region (domestic / international) has its own independent pool** — membership, target model, interval, and the rotation switch never affect the other side, because the two sides' accounts belong to different upstream stacks.
+
+### The two batch actions
+
+- **Check in all accounts** — signs in account by account. It **reads today's status first**, so an account that is already checked in is marked as such and receives **no write request at all** (idempotent — no duplicate claims); a single account failing marks only that row and **never aborts the batch**.
+- **Test all accounts** — sends one **real-volume** probe per member (about 25k input tokens; the same `probeModel` the model rows use, so it inherits both measured facts: throttling is triggered by request **size**, and the reset time is written into the response **body** rather than a header), reporting whether that account can serve that model right now.
+
+**Which model is tested:** by default the **zero-multiplier free model in that region's catalog** (`deepseek-v4.1-flash` on the domestic side), or a specific model you pick in the dropdown. If the model you named has left the catalog, the **manual action refuses outright** (`target-model-stale`) instead of quietly substituting another one — you asked to test *that* model, and swapping it answers a question you did not ask.
+
+**Cost and boundaries:** testing is a real request. Pointed at the free model (multiplier 0) it costs virtually nothing, but it is **not a free no-op**; check-in claims that day's real reward. Both actions run **only when you press the button** — the plugin **does not offer automatic check-in**, and the card does not show a switch that can never be flipped.
+
+### Membership is an explicit opt-in, empty by default
+
+"signed in on this machine" is not "spend this account's credits and claim its rewards". Membership starts **empty** and must be ticked one by one (or with **Select all**); **an empty pool never degrades into "all accounts"** — with nothing ticked, both batch actions are refused rather than running every account on your behalf.
+
+Ticking boxes is a **draft edit**: it lands on **Save**, the save button carries a dirty marker until then, and the draft survives switching tabs or closing the card.
+
+### Rotation by credits: turning "pick an account by balance" into an explicit grant
+
+This plugin's standing rule is that it **never reorders accounts to seek credits** — which account gets billed has to be predictable. Rotation is the exception **you switch on yourself**:
+
+1. Once on, the plugin ranks the usable members by **① highest credit balance first → ② credits expiring soonest first → ③ freshest credential as the tie-break** and bills the winner.
+2. **It is mutually exclusive with manual selection**: turning it on **greys out the account dropdown immediately** and explains why in place, with a switch-off button right there. Otherwise you get the worst possible state — **the dropdown reads account A while account B is actually billed**.
+3. **Rotation only decides who serves at runtime and never writes back your manual choice** (it does not touch `config.accounts[region]`). Switch it off and your last manual pick returns untouched.
+
+**Every rotation leaves a line in the card** (when, and from whom to whom) rather than happening silently.
+
+### The automatic test interval
+
+A timer ticks every 60 seconds and runs a "test all accounts" pass on your interval (**5 to 1440 minutes, default 30**). The 5-minute floor is deliberate: anything denser only throttles the whole pool.
+
+**One easily missed edge:** if the model you named has left the catalog, the scheduled pass **does not stop** — it falls back to the region's free model and keeps the measurements fresh. It has to: a member comes back into the pool through a **new probe result** (below), and a stale display preference must not freeze the whole pool's measurements. The manual action still refuses, for the reason given above.
+
+### Why an account leaves the pool, and when it comes back
+
+| Probe outcome | What it means for rotation |
+| --- | --- |
+| Usable | Eligible |
+| Rate limited | Out of the pool **temporarily**, returning on the reset time the upstream stated (and when it states none, the card says so rather than **inventing a countdown**) |
+| Out of credit | Out of the pool, returning at the monthly package's refresh time |
+| Credential rejected / model not found / upstream unreachable / failed | Out of the pool until a later probe refreshes the result |
+
+The key line: **"rate limited" is not "unusable"**. It is precisely the state most worth waiting on — treating it as permanently dead throws away the accounts that would have served you best.
+
+### Saving and drafts: why the card has two Save buttons
+
+One for model management, one for the pool — **deliberately kept apart** rather than merged: the two draft domains differ, and merging them means one failed write drags the other down (a catalog that will not save would stop you saving pool preferences too); a shared Discard would also throw away both drafts on a single misclick. Both sides use a **verified write** — **a write that did not land never discards the draft**, or your edits are lost for good.
+
+One class of state in the pool **does not go through a draft**: probe results, cooldowns, and the account rotation currently picked. Those are **observations**, written frequently by the plugin itself. The reason is practical — drafts are overwrite-based, so if observations lived in one, a single manual **Save** could roll the result a timer had just written **back to a several-minute-old value**.
 
 ## Install
 

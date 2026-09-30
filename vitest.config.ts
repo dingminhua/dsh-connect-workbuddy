@@ -51,7 +51,12 @@ const isolatedEnv = {
  */
 export default defineConfig({
   test: {
-    include: ['tests/**/*.spec.ts'],
+    // `.tsx` entries are component tests that mount the real AccountPool card
+    // under jsdom (see tests/pool-render.spec.tsx). They opt into the DOM via a
+    // `@vitest-environment jsdom` docblock so every other file stays on the
+    // plain node environment — jsdom is a dev-only dependency and must never
+    // leak a `window` into tests that assert host-side behaviour.
+    include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],
     environment: 'node',
     env: isolatedEnv,
     // Windows runners cold-start PowerShell very slowly; `processStartTimeMs`

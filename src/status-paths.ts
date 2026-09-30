@@ -30,6 +30,43 @@ export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
  */
 export const WORKBUDDY_PROBE_PATH = '/plugins/dsh-connect-workbuddy/probe'
 
+/**
+ * Plugin-owned account-pool endpoint: one batch action per call.
+ *
+ * `?action=checkin` claims the daily reward for every account of a region;
+ * `?action=test` probes every account against the region's target model. Both
+ * are POST and loopback-only because both cost something real — check-in writes
+ * to the user's account, a probe spends credits.
+ *
+ * Deliberately ONE endpoint rather than two: the two actions share every
+ * guard (method, origin, region, pool-enabled) and differ only in the work, so
+ * splitting them would duplicate the guards and invite them to drift apart.
+ */
+export const WORKBUDDY_POOL_PATH = '/plugins/dsh-connect-workbuddy/pool'
+
+/** Query parameter selecting which pool batch action a request means. */
+export const WORKBUDDY_POOL_ACTION_PARAM = 'action'
+
+/** The pool batch actions. */
+export type WorkBuddyPoolAction = 'checkin' | 'test'
+
+/** Read the pool action off a request URL; unknown/absent means undefined. */
+export function poolActionOf(url: string): WorkBuddyPoolAction | undefined {
+  const at = url.indexOf('?')
+  if (at === -1) return undefined
+  const value = new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_POOL_ACTION_PARAM)
+  return value === 'checkin' || value === 'test' ? value : undefined
+}
+
+/** Address one region's pool endpoint with an action. */
+export function withWorkBuddyRegionAndAction(
+  path: string,
+  region: WorkBuddyWebRegion,
+  action: WorkBuddyPoolAction,
+): string {
+  return `${withWorkBuddyRegion(path, region)}&${WORKBUDDY_POOL_ACTION_PARAM}=${action}`
+}
+
 /** Query parameter naming the region a card request addresses. */
 export const WORKBUDDY_REGION_PARAM = 'region'
 
@@ -133,6 +170,43 @@ export function nextRegionSlots<Slot extends object>(
  * value is always the `regions` map, i.e. exactly what `settingsScope.set(
  * 'regions', ...)` needs.
  */
+/**
+ * Build the next `regions` settings value for a MODEL-LIST save.
+ *
+ * The model save replaces a region slot wholesale, so the merge has to start
+ * from the EXISTING slot rather than from a fresh object: the pool's
+ * preferences live in that same slot, and a save that omitted them would delete
+ * settings the user configured elsewhere in the card. Every writer that owns
+ * only part of a slot goes through a helper like this one.
+ */
+export function nextRegionModels(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  models: Record<string, unknown>,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    ...models,
+  })
+}
+
+/**
+ * Build the next `regions` settings value for a POOL-PREFERENCES save.
+ *
+ * Same reasoning as {@link nextRegionModels}: the pool is one field of a slot
+ * that also holds the model list, so the merge starts from the existing slot.
+ */
+export function nextRegionPool(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  pool: Record<string, unknown>,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    pool,
+  })
+}
+
 export function nextRegionEnabled(
   value: unknown,
   region: WorkBuddyWebRegion,
@@ -348,6 +422,23 @@ export type WorkBuddyWebUsage =
     imageModelIds: readonly string[]
     credits?: WorkBuddyWebCredits
     creditsError?: string
+    /**
+     * The LAST refresh failed, but the snapshot below is intact.
+     *
+     * A failed usage re-read must not blank the panel. The account picker,
+     * credits, model directory and account pool are all gated on this region
+     * being 'signed-in', so collapsing the whole snapshot into the union's
+     * `{ status: 'error' }` variant (which carries no data at all) hides every
+     * one of them — including a pool the user is midway through editing. It
+     * reads as "the plugin lost my configuration". Carrying the failure as an
+     * overlay keeps the last good directory on screen with a banner above it,
+     * which is also what `creditsError`/`checkinError` already do per section.
+     *
+     * Only ever set on a snapshot that WAS healthy; a region that never loaded
+     * still reports the plain `{ status: 'error' }` so it can show the
+     * sign-in guidance instead of an empty panel.
+     */
+    refreshError?: string
     checkin?: WorkBuddyWebCheckin
     checkinError?: string
     /**
@@ -358,6 +449,13 @@ export type WorkBuddyWebUsage =
     credentialRejected?: boolean
     /** Present only alongside {@link credentialRejected}. */
     recovery?: WorkBuddyWebRecovery
+    /**
+     * This region's account-pool state, when the Host supports it.
+     *
+     * Absent on a Host without pool support, so the card renders no pool
+     * section instead of an empty one.
+     */
+    pool?: WorkBuddyWebPool
     /**
      * Diagnostic only: whether this Host build's Config carries the volatile
      * markers dsh-settings requires before it will persist any field. Exposed
@@ -418,6 +516,162 @@ export interface WorkBuddyWebProbeResult {
 /** The probe endpoint's answer document. */
 export interface WorkBuddyWebProbeAnswer {
   results: readonly WorkBuddyWebProbeResult[]
+}
+
+/** Why one account is currently out of the pool. */
+export type WorkBuddyWebPoolExclusion =
+  | 'unusable'
+  | 'rate-limited'
+  | 'out-of-credit'
+  | 'credential-rejected'
+  | 'not-found'
+  | 'unavailable'
+  | 'failed'
+
+/**
+ * One account's row in the pool, as the card renders it.
+ *
+ * Ties together the three facts the card shows per account — credits, the last
+ * test, and whether it is currently eligible — so the ranking the card displays
+ * comes from ONE Host answer rather than being re-derived in the browser.
+ */
+export interface WorkBuddyWebPoolAccount {
+  accountId: string
+  accountName: string
+  /** Total remaining credits, absent when the credits route failed. */
+  credits?: number
+  /** Credits expiring within 3 days. */
+  expiringSoon?: number
+  /** When the nearest package expires, in ms. */
+  nearestExpiryMs?: number
+  /** The last test of the target model, absent when never tested. */
+  probe?: {
+    outcome: WorkBuddyWebProbeOutcome
+    atMs: number
+    /** Only when the upstream named a time; never invented locally. */
+    retryAtMs?: number
+  }
+  /** Set when this account cannot serve right now. */
+  excludedBy?: WorkBuddyWebPoolExclusion
+  /** Whether this is the account currently billing traffic for the region. */
+  current: boolean
+  /**
+   * Whether the user checked this account into the pool.
+   *
+   * Listed rows include UNCHECKED accounts so the card can offer them to check:
+   * membership is an explicit opt-in, and a user can only opt in to something
+   * they can see. Only checked rows can bill or be batched.
+   */
+  member: boolean
+  /**
+   * Today's check-in state for this account.
+   *
+   * ABSENT means it was not read — the card must then say so rather than
+   * rendering a definite "not checked in", which would contradict the check-in
+   * result the user just watched succeed.
+   */
+  checkedInToday?: boolean
+}
+
+/**
+ * The pool's state for one region.
+ *
+ * `targetModelId`/`targetModelSource` exist so the card can state WHICH model a
+ * test would use and WHERE that choice came from. `none` is a real, common
+ * answer (the CN catalog carries no free model until its first refresh) and the
+ * card must render it as "no free model" rather than silently substituting a
+ * paid one.
+ */
+export interface WorkBuddyWebPool {
+  enabled: boolean
+  rotateByCredits: boolean
+  autoTestIntervalMinutes: number
+  /** The model a test would use right now; absent when none can be resolved. */
+  targetModelId?: string
+  /**
+   * The saved target id that is no longer offered by this region's catalog.
+   *
+   * Present only when {@link targetModelSource} is `'stale'`. The card says so
+   * and offers a way back to automatic, instead of enabling a test button that
+   * would run against a model the upstream does not offer.
+   */
+  staleTargetModelId?: string
+  /**
+   * Where the target came from. `'stale'` means the SAVED id is no longer in
+   * the catalog — a distinct state from `'none'` (no free model exists),
+   * because the two need opposite advice.
+   */
+  targetModelSource: 'preferred' | 'free' | 'none' | 'stale'
+  /** The account ids the user has checked into this region's pool. */
+  memberAccountIds?: readonly string[]
+  /**
+   * The subset of {@link memberAccountIds} that resolves to a real local
+   * sign-in — i.e. what a batch actually runs on.
+   *
+   * Sent so the card never re-derives it: counting the raw saved list is what
+   * let the UI claim "1 of 1 selected" and enable both buttons while the Host
+   * ran on ZERO accounts and reported success.
+   */
+  effectiveMemberAccountIds?: readonly string[]
+  /**
+   * The account rotation most recently moved billing TO, when it moved.
+   *
+   * Reported so the card can record a switch it did not perform: rotation
+   * happens on the Host (including on a timer), and the card is otherwise
+   * unable to tell a switch from an unchanged state — which would make
+   * "every switch is recorded" a promise the UI could not keep.
+   */
+  rotatedToAccountId?: string
+  accounts: readonly WorkBuddyWebPoolAccount[]
+  /**
+   * The models a manual target can be chosen from.
+   *
+   * TRIMMED to what the picker renders (id, name, multiplier) rather than the
+   * full `WorkBuddyWebModel` roster: the model table above already ships that
+   * roster in the same document, and this block is re-read on every 60-second
+   * poll, so carrying the full records here duplicated the whole catalog twice
+   * per response for three fields.
+   */
+  catalog?: readonly WorkBuddyWebPoolModel[]
+}
+
+/** One account's check-in row, as the card renders it. */
+export interface WorkBuddyWebPoolCheckinRow {
+  accountId: string
+  accountName: string
+  status: 'claimed' | 'already' | 'failed'
+  credit?: number
+  streakDays?: number
+  message?: string
+}
+
+/** One account's test row, as the card renders it. */
+export interface WorkBuddyWebPoolTestRow {
+  accountId: string
+  accountName: string
+  result: WorkBuddyWebProbeResult
+}
+
+/** One model as the pool's target picker needs it. */
+export interface WorkBuddyWebPoolModel {
+  id: string
+  name: string
+  /** Absent when the upstream stated no multiplier (NOT the same as free). */
+  creditMultiplier?: number
+}
+
+/** The pool endpoint's answer for `action=checkin`. */
+export interface WorkBuddyWebPoolCheckinAnswer {
+  action: 'checkin'
+  rows: readonly WorkBuddyWebPoolCheckinRow[]
+}
+
+/** The pool endpoint's answer for `action=test`. */
+export interface WorkBuddyWebPoolTestAnswer {
+  action: 'test'
+  /** The model actually tested; absent when none could be resolved. */
+  modelId?: string
+  rows: readonly WorkBuddyWebPoolTestRow[]
 }
 
 /**

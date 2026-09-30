@@ -30,7 +30,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { WorkBuddyCredentialStore } from './auth.ts'
+import { workbuddyAccountId, WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, fallbackModelsFor, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
@@ -47,6 +47,26 @@ import {
 import type { WorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { probeModel } from './probe.ts'
+import {
+  checkinAllAccounts,
+  probeUpdatesOf,
+  testAllAccounts,
+} from './account-pool-run.ts'
+import type {
+  WorkBuddyPoolRunnerDeps,
+  WorkBuddyPoolTarget,
+} from './account-pool-run.ts'
+import type { WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
+import {
+  createLatestWins,
+  effectiveMembersOf,
+  duePoolRegions,
+  pickAccount,
+  pickFreeModel,
+  POOL_TICK_MS,
+  resolveTargetModel,
+} from './account-pool.ts'
+import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
@@ -276,6 +296,41 @@ export interface WorkBuddyRegionState {
   imageModelIds?: string[]
   /** Local DSH context budget per model in this region. */
   contextBudgets?: Record<string, WorkBuddyContextBudget>
+  /** This region's account-pool preferences (opt-in; see {@link WorkBuddyPoolPreferences}). */
+  pool?: WorkBuddyPoolPreferences
+}
+
+/**
+ * One region's account-pool preferences, as stored.
+ *
+ * Every field is a USER CHOICE, which is why the pool's measured facts are not
+ * here: preferences are saved through the card's draft-and-discard path, and a
+ * measurement living in the same slot would be rolled back by the next save.
+ */
+export interface WorkBuddyPoolPreferences {
+  /** Whether the pool is active for this region. Opt-in: default false. */
+  enabled?: boolean
+  /**
+   * Whether the plugin may choose the billed account by credits.
+   *
+   * Opt-in, and mutually exclusive with manual selection: while it is on, the
+   * card disables the account dropdown, because two writers deciding the same
+   * slot is exactly how "the dropdown says A but B is billed" happens.
+   */
+  rotateByCredits?: boolean
+  /** Minutes between automatic tests; clamped to 5..1440. */
+  autoTestIntervalMinutes?: number
+  /** Model id to test; `''` means auto-pick a free model from this region. */
+  targetModelId?: string
+  /**
+   * The account ids checked into this region's pool.
+   *
+   * An EXPLICIT opt-in, and empty by default: the batch actions claim rewards
+   * and spend credits on real accounts, so membership is the user's decision
+   * rather than a consequence of which sign-ins happen to exist. Empty means
+   * the pool covers nothing and both buttons stay disabled.
+   */
+  memberAccountIds?: string[]
 }
 
 /** Plugin configuration. */
@@ -322,12 +377,30 @@ const modelConfig = z.object({
   maxTokens: z.number().step(1).min(1),
 })
 
+/**
+ * One region's account-pool PREFERENCES.
+ *
+ * Only user choices live here. The pool's MEASURED facts (probe outcomes,
+ * cooldowns, the account currently billed) are deliberately NOT part of this
+ * schema — see `src/account-pool-store.ts`. The card saves preferences with a
+ * draft-and-discard write, so storing measurements in the same slot would let
+ * one "Save" press overwrite results the timer had just written.
+ */
+const poolConfig = z.object({
+  enabled: z.boolean().default(false).description('Whether the account pool is active for this region (opt-in)'),
+  rotateByCredits: z.boolean().default(false).description('Whether the plugin may switch the billed account by credits (opt-in; disables manual selection)'),
+  autoTestIntervalMinutes: z.number().step(1).min(5).max(1440).default(30).description('Minutes between automatic pool tests (5..1440)'),
+  targetModelId: z.string().default('').description('Model id to test; empty means pick a zero-multiplier model from this region\'s catalog'),
+  memberAccountIds: z.array(z.string()).default([]).description('Account ids checked into this pool (opt-in; empty means the pool covers nothing)'),
+})
+
 const regionStateConfig = z.object({
   enabled: z.boolean().default(true).description('Whether this region\'s provider is offered to DSH (opt-out; false withdraws it entirely)'),
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
   imageModelIds: z.array(z.string()).default([]),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
+  pool: poolConfig.default({}),
 })
 
 const accountSelectionConfig = z.object({
@@ -530,6 +603,37 @@ export async function legacyAttributionRegion(
  */
 export function apply(ctx: Context, config: Config): void {
   const client = new WorkBuddyUpstreamClient()
+
+  /**
+   * How long a check-in reading is reused before asking the upstream again.
+   *
+   * The card polls the usage route every 60 seconds, but "did this account
+   * check in today" changes only when a check-in runs or the day rolls over.
+   * Without a cache, a 10-account pool cost ~14,400 upstream requests a day for
+   * an answer that was almost always identical.
+   */
+  const CHECKIN_CACHE_MS = 10 * 60_000
+
+  /**
+   * Per-region, per-account check-in readings.
+   *
+   * Invalidated by this plugin's own check-in batch (the only writer that can
+   * change the answer during a session), so the user sees their result
+   * immediately instead of waiting out the TTL.
+   */
+  const checkinStateCache: Partial<
+    Record<WorkBuddyRegion, Record<string, { checkedIn: boolean, atMs: number }>>
+  > = {}
+
+  /**
+   * Latest-wins guard for `applyRotation`, keyed by region.
+   *
+   * Declared here (near the top of `apply`) rather than beside `applyRotation`
+   * itself: that function is CALLED from the startup path above its definition,
+   * so a `const` declared down there would be in its temporal dead zone.
+   */
+  const rotationGuard = createLatestWins<WorkBuddyRegion>()
+
 
   // The namespace the host actually serves (see `settingsNamespaceOf`). On
   // 0.1.7 this is the Loader entry id, and the harness looks it up by EXACT
@@ -764,6 +868,132 @@ export function apply(ctx: Context, config: Config): void {
     regionUsable(region, usable) {
       if (stacks[region].catalog.setRegionUsable(usable)) invalidateCatalog()
     },
+    /**
+     * The account pool, resolved per region.
+     *
+     * Region-scoped throughout: the CN and international pools are separate
+     * stacks of accounts, so one region's pool can never rank or bill the
+     * other's accounts.
+     *
+     * `rotateByCredits` is consumed HERE, by the credential store's selection
+     * hook, rather than by writing `config.accounts[region]`. That separation
+     * is the whole reason "turn rotation off" cleanly restores the user's own
+     * choice: rotation decides who serves at runtime and never overwrites the
+     * record of what the user picked.
+     */
+    pool: {
+      preferences: region => poolPreferencesOf(current(), region),
+      members: region => poolMembersOf(region),
+      /**
+       * The checked accounts that resolve to a local sign-in.
+       *
+       * A local scan only — no upstream calls — so the route's empty-pool guard
+       * can use it on every batch. {@link poolMembersOf} is the expensive one
+       * (it fetches credits per account) and is not suitable there.
+       */
+      effectiveMemberAccountIds: async region => {
+        const saved = poolPreferencesOf(current(), region).memberAccountIds
+        if (saved.length === 0) return []
+        const accounts = await stacks[region].store.accounts()
+        // SAVED order, because this is the list the card compares against the
+        // user's own checks; the roster it renders is ordered separately.
+        return effectiveMembersOf(saved, new Set(accounts.map(account => account.id)))
+      },
+      /**
+       * Local sign-ins the pool does NOT cover.
+       *
+       * Sent so the card can offer them to check in. Membership is an explicit
+       * opt-in, and a user cannot opt in to an account the card never shows.
+       */
+      async otherAccounts(region) {
+        const wanted = new Set(poolPreferencesOf(current(), region).memberAccountIds)
+        const accounts = await stacks[region].store.accounts()
+        return accounts
+          .filter(account => !wanted.has(account.id))
+          .map(account => ({ id: account.id, accountName: account.accountName }))
+      },
+      /**
+       * Today's check-in state per account, for the pool table.
+       *
+       * Read per account through `credentialFor` (never `resolve`), so asking
+       * about an account cannot change which one is billing. A per-account
+       * failure is simply omitted, which the card renders as unknown.
+       */
+      async checkedInToday(region) {
+        // Skip the read entirely when the pool is off: the card renders no pool
+        // section in that state, so N upstream requests per poll would be pure
+        // waste (and cost, on the upstream's side).
+        if (!poolPreferencesOf(current(), region).enabled) return {}
+        const store = stacks[region].store
+        const accounts = await store.accounts()
+        const now = Date.now()
+        const entries = await Promise.all(accounts.map(async account => {
+          // Serve from the cache while it is fresh. The card polls every 60
+          // seconds, but "did this account check in today" only changes when a
+          // check-in runs or the day rolls over — so re-reading it on every
+          // poll meant ~14,400 requests/day for a 10-account pool. A check-in
+          // this plugin performs invalidates its own entry (see `checkin`).
+          const cached = checkinStateCache[region]?.[account.id]
+          if (cached !== undefined && now - cached.atMs < CHECKIN_CACHE_MS) {
+            return [account.id, cached.checkedIn] as const
+          }
+          const credential = await store.credentialFor(account.id).catch(() => undefined)
+          if (credential === undefined) return undefined
+          const status = await client.fetchCheckinStatus(credential).catch(() => undefined)
+          if (status === undefined) return undefined
+          checkinStateCache[region] = {
+            ...checkinStateCache[region],
+            [account.id]: { checkedIn: status.todayCheckedIn, atMs: now },
+          }
+          return [account.id, status.todayCheckedIn] as const
+        }))
+        return Object.fromEntries(entries.filter(entry => entry !== undefined))
+      },
+      /**
+       * The account rotation last moved to, read from the store's runtime
+       * override. Absent means rotation is not currently redirecting billing.
+       */
+      async rotatedToAccountId(region) {
+        return stacks[region].store.rotatedAccount()
+      },
+      async currentAccountId(region) {
+        // The account the STORE would actually bill, which is not always the
+        // ranking's winner: rotation is applied to the store below, and the
+        // card must show who is really serving rather than who should be.
+        const credential = await stacks[region].store.current().catch(() => undefined)
+        return credential === undefined ? undefined : workbuddyAccountId(credential)
+      },
+      checkin: async region => {
+        const rows = await checkinAllAccounts(
+          await poolTargets(region),
+          poolRunnerDeps(region),
+        )
+        // Drop the cached readings for accounts this batch touched, so the
+        // card's check-in column reflects the result immediately rather than
+        // showing the pre-batch state until the TTL expires.
+        for (const row of rows) {
+          if (row.status === 'failed') continue
+          const cached = checkinStateCache[region]
+          if (cached !== undefined) delete cached[row.accountId]
+        }
+        return rows
+      },
+      test: async (region, modelId) => {
+        const rows = await testAllAccounts(
+          await poolTargets(region),
+          modelId,
+          poolRunnerDeps(region),
+        )
+        // Persist first, then rotate: the ranking reads the measurements this
+        // batch just produced, so rotating before they land would pick from the
+        // PREVIOUS state and could rotate onto an account this test just
+        // proved unusable.
+        await writePoolProbes(region, probeUpdatesOf(rows))
+        await applyRotation(region)
+        return rows
+      },
+      catalog: region => displayModels(current(), region),
+    },
   }))
 
   /**
@@ -787,6 +1017,173 @@ export function apply(ctx: Context, config: Config): void {
       return refreshes.length === 0 ? undefined : Math.min(...refreshes)
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * Apply the pool's rotation to one region's store.
+   *
+   * The store's runtime override is set only when rotation is switched ON and a
+   * usable account exists; otherwise it is CLEARED, which restores the user's
+   * own selection immediately. Clearing on every non-rotating path is what
+   * makes "turn rotation off" complete rather than leaving a stale override
+   * billing under a switch that reads as off.
+   *
+   * Never writes settings: the user's saved choice is untouched throughout.
+   */
+  const applyRotation = async (region: WorkBuddyRegion): Promise<void> => {
+    const store = stacks[region].store
+    // Latest-wins, per region: this function AWAITS (fetching credits per
+    // member), so two overlapping calls can interleave and only the newest may
+    // write. See `createLatestWins` for the full reasoning.
+    const stale = rotationGuard.begin(region)
+
+    const preferences = poolPreferencesOf(current(), region)
+    if (!preferences.enabled || !preferences.rotateByCredits) {
+      store.setRotatedAccount(undefined)
+      return
+    }
+    const members = await poolMembersOf(region)
+    if (stale()) return
+    // An account measured unusable is never rotated to, which is the point of
+    // testing: the pool's measurements are what keep traffic off a dead
+    // account rather than only reporting on it.
+    const picked = pickAccount(members, Date.now())
+    // Re-read the preferences AFTER the await: the settings may have changed
+    // while we were fetching credits, and acting on the pre-await snapshot is
+    // the same class of bug as writing after a newer call.
+    const latest = poolPreferencesOf(current(), region)
+    if (!latest.enabled || !latest.rotateByCredits) {
+      store.setRotatedAccount(undefined)
+      return
+    }
+    store.setRotatedAccount(picked?.id)
+  }
+
+  /**
+   * One region's POOL members, each with its credits and last measurement.
+   *
+   * Only CHECKED accounts: an unchecked account is not a candidate to bill, so
+   * it must not reach the ranking that decides who serves.
+   *
+   * Read through `credentialFor()` — never `resolve()` — so no account's
+   * selection state is touched: a batch must measure every member without
+   * changing which one is billing. Credits are fetched per account and a
+   * failure degrades to "unknown" for that row only — one unreadable balance
+   * must not blank the whole pool.
+   */
+  async function poolMembersOf(region: WorkBuddyRegion): Promise<WorkBuddyPoolMember[]> {
+    const store = stacks[region].store
+    const accounts = await poolMemberAccounts(region)
+    const probes = await readPoolProbes(region)
+    const rows = await Promise.all(accounts.map(async account => {
+      const credential = await store.credentialFor(account.id).catch(() => undefined)
+      const credits = credential === undefined
+        ? undefined
+        : await client.fetchCredits(credential).catch(() => undefined)
+      return {
+        account: { id: account.id, accountName: account.accountName },
+        ...credits === undefined ? {} : {
+          credits: {
+            // The upstream client already aggregates these two, and the card
+            // displays the same figures — so re-deriving them here would let
+            // the pool and the card disagree about one account's expiry.
+            total: credits.total,
+            expiringSoon: credits.expiringSoon,
+            ...credits.nearestExpiryMs === undefined
+              ? {}
+              : { nearestExpiryMs: credits.nearestExpiryMs },
+          },
+        },
+        ...probes[account.id] === undefined ? {} : { probe: probes[account.id] as WorkBuddyPoolProbe },
+        tokenExpiresAtMs: account.tokenExpiresAtMs,
+      }
+    }))
+    return rows
+  }
+
+  /** One region's pool preferences, with the schema's defaults applied. */
+  const poolPreferencesOf = (config: Config, region: WorkBuddyRegion) => {
+    const pool = regionStateOf(config, region).pool
+    return {
+      enabled: pool?.enabled === true,
+      rotateByCredits: pool?.rotateByCredits === true,
+      autoTestIntervalMinutes: pool?.autoTestIntervalMinutes ?? 30,
+      targetModelId: pool?.targetModelId ?? '',
+      memberAccountIds: pool?.memberAccountIds ?? [],
+    }
+  }
+
+  /**
+   * The accounts the user has checked into this region's pool.
+   *
+   * Membership is an EXPLICIT opt-in list, not "every local sign-in": the two
+   * batch actions spend real credits and claim real rewards, so which accounts
+   * they touch has to be the user's decision rather than a side effect of
+   * having signed in on this machine. An account that is not checked is
+   * untouched by check-in, testing, and rotation alike.
+   */
+  async function poolMemberAccounts(region: WorkBuddyRegion) {
+    const saved = poolPreferencesOf(current(), region).memberAccountIds
+    if (saved.length === 0) return []
+    const accounts = await stacks[region].store.accounts()
+    const byId = new Map(accounts.map(account => [account.id, account]))
+    // The shared rule ANSWERS this question and this site only supplies the
+    // store's order (see `effectiveMembersOf`'s contract) plus the id→row
+    // lookup. The obvious shape — filter `accounts` by a set built from the
+    // rule — is deceptive: it makes the delegation unobservable, because
+    // `accounts.filter(id ∈ (store ∩ saved))` collapses to `accounts ∩ saved`
+    // for ANY membership rule at all. That version passed every test while the
+    // rule could have been deleted; the independent verification proved it. So
+    // the rule's own output drives the result.
+    return effectiveMembersOf(
+      accounts.map(account => account.id),
+      new Set(saved),
+    ).flatMap(id => {
+      const account = byId.get(id)
+      return account === undefined ? [] : [account]
+    })
+  }
+
+  /** The batch runner's view of one region's pool members. */
+  async function poolTargets(region: WorkBuddyRegion): Promise<WorkBuddyPoolTarget[]> {
+    const accounts = await poolMemberAccounts(region)
+    return accounts.map(account => ({
+      accountId: account.id,
+      accountName: account.accountName,
+    }))
+  }
+
+  /**
+   * The two actions' shared dependency set.
+   *
+   * `credentialFor` — never `resolve()` — is what makes a batch possible at
+   * all: it fetches any account's credential WITHOUT changing the region's
+   * selection, so testing every account cannot switch the account that bills
+   * the user's live traffic.
+   */
+  function poolRunnerDeps(region: WorkBuddyRegion): WorkBuddyPoolRunnerDeps {
+    const store = stacks[region].store
+    return {
+      credentialFor: accountId => store.credentialFor(accountId),
+      fetchCheckinStatus: credential => client.fetchCheckinStatus(credential),
+      claimDailyCheckin: credential => client.claimDailyCheckin(credential),
+      probe: async (credential, modelId) => {
+        // The SAME quota-refresh input the single-model probe route passes.
+        // Without it an exhausted account reports "the upstream gave no time",
+        // so the card could not say when a drained account returns — and the
+        // pool would re-test it blindly instead of waiting for the reset. The
+        // read is best-effort: a probe without a cooldown is still a useful
+        // probe (see `quotaRefreshOf`).
+        const quotaRefreshAtMs = await quotaRefreshOf(region, credential)
+        return probeModel({
+          client,
+          credential,
+          modelId,
+          nowMs: Date.now(),
+          ...quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs },
+        })
+      },
     }
   }
 
@@ -823,10 +1220,34 @@ export function apply(ctx: Context, config: Config): void {
   ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
     .on('loader/volatile-update', () => {
       applySelection(current())
+      // Re-apply rotation on EVERY committed settings write, not only on a test
+      // run. Without this, switching the pool (or rotation) OFF left the
+      // runtime override in place: `applyRotation`'s clearing branch was
+      // reachable only through the two test paths, and disabling the pool also
+      // disables both of those (the manual route 409s and the scheduler stops
+      // scheduling). `current()` then kept preferring the rotated account for
+      // the rest of the process lifetime, contradicting the card's promise that
+      // switching the pool off restores "follow the account you selected".
+      for (const region of REGION_KEYS) {
+        void applyRotation(region).catch(() => {
+          // A failed re-rank must not break the settings write that triggered
+          // it; the next write or test converges.
+        })
+      }
     })
 
   // Initial wiring: selections, per-region catalogs from the saved state.
   applySelection(config)
+
+  // Apply the pool's rotation once at startup too. A restart must not leave a
+  // region on the WRONG account until the first scheduled test (which, with the
+  // default 30-minute interval, is up to half an hour later) — and a restart
+  // clears the in-memory override, so without this the pool would silently stop
+  // rotating until then. Best-effort: a failure here just leaves the user's own
+  // selection in effect, which is the safe default.
+  for (const region of REGION_KEYS) {
+    void applyRotation(region).catch(() => {})
+  }
 
   // Attribute the legacy single-account selection to its own region once the
   // local scan can tell which one that is, then re-apply. Until this resolves
@@ -849,6 +1270,109 @@ export function apply(ctx: Context, config: Config): void {
   })()
 
   let stopped = false
+
+  /**
+   * When each region's automatic test last ran, in epoch ms.
+   *
+   * In-memory only, and deliberately NOT persisted: it exists to space out
+   * runs within one session. Persisting it would make a restart skip a test the
+   * user was owed, and losing it only costs one interval.
+   */
+  const poolLastRunMs: Partial<Record<WorkBuddyRegion, number>> = {}
+
+
+  /**
+   * The pool scheduler: ONE heartbeat for both regions.
+   *
+   * A single timer rather than one per region, because the tick does no network
+   * work of its own — it reads the config, compares timestamps, and only then
+   * runs a batch. That also means a settings change needs no re-arming: the next
+   * tick reads whatever interval is now saved.
+   *
+   * This is what makes the "自动测试间隔" setting real. Before it existed the
+   * interval was stored and never consumed, so the card promised a behaviour the
+   * plugin did not have.
+   */
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      void (async () => {
+        if (stopped) return
+        const nowMs = Date.now()
+        // `duePoolRegions` both ARMS a region's clock on first sight and
+        // decides whether it is due. Arming and running are separate steps on
+        // purpose: `poolDueAt` reports "not due" for a region that has never
+        // run, so a scheduler that only stamped the clock when it ran would
+        // never stamp it at all and would never fire. It also keeps a clock for
+        // an enabled region ONLY, so re-enabling the pool waits a full interval
+        // instead of inheriting a stale timestamp.
+        const schedule = duePoolRegions({
+          state: poolLastRunMs,
+          regions: REGION_KEYS,
+          enabledOf: region => poolPreferencesOf(current(), region).enabled
+            // Both switches must be on: the pool's own, and the region's
+            // provider. A withdrawn region has no traffic to keep healthy.
+            && regionEnabled(current(), region),
+          intervalMinutesOf: region => poolPreferencesOf(current(), region).autoTestIntervalMinutes,
+          nowMs,
+        })
+        for (const region of REGION_KEYS) {
+          const next = schedule.next[region]
+          if (next === undefined) delete poolLastRunMs[region]
+          else poolLastRunMs[region] = next
+        }
+        for (const region of schedule.due) {
+          // The clock is already stamped above, so a slow batch cannot be
+          // re-entered by the next tick and a failure still costs a full
+          // interval instead of hammering a broken upstream every minute.
+          await runScheduledPoolTest(region).catch(() => {
+            // A scheduled run is background work: a failure is not the user's
+            // problem to acknowledge, and the next tick retries.
+          })
+        }
+      })()
+    }, POOL_TICK_MS)
+    return () => { clearInterval(timer) }
+  }, 'dsh-connect-workbuddy: account pool scheduler')
+
+  /**
+   * One scheduled pass for a region: test the pool's members, then re-rank.
+   *
+   * Never bills a paid model on a timer: the target is the user's saved model
+   * when it resolves, and the region's FREE model when the saved one has left
+   * the catalog. An unresolvable target with no free model available stops the
+   * pass — the free-target rule is what stops a timer from spending credits.
+   *
+   * The free FALLBACK for a stale saved model is D3's fix, not a convenience.
+   * The scheduler's job is to keep MEASUREMENTS fresh, and a measurement is
+   * what keeps rotation off a dead account. It used to return early whenever
+   * `resolveTargetModel` produced no id — which is exactly what a saved model
+   * that left the catalog produces — so a stale *display preference* froze the
+   * measurement loop for the whole region. The two exclusions then behaved
+   * asymmetrically: a `rate-limited` member clears by the clock alone
+   * (`exclusionOf` consults `retryAtMs`), while an `unavailable` member can
+   * only be cleared by a NEW probe — and no probe was ever written. The member
+   * hung in the pool's "excluded" state indefinitely, until the user noticed
+   * the stale model and fixed it by hand.
+   *
+   * The manual batch route keeps refusing a stale target (`reason:
+   * 'target-model-stale'`): there the user asked to test THAT model, so
+   * substituting another one would answer a question they did not ask. Here
+   * nobody asked for anything; the pass exists to refresh the pool's own
+   * picture, so it must not be starved by a configuration error it can work
+   * around without spending anything.
+   */
+  async function runScheduledPoolTest(region: WorkBuddyRegion): Promise<void> {
+    const targets = await poolTargets(region)
+    if (targets.length === 0) return
+    const catalog = displayModels(current(), region)
+    const target = resolveTargetModel(catalog, poolPreferencesOf(current(), region).targetModelId)
+    const modelId = target.modelId ?? pickFreeModel(catalog)?.id
+    if (modelId === undefined) return
+    const rows = await testAllAccounts(targets, modelId, poolRunnerDeps(region))
+    await writePoolProbes(region, probeUpdatesOf(rows))
+    await applyRotation(region)
+  }
+
   ctx.effect(() => () => {
     stopped = true
     for (const region of REGION_KEYS) void stacks[region].shim.close()

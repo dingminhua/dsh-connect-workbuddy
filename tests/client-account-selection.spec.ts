@@ -5,6 +5,7 @@ import {
   writeAccountSlot,
   writeRegionEnabled,
   writeRegionModels,
+  writePoolPreferences,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
 
@@ -211,5 +212,144 @@ describe('writeRegionEnabled', () => {
     }
     await expect(writeRegionEnabled(scope, 'cn', false, { enabled: true }))
       .rejects.toThrow(WorkBuddySettingsWriteError)
+  })
+})
+
+/**
+ * The pool preferences write.
+ *
+ * These matter more than most writes: the card DISCARDS its draft once the
+ * write resolves, so a write that reports success without landing would throw
+ * the user's selection away with nothing to recover from.
+ */
+describe('writePoolPreferences', () => {
+  const PREFERENCES = {
+    enabled: true,
+    rotateByCredits: true,
+    autoTestIntervalMinutes: 45,
+    targetModelId: 'glm-5.3',
+    memberAccountIds: ['a', 'b'],
+  }
+
+  it('stores the preferences under the region slot', async () => {
+    const { scope, document } = scopeWith({ regions: { cn: {} } })
+    await writePoolPreferences(scope, 'cn', { ...PREFERENCES })
+    const pool = (document()['regions'] as Record<string, { pool?: unknown }>).cn?.pool
+    expect(pool).toEqual({ ...PREFERENCES })
+  })
+
+  it('PRESERVES the model list when saving pool preferences', async () => {
+    // The pool shares a slot with the model list, so this write must merge
+    // rather than replace — otherwise configuring the pool would delete the
+    // user's models.
+    const { scope, document } = scopeWith({
+      regions: { cn: { lastCatalog: [{ id: 'm' }], enabledModelIds: ['m'] } },
+    })
+    await writePoolPreferences(scope, 'cn', { ...PREFERENCES })
+    const slot = (document()['regions'] as Record<string, Record<string, unknown>>).cn
+    expect(slot?.['lastCatalog']).toEqual([{ id: 'm' }])
+    expect(slot?.['enabledModelIds']).toEqual(['m'])
+    expect(slot?.['pool']).toEqual({ ...PREFERENCES })
+  })
+
+  it('accepts a membership set stored in a different ORDER', async () => {
+    // Stored order is not meaningful; an order-sensitive check would reject a
+    // write that landed correctly, and the card would then report a save
+    // failure for a selection it actually stored.
+    const { scope } = scopeWith({
+      regions: { cn: { pool: { ...PREFERENCES, memberAccountIds: ['b', 'a'] } } },
+    })
+    // The merge base is the snapshot, so the swapped order is what lands; the
+    // verification must still accept it.
+    await expect(writePoolPreferences(scope, 'cn', { ...PREFERENCES })).resolves.toBeUndefined()
+  })
+
+  it('accepts an empty membership set', async () => {
+    // "Nothing checked" is a real, saveable state — it is what keeps the batch
+    // buttons disabled.
+    const { scope, document } = scopeWith({ regions: { cn: {} } })
+    const empty = { ...PREFERENCES, memberAccountIds: [] as string[], enabled: false, rotateByCredits: false }
+    await writePoolPreferences(scope, 'cn', empty)
+    const pool = (document()['regions'] as Record<string, { pool?: { memberAccountIds?: string[] } }>).cn?.pool
+    expect(pool?.memberAccountIds).toEqual([])
+  })
+
+  it('reports a write that did not persist instead of dropping the draft', async () => {
+    // A locked profile settles without storing; the card treats a resolved write
+    // as permission to discard its draft, so this must throw.
+    const { scope } = scopeWith({ regions: { cn: {} } }, { locked: true })
+    await expect(writePoolPreferences(scope, 'cn', { ...PREFERENCES }))
+      .rejects.toBeInstanceOf(WorkBuddySettingsWriteError)
+  })
+})
+
+/**
+ * The two saves coexist in ONE region slot.
+ *
+ * The model list, the provider switch, and the pool's preferences are all
+ * fields of the same `regions[region]` object. Every writer therefore has to
+ * merge onto the existing slot: a writer that replaced the slot would delete
+ * the other features' settings, so configuring the pool would wipe the user's
+ * models (or the reverse), with no error to explain it.
+ */
+describe('coexisting writers on one region slot', () => {
+  it('saving the MODEL LIST keeps the pool preferences', async () => {
+    const { scope, document } = scopeWith({
+      regions: { cn: { pool: { enabled: true, memberAccountIds: ['a'] } } },
+    })
+    await writeRegionModels(scope, 'cn', {
+      lastCatalog: [{ id: 'm' }],
+      enabledModelIds: ['m'],
+    })
+    const slot = (document()['regions'] as Record<string, Record<string, unknown>>).cn
+    expect(slot?.['pool']).toEqual({ enabled: true, memberAccountIds: ['a'] })
+    expect(slot?.['lastCatalog']).toEqual([{ id: 'm' }])
+  })
+
+  it('saving the POOL keeps the model list', async () => {
+    const { scope, document } = scopeWith({
+      regions: { cn: { lastCatalog: [{ id: 'm' }], enabledModelIds: ['m'] } },
+    })
+    await writePoolPreferences(scope, 'cn', {
+      enabled: true,
+      rotateByCredits: false,
+      autoTestIntervalMinutes: 30,
+      targetModelId: '',
+      memberAccountIds: ['a'],
+    })
+    const slot = (document()['regions'] as Record<string, Record<string, unknown>>).cn
+    expect(slot?.['lastCatalog']).toEqual([{ id: 'm' }])
+    expect(slot?.['enabledModelIds']).toEqual(['m'])
+    expect((slot?.['pool'] as Record<string, unknown>)?.['enabled']).toBe(true)
+  })
+
+  it('toggling the PROVIDER keeps both the model list and the pool', async () => {
+    const { scope, document } = scopeWith({
+      regions: { cn: { lastCatalog: [{ id: 'm' }], pool: { enabled: true } } },
+    })
+    const slot = (document()['regions'] as Record<string, Record<string, unknown>>).cn ?? {}
+    await writeRegionEnabled(scope, 'cn', false, { ...slot, enabled: false })
+    const after = (document()['regions'] as Record<string, Record<string, unknown>>).cn
+    expect(after?.['enabled']).toBe(false)
+    expect(after?.['lastCatalog']).toEqual([{ id: 'm' }])
+    expect(after?.['pool']).toEqual({ enabled: true })
+  })
+
+  it('never disturbs the sibling region', async () => {
+    const { scope, document } = scopeWith({
+      regions: {
+        cn: { pool: { enabled: true } },
+        global: { lastCatalog: [{ id: 'g' }], pool: { enabled: false } },
+      },
+    })
+    await writePoolPreferences(scope, 'cn', {
+      enabled: false,
+      rotateByCredits: false,
+      autoTestIntervalMinutes: 30,
+      targetModelId: '',
+      memberAccountIds: [],
+    })
+    const regions = document()['regions'] as Record<string, Record<string, unknown>>
+    expect(regions.global).toEqual({ lastCatalog: [{ id: 'g' }], pool: { enabled: false } })
   })
 })

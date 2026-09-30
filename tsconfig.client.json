@@ -15,5 +15,10 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/client"]
+  "include": [
+    "src/client",
+    "tests/pool-render-helpers.tsx",
+    "tests/pool-render.spec.tsx",
+    "tests/pool-card-render.spec.tsx"
+  ]
 }

@@ -15,5 +15,10 @@
     "types": ["node"]
   },
   "include": ["src", "tests"],
-  "exclude": ["src/client"]
+  "exclude": [
+    "src/client",
+    "tests/pool-render-helpers.tsx",
+    "tests/pool-render.spec.tsx",
+    "tests/pool-card-render.spec.tsx"
+  ]
 }

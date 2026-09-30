@@ -17,7 +17,7 @@
  * @module dsh-connect-workbuddy/client/account-selection
  */
 
-import { unwrapVolatileDeep } from '../status-paths.ts'
+import { nextRegionModels, nextRegionPool, unwrapVolatileDeep } from '../status-paths.ts'
 import type { WorkBuddyWebRegion } from '../status-paths.ts'
 
 /**
@@ -258,11 +258,18 @@ export async function writeRegionModels(
   region: WorkBuddyWebRegion,
   payload: { lastCatalog: readonly { id: string }[] } & Record<string, unknown>,
 ): Promise<void> {
+  // Merge onto the EXISTING slot instead of replacing it. The slot also holds
+  // the pool's preferences, so a replace would delete them: saving the model
+  // list would silently wipe a pool configuration the user had just made. The
+  // snapshot is read here rather than taken from the caller so no caller can
+  // get this wrong.
+  const merged = nextRegionModels(scope.getSnapshot().value, region, payload)
+  const next = merged[region] as Record<string, unknown>
   // Compare the round-tripped catalog ids: they are user-visible and cheap to
   // compare, and the selection fields ride in the same object so they cannot
   // land separately. A present-but-truncated slot must not pass this check.
   const written = payload.lastCatalog.map(model => model.id)
-  await writeField(scope, 'regions', region, payload, readBack => {
+  await writeField(scope, 'regions', region, next, readBack => {
     const stored = (readBack as { lastCatalog?: { id?: string }[] } | undefined)?.lastCatalog?.map(model => model.id)
     return stored !== undefined
       && stored.length === written.length
@@ -305,5 +312,68 @@ export async function writeRegionEnabled(
   await writeField(scope, 'regions', region, slot, readBack => {
     const stored = readBack as Record<string, unknown> | null | undefined
     return stored !== null && stored !== undefined && stored['enabled'] === enabled
+  })
+}
+
+/**
+ * Write one region's account-pool PREFERENCES, verifying they landed.
+ *
+ * Routed through {@link writeField} like every other settings write, so it gets
+ * the same Host-endpoint-first path and the same landed check. The card treats
+ * a resolved write as "the draft is now safe to discard", so a write that
+ * silently did nothing would throw away the user's edits while reporting
+ * success — unrecoverable, since the draft is the only copy.
+ *
+ * The COMPLETE region slot is passed in by the caller for the same reason
+ * {@link writeRegionEnabled} does it: the pool lives INSIDE the region slot
+ * alongside `lastCatalog`/`enabledModelIds`, so writing only the pool field
+ * would drop the model list.
+ *
+ * Deliberately does NOT carry the pool's measured facts. Those are written by
+ * the Host to its own file; keeping them out of settings is what stops a save
+ * from rolling back a test result the timer had just recorded.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param region - the region whose pool preferences are written.
+ * @param preferences - the four preference fields, as the user set them.
+ * @param slot - the region's COMPLETE next slot (caller owns the merge).
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writePoolPreferences(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  preferences: {
+    enabled: boolean
+    rotateByCredits: boolean
+    autoTestIntervalMinutes: number
+    targetModelId: string
+    memberAccountIds: readonly string[]
+  },
+): Promise<void> {
+  // The merge starts from the EXISTING slot, read here rather than taken from
+  // the caller: the pool is one field of a slot that also holds the model list,
+  // so a caller that forgot to pass the rest would silently delete it. Reading
+  // the snapshot here makes that impossible to get wrong.
+  const merged = nextRegionPool(scope.getSnapshot().value, region, preferences)
+  const next = merged[region] as Record<string, unknown>
+  await writeField(scope, 'regions', region, next, readBack => {
+    const pool = (readBack as { pool?: Record<string, unknown> } | null | undefined)?.pool
+    if (pool === undefined || pool === null) return false
+    // Compare every field: the caller discards the draft on success, so a
+    // partially-landed write must NOT read as success.
+    if (pool['enabled'] !== preferences.enabled
+      || pool['rotateByCredits'] !== preferences.rotateByCredits
+      || pool['autoTestIntervalMinutes'] !== preferences.autoTestIntervalMinutes
+      || pool['targetModelId'] !== preferences.targetModelId) {
+      return false
+    }
+    // Membership is compared as a SET: the stored order is not meaningful, and
+    // an order-sensitive check would report a failed save for a write that
+    // landed correctly — which, because success is what discards the draft,
+    // would make the user's selection look like it never saved.
+    const stored = pool['memberAccountIds']
+    if (!Array.isArray(stored) || stored.length !== preferences.memberAccountIds.length) return false
+    const wanted = new Set(preferences.memberAccountIds)
+    return stored.every(id => typeof id === 'string' && wanted.has(id))
   })
 }
