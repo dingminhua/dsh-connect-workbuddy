@@ -116,6 +116,12 @@ git push origin vX.Y.Z
 npm publish
 ```
 
+> ⚠️ **`npm publish` 成功退出（exit 0）不等于版本已上线。** 本账号/包现在会走 npm 的**暂存发布（staged publishing）**：此时 registry 返回 **`202 Accepted`**，npm 把它当成功（打印 `info ok`、退出码 0），但版本只是进了**暂存区**，**公开的 packument 里看不到**，用户也装不到。
+>
+> **判据**：`npm publish` 只报 `PUT 202` / `info ok`（**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行），且第 8 步直连核验里 `latest` 仍是旧版本 —— 那就是**待批准**，不是失败。
+>
+> **必须再由维护者用 2FA 批准**：到 npmjs.com 的 **Staged Packages** 标签页点 **Approve**；或在 npm CLI **≥ 11.15.0** 下用 `npm stage approve <stage-id>`（本机 npm 若是 11.12.x，`npm stage` 会报 `Unknown command`——那是 CLI 太旧，不是命令不存在）。详见[常见问题](#常见问题)。
+
 **打包内容**：`package.json` 的 `files` 字段已限定只发布 `lib/`、`docs/assets/` 产品截图、`screenshots.json`、`cordis.patch.yml`、`README.md`、`README.en.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`，`tests/` 和 `node_modules/` 不会进入发布包。
 
 **发布前检查**（可选但推荐）：
@@ -214,6 +220,11 @@ gh release view vX.Y.Z --json name,tagName,isDraft,isPrerelease,assets
   - `You cannot publish over the previously published versions: X.Y.Z` —— 这才是**已经发布成功**。此时第 8 步的直连核验会显示 `latest: X.Y.Z`，tarball 也能下载。
 
   有一条很实用的判据：**报错从「staged」变成「previously published」，说明中间那次其实已经成功落地**。v3.0.0 发布时就是这样——先看到 staged 的 409，再看到 published 的 409，而 registry 上的发布时间戳正好落在两次尝试之间（即另有一次发布在窗口内完成）。因此**任何时刻都以第 8 步的直连核验为准**，不要凭 `npm publish` 的退出码或某一次报文下结论；两次发布若来自不同的人/会话，只要比对 tarball 的 shasum 一致，就说明发的是同一个构建，没有版本分叉。
+- **`npm publish` 明明成功了（exit 0 / `info ok`），registry 上却查不到新版本**：本账号/包会走 npm 的**暂存发布（staged publishing）**——registry 返回 **`202 Accepted`**，npm 视之为成功，但版本只进了**暂存区**，**未公开**：packument 里没有它、`latest` 不变、用户装不到。别把它当成「发布失败」去重试，更**不要**改版本号重发（那只会再多一个待批准的暂存版本）。
+  - **怎么认出来**：`npm publish` 的输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行（只有 `PUT 202` / `info ok`），且第 8 步直连核验显示 `latest` 仍是旧版本。
+  - **怎么批准**（**必须由维护者带 2FA 操作**）：到 **npmjs.com → Staged Packages** 标签页，核对后点 **Approve**；或在 npm CLI **≥ 11.15.0** + Node **≥ 22.14.0** 下执行 `npm stage approve <stage-id>`（`npm stage list` 可以先列出待批准的版本）。
+  - **为什么本机 `npm stage` 用不了**：本机 npm 是 **11.12.x**，而暂存发布的 CLI 支持从 **11.15.0** 才有——`npm stage` 会报 `Unknown command: "stage"`，那是 **CLI 太旧，不是命令不存在**。要么升级 npm，要么直接用网页批准。
+  - 参考：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing/)。v3.0.0、v3.0.2 发布时都撞到这一点，且**两次都不是失败**——版本最终是在维护者批准后才出现在 registry 上。
 - **发布后 `npm view ... version` 还是旧版本 / 甚至 `@新版本` 报 404**：**先别断定发布失败**。本机 `~/.npmrc` 的本地代理会缓存 registry 响应——用第 8 步的 `curl --noproxy '*'` 直连命令复核，或 `npm view --prefer-online`。v1.4.0 发布时就是这样被误判过一次。真正的失败特征是：`npm publish` 输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行。
 - **`npm whoami` 报 E401**：说明 `~/.npmrc` 里的 `_authToken` 已失效（注意 `npm whoami` 偶尔会回显**缓存**的上一次结果，别被它迷惑）。先 `npm login --auth-type=web` 重新登录再发布。
 - **本地开发与发布的关系**：本地开发用 `link:` 安装，与 npm 发布互不影响；npm 发布的包是 `lib/`、README 等静态文件，同一份源码。
