@@ -293,6 +293,32 @@ describe('the model list folds, and the fold cannot hide unsaved edits', () => {
     await m.unmount()
   })
 
+  it('names the action available now in the header hint, and swaps it on toggle', async () => {
+    // The chevron alone was not an obvious enough affordance, so the header
+    // carries a faint hint. It must name the action that is available NOW:
+    // a static "expand or collapse" leaves the reader to work out which one
+    // applies, which is the very thing the hint is there to remove.
+    const m = await openCard()
+    const hint = (): string => summaryOf(m).querySelector('.dsm-workbuddy-models-fold-hint')?.textContent ?? ''
+    expect(hint()).toContain('row.modelsFoldHide')
+    expect(hint()).not.toContain('row.modelsFoldShow')
+    await m.click(summaryOf(m))
+    // jsdom dispatches `toggle` on a turn AFTER the click, so React's
+    // `onToggle` — the only thing that updates this hint — may not have run yet
+    // when `click` resolves. Settle first, or this asserts on a stale render and
+    // fails on correct code (the hint still says "click to collapse"). The test
+    // above survives without this because it reads `open`, which jsdom has
+    // already updated and which no re-render is needed to observe; the RENDERED
+    // WORD is what needs the extra turn, and the word is the subject here.
+    await m.settle()
+    expect(hint()).toContain('row.modelsFoldShow')
+    expect(hint()).not.toContain('row.modelsFoldHide')
+    // aria-hidden, like the chevron: the <details> element already announces the
+    // state, and this text would otherwise be appended to the accessible name.
+    expect(summaryOf(m).querySelector('.dsm-workbuddy-models-fold-hint')?.getAttribute('aria-hidden')).toBe('true')
+    await m.unmount()
+  })
+
   it('refreshing does NOT also fold the list', async () => {
     // The refresh button lives INSIDE <summary>, and a click anywhere inside a
     // summary activates the disclosure — so without the guard in the summary's

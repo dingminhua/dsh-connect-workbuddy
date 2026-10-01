@@ -1225,6 +1225,17 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                             </div>
                             <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                           </div>
+                          {/* Faint hint naming the action available RIGHT NOW.
+                              It sits in the header's empty middle because that
+                              is where a reader looks when wondering whether a
+                              section is clickable, and it names which way the
+                              click goes instead of making them work it out.
+                              aria-hidden: the <details> element already
+                              announces the state, and this text would otherwise
+                              be appended to the section's accessible name. */}
+                          <span className="dsm-workbuddy-models-fold-hint" aria-hidden="true">
+                            {modelsOpen ? t('row.modelsFoldHide') : t('row.modelsFoldShow')}
+                          </span>
                           <div className="dsm-workbuddy-models-head-actions">
                             {/* No "test selected" batch: every probe now sends a
                                 real-volume request and therefore costs real

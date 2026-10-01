@@ -115,6 +115,14 @@ export const WORKBUDDY_CARD_CSS = `
    The rotation keys off the details element's own open attribute, so it needs
    no state and cannot disagree with what the browser actually shows. */
 .dsm-workbuddy-models-chevron{display:inline-flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px;color:var(--dsw-alias-label-tertiary,#999);transition:transform .16s}
+/* The faint affordance hint, centred in the space between the section title and
+   the refresh button. Same faint token as the summary line under the title, so
+   it reads as a hint rather than as a second heading. flex:1 is what makes it
+   land in the actual middle instead of wherever space-between drops it. */
+.dsm-workbuddy-models-fold-hint{flex:1 1 auto;min-width:0;overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+/* Too narrow to hold title + hint + button on one line: the chevron already
+   marks the header as a disclosure, so the words are the part that can go. */
+@media (max-width:760px){.dsm-workbuddy-models-fold-hint{display:none}}
 .dsm-workbuddy-models-fold[open] .dsm-workbuddy-models-chevron{transform:rotate(90deg)}
 .dsm-workbuddy-models-head:hover .dsm-workbuddy-models-chevron{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
