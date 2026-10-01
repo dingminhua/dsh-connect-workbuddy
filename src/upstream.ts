@@ -447,6 +447,78 @@ function normalizeToolChoice(obj: Record<string, unknown>): void {
   delete obj['tool_choice']
 }
 
+/**
+ * What a PREPARED request body declares, as the input to DSML recovery.
+ *
+ * This exists so the recovery path can answer the one question its gates turn
+ * on — "was this tool name offered in THIS request?" — without a second parse
+ * of the body and without a second source of truth. `prepareChatBody` has
+ * already parsed it; this reads the same prepared JSON.
+ *
+ * Two facts make it cheap and exact:
+ *
+ *   - `tool_choice: "none"` deletes `tools` outright in
+ *     {@link normalizeToolChoice}, so "no tools declared" is directly
+ *     observable here rather than a separate condition to remember;
+ *   - a pinned `tool_choice` arrives as the bare function name (the object form
+ *     was flattened), so anything that is not `auto`/`required`/`none` is a pin.
+ *
+ * Returns `undefined` when the body declares nothing usable — malformed JSON,
+ * no `tools` array, or an empty one. Callers must read that as "recovery is
+ * off" (gate 3), not as "no information, so guess".
+ */
+export function declaredTools(bodyJson: string): {
+  names: Set<string>
+  requiredParameters: Map<string, string[]>
+  pinnedToolName?: string
+} | undefined {
+  let body: unknown
+  try {
+    body = JSON.parse(bodyJson)
+  } catch {
+    return undefined
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
+  const obj = body as Record<string, unknown>
+
+  const tools = obj['tools']
+  if (!Array.isArray(tools)) return undefined
+
+  const names = new Set<string>()
+  const requiredParameters = new Map<string, string[]>()
+
+  for (const value of tools) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const wrapped = value as Record<string, unknown>
+    const fn = wrapped['function']
+    if (typeof fn !== 'object' || fn === null || Array.isArray(fn)) continue
+    const definition = fn as Record<string, unknown>
+    const name = typeof definition['name'] === 'string' ? definition['name'] : ''
+    if (name === '') continue
+    names.add(name)
+
+    const parameters = definition['parameters']
+    if (typeof parameters !== 'object' || parameters === null || Array.isArray(parameters)) continue
+    const required = (parameters as Record<string, unknown>)['required']
+    if (!Array.isArray(required)) continue
+    const list = required.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+    if (list.length > 0) requiredParameters.set(name, list)
+  }
+
+  if (names.size === 0) return undefined
+
+  const pinned = typeof obj['tool_choice'] === 'string' ? obj['tool_choice'].trim() : ''
+  const pinnedToolName = pinned !== '' && !['auto', 'required', 'none'].includes(pinned.toLowerCase())
+    ? pinned
+    : undefined
+
+  return {
+    names,
+    requiredParameters,
+    ...pinnedToolName === undefined ? {} : { pinnedToolName },
+  }
+}
+
 /** One JSON-envelope response from the upstream, already unwrapped. */
 interface Envelope {
   code: number

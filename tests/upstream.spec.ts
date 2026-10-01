@@ -4,6 +4,7 @@ import {
   WorkBuddyUpstreamClient,
   WORKBUDDY_FALLBACK_SYSTEM_PROMPT,
   classifyUpstreamError,
+  declaredTools,
   parseCreditMultiplier,
   parseReasoning,
   parseUpstreamModel,
@@ -445,5 +446,68 @@ describe('parseUpstreamModel', () => {
     expect(parseUpstreamModel({ id: 'a', disabled: true, maxInputTokens: 1, maxOutputTokens: 1 })).toBeUndefined()
     expect(parseUpstreamModel({ id: 'b', maxInputTokens: 0, maxOutputTokens: 1 })).toBeUndefined()
     expect(parseUpstreamModel({ id: '', maxInputTokens: 1, maxOutputTokens: 1 })).toBeUndefined()
+  })
+})
+
+/**
+ * The input to DSML recovery: which tool names THIS request offered.
+ *
+ * Getting this wrong is the difference between a recovery that can never fire
+ * (names unrecognised, so every block is refused) and one that fires on a name
+ * the caller never authorised — the production accident the gates exist for.
+ * The `tool_choice: "none"` case is the important one: `prepareChatBody` deletes
+ * `tools` for it, so gate 3 comes out of the same prepared JSON rather than
+ * from a second rule someone has to remember to keep in sync.
+ */
+describe('declaredTools', () => {
+  it('reads names and required parameters from a prepared body', () => {
+    const prepared = prepareChatBody(JSON.stringify({
+      tools: [
+        { type: 'function', function: { name: 'bash', parameters: { type: 'object', required: ['command'] } } },
+        { type: 'function', function: { name: 'read_file', parameters: { type: 'object' } } },
+      ],
+    }))
+    const declared = declaredTools(prepared)
+    expect(declared?.names).toEqual(new Set(['bash', 'read_file']))
+    expect(declared?.requiredParameters.get('bash')).toEqual(['command'])
+    // A tool with no `required` list contributes no entry rather than an empty
+    // one: an empty list would read as "checked and nothing is required", which
+    // is the same answer but hides the difference between the two.
+    expect(declared?.requiredParameters.has('read_file')).toBe(false)
+    expect(declared?.pinnedToolName).toBeUndefined()
+  })
+
+  it('reports nothing when the prepared body declares no tools (gate 3)', () => {
+    expect(declaredTools(prepareChatBody(JSON.stringify({ messages: [] })))).toBeUndefined()
+    expect(declaredTools(prepareChatBody(JSON.stringify({
+      tool_choice: 'none',
+      tools: [{ type: 'function', function: { name: 'bash' } }],
+    })))).toBeUndefined()
+    expect(declaredTools(prepareChatBody(JSON.stringify({ tools: [] })))).toBeUndefined()
+  })
+
+  it('reports a pinned tool_choice as a bare name', () => {
+    const prepared = prepareChatBody(JSON.stringify({
+      tools: [{ type: 'function', function: { name: 'read' } }],
+      tool_choice: { type: 'function', function: { name: 'read' } },
+    }))
+    expect(declaredTools(prepared)?.pinnedToolName).toBe('read')
+  })
+
+  it('does not treat auto or required as a pin', () => {
+    for (const choice of ['auto', 'required']) {
+      const prepared = prepareChatBody(JSON.stringify({
+        tools: [{ type: 'function', function: { name: 'read' } }],
+        tool_choice: choice,
+      }))
+      expect(declaredTools(prepared)?.pinnedToolName).toBeUndefined()
+    }
+  })
+
+  it('returns nothing for an unparsable or malformed body', () => {
+    expect(declaredTools('not json')).toBeUndefined()
+    expect(declaredTools('[]')).toBeUndefined()
+    expect(declaredTools(JSON.stringify({ tools: [{ type: 'function' }, { function: { name: 7 } }, null] })))
+      .toBeUndefined()
   })
 })
