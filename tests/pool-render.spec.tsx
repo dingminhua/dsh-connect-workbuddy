@@ -52,11 +52,11 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     const props = baseProps({ settingsScope: scope, onSaved })
     const m = await mount(AccountPool, props)
     await makeDirty(m) // dirty: members [real-1] → []
-    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.button('row.poolSaved').disabled, 'the edit is still pending — Save must be enabled').toBe(false)
     await m.click(m.button('row.poolSaved')) // "Save"
     // Success: no longer dirty, and the re-read delivered fresh props.
     expect(onSaved).toHaveBeenCalledTimes(1)
-    expect(m.text()).toContain('row.poolSaveIdle')
+    expect(m.button('row.poolSaved').disabled, 'nothing left to save — Save must be disabled').toBe(true)
     // The parent now re-renders with the pool it re-read (no members); the
     // panel must show the new state, not the pre-edit one.
     await m.update({ ...props, pool: poolOf({ memberAccountIds: [], effectiveMemberAccountIds: [], accounts: [GENUINE_ACCOUNT] }) })
@@ -72,7 +72,7 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     await m.click(m.button('row.poolSaved'))
     // The draft is the only copy of what was just saved; discarding it against
     // a still-stale `saved` prop would revert the panel to the pre-edit values.
-    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.button('row.poolSaved').disabled, 'the edit is still pending — Save must be enabled').toBe(false)
     // The stale-refresh notice names the DISPLAY problem (the write landed).
     expect(m.text()).toContain('row.poolSaveFailed|message=row.poolSavedStaleRefresh')
     await m.unmount()
@@ -89,7 +89,7 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     await m.click(m.button('row.poolSaved'))
     expect(posts.length).toBe(1)
     // The draft survives: the user's edit is still on screen and still dirty.
-    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.button('row.poolSaved').disabled, 'the edit is still pending — Save must be enabled').toBe(false)
     expect(m.text()).toContain('row.poolSaveFailed|message=')
     // The re-read never ran: the write never landed.
     expect(onSaved).not.toHaveBeenCalled()
@@ -115,7 +115,7 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     // The remedy is shown...
     expect(m.text()).toContain('row.saveContentionHint')
     // ...and the draft survives (the hint promises it does).
-    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.button('row.poolSaved').disabled, 'the edit is still pending — Save must be enabled').toBe(false)
     // ...and the raw reason is still there for diagnosis.
     expect(m.text()).toContain('EPERM')
     await m.unmount()
@@ -554,8 +554,10 @@ describe('the settings commit row matches the model section', () => {
     // Cheer first, then the hint, then the buttons wrapper.
     expect(order[0], 'the encouragement link must lead, as in the model row')
       .toContain('dsm-workbuddy-usage-cheer')
-    expect(order[1]).toContain('dsm-workbuddy-pool-hint')
-    expect(order[2], 'the buttons must be the last group').toContain('dsm-workbuddy-pool-save-buttons')
+    // Exactly two groups now: the status line between them was removed (the Save
+    // button's own enabled state carries that information).
+    expect(order, 'the row must hold only the link and the buttons').toHaveLength(2)
+    expect(order[1], 'the buttons must be the last group').toContain('dsm-workbuddy-pool-save-buttons')
 
     // The link is a real external link, not decoration.
     const cheer = bar?.querySelector<HTMLAnchorElement>('a.dsm-workbuddy-usage-cheer')
@@ -575,5 +577,32 @@ describe('the settings commit row matches the model section', () => {
     expect(labels[0], 'the secondary action must come first').toContain('row.poolDiscard')
     expect(labels[1], 'the primary action must come last').toContain('row.poolSaved')
     await m.unmount()
+  })
+})
+
+describe('the commit row states its own availability', () => {
+  // `makeDirty` is scoped to another describe, so this block needs its own copy:
+  // unchecking the only member is an edit, and any edit dirties the draft.
+  async function dirtyTheDraft(m: Awaited<ReturnType<typeof mount>>): Promise<void> {
+    const box = m.checkboxes()[0]
+    if (box === undefined) throw new Error('no member checkbox rendered')
+    await m.click(box)
+  }
+
+  it('gates BOTH buttons on dirtiness — there is nothing to save or discard otherwise', async () => {
+    // The status line that used to say this in words is gone, so the buttons are
+    // now the only thing that can. Asserted for Discard too: it was never checked
+    // before (the old tests read the hint text instead), which left "Discard
+    // enabled with nothing to discard" undetected.
+    const clean = await mount(AccountPool, baseProps())
+    expect(clean.button('row.poolSaved').disabled, 'Save must be off while clean').toBe(true)
+    expect(clean.button('row.poolDiscard').disabled, 'Discard must be off while clean').toBe(true)
+    await clean.unmount()
+
+    const dirty = await mount(AccountPool, baseProps())
+    await dirtyTheDraft(dirty)
+    expect(dirty.button('row.poolSaved').disabled, 'Save must turn on once dirty').toBe(false)
+    expect(dirty.button('row.poolDiscard').disabled, 'Discard must turn on once dirty').toBe(false)
+    await dirty.unmount()
   })
 })

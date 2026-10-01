@@ -1076,6 +1076,12 @@ function renderSettings(input: {
     // the card's two "commit your edits" rows, and a user who learns where the
     // buttons are in one should not have to look in the other. Encouragement
     // (the star link) leads on the left, the buttons sit on the right.
+    //
+    // Nothing between them, matching the model row. There WAS a status line
+    // ("change any setting above to save it" / "you have unsaved changes"), and
+    // it was redundant twice over: the Save button's own enabled state already
+    // distinguishes the two cases, and a line that only appears while dirty made
+    // the row reflow on every edit.
     h('div', { className: 'dsm-workbuddy-pool-save-bar' },
       h('a', {
         className: 'dsm-workbuddy-usage-cheer',
@@ -1086,10 +1092,6 @@ function renderSettings(input: {
         t('row.cheer'),
         h('span', { className: 'dsm-workbuddy-usage-cheer-star', 'aria-hidden': 'true' }, '★'),
       ),
-      // Kept between the two: it reports whether there is anything to save, and
-      // neither the buttons nor the star say that on their own.
-      h('span', { className: 'dsm-workbuddy-pool-hint' },
-        dirty ? t('row.poolSaveDirty') : t('row.poolSaveIdle')),
       h('div', { className: 'dsm-workbuddy-pool-save-buttons' },
         h('button', {
           type: 'button',

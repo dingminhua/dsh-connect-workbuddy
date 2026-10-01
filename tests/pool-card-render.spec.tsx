@@ -180,7 +180,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     const box = m.container.querySelector<HTMLInputElement>('.dsm-workbuddy-pool-table input[type=checkbox]')
     if (box === null) throw new Error('no pool member checkbox rendered')
     await m.click(box)
-    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.container.querySelector('.dsm-workbuddy-pool-save-buttons button:last-child')?.hasAttribute('disabled'), 'the edit is still pending — Save must be enabled').toBe(false)
     // The save writes through the Host endpoint (stubbed to succeed) but the
     // re-read then fails: `refreshUsage` resolves `undefined` → `onSaved`
     // answers false → the section must KEEP the draft. With M15 the catch
@@ -188,7 +188,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     usageOk = false
     await m.click(m.button('row.poolSaved'))
     await m.settle()
-    expect(m.text()).toContain('row.poolSaveDirty')
+    expect(m.container.querySelector('.dsm-workbuddy-pool-save-buttons button:last-child')?.hasAttribute('disabled'), 'the edit is still pending — Save must be enabled').toBe(false)
     expect(m.text()).toContain('row.poolSaveFailed|message=row.poolSavedStaleRefresh')
     // A failed re-read must NOT blank the panel. The region keeps its last good
     // snapshot with a `refreshError` overlay, so the pool section the user was
