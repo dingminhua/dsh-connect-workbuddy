@@ -862,8 +862,20 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * placeholder says the honest thing instead.
    */
   const nameOf = (value: string): string => value === '' ? t('row.accountUnnamed') : value
+  /**
+   * The region's status line.
+   *
+   * With the pool ON it deliberately does NOT name an account: the pool's ranking
+   * decides who serves each request, so there is no single "the" account here —
+   * and naming one is how this line came to disagree with the rest of the card
+   * (a live screenshot showed one account here and a different one right below).
+   * The pool block names the account in use; this line reports whether the REGION
+   * is usable, which is what the dot and the token expiry beside it are about.
+   */
   const label = status.status === 'signed-in'
-    ? t('row.signedIn', { accountName: nameOf(status.accountName) })
+    ? status.pool?.enabled === true
+      ? t('row.signedInPooled')
+      : t('row.signedIn', { accountName: nameOf(status.accountName) })
     : status.status === 'error'
       ? t('row.requestFailed')
       : t('row.signedOut')
@@ -978,71 +990,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                     : null}
                 </div>
               </div>
-              {status.status !== 'error' && status.accounts.length > 0
-                ? <section className="dsm-workbuddy-account-picker" aria-label={t('row.accountsTitle')}>
-                    <div className="dsm-workbuddy-usage-select-wrap">
-                      <select
-                        className="dsm-workbuddy-usage-select"
-                        /* Read the selection from the account list rather than
-                           from the status branch. `accountId` only exists on
-                           the signed-in document, so deriving the value from
-                           it blanked the control both when the saved id was
-                           orphaned AND when a perfectly intact choice merely
-                           failed to resolve (expired token, refresh error) —
-                           the user's own choice looked like it had vanished.
-                           The list is the one source that distinguishes "no
-                           account in effect" from "signed in". */
-                        value={status.accounts.find(account => account.selected)?.id ?? ''}
-                        disabled={switchingAccount || !canWrite}
-                        onChange={event => { void switchAccount(event.currentTarget.value) }}
-                      >
-                        {/* Shown while no row is in effect — an orphaned saved
-                            id, a failed refresh, or no explicit choice yet.
-                            Without it the control would have no matching
-                            option and silently display the first account,
-                            which is exactly the "looks fine, but is not what
-                            runs" confusion this fixes. Disabled so it can
-                            never be picked as a value. */}
-                        {status.accounts.some(account => account.selected)
-                          ? null
-                          : <option value="" disabled>{t('row.accountNoneInEffect')}</option>}
-                        {status.accounts.map(account => (
-                          <option key={account.id} value={account.id}>
-                            {nameOf(account.accountName)}{account.domain === '' ? '' : ` · ${account.domain}`}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    {/* State, not a hint: whether this region is running a saved
-                        choice. The "follow the app's sign-in" mode has been
-                        removed from this card — accounts are picked explicitly. */}
-                    <span className="dsm-workbuddy-account-state" role="status">
-                      {selectionExplicit === true
-                        ? t('row.accountsSavedChoice')
-                        : ''}
-                    </span>
-                    {/* With the pool on, the selection above is not authoritative:
-                        the pool's ranking decides who serves each request. Saying
-                        so here is the difference between "your pick still matters,
-                        it just ranks" and a picker that quietly lies. */}
-                    {status.status === 'signed-in' && status.pool?.enabled === true
-                      ? <span className="dsm-workbuddy-account-state" role="status">
-                          {t('row.accountsPoolOverrides')}
-                        </span>
-                      : null}
-                    {/* A write that did not persist is stated, never swallowed.
-                        Reaching this means `set()` resolved while the value is
-                        absent from the document (a locked profile configuration on
-                        Windows), so the choice shown above is NOT the one in
-                        effect and saying nothing would leave the user with a
-                        picker that lies. */}
-                    {accountError === undefined
-                      ? null
-                      : <span className="dsm-workbuddy-account-error" role="alert">
-                          {t('row.accountsWriteFailed', { message: accountError })}
-                        </span>}
-                  </section>
-                : null}
               {status.status === 'signed-in'
                 ? <>
                     {status.credits === undefined ? null : (() => {
@@ -1157,6 +1104,44 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     {status.refreshError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error" role="alert">{t('row.requestFailedHint', { message: status.refreshError })}</p>}
+                    {/* The account pool. Rendered only when the Host reports
+                        pool state, so an older Host shows an unmodified card.
+                        It owns the rotation-vs-manual conflict: while rotation
+                        is on it reports `locked` and the account picker above
+                        is disabled, because two writers deciding the same slot
+                        is how "shows A, bills B" happens. The two sections'
+                        save buttons are also serialized (`siblingBusy` /
+                        `onBusyChange`): both write into ONE region slot and the
+                        Host merges per-region, so concurrent saves could revert
+                        each other. */}
+                    <AccountPool
+                      t={t}
+                      region={activeRegion}
+                      {...status.pool === undefined ? {} : { pool: status.pool }}
+                      {...settingsScope === undefined ? {} : { settingsScope }}
+                      // Account DISCOVERY lives with the pool now: the pool's
+                      // member table is where accounts are chosen, so re-reading
+                      // the local sign-ins belongs beside it rather than in the
+                      // card's status header — one place to manage accounts.
+                      onRescan={() => { void rescanAccounts() }}
+                      rescanning={busy}
+                      siblingBusy={saving || togglingRegion !== undefined}
+                      onBusyChange={setPoolBusy}
+                      // Returns the promise so the pool section can AWAIT the
+                      // fresh props before discarding its draft (A-8). With
+                      // `void` here the await resolved immediately and the
+                      // window stayed open.
+                      //
+                      // And it answers with a BOOLEAN: `refreshUsage` reports a
+                      // failed fetch by RESOLVING (undefined) rather than
+                      // throwing, so the section cannot infer "the fresh props
+                      // arrived" from "it did not throw". `true` only when the
+                      // snapshot was actually applied; a superseded or failed
+                      // re-read resolves `false` and the draft is kept.
+                      onSaved={async () => (await refreshUsage(activeRegion)) !== undefined}
+                      onRefresh={() => { void refreshUsage(activeRegion) }}
+                    />
+
                     <section className="dsm-workbuddy-models" aria-label={t('row.modelsTitle')}>
                       {/* The model LIST folds; its header does not. Native
                           <details> so the toggle is keyboard-operable and
@@ -1378,43 +1363,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       </div>
                       </details>
                     </section>
-                    {/* The account pool. Rendered only when the Host reports
-                        pool state, so an older Host shows an unmodified card.
-                        It owns the rotation-vs-manual conflict: while rotation
-                        is on it reports `locked` and the account picker above
-                        is disabled, because two writers deciding the same slot
-                        is how "shows A, bills B" happens. The two sections'
-                        save buttons are also serialized (`siblingBusy` /
-                        `onBusyChange`): both write into ONE region slot and the
-                        Host merges per-region, so concurrent saves could revert
-                        each other. */}
-                    <AccountPool
-                      t={t}
-                      region={activeRegion}
-                      {...status.pool === undefined ? {} : { pool: status.pool }}
-                      {...settingsScope === undefined ? {} : { settingsScope }}
-                      // Account DISCOVERY lives with the pool now: the pool's
-                      // member table is where accounts are chosen, so re-reading
-                      // the local sign-ins belongs beside it rather than in the
-                      // card's status header — one place to manage accounts.
-                      onRescan={() => { void rescanAccounts() }}
-                      rescanning={busy}
-                      siblingBusy={saving || togglingRegion !== undefined}
-                      onBusyChange={setPoolBusy}
-                      // Returns the promise so the pool section can AWAIT the
-                      // fresh props before discarding its draft (A-8). With
-                      // `void` here the await resolved immediately and the
-                      // window stayed open.
-                      //
-                      // And it answers with a BOOLEAN: `refreshUsage` reports a
-                      // failed fetch by RESOLVING (undefined) rather than
-                      // throwing, so the section cannot infer "the fresh props
-                      // arrived" from "it did not throw". `true` only when the
-                      // snapshot was actually applied; a superseded or failed
-                      // re-read resolves `false` and the draft is kept.
-                      onSaved={async () => (await refreshUsage(activeRegion)) !== undefined}
-                      onRefresh={() => { void refreshUsage(activeRegion) }}
-                    />
                   </>
                 : null}
               {status.status === 'signed-out'

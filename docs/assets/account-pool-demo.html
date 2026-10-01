@@ -81,15 +81,9 @@ body{
 .dsm-workbuddy-usage-status{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:500;color:var(--dsw-alias-label-primary)}
 .dsm-workbuddy-usage-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
 .dsm-workbuddy-usage-text{margin:0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-secondary)}
-.dsm-workbuddy-account-picker{display:flex;flex-direction:column;gap:8px}
+/* 账号选择器已整块删除：账号一律在账号池里管（成员勾选就是选择面），
+   而池开启时由排序决定谁服务，一个「改了也不生效」的下拉比没有更糟。 */
 .dsm-workbuddy-account-state{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-.dsm-workbuddy-usage-select-wrap{position:relative}
-.dsm-workbuddy-usage-select{appearance:none;width:100%;font:inherit;padding:10px 34px 10px 12px;
-  border:1px solid var(--dsw-alias-border-l2);border-radius:10px;color:var(--dsw-alias-label-primary);
-  background:var(--dsw-alias-bg-layer-3);cursor:pointer}
-.dsm-workbuddy-usage-select-wrap::after{content:"";position:absolute;top:50%;right:12px;width:7px;height:7px;
-  transform:translateY(-65%) rotate(45deg);border-right:1.6px solid var(--dsw-alias-label-secondary);
-  border-bottom:1.6px solid var(--dsw-alias-label-secondary);pointer-events:none}
 .wb-credits-panels{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .dsm-workbuddy-credit-panel{display:flex;flex-direction:column;min-width:0;gap:7px;padding:14px;
   border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
@@ -284,7 +278,7 @@ body{
 
   <div class="demo-note">
     <b>演示稿（Demo）</b> — 这是<b>国内版 tab 的完整卡片</b>，非最终实现。
-    上半部分是插件<b>原有的设置</b>（账号状态 / 账号选择 / 积分与签到 / 模型管理），
+    上半部分是插件<b>原有的设置</b>（区域状态 / 积分与签到），
     下半部分蓝色虚线以下是<b>本次新增的账号池</b>。数据均为示例值，按钮只驱动本地假状态，
     不发任何真实请求。视觉沿用插件真实的 <code>--dsw-alias-*</code> 令牌与 <code>dsm-*</code> 类名，
     配色随系统深浅色切换。<br />
@@ -329,18 +323,6 @@ body{
                下卡片仍保留一个副本，因为那时账号池整块不渲染。） -->
         </div>
 
-        <!-- ==================== [原有] 账号选择 ==================== -->
-        <section class="dsm-workbuddy-account-picker">
-          <div class="dsm-workbuddy-usage-select-wrap">
-            <select class="dsm-workbuddy-usage-select" id="manualPicker">
-              <option selected>账号A · 138****6621（当前）</option>
-              <option>账号B · 189****3302</option>
-              <option>账号C · 152****7788</option>
-            </select>
-          </div>
-          <span class="dsm-workbuddy-account-state">勾选后即切换该账号；再选一次可清除，跟回桌面端当前登录。</span>
-        </section>
-
         <!-- ==================== [原有] 积分 / 签到 ==================== -->
         <div class="wb-credits-panels">
           <section class="dsm-workbuddy-credit-panel">
@@ -359,44 +341,6 @@ body{
             </div>
           </section>
         </div>
-
-        <!-- ==================== [原有] 模型管理 ==================== -->
-        <section class="dsm-workbuddy-models">
-          <div class="wb-models-head">
-            <div>
-              <h3 class="wb-models-title">模型</h3>
-              <p class="wb-models-summary">已启用 3 / 共 4 个（国内版目录）</p>
-            </div>
-            <button class="dsm-btn dsm-btn-outline" type="button">重新读取模型</button>
-          </div>
-          <div class="wb-model-list">
-            <div class="wb-model-row">
-              <label class="wb-model-check"><input type="checkbox" checked /><span></span></label>
-              <span class="wb-model-name">Deepseek-V4.1-Flash <span class="wb-rate">x0.00</span></span>
-              <label class="wb-model-img"><input type="checkbox" checked /><span>图片</span></label>
-              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
-            </div>
-            <div class="wb-model-row">
-              <label class="wb-model-check"><input type="checkbox" checked /><span></span></label>
-              <span class="wb-model-name">GLM-5.3 <span class="wb-rate">x0.79</span></span>
-              <label class="wb-model-img"><input type="checkbox" /><span>图片</span></label>
-              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
-            </div>
-            <div class="wb-model-row">
-              <label class="wb-model-check"><input type="checkbox" checked /><span></span></label>
-              <span class="wb-model-name">Kimi-K3 <span class="wb-rate">x1.20</span></span>
-              <label class="wb-model-img"><input type="checkbox" /><span>图片</span></label>
-              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
-            </div>
-            <div class="wb-model-row">
-              <label class="wb-model-check"><input type="checkbox" /><span></span></label>
-              <span class="wb-model-name">Hy3 <span class="wb-rate">x0.50</span></span>
-              <label class="wb-model-img"><input type="checkbox" /><span>图片</span></label>
-              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
-            </div>
-          </div>
-          <p class="wb-models-foot">每次测试会发一次真实体积请求（实测约 25k input tokens，credit ≈ 0.72），因此只支持逐个测试。</p>
-        </section>
 
         <!-- ==================== 【新增】账号池区块 ==================== -->
         <div class="pool-new-marker">
@@ -461,6 +405,44 @@ body{
             该模型倍率为 0，但仍会消耗少量额度；测试严格串行，避免把账号打成限流。
           </p>
         </div>
+
+        <!-- ==================== [原有] 模型管理 ==================== -->
+        <section class="dsm-workbuddy-models">
+          <div class="wb-models-head">
+            <div>
+              <h3 class="wb-models-title">模型</h3>
+              <p class="wb-models-summary">已启用 3 / 共 4 个（国内版目录）</p>
+            </div>
+            <button class="dsm-btn dsm-btn-outline" type="button">重新读取模型</button>
+          </div>
+          <div class="wb-model-list">
+            <div class="wb-model-row">
+              <label class="wb-model-check"><input type="checkbox" checked /><span></span></label>
+              <span class="wb-model-name">Deepseek-V4.1-Flash <span class="wb-rate">x0.00</span></span>
+              <label class="wb-model-img"><input type="checkbox" checked /><span>图片</span></label>
+              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
+            </div>
+            <div class="wb-model-row">
+              <label class="wb-model-check"><input type="checkbox" checked /><span></span></label>
+              <span class="wb-model-name">GLM-5.3 <span class="wb-rate">x0.79</span></span>
+              <label class="wb-model-img"><input type="checkbox" /><span>图片</span></label>
+              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
+            </div>
+            <div class="wb-model-row">
+              <label class="wb-model-check"><input type="checkbox" checked /><span></span></label>
+              <span class="wb-model-name">Kimi-K3 <span class="wb-rate">x1.20</span></span>
+              <label class="wb-model-img"><input type="checkbox" /><span>图片</span></label>
+              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
+            </div>
+            <div class="wb-model-row">
+              <label class="wb-model-check"><input type="checkbox" /><span></span></label>
+              <span class="wb-model-name">Hy3 <span class="wb-rate">x0.50</span></span>
+              <label class="wb-model-img"><input type="checkbox" /><span>图片</span></label>
+              <button class="dsm-btn dsm-btn-outline wb-probe" type="button">测试</button>
+            </div>
+          </div>
+          <p class="wb-models-foot">每次测试会发一次真实体积请求（实测约 25k input tokens，credit ≈ 0.72），因此只支持逐个测试。</p>
+        </section>
 
         <!-- ==================== 换号规则 ==================== -->
         <div class="pool-section">
@@ -964,11 +946,6 @@ $('btnCheckin').addEventListener('click', runCheckin);
 $('btnTest').addEventListener('click', runTest);
 $('btnSimulate').addEventListener('click', runSimulatedRequest);
 $('btnClearLog').addEventListener('click', () => { log = []; renderLog(); });
-$('manualPicker').addEventListener('change', e => {
-  const name = e.target.options[e.target.selectedIndex].text.split('（')[0];
-  addLog(`手动指定账号：${name} —— 换号不会改变这个选择，它只是失败时的临时借用`, 'log-swap');
-  renderCurrent();
-});
 $('swEnabled').addEventListener('change', e => {
   editPref('enabled', e.target.checked);
   addLog(e.target.checked

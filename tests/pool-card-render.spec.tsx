@@ -350,13 +350,25 @@ describe('the model list folds, and the fold cannot hide unsaved edits', () => {
   })
 })
 
-describe('the picker says when the pool outranks your choice', () => {
-  it('states it while the pool is on, and drops it while the pool is off', async () => {
-    // With the pool on, the ranking decides who serves — so the account dropdown
-    // above is not authoritative. Leaving that unsaid is the one way this design
-    // produces a picker that lies: the user picks A, sees A selected, and B is
-    // billed. While the pool is OFF the picker IS authoritative, so the notice
-    // must disappear rather than become permanent furniture.
+describe('the account picker is gone, and the status line agrees with the pool', () => {
+  it('renders no account dropdown at all', async () => {
+    // Accounts are managed in the POOL now: its member checkboxes are the
+    // selection surface, and with the pool on the ranking decides who serves —
+    // so a dropdown that changes nothing yet looks authoritative is worse than
+    // no dropdown. It also removed a real contradiction: the header could name
+    // one account while the picker showed another.
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    expect(m.container.querySelector('.dsm-workbuddy-account-picker')).toBeNull()
+    expect(m.container.querySelector('.dsm-workbuddy-usage-select')).toBeNull()
+    await m.unmount()
+  })
+
+  it('stops naming a single account while the pool is on', async () => {
+    // "Signed in: A" is the wrong claim once several accounts can be signed in
+    // and the pool picks which one serves. The pool block states the account in
+    // use; this line reports the REGION's health (dot + token expiry).
     const poolOf = (enabled: boolean): Record<string, unknown> => ({
       ...(usageOf()['pool'] as Record<string, unknown>),
       enabled,
@@ -365,13 +377,16 @@ describe('the picker says when the pool outranks your choice', () => {
     routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
     const on = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await on.settle()
-    expect(on.text()).toContain('row.accountsPoolOverrides')
+    expect(on.text()).toContain('row.signedInPooled')
+    expect(on.text()).not.toContain('row.signedIn|accountName=')
     await on.unmount()
 
     routeFetch([[USAGE_PATH, () => ({ body: usageOf({ pool: poolOf(false) }) })], ['*', () => ({ body: {} })]])
     const off = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await off.settle()
-    expect(off.text()).not.toContain('row.accountsPoolOverrides')
+    // Pool off: the saved/selected account IS the answer, so name it.
+    expect(off.text()).toContain('row.signedIn|accountName=')
+    expect(off.text()).not.toContain('row.signedInPooled')
     await off.unmount()
   })
 
@@ -394,5 +409,27 @@ describe('the picker says when the pool outranks your choice', () => {
     await signedOut.settle()
     expect(signedOut.text()).toContain('row.accountsRescan')
     await signedOut.unmount()
+  })
+})
+
+describe('the model list comes last', () => {
+  it('renders the pool before the model section', async () => {
+    // The requested order: status → credits → pool → models. "Setting the models
+    // last" is the point — the pool is what you reach for daily, and it should not
+    // sit below a long, foldable list.
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() }), ], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    const html = m.html()
+    // Match the SECTION's class attribute, not a bare prefix: `dsm-workbuddy-models`
+    // also prefixes the tab hint (`dsm-workbuddy-models-summary`) that sits above
+    // everything, so a substring search would compare against the wrong element
+    // and pass whatever the order was.
+    const pool = html.indexOf('class="dsm-workbuddy-pool"')
+    const models = html.indexOf('class="dsm-workbuddy-models"')
+    expect(pool, 'no pool section rendered').toBeGreaterThan(-1)
+    expect(models, 'no model section rendered').toBeGreaterThan(-1)
+    expect(pool, 'the model list is not last').toBeLessThan(models)
+    await m.unmount()
   })
 })
