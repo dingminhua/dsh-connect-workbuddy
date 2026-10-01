@@ -26,13 +26,17 @@
  *                                    human can look at it rather than trust us.
  *
  * Deliberate scope limit: these functions only DECIDE and REPORT. They do not
- * rewrite, strip or convert markup, because that would be the actual fix — a
- * change to the response path every request passes through — and it must not
- * arrive as a side effect of a diagnostic tool. See `docs/` for the open
- * decision.
+ * rewrite, strip or convert markup — that is `src/dsml-recovery.ts`, which was
+ * added later, once the response-path change it requires could be made
+ * deliberately rather than as a side effect of a diagnostic tool. The two are
+ * deliberately separate modules: this one must stay readable and side-effect
+ * free so a human can check the claim, and the recovery one sits in the path of
+ * every request, where the bar for changing it is higher.
  *
  * @module dsh-connect-workbuddy/markup-diagnosis
  */
+
+import { FULLWIDTH_BAR as BAR, MARKUP_RE as RE, MARKUP_TOKEN as TOKEN } from './dsml-recovery.ts'
 
 /**
  * Full-width vertical line U+FF5C.
@@ -42,8 +46,12 @@
  * every regex here is built from this constant instead of a literal — a hand-
  * typed `|` would silently never match, and a check that never matches looks
  * exactly like a clean bill of health.
+ *
+ * Defined in the recovery module and re-exported, because both halves must
+ * agree on the spelling: a detector that accepts one form while the converter
+ * accepts another would report leaks it then fails to convert.
  */
-export const FULLWIDTH_BAR = '\uff5c'
+export const FULLWIDTH_BAR = BAR
 
 /**
  * The identifying token of the model's tool-call markup: `｜｜DSML｜｜`.
@@ -56,25 +64,10 @@ export const FULLWIDTH_BAR = '\uff5c'
  *
  * This constant is the DOUBLED spelling only, kept as the reference form that
  * documentation and callers quote. Matching must go through {@link MARKUP_RE},
- * because the bars are not stable either — see the note there.
+ * because the bars are not stable either — see the note on the recovery
+ * module's `BARS` constant.
  */
-export const MARKUP_TOKEN = `${FULLWIDTH_BAR}${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR}${FULLWIDTH_BAR}`
-
-/**
- * One or two full-width bars.
- *
- * The bar count is a VARIABLE, not part of the token. Measured on this project's
- * own transcript: a single captured emission spelled the marker all five ways in
- * one block — `｜DSML｜ validate` (one bar), `｜DSML｜ parameter name="spec"` (one),
- * `｜DSML｜ invoke` (one), and the closer `｜｜DSML｜｜ calls` (two). A detector built
- * on the doubled spelling alone returned a clean bill of health for a session
- * that had leaked four times, and a check that never matches looks exactly like a
- * clean report — the same trap {@link FULLWIDTH_BAR} documents one level up.
- *
- * Upstream agrees the single-bar spelling is normal: vLLM's own reproduction for
- * this defect writes `<｜DSML｜invoke name="terminal"><｜DSML｜parameter …>`.
- */
-const BARS = `${FULLWIDTH_BAR}${FULLWIDTH_BAR}?`
+export const MARKUP_TOKEN = TOKEN
 
 /**
  * The marker in any spelling: one or two bars on each side.
@@ -82,7 +75,7 @@ const BARS = `${FULLWIDTH_BAR}${FULLWIDTH_BAR}?`
  * Global so callers can count occurrences; the lastIndex is reset on every use
  * through {@link markupMatches}.
  */
-export const MARKUP_RE = new RegExp(`${BARS}DSML${BARS}`, 'g')
+export const MARKUP_RE = RE
 
 /** How one upstream response answered the request. */
 export type StreamShape =
@@ -266,10 +259,14 @@ export function findMarkup(text: string, radius = 160): MarkupHit | null {
  *     on `invoke name=` alone missed it; the parameter grammar is the same block
  *     seen from a different angle.
  *
+/**
  * The cost of that second shape is that prose *describing* a parameter clause
  * could count as an emission, which is the overcounting this module's mention
  * rule exists to prevent — so quoting in inline backticks is handled there too.
  */
+/** One or two bars — see {@link MARKUP_RE} for why the count is a variable. */
+const BARS = `${FULLWIDTH_BAR}${FULLWIDTH_BAR}?`
+
 const CALL_ATTEMPT = new RegExp(
   `${BARS}DSML${BARS}\\s*(?:invoke\\s+name="([^"]+)"|invoke\\b|parameter\\s+name=)`,
 )
