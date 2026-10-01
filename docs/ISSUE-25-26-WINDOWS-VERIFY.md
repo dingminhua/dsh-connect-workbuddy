@@ -321,3 +321,82 @@ robocopy "$env:USERPROFILE\wb-backup-302" $real /MIR /NFL /NDL /NJH /NJS
 | `tests/adapter-outgoing-body.spec.ts` | **出站请求体**里确有 `tools` 与首条 system 文本（#26 建议的测法） |
 | `tests/pi-ai-runtime.spec.ts` | 代次判定自洽；**解析不到本地副本时默认 modern（宿主提供）** |
 | `tests/upstream.spec.ts` | wire 层兜底：user 打头时补 system 占位、已是 system 则不重复补 |
+
+---
+
+# 验证结果存档
+
+## 2026-10-01 · Windows 11 真机（第二台机器，独立复核）
+
+由另一台 Windows 机器上的 AI 按本文档执行，结论：**修复有效**。以下是该次执行的结果存档。
+
+### 环境
+
+| 项 | 值 |
+|---|---|
+| 操作系统 | Windows 11 专业版 10.0.22621 |
+| Node | v24.19.0 |
+| pnpm | 11.7.0（DSH 内置；系统 PATH 中无 pnpm） |
+| DSH | 0.2.0.0 |
+| profile / 安装方式 | `desktop`；junction → `D:\DshProject\dsh-connect-workbuddy`（仓库本体） |
+| 验证提交 | `6866d5ad66b2fd5f5c3ba805dab64255e75283d8`（即含修复 `abe09c5`） |
+
+### A. 代码与测试
+
+- `pnpm run check`：typecheck ✓ · `Test Files 33 passed (33)` · `Tests 721 passed (721)` · Build complete ✓ —— 与 macOS 机器上的数字逐字一致；
+- 判据 A3（`lib/bin.js`、`lib/host-heartbeat-*.js` 无 `@earendil-works/pi-ai` 静态 import）：✓ 无匹配。
+
+### B. 缺陷复现（红色基线，在部署修复之前）
+
+用的是仓库里残留的旧构建（版本烙印 `3.0.1`，建于 `1ada886`）。该基线的有效性**已独立核对**：`git show --stat 1920b65` 显示「版本升级至 3.0.2」那次提交只改动 `CHANGELOG.md` 与 `package.json` 各 1 行、无源码改动；且 `git diff 1ada886 <修复前最后状态> -- src/adapter.ts src/upstream.ts` 输出为空 —— 即该旧构建跑的正是出缺陷的 adapter 代码。
+
+| 区域 | 表现 |
+|---|---|
+| 国内版 | 模型承认没有工具：「我没有可用的 shell 工具，无法真实执行命令……」→ #26 复现 |
+| 国际版 | `400 {"message":"…{\"code\":11128,\"msg\":\"first message is not system prompt\"}…"}` → #25 复现，与判据 B1 逐字吻合 |
+
+### C. 部署
+
+按 link 方式就地 `pnpm run build` 重建 `lib/`（`bin.js` mtime 10:46:23；判据 C1 以 `Select-String 'piAiRuntime'` 在三份产物中命中达成）。**完全重启 DSH**：10:49:43 重启（旧 6 进程全部退出、新 7 进程），心跳 10:49:47 重新注册，`pluginVersion: "3.0.2"`。
+
+> 该机未执行本文 §4 的 robocopy 备份/覆盖：link 部署下插件真实路径即仓库本体，备份/覆盖无意义。因此市场安装目录**未被触碰**，步骤 G 无需还原。
+
+### D. doctor 输出
+
+```
+pi-ai runtime: legacy 0.85.1 (D:\DshProject\dsh-connect-workbuddy\node_modules\.pnpm\@earendil-works+pi-ai@0.85.1_ws@8.21.3_zod@4.5.4\node_modules\@earendil-works\pi-ai\dist\index.js) — folds 0.87 transcripts (system text + tool state) into the 0.85 context shape
+```
+
+```json
+"piAiRuntime": {
+  "generation": "legacy",
+  "version": "0.85.1",
+  "resolvedFrom": "D:\\DshProject\\dsh-connect-workbuddy\\node_modules\\.pnpm\\@earendil-works+pi-ai@0.85.1_ws@8.21.3_zod@4.5.4\\node_modules\\@earendil-works\\pi-ai\\dist\\index.js",
+  "resolvedLocally": true,
+  "adapterBehaviour": "folds 0.87 transcripts (system text + tool state) into the 0.85 context shape"
+}
+```
+
+即：junction 到仓库本体 → 解析到仓库内嵌套的 0.85.1 → 走 **legacy 桥接分支**（本文 §5 认可的两种有效分支之一，也正是 #26 所述「本机有嵌套副本」的场景）。
+
+### E. 真机验证
+
+| 区域 | E1 真实执行 | E2 工具真名 | E3 不再 400 | E4 prompt 生效 |
+|---|---|---|---|---|
+| workbuddy（国内） | ✅ `pwsh` 真实调用，输出逐字 `WB-2526-FIXED` | ✅ 48 个 DSH 真名 | N/A（本无 400，全程无报错） | ✅ |
+| workbuddy-global（国际） | ✅ `pwsh` 真实调用，输出逐字 `WB-2526-FIXED` | ✅ 48 个 DSH 真名 | ✅ | ✅ |
+
+证据取自会话记录里的 `tool/call` → `tool/result` 事件链，而不是模型的自我转述：
+
+```
+[TOOL CALL]   {"name":"pwsh","arguments":"{\"command\":\"echo WB-2526-FIXED\",…}"}
+[TOOL RESULT] {"content":[{"type":"text","text":"WB-2526-FIXED\r\n"}],"isError":false}
+```
+
+E4 摘录（国际版）：模型复述出 GUI 地址 `http://127.0.0.1:19387`、工作目录，以及系统提示词中「文件操作优先 `read`/`edit`/`write`」「≥3 条并列要点改用 dsh-ui 组件」等条款 —— 说明整份 system prompt **原样送达并被遵守**，而非仅仅「有一条 system 消息」这种形式达标。
+
+### 结论与已知覆盖缺口
+
+结论：**修复有效**（红色基线 → 部署修复 → 双区域复测，对照成立）。
+
+覆盖缺口：两台机器（Windows 与 macOS）都是 junction 到仓库本体，因此**都走 legacy 桥接分支**。「市场安装、本地无 pi-ai 副本」的 **modern 透传分支**目前只有单元测试（`toBe` 恒等断言）与本地模拟安装树上的 doctor 选中验证，**尚无真机端到端观测**（即本文 §4 步骤 C 的覆盖式部署路径也未经真机走通）。该分支是恒等透传——等价于「不做适配」，即 3.0.1 之前市场用户所处的状态——因此风险低；但它是 #26 报告者的真实环境。若要闭合，按 §4 步骤 C 把 `lib/` 覆盖到市场安装目录后完全重启 DSH 即可（doctor 应报 `modern, host-provided …`）。
