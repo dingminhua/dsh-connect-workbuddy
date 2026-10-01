@@ -153,6 +153,11 @@ export const WORKBUDDY_CARD_CSS = `
 /* Sits under the header block, before the batch buttons: account discovery is
    the first step of using the pool, so it reads above the actions it enables. */
 .dsm-workbuddy-pool-rescan{display:flex;justify-content:flex-end;margin-top:8px}
+/* Manual-mode account picker: shares the settings row layout (.pool-set), and
+   only the select itself needs a hint that it is a PICKER of accounts rather
+   than of models — the two sit near each other and used to be indistinguishable
+   to a selector query as well as to the eye. */
+.dsm-workbuddy-pool-account-select{min-width:200px}
 .dsm-workbuddy-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-pool-summary{margin:2px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}

@@ -460,8 +460,14 @@ describe('the switch controls AUTOMATIC routing, not manual actions', () => {
   it('keeps the target-model choice editable while the pool is off', async () => {
     // The manual test needs a model to test against; disabling the picker with
     // the pool off made the one remaining manual measurement impossible to aim.
+    //
+    // Selector excludes `pool-account-select` on purpose: the manual-mode account
+    // picker shares the `pool-select` class, so the bare selector matched
+    // whichever rendered first rather than the model picker this test is about.
     const m = await mount(AccountPool, baseProps({ pool: poolSwitchedOff() }))
-    const select = m.container.querySelector<HTMLSelectElement>('select.dsm-workbuddy-pool-select')
+    const select = m.container.querySelector<HTMLSelectElement>(
+      'select.dsm-workbuddy-pool-select:not(.dsm-workbuddy-pool-account-select)',
+    )
     expect(select, 'no target-model select rendered').not.toBeNull()
     expect(select?.disabled).toBe(false)
     await m.unmount()
@@ -475,6 +481,61 @@ describe('the switch controls AUTOMATIC routing, not manual actions', () => {
     }))
     expect(m.button('row.poolCheckinAll').disabled).toBe(true)
     expect(m.button('row.poolTestAll').disabled).toBe(true)
+    await m.unmount()
+  })
+})
+
+describe('manual mode can actually pick the serving account', () => {
+  const OTHERS = [
+    accountOf({ accountId: GENUINE_ID, accountName: 'Real One', current: true }),
+    accountOf({ accountId: 'second-1', accountName: 'Second', current: false }),
+  ]
+
+  it('offers the picker while the pool is off, and calls back with the chosen id', async () => {
+    // With the pool off nothing else picks the serving account — the ranking is
+    // out of the picture — so this control IS manual mode. Removing it from the
+    // card header without putting it here left the user stuck with whatever had
+    // been selected before, which is what "no place to choose my account" was.
+    const onSelectAccount = vi.fn()
+    const m = await mount(AccountPool, baseProps({
+      onSelectAccount,
+      pool: poolOf({ enabled: false, accounts: OTHERS, memberAccountIds: [GENUINE_ID], effectiveMemberAccountIds: [GENUINE_ID] }),
+    }))
+    const select = m.container.querySelector<HTMLSelectElement>('select.dsm-workbuddy-pool-account-select')
+    expect(select, 'no account picker rendered with the pool off').not.toBeNull()
+    // It shows who is serving, and lists every account of the region.
+    expect(select?.value).toBe(GENUINE_ID)
+    expect(Array.from(select?.options ?? []).map(o => o.value)).toEqual([GENUINE_ID, 'second-1'])
+    // Choosing another one is reported upward (the card owns the write).
+    if (select !== null) {
+      select.value = 'second-1'
+      select.dispatchEvent(new window.Event('change', { bubbles: true }))
+    }
+    expect(onSelectAccount).toHaveBeenCalledWith('second-1')
+    await m.unmount()
+  })
+
+  it('does NOT offer it while the pool is on', async () => {
+    // With the pool ON the ranking decides, so a picker would change nothing
+    // while looking authoritative — the exact "shows A, bills B" trap this card
+    // keeps having to avoid. The manual row must be absent, not merely disabled.
+    const m = await mount(AccountPool, baseProps({
+      onSelectAccount: () => {},
+      pool: poolOf({ enabled: true, accounts: OTHERS, memberAccountIds: [GENUINE_ID], effectiveMemberAccountIds: [GENUINE_ID] }),
+    }))
+    expect(m.container.querySelector('select.dsm-workbuddy-pool-account-select')).toBeNull()
+    expect(m.text()).not.toContain('row.poolManualAccountLabel')
+    await m.unmount()
+  })
+
+  it('holds the picker while a selection write is in flight', async () => {
+    const m = await mount(AccountPool, baseProps({
+      onSelectAccount: () => {},
+      selectingAccount: true,
+      pool: poolOf({ enabled: false, accounts: OTHERS }),
+    }))
+    const select = m.container.querySelector<HTMLSelectElement>('select.dsm-workbuddy-pool-account-select')
+    expect(select?.disabled, 'a second change must not race the first write').toBe(true)
     await m.unmount()
   })
 })

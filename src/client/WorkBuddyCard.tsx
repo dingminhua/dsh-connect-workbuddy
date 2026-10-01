@@ -994,6 +994,16 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       // card's status header — one place to manage accounts.
                       onRescan={() => { void rescanAccounts() }}
                       rescanning={busy}
+                      // Manual account selection lives here too, and ONLY while
+                      // the pool is OFF. With the pool off nothing else can pick
+                      // the serving account — the ranking is out of the picture —
+                      // so removing this from the card header without putting it
+                      // here left the user with no way to choose at all. With the
+                      // pool ON it is deliberately not rendered: the ranking
+                      // decides the serving account, so a picker would be a
+                      // control that changes nothing.
+                      onSelectAccount={(accountId) => { void switchAccount(accountId) }}
+                      selectingAccount={switchingAccount}
                       siblingBusy={saving || togglingRegion !== undefined}
                       onBusyChange={setPoolBusy}
                       // Returns the promise so the pool section can AWAIT the

@@ -108,6 +108,8 @@ The last two rows are deliberate: check-in and testing are MANUAL actions over t
 
 **The one hard rule**: with nothing checked in the pool, batch actions are refused. An empty pool **never** degrades into "then run on every account" — that is the one reading which would spend credits you never authorized.
 
+**Where manual selection lives**: in the account pool section. **With the pool off** that section shows an "Account in use" dropdown; picking one takes effect immediately (it writes the region's account slot through the same verified path the credential-recovery "switch to a usable account" action uses). **With the pool on the row is absent** — the ranking decides there, and a dropdown that changes nothing is worse than no dropdown. Account discovery ("detect accounts again"), membership, check-in and testing all sit in that one section, so accounts are managed in exactly one place.
+
 ### The ranking (what decides who serves)
 
 1. **Usable first** — an account a measurement rules out (limited with its cooldown unexpired, credential rejected, upstream unreachable) sorts last and is not chosen;

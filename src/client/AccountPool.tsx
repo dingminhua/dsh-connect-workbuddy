@@ -102,6 +102,18 @@ export interface AccountPoolProps {
   /** A rescan is in flight; the button reports it rather than looking inert. */
   rescanning?: boolean
   /**
+   * Switch the account that serves this region.
+   *
+   * Rendered ONLY while the pool is off: that is the mode where the user's own
+   * choice is what serves, so it is the only mode where changing it means
+   * anything. With the pool on the ranking decides, and a picker would be a
+   * control that changes nothing — which is exactly why it was removed from the
+   * card header. It lives in this section so account handling stays in one place.
+   */
+  onSelectAccount?: (accountId: string) => void
+  /** A selection write is in flight; the picker is held until it lands. */
+  selectingAccount?: boolean
+  /**
    * Called after a successful save. The `pool` prop comes from the usage
    * route, so without a re-read the card would render the PREVIOUS pool state
    * while the draft was already discarded — the save would look like it did
@@ -247,7 +259,7 @@ function exclusionText(t: Translate, account: WorkBuddyWebPoolAccount): string |
  * section implying the feature exists.
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
-  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning } = props
+  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -652,6 +664,44 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
             onClick: onRescan,
           }, rescanning === true ? t('row.accountsScanning') : t('row.accountsRescan')),
         ),
+
+    // Manual account selection, shown ONLY with the pool off.
+    //
+    // This is the whole of "manual mode": with the pool off the plugin does not
+    // pick the serving account, so the user must be able to — and no other
+    // control is left to do it (the card header's picker is gone on purpose,
+    // because with the pool ON it changed nothing while looking authoritative).
+    // Without this, "the pool is off" meant "you are stuck with whatever was
+    // selected before", which is not a mode anyone can use.
+    !active.enabled && onSelectAccount !== undefined && pool.accounts.length > 0
+      ? h('div', { className: 'dsm-workbuddy-pool-set' },
+          h('span', { className: 'dsm-workbuddy-pool-set-copy' },
+            h('b', null, t('row.poolManualAccountLabel')),
+            h('span', null, t('row.poolManualAccountHint')),
+          ),
+          h('span', { className: 'dsm-workbuddy-pool-set-ctl' },
+            h('select', {
+              className: 'dsm-workbuddy-pool-select dsm-workbuddy-pool-account-select',
+              value: currentAccount?.accountId ?? '',
+              disabled: selectingAccount === true,
+              onChange: (event: { currentTarget: { value: string } }) => {
+                onSelectAccount(event.currentTarget.value)
+              },
+            },
+              // "No account in effect" is a real state (an orphaned saved id, a
+              // failed refresh). Without a matching option the control would
+              // silently display the first account — the same "looks fine, but
+              // is not what runs" confusion this card keeps having to avoid.
+              pool.accounts.some(account => account.current)
+                ? null
+                : h('option', { value: '', disabled: true }, t('row.poolManualAccountNone')),
+              ...pool.accounts.map(account =>
+                h('option', { key: account.accountId, value: account.accountId },
+                  account.accountName === '' ? t('row.accountUnnamed') : account.accountName)),
+            ),
+          ),
+        )
+      : null,
 
     // The batch buttons. These are MANUAL actions, so they are deliberately NOT
     // gated on the pool switch: the switch decides whether the plugin picks the
