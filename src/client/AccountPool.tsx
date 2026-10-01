@@ -91,6 +91,17 @@ export interface AccountPoolProps {
    */
   onBusyChange?: (busy: boolean) => void
   /**
+   * Re-read this machine's local sign-ins.
+   *
+   * Lives here because the pool's member table is where accounts are managed:
+   * a new sign-in shows up as a row to tick, so "look again" belongs beside the
+   * rows rather than in the card's status header. The card keeps its own copy
+   * for the signed-out state, where this whole section is not rendered.
+   */
+  onRescan?: () => void
+  /** A rescan is in flight; the button reports it rather than looking inert. */
+  rescanning?: boolean
+  /**
    * Called after a successful save. The `pool` prop comes from the usage
    * route, so without a re-read the card would render the PREVIOUS pool state
    * while the draft was already discarded — the save would look like it did
@@ -236,7 +247,7 @@ function exclusionText(t: Translate, account: WorkBuddyWebPoolAccount): string |
  * section implying the feature exists.
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
-  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh } = props
+  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -628,6 +639,19 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               t('row.poolCurrentHint')),
           ),
     ),
+    // Re-read the local sign-ins. Beside the member table rather than in the
+    // card header: a sign-in that appeared externally shows up as a new row to
+    // tick, so this is the control that makes it appear.
+    onRescan === undefined
+      ? null
+      : h('div', { className: 'dsm-workbuddy-pool-rescan' },
+          h('button', {
+            type: 'button',
+            className: 'dsm-btn dsm-btn-outline',
+            disabled: rescanning === true,
+            onClick: onRescan,
+          }, rescanning === true ? t('row.accountsScanning') : t('row.accountsRescan')),
+        ),
 
     // The batch buttons. Testing is disabled when no free model resolved, so a
     // press cannot silently bill a paid model. The check-in button exists only

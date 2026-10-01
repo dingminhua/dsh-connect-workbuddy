@@ -349,3 +349,50 @@ describe('the model list folds, and the fold cannot hide unsaved edits', () => {
     await m.unmount()
   })
 })
+
+describe('the picker says when the pool outranks your choice', () => {
+  it('states it while the pool is on, and drops it while the pool is off', async () => {
+    // With the pool on, the ranking decides who serves — so the account dropdown
+    // above is not authoritative. Leaving that unsaid is the one way this design
+    // produces a picker that lies: the user picks A, sees A selected, and B is
+    // billed. While the pool is OFF the picker IS authoritative, so the notice
+    // must disappear rather than become permanent furniture.
+    const poolOf = (enabled: boolean): Record<string, unknown> => ({
+      ...(usageOf()['pool'] as Record<string, unknown>),
+      enabled,
+    })
+
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const on = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await on.settle()
+    expect(on.text()).toContain('row.accountsPoolOverrides')
+    await on.unmount()
+
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf({ pool: poolOf(false) }) })], ['*', () => ({ body: {} })]])
+    const off = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await off.settle()
+    expect(off.text()).not.toContain('row.accountsPoolOverrides')
+    await off.unmount()
+  })
+
+  it('offers re-detection in the pool AND while signed out', async () => {
+    // The control moved into the pool block, which renders for a signed-in region
+    // only — so the signed-out branch needs its own copy. Without it, "I signed in
+    // over in the app, look again" (precisely a signed-out action) would have no
+    // way to run.
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const signedIn = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await signedIn.settle()
+    expect(signedIn.text()).toContain('row.accountsRescan')
+    await signedIn.unmount()
+
+    routeFetch([[
+      USAGE_PATH,
+      () => ({ body: { status: 'signed-out', accounts: [], selectionExplicit: false, searched: [] } }),
+    ], ['*', () => ({ body: {} })]])
+    const signedOut = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await signedOut.settle()
+    expect(signedOut.text()).toContain('row.accountsRescan')
+    await signedOut.unmount()
+  })
+})

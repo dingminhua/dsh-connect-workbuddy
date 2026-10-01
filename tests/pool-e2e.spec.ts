@@ -525,14 +525,24 @@ describe('the pool: regression guards for the audited defects', () => {
  * is satisfied by a MENTION: a comment, an error message, or the argument of a
  * `typeof` can all contain the name without the call existing. Removing
  * literals and comments first makes the search a search for code.
+ *
+ * ORDER AND LINE-BOUNDEDNESS MATTER, and this used to get both wrong:
+ * `` `http://127.0.0.1:${port}` `` contains `//`, so stripping comments FIRST
+ * truncated the template to `` `http: `` — an ODD number of backticks — and the
+ * backtick pass then paired that stray tick with one hundreds of lines later,
+ * **deleting everything in between**. A guard that searched that span reported a
+ * missing call that was plainly present. Listing literals first (keywords like
+ * `return` are not literals) and forbidding a literal from spanning a newline
+ * removes the whole failure mode: nothing can be swallowed, because nothing can
+ * pair with a distant partner.
  */
 function stripLiterals(text: string): string {
   return text
-    .replace(/\/\*[\s\S]*?\*\//gu, '')
-    .replace(/\/\/[^\n]*/gu, '')
     .replace(/'(?:[^'\\\n]|\\.)*'/gu, "''")
     .replace(/"(?:[^"\\\n]|\\.)*"/gu, '""')
-    .replace(/`(?:[^`\\]|\\.)*`/gu, '``')
+    .replace(/`(?:[^`\\\n]|\\.)*`/gu, '``')
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/\/\/[^\n]*/gu, '')
 }
 
 describe('the pool section and the card share one refresh path (M-4 / L-5)', () => {
@@ -876,6 +886,50 @@ describe('the pool section and the card share one refresh path (M-4 / L-5)', () 
     expect(policy, 'candidates are read through the wrong accessor').toContain('credentialFor(')
     expect(policy, 'the policy resolves the selection instead of borrowing a candidate')
       .not.toContain('resolve()')
+  })
+
+  it('lets the pool ranking decide who serves the first attempt', async () => {
+    // The switch's whole point: with the pool on, "who serves" is the pool's
+    // decision, not the saved selection's. Two halves make that true — the shim
+    // must ASK before resolving, and the Host must point the store at the
+    // ranking's winner. Either half alone leaves the feature invisible.
+    const host = stripLiterals(await sourceOf('index.ts'))
+    const shim = stripLiterals(await sourceOf('shim.ts'))
+
+    expect(shim, 'the shim never asks who should serve').toContain('prepareAccount?.()')
+    // Asked BEFORE the credential is resolved: that ordering is what keeps token
+    // refresh in one place instead of on the routing path.
+    expect(
+      shim.indexOf('await prepareAccount?.()'),
+      'the pool is asked after the credential was already resolved',
+    ).toBeLessThan(shim.indexOf('await store.resolve()'))
+
+    expect(host, 'the shim is not given a routing hook').toContain('prepareAccount:')
+
+    const at = host.indexOf('const applyPoolSelection =')
+    expect(at, 'applyPoolSelection moved — update this guard').toBeGreaterThan(-1)
+    const selection = host.slice(at, host.indexOf('\n  }', at))
+    // Off restores the user's own account immediately: leaving a stale override
+    // in place keeps billing under a switch that reads as off.
+    expect(selection, 'turning the pool off does not clear the override')
+      .toContain('setRotatedAccount(undefined)')
+    // ...and ON must actually APPLY the winner. Naming `setRotatedAccount(` alone
+    // is satisfied by the clearing branch above, so the assertion has to be about
+    // the winning id reaching the store — a mutant that computed the ranking and
+    // threw it away passed the weaker form.
+    expect(selection, 'the ranked winner is computed but never applied')
+      .toMatch(/setRotatedAccount\((?!undefined)[^)]*\)/)
+    expect(selection, 'the winner is not the ranked account')
+      .toContain('winner?.account.id')
+    // The request path must not fetch credits per member: that is a network call
+    // on the hot path, and one page of chat would become N extra requests.
+    expect(selection, 'the request path fetches credits').not.toContain('client.fetchCredits')
+    expect(selection, 'routing does not use the local-only member builder')
+      .toContain('localPoolMembers')
+    // And the card must report the same decision the router makes, or the panel
+    // and the traffic disagree.
+    expect(host, 'the card does not share the routing decision')
+      .toContain('await applyPoolSelection(region).catch(() => undefined)')
   })
 
 })

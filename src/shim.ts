@@ -73,6 +73,20 @@ export interface WorkBuddyShimOptions {
    * reported as-is.
    */
   failoverAccount?: WorkBuddyFailoverAccount
+  /**
+   * Called before the FIRST attempt of every chat request, so the plugin can
+   * point the store at the account the pool's ranking says should serve.
+   *
+   * It exists because "who serves" and "who to retry with" are the same decision
+   * made at two moments: the ranking picks the first account, and after a failure
+   * picks the next one. The shim resolves the credential itself right after this
+   * returns, so the ranking never has to produce a credential — which keeps
+   * token REFRESH in one place (`store.resolve()`) instead of duplicating it on
+   * a path that would silently send expired tokens.
+   *
+   * Absent means the store's own selection always serves.
+   */
+  prepareAccount?: () => Promise<void>
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -169,6 +183,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const { store, client, catalog } = options
   const logger = options.logger
   const failoverAccount = options.failoverAccount
+  const prepareAccount = options.prepareAccount
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
@@ -273,6 +288,14 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       writeOpenAIError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
       return
     }
+    // Let the plugin point the store at whoever the pool's ranking picks for
+    // this request BEFORE resolving. Failure is not fatal: the request then goes
+    // to whatever the store already had, which is the user's own account — the
+    // same behaviour as a plugin with no pool at all.
+    await prepareAccount?.().catch(error => {
+      logger?.warn('dsh-connect-workbuddy: pool account selection failed', error)
+    })
+
     let credential
     try {
       credential = await store.resolve()

@@ -176,6 +176,9 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-current{display:flex;flex-direction:column;align-items:flex-end;gap:4px;max-width:340px;text-align:right}
 .dsm-workbuddy-pool-current-badge{padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .dsm-workbuddy-pool-current-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999)}
+/* Sits under the header block, before the batch buttons: account discovery is
+   the first step of using the pool, so it reads above the actions it enables. */
+.dsm-workbuddy-pool-rescan{display:flex;justify-content:flex-end;margin-top:8px}
 .dsm-workbuddy-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-pool-summary{margin:2px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}

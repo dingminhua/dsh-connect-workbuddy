@@ -126,8 +126,10 @@ body{
 .wb-models-foot{margin:10px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 
 /* 注意：这里原本有一条「手动 / 自动冲突提示」样式块（含只读下拉的置灰样式）。
-   新版删掉了「按积分自动轮换」，手动选择永远有效，冲突状态不复存在，故整块删除 —— 
-   留着一套没人使用的警告样式只会让人以为还有这个状态。 */
+   新版删掉了「按积分自动轮换」这个设置，于是「手动还是自动」不再是二选一，那一整套冲突状态
+   （置灰下拉 + 告警块 + 解锁按钮）不复存在，故整块删除 —— 留着一套没人使用的警告样式，
+   只会让人以为还有这个状态。
+   目前的关系是：开启账号池时由池子的排序决定谁服务，你保存的选择不被改写；关闭后它立刻完全生效。 */
 
 /* ---- 【新增】草稿 / 保存 ---- */
 .pool-save-bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
@@ -322,7 +324,9 @@ body{
             </span>
             <span class="dsm-workbuddy-usage-text" style="font-size:13px">账号A · 138****6621</span>
           </div>
-          <button class="dsm-btn dsm-btn-outline" type="button">重新检测账号</button>
+          <!-- 「重新检测账号」已移到下面的账号池区块：那里才是管理账号的地方，
+               新登录的账号会以「一行待勾选」的形式出现。（真机同样如此；未登录状态
+               下卡片仍保留一个副本，因为那时账号池整块不渲染。） -->
         </div>
 
         <!-- ==================== [原有] 账号选择 ==================== -->
@@ -407,6 +411,7 @@ body{
               <p class="pool-title">账号池 <span class="region-badge">国内版</span></p>
               <p class="pool-sub">池内 3 个国内版账号 · 目标模型 <b class="mono">deepseek-v4.1-flash</b>（免费，x0.00 倍率）</p>
             </div>
+            <button class="dsm-btn dsm-btn-outline" type="button">重新检测账号</button>
           </div>
           <p class="region-independent">
             国内版与国际版是<b>各自独立</b>的两个账号池：账号与目标模型互不影响。
@@ -466,13 +471,15 @@ body{
           <div class="pool-rule">
             <div class="pool-rule-line">
               <span class="pool-rule-idx">1</span>
-              <span><b>你的账号永远第一个被尝试</b>。失败后才按池内顺序取下一个<b>可用</b>成员重试，
-                直到有人接手、或全部不可用为止；全部失败才把错误报出来（并注明尝试过几个账号）。</span>
+              <span><b>每一次请求都由池子的排序选出服务账号</b>（可用优先，其次积分高、快过期的积分包、凭据更新的），
+                所以上面那行「当前使用」是排序的结果，不一定是你手动选的那个。该账号失败时，
+                再按同一个排序取下一个<b>可用</b>成员重试，直到有人接手或全部不可用；全部失败才把错误报出来（并注明尝试过几个账号）。</span>
             </div>
             <div class="pool-rule-line">
               <span class="pool-rule-idx">2</span>
               <span><b>只跳过「已知不可用」的成员</b>：仍在冷却期内的限流账号、凭据被上游拒绝的账号。
-                <b>从没测试过的账号默认视为可用</b>——刚发现的登录不该因为「还没测」就被排除在外。</span>
+                <b>从没测试过的账号默认视为可用</b>——刚发现的登录不该因为「还没测」就被排除在外。
+                积分也参与排序，但只在有新鲜读数时（卡片轮询 / 批量测试 / 保存时读到的），请求路径不会为了排序去打上游。</span>
             </div>
             <div class="pool-rule-line">
               <span class="pool-rule-idx">3</span>
@@ -481,8 +488,8 @@ body{
             </div>
             <div class="pool-rule-line">
               <span class="pool-rule-idx">4</span>
-              <span><b>不改变你的选择</b>。换号只为这一次请求借用别人的额度，上面那行「当前使用」不动，
-                下一个请求仍从它开始——所以也没有「手动选择被停用」这回事。</span>
+              <span><b>不写回你保存的选择</b>。排序只通过运行时覆盖决定「谁服务」，从不改写你选定的账号；
+                关掉账号池，你选定的那个立刻完全恢复生效。上面那行「当前使用」就是当下真正在服务的账号。</span>
             </div>
           </div>
         </div>
@@ -939,7 +946,7 @@ async function runSimulatedRequest(){
     await sleep(450);
     addLog(`改用 ${cand.name} 重发同一个请求 → 成功返回`, 'log-ok');
     persistRuntime(`本次请求由 ${cand.name} 承接；当前使用仍是 ${primary ? primary.name : '（无）'}`);
-    addLog(`当前使用未改变：仍是 ${primary ? primary.name : '（无）'} —— 换号只为这一次请求借用额度`, 'log-swap');
+    addLog('排序不写回你保存的选择：关闭账号池后仍然是你选定的那个账号生效', 'log-swap');
     render();
     running = false; setBusy(false);
     return;

@@ -977,14 +977,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                     ? <span className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</span>
                     : null}
                 </div>
-                <button
-                  type="button"
-                  className="dsm-btn dsm-btn-outline"
-                  disabled={busy}
-                  onClick={() => { void rescanAccounts() }}
-                >
-                  {busy ? t('row.accountsScanning') : t('row.accountsRescan')}
-                </button>
               </div>
               {status.status !== 'error' && status.accounts.length > 0
                 ? <section className="dsm-workbuddy-account-picker" aria-label={t('row.accountsTitle')}>
@@ -1029,6 +1021,15 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         ? t('row.accountsSavedChoice')
                         : ''}
                     </span>
+                    {/* With the pool on, the selection above is not authoritative:
+                        the pool's ranking decides who serves each request. Saying
+                        so here is the difference between "your pick still matters,
+                        it just ranks" and a picker that quietly lies. */}
+                    {status.status === 'signed-in' && status.pool?.enabled === true
+                      ? <span className="dsm-workbuddy-account-state" role="status">
+                          {t('row.accountsPoolOverrides')}
+                        </span>
+                      : null}
                     {/* A write that did not persist is stated, never swallowed.
                         Reaching this means `set()` resolved while the value is
                         absent from the document (a locked profile configuration on
@@ -1392,6 +1393,12 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       region={activeRegion}
                       {...status.pool === undefined ? {} : { pool: status.pool }}
                       {...settingsScope === undefined ? {} : { settingsScope }}
+                      // Account DISCOVERY lives with the pool now: the pool's
+                      // member table is where accounts are chosen, so re-reading
+                      // the local sign-ins belongs beside it rather than in the
+                      // card's status header — one place to manage accounts.
+                      onRescan={() => { void rescanAccounts() }}
+                      rescanning={busy}
                       siblingBusy={saving || togglingRegion !== undefined}
                       onBusyChange={setPoolBusy}
                       // Returns the promise so the pool section can AWAIT the
@@ -1425,6 +1432,21 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                           the detail. */}
                       {signedOutText(notice, t)}
                     </p>
+                    {/* Re-detect stays HERE as well, not only in the pool block:
+                        the pool renders for a signed-in region only, and "I just
+                        signed in over there, look again" is precisely a
+                        signed-OUT action. Moving the control without this copy
+                        would have removed the only way out of that state. */}
+                    <div className="dsm-workbuddy-usage-account-actions">
+                      <button
+                        type="button"
+                        className="dsm-btn dsm-btn-outline"
+                        disabled={busy}
+                        onClick={() => { void rescanAccounts() }}
+                      >
+                        {busy ? t('row.accountsScanning') : t('row.accountsRescan')}
+                      </button>
+                    </div>
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>
                 : null}

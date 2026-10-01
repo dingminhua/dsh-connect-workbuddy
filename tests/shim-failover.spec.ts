@@ -356,3 +356,61 @@ describe('which pool members failover may try', () => {
     expect(ranked[0]?.excludedBy).toBe('credential-rejected')
   })
 })
+
+describe('the pool decides who serves the FIRST attempt', () => {
+  it('consults the pool before resolving, and uses the credential it produced', async () => {
+    // With the pool on, the ranking owns who serves — the switch's whole point.
+    // The shim cannot pick the account itself (it does not know the pool), so it
+    // asks the plugin first and then resolves: that ordering is what lets token
+    // REFRESH stay in `store.resolve()` instead of being re-implemented on the
+    // routing path, where a missed refresh would send an expired token.
+    const order: string[] = []
+    const other = credentialFor('other')
+    const store = {
+      resolve: async () => {
+        order.push('resolve')
+        return other
+      },
+      credentialFor: async () => other,
+    } as unknown as WorkBuddyCredentialStore
+    shim = createWorkBuddyShim({
+      store,
+      client: {
+        chatStream: async (credential: WorkBuddyCredential) => {
+          order.push(`chat:${credential.uin ?? ''}`)
+          return ok()
+        },
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      prepareAccount: async () => { order.push('prepare') },
+    })
+    await shim.ready
+    await chat(shim)
+    expect(order).toEqual(['prepare', 'resolve', 'chat:other'])
+  })
+
+  it('still serves the request when the pool lookup fails', async () => {
+    // Routing is an optimisation, not a gate. A pool that cannot be read (a
+    // corrupt probe file, a store hiccup) must degrade to the account the store
+    // already had rather than failing the user's request.
+    const warn = vi.fn()
+    const sent: string[] = []
+    shim = createWorkBuddyShim({
+      store: { resolve: async () => SELECTED } as unknown as WorkBuddyCredentialStore,
+      client: {
+        chatStream: async (credential: WorkBuddyCredential) => {
+          sent.push(credential.uin ?? '')
+          return ok()
+        },
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      logger: { warn, error: vi.fn() },
+      prepareAccount: async () => { throw new Error('probe store unreadable') },
+    })
+    await shim.ready
+    const response = await chat(shim)
+    expect(response.status).toBe(200)
+    expect(sent).toEqual(['selected'])
+    expect(warn).toHaveBeenCalled()
+  })
+})

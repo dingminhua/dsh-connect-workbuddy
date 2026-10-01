@@ -56,7 +56,7 @@ import type {
   WorkBuddyPoolRunnerDeps,
   WorkBuddyPoolTarget,
 } from './account-pool-run.ts'
-import type { WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
+import type { WorkBuddyPoolCredits, WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
 import {
   effectiveMembersOf,
   rankPool,
@@ -645,18 +645,21 @@ export function apply(ctx: Context, config: Config): void {
       catalog,
       logger: ctx.logger,
       /**
-       * Pool failover, bound to THIS region.
+       * Pool routing, bound to THIS region.
        *
        * The region is captured in the closure rather than passed per call: each
-       * region owns its own store, pool and shim, and a retry that consulted
-       * the other region's members would bill an account from a different
-       * account pool than the one that failed.
+       * region owns its own store, pool and shim, and routing that consulted the
+       * other region's members would bill an account from a different account
+       * pool than the one in play.
        *
-       * Resolved lazily — `failoverAccountFor` reads `poolMembersOf`, which is
-       * defined below with the rest of the pool plumbing — but never called
-       * before it exists: the shim only takes traffic once the provider is
-       * registered, which happens after this whole setup completes.
+       * `prepareAccount` runs before every request (so the ranking decides who
+       * serves), `failoverAccount` runs after a failure (so the ranking decides
+       * who to try next). Both are resolved lazily — they read pool plumbing
+       * defined below — but never called before it exists: the shim only takes
+       * traffic once the provider is registered, which happens after this whole
+       * setup completes.
        */
+      prepareAccount: () => applyPoolSelection(region),
       failoverAccount: triedAccountIds => failoverAccountFor(region, triedAccountIds),
     })
     stacks[region] = { store, catalog, shim }
@@ -956,11 +959,15 @@ export function apply(ctx: Context, config: Config): void {
         return Object.fromEntries(entries.filter(entry => entry !== undefined))
       },
       async currentAccountId(region) {
-        // The account the STORE would bill at this moment — i.e. the one the
-        // user selected. Failover never edits this: a request that failed over
-        // borrowed another member's credential for that one retry, so the next
-        // request still starts here and the card keeps reporting the user's own
-        // choice rather than a transient fallback.
+        // Apply the SAME selection the request path applies, then report what the
+        // store would bill. Going through `applyPoolSelection` instead of
+        // re-deriving "who should serve" here is what keeps the card and the
+        // router from disagreeing: one rule, one answer.
+        //
+        // It also means the card is correct immediately on a settings change,
+        // rather than only after the next chat request happens to re-point the
+        // store.
+        await applyPoolSelection(region).catch(() => undefined)
         const credential = await stacks[region].store.current().catch(() => undefined)
         return credential === undefined ? undefined : workbuddyAccountId(credential)
       },
@@ -1040,8 +1047,7 @@ export function apply(ctx: Context, config: Config): void {
    *
    * Reads the candidate through `credentialFor()`, never `resolve()`: the saved
    * selection and the store's runtime state stay untouched, so this is
-   * per-request borrowing rather than a silent change of who pays. The next
-   * request starts from the user's own account again.
+   * per-request borrowing rather than a silent change of who pays.
    */
   const failoverAccountFor = async (
     region: WorkBuddyRegion,
@@ -1060,6 +1066,81 @@ export function apply(ctx: Context, config: Config): void {
       if (credential !== undefined) return credential
     }
     return undefined
+  }
+
+  /**
+   * The last CREDITS reading per region, so a request can rank by balance
+   * without fetching one.
+   *
+   * Credits are the ranking's second key, and they cost an upstream call per
+   * member. A chat request must never pay that: it happens on the hot path, and
+   * `fetchCredits` per member would turn one page of conversation into N extra
+   * requests. So the request path uses whatever the pool last read (the card's
+   * 60-second poll, a batch test, or a save) and simply skips the key when the
+   * snapshot is too old to speak for today's balances.
+   */
+  const creditsSnapshot: Partial<Record<WorkBuddyRegion, ReadonlyMap<string, WorkBuddyPoolCredits>>> = {}
+  /** How long a credits reading may steer routing. */
+  const CREDITS_SNAPSHOT_MS = 10 * 60_000
+
+  /** When each region's snapshot was taken, for the freshness check above. */
+  const creditsSnapshotAt: Partial<Record<WorkBuddyRegion, number>> = {}
+
+  /**
+   * One region's pool members from LOCAL sources only: the credential store and
+   * the probe store, plus the credits snapshot when it is fresh.
+   *
+   * The request path calls this on every chat completion, so it must not touch
+   * the network. `poolMembersOf` is the honest-but-expensive version (it fetches
+   * credits per member) and stays on the card's route, which is where those
+   * readings come from in the first place.
+   */
+  async function localPoolMembers(region: WorkBuddyRegion): Promise<WorkBuddyPoolMember[]> {
+    const accounts = await poolMemberAccounts(region)
+    const probes = await readPoolProbes(region)
+    const fresh = Date.now() - (creditsSnapshotAt[region] ?? 0) <= CREDITS_SNAPSHOT_MS
+    const credits = fresh ? creditsSnapshot[region] : undefined
+    return accounts.map(account => {
+      const reading = credits?.get(account.id)
+      return {
+        account: { id: account.id, accountName: account.accountName },
+        ...reading === undefined ? {} : { credits: reading },
+        ...probes[account.id] === undefined ? {} : { probe: probes[account.id] as WorkBuddyPoolProbe },
+        tokenExpiresAtMs: account.tokenExpiresAtMs,
+      }
+    })
+  }
+
+  /**
+   * Point this region's store at whoever the pool's ranking says should serve.
+   *
+   * Called once per chat request. With the pool ON the ranking decides the
+   * serving account — the whole point of the switch, and the reason the card can
+   * show a "current account" that is not simply the saved selection. With the
+   * pool OFF the override is CLEARED, which restores the user's own choice
+   * immediately: leaving a stale override in place would keep billing under a
+   * switch that reads as off.
+   *
+   * The override is runtime-only and never written to settings, so the user's
+   * recorded choice survives untouched either way — turning the pool off gives
+   * it back verbatim.
+   *
+   * Best-effort: a failure here leaves the previous state in effect, and the
+   * request still goes out (to the user's account when the pool is off, which is
+   * the safe default).
+   */
+  const applyPoolSelection = async (region: WorkBuddyRegion): Promise<void> => {
+    const store = stacks[region].store
+    if (!poolPreferencesOf(current(), region).enabled) {
+      store.setRotatedAccount(undefined)
+      return
+    }
+    const winner = rankPool(await localPoolMembers(region), Date.now())
+      .find(row => row.excludedBy === undefined)
+    // Nobody usable is NOT "no account": clearing the override hands the request
+    // to the saved selection, and the failure (if any) is then reported honestly
+    // instead of being masked by a pool that has nothing better to offer.
+    store.setRotatedAccount(winner?.account.id)
   }
 
   /**
@@ -1101,6 +1182,17 @@ export function apply(ctx: Context, config: Config): void {
         tokenExpiresAtMs: account.tokenExpiresAtMs,
       }
     }))
+    // Remember the balances for the REQUEST path, which cannot afford to fetch
+    // them (`localPoolMembers`). Written here because this is the one place the
+    // pool pays for a credits reading — the card's poll and every batch test run
+    // through it — so the snapshot is exactly as fresh as the numbers the user
+    // is looking at.
+    creditsSnapshot[region] = new Map(
+      rows
+        .filter(row => row.credits !== undefined)
+        .map(row => [row.account.id, row.credits as WorkBuddyPoolCredits]),
+    )
+    creditsSnapshotAt[region] = Date.now()
     return rows
   }
 
