@@ -115,12 +115,13 @@ describe('the card renders what it fetched (polarity)', () => {
     await m.settle()
     // The fetch DID happen — so a blank card cannot be blamed on the stub.
     expect(usageCalls(calls).length).toBeGreaterThanOrEqual(2)
-    // The signed-in BODY renders only from an APPLIED snapshot. The credits panel
-    // is the marker: it lives inside the signed-in branch and needs real credits,
-    // so a dropped or superseded snapshot leaves it out. (It used to be the status
-    // line, which no longer exists — the account name it carried was redundant with
-    // the pool block, and naming one account was wrong once several can be signed in.)
-    expect(m.text()).toContain('row.creditsTotalLabel')
+    // The signed-in BODY renders only from an APPLIED snapshot. The model section
+    // is the marker: it lives inside the signed-in branch and always renders there,
+    // so a dropped or superseded snapshot leaves it out. (The marker has moved twice
+    // as this card shed single-account-era chrome — first the status line, then the
+    // credits panel — which is exactly why it is now a structural element rather
+    // than a piece of copy.)
+    expect(m.text()).toContain('row.modelsTitle')
     expect(m.text()).not.toContain('row.signedOut')
     expect(m.text()).not.toContain('row.requestFailed')
     await m.unmount()
@@ -141,7 +142,7 @@ describe('the card renders what it fetched (polarity)', () => {
     await m.settle()
     for (const call of calls) settled.push(call.url)
     expect(settled.length).toBeGreaterThanOrEqual(2)
-    expect(m.text()).toContain('row.creditsTotalLabel')
+    expect(m.text()).toContain('row.modelsTitle')
     expect(m.text()).toContain('Real One')
     await m.unmount()
   })
@@ -157,7 +158,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await m.settle()
     expect(usageCalls(calls).length).toBeGreaterThanOrEqual(2)
-    expect(m.text()).toContain('row.creditsTotalLabel')
+    expect(m.text()).toContain('row.modelsTitle')
     expect(m.text()).toContain('Real One')
     expect(m.text()).not.toContain('row.requestFailed')
     await m.unmount()
@@ -174,7 +175,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await m.settle()
     expect(calls.length).toBeGreaterThan(0)
-    expect(m.text()).toContain('row.creditsTotalLabel')
+    expect(m.text()).toContain('row.modelsTitle')
     // Edit the pool membership so the draft is dirty.
     const box = m.container.querySelector<HTMLInputElement>('.dsm-workbuddy-pool-table input[type=checkbox]')
     if (box === null) throw new Error('no pool member checkbox rendered')
@@ -196,7 +197,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     // `pool`, `credits` or `models` — and the entire body (which is gated on
     // `status === 'signed-in'`) disappeared, pool draft included.
     expect(m.text()).toContain('row.poolTitle')
-    expect(m.text()).toContain('row.creditsTotalLabel')
+    expect(m.text()).toContain('row.modelsTitle')
     expect(m.text()).toContain('row.requestFailedHint|message=HTTP 500')
     await m.unmount()
   })
@@ -388,7 +389,7 @@ describe('the account picker is gone, and the status line agrees with the pool',
     expect(m.text()).not.toContain('row.tokenExpiry')
     // And the card is still rendering the signed-in body — otherwise "absent"
     // would pass on an empty card.
-    expect(m.text()).toContain('row.creditsTotalLabel')
+    expect(m.text()).toContain('row.modelsTitle')
     await m.unmount()
   })
 
