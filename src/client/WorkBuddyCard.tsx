@@ -204,13 +204,6 @@ function formatNumber(value: number): string {
   }).format(value)
 }
 
-function formatDateTime(value: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(new Date(value))
-}
-
 /**
  * Compact package-date rendering with time, e.g. `08/25 14:44`.
  *
@@ -862,23 +855,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    * placeholder says the honest thing instead.
    */
   const nameOf = (value: string): string => value === '' ? t('row.accountUnnamed') : value
-  /**
-   * The region's status line.
-   *
-   * With the pool ON it deliberately does NOT name an account: the pool's ranking
-   * decides who serves each request, so there is no single "the" account here —
-   * and naming one is how this line came to disagree with the rest of the card
-   * (a live screenshot showed one account here and a different one right below).
-   * The pool block names the account in use; this line reports whether the REGION
-   * is usable, which is what the dot and the token expiry beside it are about.
-   */
-  const label = status.status === 'signed-in'
-    ? status.pool?.enabled === true
-      ? t('row.signedInPooled')
-      : t('row.signedIn', { accountName: nameOf(status.accountName) })
-    : status.status === 'error'
-      ? t('row.requestFailed')
-      : t('row.signedOut')
   /** The saved choice no longer matches a local sign-in (tokens are fine). */
   const selectionLost = status.status === 'signed-out' && status.selectionLost === true
   /**
@@ -966,30 +942,30 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
               {!activeRegionOn
                 ? <p className="dsm-workbuddy-tab-off-notice">{t('row.tabOffNotice')}</p>
                 : null}
-              <div className="dsm-workbuddy-usage-account">
-                <div className="dsm-workbuddy-usage-account-copy" role="status">
-                  <div className="dsm-workbuddy-usage-status">
-                    <span aria-hidden="true" className="dsm-workbuddy-usage-dot" style={dotStyle(status.status)} />
-                    <span>{label}</span>
-                  </div>
-                  {status.status === 'signed-in'
-                    ? <span className="dsm-workbuddy-usage-expiry">
-                        {t('row.tokenExpiry', { expiresAt: formatDateTime(status.tokenExpiresAtMs) })}
-                      </span>
-                    : null}
-                  {status.status === 'error'
-                    || (status.status === 'signed-in' && status.creditsError !== undefined)
-                    // A refusal gets its own, specific advice in the panel below;
-                    // the generic "sign in again" would contradict it.
-                    ? status.status === 'signed-in' && status.credentialRejected === true
-                      ? null
-                      : <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
-                    : null}
-                  {selectionLost
-                    ? <span className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</span>
-                    : null}
-                </div>
-              </div>
+              {/* The signed-in status card is GONE: the account name and the
+                  token expiry were both information the rest of the card already
+                  carries, and this line was actively the wrong place for it.
+                  With a pool, several accounts are signed in at once, so naming
+                  one was never the whole truth; the pool block names the account
+                  actually serving and its table lists every account with its
+                  state. The token auto-renews, so its expiry is nothing the user
+                  can act on — and when the credential genuinely breaks, the
+                  dedicated panels below say so with a remedy.
+
+                  What remains here is only text the user must ACT on: the
+                  re-login hint for a failed region, and the orphaned-choice
+                  notice. A region's health at a glance is still on its tab dot. */}
+              {status.status === 'error'
+                || (status.status === 'signed-in' && status.creditsError !== undefined)
+                // A refusal gets its own, specific advice in the panel below;
+                // the generic "sign in again" would contradict it.
+                ? status.status === 'signed-in' && status.credentialRejected === true
+                  ? null
+                  : <p className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</p>
+                : null}
+              {selectionLost
+                ? <p className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</p>
+                : null}
               {status.status === 'signed-in'
                 ? <>
                     {status.credits === undefined ? null : (() => {

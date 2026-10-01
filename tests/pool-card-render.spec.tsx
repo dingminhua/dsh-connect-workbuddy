@@ -115,9 +115,12 @@ describe('the card renders what it fetched (polarity)', () => {
     await m.settle()
     // The fetch DID happen — so a blank card cannot be blamed on the stub.
     expect(usageCalls(calls).length).toBeGreaterThanOrEqual(2)
-    // The signed-in line renders only from an APPLIED snapshot.
-    expect(m.text()).toContain('row.signedIn')
-    expect(m.text()).toContain('Real One')
+    // The signed-in BODY renders only from an APPLIED snapshot. The credits panel
+    // is the marker: it lives inside the signed-in branch and needs real credits,
+    // so a dropped or superseded snapshot leaves it out. (It used to be the status
+    // line, which no longer exists — the account name it carried was redundant with
+    // the pool block, and naming one account was wrong once several can be signed in.)
+    expect(m.text()).toContain('row.creditsTotalLabel')
     expect(m.text()).not.toContain('row.signedOut')
     expect(m.text()).not.toContain('row.requestFailed')
     await m.unmount()
@@ -138,7 +141,7 @@ describe('the card renders what it fetched (polarity)', () => {
     await m.settle()
     for (const call of calls) settled.push(call.url)
     expect(settled.length).toBeGreaterThanOrEqual(2)
-    expect(m.text()).toContain('row.signedIn')
+    expect(m.text()).toContain('row.creditsTotalLabel')
     expect(m.text()).toContain('Real One')
     await m.unmount()
   })
@@ -154,7 +157,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await m.settle()
     expect(usageCalls(calls).length).toBeGreaterThanOrEqual(2)
-    expect(m.text()).toContain('row.signedIn')
+    expect(m.text()).toContain('row.creditsTotalLabel')
     expect(m.text()).toContain('Real One')
     expect(m.text()).not.toContain('row.requestFailed')
     await m.unmount()
@@ -171,7 +174,7 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await m.settle()
     expect(calls.length).toBeGreaterThan(0)
-    expect(m.text()).toContain('row.signedIn')
+    expect(m.text()).toContain('row.creditsTotalLabel')
     // Edit the pool membership so the draft is dirty.
     const box = m.container.querySelector<HTMLInputElement>('.dsm-workbuddy-pool-table input[type=checkbox]')
     if (box === null) throw new Error('no pool member checkbox rendered')
@@ -365,29 +368,28 @@ describe('the account picker is gone, and the status line agrees with the pool',
     await m.unmount()
   })
 
-  it('stops naming a single account while the pool is on', async () => {
-    // "Signed in: A" is the wrong claim once several accounts can be signed in
-    // and the pool picks which one serves. The pool block states the account in
-    // use; this line reports the REGION's health (dot + token expiry).
-    const poolOf = (enabled: boolean): Record<string, unknown> => ({
-      ...(usageOf()['pool'] as Record<string, unknown>),
-      enabled,
-    })
-
+  it('renders no signed-in status card at all', async () => {
+    // The card used to lead with a boxed "Signed in: A / token expires …".
+    // Both halves are gone, for different reasons: naming ONE account is the
+    // wrong claim once several can be signed in (the pool block names the one
+    // serving, and its table lists them all), and a token that auto-renews has
+    // an expiry the user cannot act on. What remains for a broken region is only
+    // text with a remedy — covered by the credential/credits panels, and by the
+    // per-region dot on the tabs.
+    //
+    // Pinned as "absent" rather than deleted from the test file: re-introducing a
+    // status card is a UI decision, and it should take a deliberate edit to the
+    // expectation, not slip through as a new element nobody asserted.
     routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
-    const on = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
-    await on.settle()
-    expect(on.text()).toContain('row.signedInPooled')
-    expect(on.text()).not.toContain('row.signedIn|accountName=')
-    await on.unmount()
-
-    routeFetch([[USAGE_PATH, () => ({ body: usageOf({ pool: poolOf(false) }) })], ['*', () => ({ body: {} })]])
-    const off = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
-    await off.settle()
-    // Pool off: the saved/selected account IS the answer, so name it.
-    expect(off.text()).toContain('row.signedIn|accountName=')
-    expect(off.text()).not.toContain('row.signedInPooled')
-    await off.unmount()
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    expect(m.container.querySelector('.dsm-workbuddy-usage-account')).toBeNull()
+    expect(m.container.querySelector('.dsm-workbuddy-usage-status')).toBeNull()
+    expect(m.text()).not.toContain('row.tokenExpiry')
+    // And the card is still rendering the signed-in body — otherwise "absent"
+    // would pass on an empty card.
+    expect(m.text()).toContain('row.creditsTotalLabel')
+    await m.unmount()
   })
 
   it('offers re-detection in the pool AND while signed out', async () => {

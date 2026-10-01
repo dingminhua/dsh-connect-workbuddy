@@ -49,14 +49,12 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-tab-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-tab-switch input:disabled{opacity:.4;cursor:default}
 .dsm-workbuddy-tab-off{opacity:.55}
+/* Re-detection keeps a copy in the signed-out branch (that branch is where
+   "I just signed in over there" applies), so it needs its own placement: the
+   pool block's rule cannot reach it. */
+.dsm-workbuddy-usage-account-actions{display:flex;gap:8px;margin:10px 0 0}
 .dsm-workbuddy-tab-off-notice{color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px;margin:0 0 4px;padding:8px 10px;background:var(--dsw-alias-bg-layer-3,#2a2c33);border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px}
-.dsm-workbuddy-usage-account{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#24262c)}
-.dsm-workbuddy-usage-account-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
-.dsm-workbuddy-usage-expiry{padding-left:19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-workbuddy-usage-hint{padding-left:19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
-.dsm-workbuddy-account-picker{display:flex;flex-direction:column;gap:8px}
-.dsm-workbuddy-account-state{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
-.dsm-workbuddy-account-state:empty{display:none}
 .dsm-workbuddy-account-error{color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
 .dsm-workbuddy-usage-select-wrap{position:relative}
 .dsm-workbuddy-usage-select{appearance:none;width:100%;font:inherit;padding:10px 34px 10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-3,#2a2c33);cursor:pointer;transition:border-color .15s,box-shadow .15s}
@@ -77,7 +75,6 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-searched-more:hover{text-decoration:underline}
 .dsm-workbuddy-usage-error{margin:0;font-size:14px;line-height:22px;color:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-workbuddy-usage-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
-.dsm-workbuddy-usage-status{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-credits-panels{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(150px,.8fr);gap:10px}
 .dsm-workbuddy-credit-panel{display:flex;flex-direction:column;min-width:0;gap:7px;padding:14px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;background:var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-workbuddy-credit-panel-title{color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
