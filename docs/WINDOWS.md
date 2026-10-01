@@ -21,7 +21,7 @@ Windows 在本项目里不是「顺带能跑」的平台，而是**有专属分�
 | # | 位置 | Windows 行为 | 若改错会怎样 |
 | --- | --- | --- | --- |
 | 1 | `src/auth.ts` `defaultDesktopAuthDirs()` | `%LOCALAPPDATA%` / `%APPDATA%` **优先**，未设或为空白串时回落 `<home>\AppData`（`Local` / `Roaming` 两个候选） | 重定向配置文件（OneDrive 文件夹备份、企业策略）的机器读不到凭据 → 显示未登录 |
-| 2 | `src/at-rest.ts` `workbuddyAppExecutableCandidates()` | 按 `WorkBuddy.exe` 探四个位置：`%LOCALAPPDATA%\Programs\WorkBuddy`、`%LOCALAPPDATA%\WorkBuddy`、`%ProgramFiles%\WorkBuddy`、`%ProgramFiles(x86)%\WorkBuddy` | 装在自定义目录（如同源 issue 里的 `E:\WorkBuddy\WorkBuddy.exe`）的机器取不到字段密钥 → 加密凭据读不出 |
+| 2 | `src/at-rest.ts` `workbuddyAppExecutableCandidates()` → `windowsRegistryAppExecutable()` | 先按 `WorkBuddy.exe` 探四个位置：`%LOCALAPPDATA%\Programs\WorkBuddy`、`%LOCALAPPDATA%\WorkBuddy`、`%ProgramFiles%\WorkBuddy`、`%ProgramFiles(x86)%\WorkBuddy`；**四处全落空时**才回退查注册表卸载项（`HKCU`/`HKLM` 两个 hive 各一次 `reg query`，`DisplayIcon` 优先、`InstallLocation` 兜底，路径基名必须仍是 `WorkBuddy.exe` 且存在） | 装在自定义目录（如同源 issue 里的 `E:\WorkBuddy\WorkBuddy.exe`）的机器取不到字段密钥 → 加密凭据读不出。注册表回退即为此而设：安装器登记过的路径由系统代答，用户无需再手设 `WORKBUDDY_APP_EXECUTABLE` |
 | 3 | `src/host-heartbeat.ts` `processStartTimeMs()` → `processStartProbe()` | 走 PowerShell `Get-Process` 的 `StartTime`，以 UTC ISO 8601 输出供 `Date.parse` 解析 | PID 复用判定失准 → 心跳误判宿主存活 |
 | 4 | 设置写入回读校验（`src/client/account-selection.ts`） | 写入后**回读校验**：profile 的 `cordis.patch.yml` 被占用会让 rename 覆盖失败，而 `set()` 的 promise 仍 resolve | 用户看到假确认（显示「已清除」但没落盘）→ issue #11 |
 | 5 | 子进程启动选项：`src/host-heartbeat.ts` `PROCESS_PROBE_OPTIONS` 与 `src/at-rest.ts` `fetchAtRestKeyPayload()` | 一律带 `windowsHide: true`（POSIX 忽略该选项） | **宿主本身没有控制台**（Electron GUI 进程，实测 `MainWindowHandle = 0`），Windows 会给子进程**新建一个可见的控制台窗口** → 每次进程存活判定都在屏幕上闪一次黑框 |
@@ -93,7 +93,7 @@ WMI 服务（`Win32_Process.Create`）创建的进程与 Electron 宿主同为�
 | --- | --- |
 | CI 矩阵（含 `windows-latest`） | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) |
 | 凭据目录推导与测试 | `src/auth.ts` `defaultDesktopAuthDirs()`；`tests/auth.spec.ts` |
-| 可执行文件候选与测试 | `src/at-rest.ts` `workbuddyAppExecutableCandidates()`；`tests/at-rest.spec.ts` |
+| 可执行文件候选与测试 | `src/at-rest.ts` `workbuddyAppExecutableCandidates()`（注册表回退 `windowsRegistryAppExecutable()`，注入 seam：`query`）；`tests/at-rest.spec.ts` |
 | 心跳时间戳与测试 | `src/host-heartbeat.ts` `processStartTimeMs()` / `processStartProbe()`；`tests/host-heartbeat.spec.ts` |
 | 子进程启动选项（`windowsHide`）与测试 | `src/host-heartbeat.ts` `PROCESS_PROBE_OPTIONS`、`src/at-rest.ts` `fetchAtRestKeyPayload()`；`tests/platform-standing.spec.ts`、`tests/host-heartbeat.spec.ts` |
 | 写入回读校验与测试 | `src/client/account-selection.ts`；`tests/client-account-selection.spec.ts` |
