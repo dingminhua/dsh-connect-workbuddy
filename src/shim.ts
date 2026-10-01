@@ -17,7 +17,8 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
+import { workbuddyAccountId } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
@@ -44,12 +45,34 @@ export interface WorkBuddyShim {
   close(): Promise<void>
 }
 
+/**
+ * Supplies the credential to retry a failed chat request with.
+ *
+ * Called with every account id already tried for THIS request, the one that just
+ * failed LAST, and resolves to the next candidate — or `undefined` when the pool
+ * is off, empty, or exhausted, in which case the original failure is reported
+ * unchanged.
+ *
+ * The plugin owns the policy (which pool members count as usable, in what
+ * order); the shim owns only the retry loop and the wire-level rule that a
+ * retry may happen before anything has been written to the client.
+ */
+export type WorkBuddyFailoverAccount = (
+  triedAccountIds: readonly string[],
+) => Promise<WorkBuddyCredential | undefined>
+
 /** Constructor dependencies. */
 export interface WorkBuddyShimOptions {
   store: WorkBuddyCredentialStore
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
+  /**
+   * Pool failover for chat requests. Absent means no failover at all — the
+   * pre-pool behaviour, where the selected account serves and its failure is
+   * reported as-is.
+   */
+  failoverAccount?: WorkBuddyFailoverAccount
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -145,6 +168,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim {
   const { store, client, catalog } = options
   const logger = options.logger
+  const failoverAccount = options.failoverAccount
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
@@ -230,6 +254,20 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     }
   }
 
+  /**
+   * Failure classes worth retrying against another account.
+   *
+   * `client` is deliberately NOT one of them: the upstream rejected the
+   * REQUEST (malformed body, unsupported field), so every account answers the
+   * same 400 and walking the rest of the pool only multiplies the wait before
+   * the user sees an error they must act on anyway. Everything else describes a
+   * PER-ACCOUNT condition — a rate limit, exhausted credits, a dead session, a
+   * gateway that failed this one call — which another account may well survive.
+   */
+  function isFailoverWorthy(kind: UpstreamErrorKind): boolean {
+    return kind !== 'client'
+  }
+
   async function chatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isJsonContentType(req)) {
       writeOpenAIError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
@@ -247,15 +285,67 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const prepared = prepareChatBody(raw)
 
     const controller = new AbortController()
-    req.on('close', () => controller.abort())
-    const result = await client.chatStream(credential, prepared, controller.signal)
+    // Watch the RESPONSE, not the request.
+    //
+    // `req.on('close')` cannot express "the client hung up" here: Node emits it
+    // as soon as the request STREAM ends — which `readBody` has already done —
+    // so a listener attached after the read never fires at all (measured: the
+    // signal stayed un-aborted through a real disconnect), and one attached
+    // BEFORE the read fires immediately and would abort every request. The
+    // response's `close` fires on actual socket teardown instead, which is the
+    // event that means the reader is gone: mid-flight it aborts the upstream
+    // call, and on a normal completion it arrives after `res.end` and changes
+    // nothing.
+    res.on('close', () => controller.abort())
+
+    // Retry the SAME prepared body against the pool's other usable accounts,
+    // in the plugin's order, until one serves it or none is left.
+    //
+    // Only failures raised BEFORE the stream starts reach this loop: `!ok`
+    // means the upstream answered non-2xx, so not one byte has been written to
+    // the client and a retry cannot splice two responses together. A stream
+    // that dies MID-flight (the `body.on('error')` path below) is deliberately
+    // not retried — the client already received a partial answer, and
+    // replaying it would duplicate output the model may already have acted on.
+    // The first attempt always uses the store's own resolution, so a token
+    // refresh still happens exactly once, before any retry.
+    let result = await client.chatStream(credential, prepared, controller.signal)
+    const triedAccountIds: string[] = []
+    while (!result.ok && isFailoverWorthy(result.kind) && failoverAccount !== undefined) {
+      // A client that hung up is not waiting for a better account.
+      if (controller.signal.aborted) break
+      triedAccountIds.push(workbuddyAccountId(credential))
+      const next = await failoverAccount(triedAccountIds).catch(() => undefined)
+      if (next === undefined) break
+      // The policy is expected to skip what was already tried, and the shim does
+      // not rely on it: a candidate that repeats one of them would re-send the
+      // same request to the same account forever, spending real quota in a loop
+      // with no upper bound. `triedAccountIds` is the only brake there is, so
+      // the identity check lives here as well as in the policy.
+      if (triedAccountIds.includes(workbuddyAccountId(next))) break
+      logger?.warn(
+        `dsh-connect-workbuddy: retrying chat on another pool account after ${result.kind} (http ${result.status})`,
+      )
+      credential = next
+      result = await client.chatStream(credential, prepared, controller.signal)
+    }
 
     if (!result.ok) {
+      // Say how many accounts were tried when more than one was: without it, a
+      // pool that failed over and still lost reads exactly like the single
+      // account the user selected failing, and the user cannot tell whether the
+      // fallbacks were even attempted.
+      //
+      // `triedAccountIds` already holds every account that SERVED an attempt —
+      // the loop pushes each one before asking for the next — so its length IS
+      // the attempt count. Adding one here reported a phantom extra account.
+      const attempts = triedAccountIds.length
+      const note = attempts > 1 ? ` (after trying ${attempts} accounts)` : ''
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],
         result.kind,
-        `workbuddy upstream ${result.kind} (http ${result.status}): ${result.message.slice(0, 400)}`,
+        `workbuddy upstream ${result.kind} (http ${result.status})${note}: ${result.message.slice(0, 400)}`,
       )
       return
     }

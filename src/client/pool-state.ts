@@ -15,39 +15,11 @@
 import { effectiveMembersOf } from '../account-pool.ts'
 import type { Translate } from './searched-paths.ts'
 
-/** The four preference fields the pool section edits. */
+/** The preference fields the pool section edits. */
 export interface PoolPreferencesLike {
   enabled: boolean
-  rotateByCredits: boolean
-  autoTestIntervalMinutes: number
   targetModelId: string
   memberAccountIds: readonly string[]
-}
-
-/**
- * Whether rotation currently owns the region's billing choice, and whether the
- * user has drafted turning it off.
- *
- * `locked` reads the COMMITTED preferences, never the draft. The Host decides
- * who is billed from the saved config, so a draft-based lock let one click of
- * "turn off rotation" re-enable the manual dropdown and hide the conflict
- * notice while the Host kept rotating — the user then picked an account, the
- * card showed it as current, and a different account was billed. That is
- * exactly the failure the lock exists to prevent.
- *
- * `unlockPending` is the honest intermediate state: the draft says "stop
- * rotating" but the Host has not been told yet, so the lock still applies and
- * the UI must say so rather than looking broken.
- */
-export function rotationLockState(
-  saved: Pick<PoolPreferencesLike, 'enabled' | 'rotateByCredits'>,
-  active: Pick<PoolPreferencesLike, 'enabled' | 'rotateByCredits'>,
-): { locked: boolean, unlockPending: boolean } {
-  const locked = saved.enabled && saved.rotateByCredits
-  return {
-    locked,
-    unlockPending: locked && !(active.enabled && active.rotateByCredits),
-  }
 }
 
 /**
@@ -135,10 +107,6 @@ export function announcedBatchCount(input: {
   return (input.savedEffective ?? input.savedMembers).length
 }
 
-/** Bounds the Host enforces on the automatic-test interval (`src/index.ts:390`). */
-export const POOL_INTERVAL_MIN = 5
-export const POOL_INTERVAL_MAX = 1440
-
 /**
  * Localize a pool route failure from its structured cause.
  *
@@ -169,6 +137,7 @@ export function poolErrorText(
     case 'no-live-members': return t('row.poolErrNoLiveMembers')
     case 'no-free-model': return t('row.poolErrNoFreeModel')
     case 'target-model-stale': return t('row.poolErrStaleModel')
+    case 'checkin-unsupported': return t('row.poolErrNoCheckin')
     case 'pool-unavailable': return t('row.poolErrUnavailable')
     case 'pool-failed': return t('row.poolErrFailed', { message: detail ?? '' })
     default: return undefined
@@ -201,45 +170,6 @@ export function poolFailureText(
   return poolErrorText(t, input.reason, input.error)
     ?? input.error
     ?? t('row.poolErrHttp', { status: String(input.status) })
-}
-
-/**
- * Parse an in-progress interval edit.
- *
- * Returns `undefined` while the text is not yet a plain non-negative integer —
- * empty, `-`, `12e`, `1.5` — so the caller can leave EXACTLY what the user typed
- * on screen instead of rewriting the control from a parsed number.
- *
- * That rewriting was the defect this replaces: the field clamped on every
- * keystroke and wrote the clamped result back into a controlled `value`, so
- * typing `120` produced `520` (each keystroke's clamped `5` was rendered, and the
- * next digit appended to it) and clearing the field immediately snapped it to
- * `5`. The user's original request was "设置一个时间间隔自动测试" — a field that
- * cannot be typed into is that requirement unmet, not a cosmetic wart.
- */
-export function parseIntervalInput(raw: string): number | undefined {
-  const trimmed = raw.trim()
-  if (!/^[0-9]+$/.test(trimmed)) return undefined
-  const parsed = Number(trimmed)
-  if (!Number.isFinite(parsed)) return undefined
-  return Math.min(POOL_INTERVAL_MAX, Math.max(POOL_INTERVAL_MIN, Math.round(parsed)))
-}
-
-/**
- * One keystroke in the interval field: what to DISPLAY, and what to commit.
- *
- * `text` is ALWAYS the raw keystroke, never a re-serialized number — that
- * distinction is the whole defect. A field whose displayed value is derived from
- * the parsed-and-clamped number cannot be typed into: each keystroke's clamped
- * `5` is rendered, and the next digit appends to it (`120` → `520`).
- *
- * `commit` is the clamped number to fold into the draft, or `undefined` while the
- * text is not yet a plain integer (so the draft is left alone until the entry is
- * meaningful). Splitting the two makes the invariant unit-testable without a DOM,
- * which this project has no way to render.
- */
-export function intervalEditOnInput(raw: string): { text: string, commit: number | undefined } {
-  return { text: raw, commit: parseIntervalInput(raw) }
 }
 
 /**

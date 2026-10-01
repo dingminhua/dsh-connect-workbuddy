@@ -1,5 +1,5 @@
 import { Context } from '@deepseek-ai/cordis'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { registerWorkBuddyStatusRoute } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions, WorkBuddyPoolDeps } from '../src/web-status.ts'
 import { WORKBUDDY_POOL_PATH } from '../src/status-paths.ts'
@@ -47,14 +47,10 @@ const FREE_CATALOG: readonly WorkBuddyModelInfo[] = [
 function poolDeps(overrides: Partial<WorkBuddyPoolDeps> = {}): WorkBuddyPoolDeps {
   const preferences = overrides.preferences ?? ((): {
     enabled: boolean
-    rotateByCredits: boolean
-    autoTestIntervalMinutes: number
     targetModelId: string
     memberAccountIds: readonly string[]
   } => ({
     enabled: true,
-    rotateByCredits: false,
-    autoTestIntervalMinutes: 30,
     targetModelId: '',
     memberAccountIds: ['a'],
   }))
@@ -67,6 +63,9 @@ function poolDeps(overrides: Partial<WorkBuddyPoolDeps> = {}): WorkBuddyPoolDeps
     // mismatched double that would let a batch through.
     effectiveMemberAccountIds: async region => [...preferences(region).memberAccountIds],
     catalog: () => FREE_CATALOG,
+    // The CN region is the one with a daily check-in; the route refuses the
+    // action elsewhere, and the tests below drive the CN shape.
+    checkinSupported: () => true,
     checkin: async () => [{ accountId: 'a', accountName: 'Alpha', status: 'claimed', credit: 60 }],
     test: async (_region: WorkBuddyRegion, modelId: string) => [
       { accountId: 'a', accountName: 'Alpha', result: { modelId, outcome: 'ok' } },
@@ -234,8 +233,6 @@ describe('the account-pool route', () => {
     const handler = await mountPoolHandler(deps(poolDeps({
       preferences: () => ({
         enabled: true,
-        rotateByCredits: false,
-        autoTestIntervalMinutes: 30,
         targetModelId: 'glm-5.3',
         memberAccountIds: ['a'],
       }),
@@ -257,8 +254,6 @@ describe('the account-pool route', () => {
     const handler = await mountPoolHandler(deps(poolDeps({
       preferences: () => ({
         enabled: false,
-        rotateByCredits: false,
-        autoTestIntervalMinutes: 30,
         targetModelId: '',
         memberAccountIds: [],
       }),
@@ -314,8 +309,6 @@ describe('the account-pool route', () => {
     const handler = await mountPoolHandler(deps(poolDeps({
       preferences: () => ({
         enabled: true,
-        rotateByCredits: false,
-        autoTestIntervalMinutes: 30,
         targetModelId: '',
         memberAccountIds: [],
       }),
@@ -348,8 +341,6 @@ describe('the account-pool route', () => {
     const handler = await mountPoolHandler(deps(poolDeps({
       preferences: () => ({
         enabled: true,
-        rotateByCredits: false,
-        autoTestIntervalMinutes: 30,
         targetModelId: '',
         memberAccountIds: ['a'],
       }),
@@ -368,8 +359,6 @@ describe('the account-pool route', () => {
     const handler = await mountPoolHandler(deps(poolDeps({
       preferences: () => ({
         enabled: true,
-        rotateByCredits: false,
-        autoTestIntervalMinutes: 30,
         targetModelId: '',
         // A saved id, but no local sign-in resolves it.
         memberAccountIds: ['ghost'],
@@ -430,6 +419,43 @@ describe('the account-pool route', () => {
     await handler(request('POST', `${WORKBUDDY_POOL_PATH}?region=cn&action=checkin`), res)
     expect(status()).toBe(503)
     expect(body()['reason']).toBe('pool-unavailable')
+  })
+
+  it('refuses the check-in action for a region that has no check-in', async () => {
+    // The international region has no daily check-in. Refusing HERE, before the
+    // client is ever called, is what keeps the hidden button and the endpoint in
+    // agreement: a page that still had the button (a stale tab, a hand-rolled
+    // request) cannot reach an action the product does not offer — and it gets a
+    // distinct cause rather than a generic failure, so a caller can tell "not
+    // offered here" from "offered, but it broke".
+    const checkin = vi.fn(async () => [
+      { accountId: 'a', accountName: 'Alpha', status: 'claimed' as const },
+    ])
+    const handler = await mountPoolHandler(deps(poolDeps({
+      checkinSupported: () => false,
+      checkin: checkin as never,
+    })))
+    const { res, status, body } = response()
+    await handler(request('POST', `${WORKBUDDY_POOL_PATH}?region=global&action=checkin`), res)
+    expect(status()).toBe(409)
+    expect(body()['reason']).toBe('checkin-unsupported')
+    // Nothing was spent: the refusal happens before any upstream call.
+    expect(checkin).not.toHaveBeenCalled()
+  })
+
+  it('reports the region capability in the document the card renders from', async () => {
+    // The card decides whether to draw the button and the column from THIS flag,
+    // so the two halves cannot drift: a card that hid the action while the route
+    // still offered it would be a UI-only rule, and the reverse would hide a
+    // working action.
+    const handler = await mountUsage(poolDeps({ checkinSupported: region => region === 'cn' }))
+    const domestic = response()
+    await handler(request('GET', '/plugins/dsh-connect-workbuddy/usage?region=cn'), domestic.res)
+    expect((domestic.body() as { pool?: { checkinSupported?: boolean } }).pool?.checkinSupported).toBe(true)
+
+    const international = response()
+    await handler(request('GET', '/plugins/dsh-connect-workbuddy/usage?region=global'), international.res)
+    expect((international.body() as { pool?: { checkinSupported?: boolean } }).pool?.checkinSupported).toBe(false)
   })
 
   it('reports a failing batch as a server error rather than a silent success', async () => {
@@ -523,8 +549,6 @@ describe('the pool listing in the usage document', () => {
     const handler = await mountUsage(poolDeps({
       preferences: () => ({
         enabled: true,
-        rotateByCredits: false,
-        autoTestIntervalMinutes: 30,
         targetModelId: '',
         memberAccountIds: ['a', 'b'],
       }),
@@ -587,35 +611,5 @@ describe('the check-in column must not lie', () => {
     expect(status()).toBe(200)
     const rows = (body() as { pool?: { accounts?: { checkedInToday?: boolean }[] } }).pool?.accounts ?? []
     expect(rows[0]?.checkedInToday).toBeUndefined()
-  })
-})
-
-describe('rotation is observable to the card', () => {
-  it('reports the account rotation moved to', async () => {
-    // Rotation runs on the HOST (including on a timer), so the browser cannot
-    // infer it. Without this field "every switch leaves a record" was a promise
-    // the card had no way to keep.
-    const handler = await mountUsage(poolDeps({
-      members: async () => [
-        { account: { id: 'a', accountName: 'Alpha' }, credits: { total: 1, expiringSoon: 0 } },
-      ],
-      rotatedToAccountId: async () => 'a',
-    }))
-    const { res, body } = response()
-    await handler(request('GET', '/plugins/dsh-connect-workbuddy/usage?region=cn'), res)
-    expect((body() as { pool?: { rotatedToAccountId?: string } }).pool?.rotatedToAccountId).toBe('a')
-  })
-
-  it('omits the field when rotation is not redirecting billing', async () => {
-    const handler = await mountUsage(poolDeps({
-      members: async () => [
-        { account: { id: 'a', accountName: 'Alpha' }, credits: { total: 1, expiringSoon: 0 } },
-      ],
-      rotatedToAccountId: async () => undefined,
-    }))
-    const { res, body } = response()
-    await handler(request('GET', '/plugins/dsh-connect-workbuddy/usage?region=cn'), res)
-    expect((body() as { pool?: { rotatedToAccountId?: string } }).pool?.rotatedToAccountId)
-      .toBeUndefined()
   })
 })

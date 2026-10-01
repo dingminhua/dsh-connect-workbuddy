@@ -334,15 +334,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
   /**
-   * Whether the account pool's rotation currently owns this region's choice.
-   *
-   * Reported up by the pool section. While true, the manual account dropdown is
-   * disabled: both would write the same slot, and letting them disagree is how
-   * the card ends up showing one account while another is billed. The pool
-   * shows the reason and an inline way to switch rotation off.
-   */
-  const [poolRotationLocked, setPoolRotationLocked] = useState(false)
-  /**
    * Whether the account pool's save is in flight. Both sections write into one
    * region slot and the Host merges per-region, so two concurrent saves can
    * interleave on a stale base and revert each other while both report success
@@ -1010,7 +1001,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                            The list is the one source that distinguishes "no
                            account in effect" from "signed in". */
                         value={status.accounts.find(account => account.selected)?.id ?? ''}
-                        disabled={switchingAccount || !canWrite || poolRotationLocked}
+                        disabled={switchingAccount || !canWrite}
                         onChange={event => { void switchAccount(event.currentTarget.value) }}
                       >
                         {/* Shown while no row is in effect — an orphaned saved
@@ -1416,7 +1407,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       // re-read resolves `false` and the draft is kept.
                       onSaved={async () => (await refreshUsage(activeRegion)) !== undefined}
                       onRefresh={() => { void refreshUsage(activeRegion) }}
-                      onRotationChange={setPoolRotationLocked}
                     />
                   </>
                 : null}

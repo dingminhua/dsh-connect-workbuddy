@@ -55,15 +55,10 @@ export interface Mounted {
   html: () => string
   buttons: () => HTMLButtonElement[]
   button: (needle: string) => HTMLButtonElement
-  input: () => HTMLInputElement
   checkboxes: () => HTMLInputElement[]
-  /** The settings toggles: [0] pool enabled, [1] rotate by credits. */
+  /** The settings toggles: [0] is the account pool switch. */
   toggles: () => HTMLInputElement[]
   click: (element: Element) => Promise<void>
-  type: (text: string) => Promise<void>
-  /** Selects-all-and-deletes, the way a user empties the field. */
-  clear: () => Promise<void>
-  blur: () => Promise<void>
   settle: () => Promise<void>
 }
 
@@ -94,48 +89,12 @@ export async function mount(Component: any, props: any): Promise<Mounted> {
       }
       return found
     },
-    input() {
-      const found = container.querySelector<HTMLInputElement>('input.dsm-workbuddy-pool-num')
-      if (found === null) throw new Error('no interval input rendered')
-      return found
-    },
     checkboxes: () =>
       Array.from(container.querySelectorAll<HTMLInputElement>('.dsm-workbuddy-pool-table input[type=checkbox]')),
     toggles: () =>
       Array.from(container.querySelectorAll<HTMLInputElement>('.dsm-workbuddy-pool-settings input[type=checkbox]')),
     async click(element: Element) {
       await act(async () => { (element as HTMLElement).click() })
-    },
-    async type(text: string) {
-      const input = mounted.input()
-      // React's controlled input needs the native setter bypass so the DOM
-      // value actually changes before the event dispatches.
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-      let current = ''
-      for (const ch of text) {
-        current += ch
-        await act(async () => {
-          setter?.call(input, current)
-          input.dispatchEvent(new window.Event('input', { bubbles: true }))
-        })
-      }
-    },
-    /** Selects-all-and-deletes, the way a user empties the field. */
-    async clear() {
-      const input = mounted.input()
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-      await act(async () => {
-        setter?.call(input, '')
-        input.dispatchEvent(new window.Event('input', { bubbles: true }))
-      })
-    },
-    async blur() {
-      // React delegates onBlur through the BUBBLING `focusout` event (the
-      // native `blur` does not bubble, so a plain dispatch never reaches the
-      // root listener).
-      await act(async () => {
-        mounted.input().dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }))
-      })
     },
     /**
      * Drain async work started OUTSIDE an act scope.
@@ -199,8 +158,9 @@ export function stubFetch(
 export function poolOf(overrides: Record<string, unknown>): any {
   return {
     enabled: true,
-    rotateByCredits: false,
-    autoTestIntervalMinutes: 30,
+    // Defaulted ON so existing scenarios keep rendering the check-in column; the
+    // international-region scenarios turn it off explicitly.
+    checkinSupported: true,
     targetModelSource: 'free',
     targetModelId: 'free-1',
     memberAccountIds: [],

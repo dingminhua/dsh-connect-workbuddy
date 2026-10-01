@@ -268,8 +268,6 @@ describe('writeRegionEnabled', () => {
 describe('writePoolPreferences', () => {
   const PREFERENCES = {
     enabled: true,
-    rotateByCredits: true,
-    autoTestIntervalMinutes: 45,
     targetModelId: 'glm-5.3',
     memberAccountIds: ['a', 'b'],
   }
@@ -311,7 +309,7 @@ describe('writePoolPreferences', () => {
     // "Nothing checked" is a real, saveable state — it is what keeps the batch
     // buttons disabled.
     const { scope, document } = scopeWith({ regions: { cn: {} } })
-    const empty = { ...PREFERENCES, memberAccountIds: [] as string[], enabled: false, rotateByCredits: false }
+    const empty = { ...PREFERENCES, memberAccountIds: [] as string[], enabled: false, }
     await writePoolPreferences(scope, 'cn', empty)
     const pool = (document()['regions'] as Record<string, { pool?: { memberAccountIds?: string[] } }>).cn?.pool
     expect(pool?.memberAccountIds).toEqual([])
@@ -355,8 +353,6 @@ describe('coexisting writers on one region slot', () => {
     })
     await writePoolPreferences(scope, 'cn', {
       enabled: true,
-      rotateByCredits: false,
-      autoTestIntervalMinutes: 30,
       targetModelId: '',
       memberAccountIds: ['a'],
     })
@@ -387,8 +383,6 @@ describe('coexisting writers on one region slot', () => {
     })
     await writePoolPreferences(scope, 'cn', {
       enabled: false,
-      rotateByCredits: false,
-      autoTestIntervalMinutes: 30,
       targetModelId: '',
       memberAccountIds: [],
     })

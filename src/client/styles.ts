@@ -173,6 +173,9 @@ export const WORKBUDDY_CARD_CSS = `
 /* ---- Account pool ---- */
 .dsm-workbuddy-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:16px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-workbuddy-pool-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.dsm-workbuddy-pool-current{display:flex;flex-direction:column;align-items:flex-end;gap:4px;max-width:340px;text-align:right}
+.dsm-workbuddy-pool-current-badge{padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
+.dsm-workbuddy-pool-current-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-pool-summary{margin:2px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}
@@ -186,10 +189,17 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-row:first-child{border-top:0}
 .dsm-workbuddy-pool-row-head{padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
 .dsm-workbuddy-pool-row-current{background:rgba(86,134,254,.07)}
+/* The serving row, made findable at a glance: a left accent bar plus the tint.
+   The bar is what distinguishes it in a long table, where a 7%-opacity wash
+   alone reads as an alternating-row stripe. */
+.dsm-workbuddy-pool-row-current{box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-pool-account{display:flex;align-items:center;gap:8px;min-width:0}
 .dsm-workbuddy-pool-account-name{display:flex;flex-direction:column;gap:1px;min-width:0}
 .dsm-workbuddy-pool-account-name b{font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-workbuddy-pool-account-name span{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
+/* Declared AFTER the blanket span rule so it wins: the badge must not inherit
+   the muted 11px tertiary treatment the membership line uses. */
+.dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-current-tag{align-self:flex-start;margin-top:2px;padding:1px 6px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
 .dsm-workbuddy-pool-excluded{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-workbuddy-pool-credits{display:flex;flex-direction:column;gap:1px;min-width:0;font-variant-numeric:tabular-nums}
 .dsm-workbuddy-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}

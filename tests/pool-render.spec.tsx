@@ -38,71 +38,29 @@ function baseProps(overrides: Record<string, unknown> = {}): Record<string, unkn
   }
 }
 
-describe('the interval field is typeable (A-4 / M-2 — the user-reported clamp)', () => {
-  it('shows each raw keystroke while typing "120" (M01, M17, M38b)', async () => {
-    const m = await mount(AccountPool, baseProps())
-    // The field must render what the user typed, character by character.
-    // The user-reported defect: typing `120` showed `5`, then `52`, then `520`
-    // — the clamped first keystroke re-serialized into the display.
-    await m.type('1')
-    expect(m.input().value).toBe('1')
-    await m.type('12')
-    expect(m.input().value).toBe('12')
-    await m.type('120')
-    expect(m.input().value).toBe('120')
-    await m.unmount()
-  })
-
-  it('folds a valid integer into the draft but keeps the text raw (M01: text ≠ String(commit))', async () => {
-    const m = await mount(AccountPool, baseProps({ pool: poolOf({ autoTestIntervalMinutes: 30 }) }))
-    // `1` parses to the minimum 5 — but the DISPLAY must stay `1`, or the
-    // next digit appends onto `5` and `120` becomes `520`.
-    await m.type('1')
-    expect(m.input().value).toBe('1')
-    // The draft has the clamped commit (saveable), the display has the text.
-    expect(m.text()).toContain('row.poolSaveDirty')
-    await m.unmount()
-  })
-
-  it('keeps an empty field empty while focused, then clamps exactly once on blur', async () => {
-    const m = await mount(AccountPool, baseProps({ pool: poolOf({ autoTestIntervalMinutes: 30 }) }))
-    const input = m.input()
-    // Clearing the field must not snap to `5` while the user is still there.
-    await m.clear()
-    expect(input.value).toBe('')
-    await m.blur()
-    // On commit, the half-typed text is dropped and the control re-renders the
-    // committed number (the saved value — nothing parseable was committed).
-    expect(input.value).toBe('30')
-    await m.unmount()
-  })
-
-  it('typing over the value then blurring shows the committed number once', async () => {
-    const m = await mount(AccountPool, baseProps({ pool: poolOf({ autoTestIntervalMinutes: 30 }) }))
-    await m.type('9999')
-    expect(m.input().value).toBe('9999')
-    await m.blur()
-    // 9999 > 1440, so the commit clamps to the maximum — exactly once.
-    expect(m.input().value).toBe('1440')
-    await m.unmount()
-  })
-})
-
 describe('save keeps the draft unless the write AND the re-read both verify (A-8 / N1)', () => {
+  /** A draft edit: unchecking the only member. Any edit dirties the draft. */
+  async function makeDirty(m: Awaited<ReturnType<typeof mount>>): Promise<void> {
+    const box = m.checkboxes()[0]
+    if (box === undefined) throw new Error('no member checkbox rendered')
+    await m.click(box)
+  }
+
   it('discards the draft only after onSaved resolves true (M16: committed must not be set in catch)', async () => {
     const onSaved = vi.fn(async () => true)
     const scope = fakeScope({})
     const props = baseProps({ settingsScope: scope, onSaved })
     const m = await mount(AccountPool, props)
-    await m.type('45') // dirty: interval 30 → 45
+    await makeDirty(m) // dirty: members [real-1] → []
+    expect(m.text()).toContain('row.poolSaveDirty')
     await m.click(m.button('row.poolSaved')) // "Save"
     // Success: no longer dirty, and the re-read delivered fresh props.
     expect(onSaved).toHaveBeenCalledTimes(1)
     expect(m.text()).toContain('row.poolSaveIdle')
-    // The parent now re-renders with the pool it re-read (interval 45); the
-    // panel must show the new number, not the pre-edit 30.
-    await m.update({ ...props, pool: poolOf({ autoTestIntervalMinutes: 45 }) })
-    expect(m.input().value).toBe('45')
+    // The parent now re-renders with the pool it re-read (no members); the
+    // panel must show the new state, not the pre-edit one.
+    await m.update({ ...props, pool: poolOf({ memberAccountIds: [], effectiveMemberAccountIds: [], accounts: [GENUINE_ACCOUNT] }) })
+    expect(m.text()).toContain('row.poolSelectedCount|count=0|total=1')
     await m.unmount()
   })
 
@@ -110,15 +68,13 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     const onSaved = vi.fn(async () => false)
     const scope = fakeScope({})
     const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved }))
-    await m.type('45')
+    await makeDirty(m)
     await m.click(m.button('row.poolSaved'))
     // The draft is the only copy of what was just saved; discarding it against
     // a still-stale `saved` prop would revert the panel to the pre-edit values.
     expect(m.text()).toContain('row.poolSaveDirty')
     // The stale-refresh notice names the DISPLAY problem (the write landed).
     expect(m.text()).toContain('row.poolSaveFailed|message=row.poolSavedStaleRefresh')
-    // The half-typed text survives too — the edit is still in progress.
-    expect(m.input().value).toBe('45')
     await m.unmount()
   })
 
@@ -129,7 +85,7 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     const scope = fakeScope({}, true)
     const posts = stubFetch(() => ({ status: 500, body: { error: 'boom' } }))
     const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved }))
-    await m.type('45')
+    await makeDirty(m)
     await m.click(m.button('row.poolSaved'))
     expect(posts.length).toBe(1)
     // The draft survives: the user's edit is still on screen and still dirty.
@@ -154,13 +110,12 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
       body: { errorName: 'Error', error: "EPERM: operation not permitted, rename 'C:\\u\\.dsh\\p\\cordis.patch.yml.79498ff8fb27.tmp' -> 'C:\\u\\.dsh\\p\\cordis.patch.yml'" },
     }))
     const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved }))
-    await m.type('45')
+    await makeDirty(m)
     await m.click(m.button('row.poolSaved'))
     // The remedy is shown...
     expect(m.text()).toContain('row.saveContentionHint')
-    // ...the draft survives (the hint promises it does)...
+    // ...and the draft survives (the hint promises it does).
     expect(m.text()).toContain('row.poolSaveDirty')
-    expect(m.input().value).toBe('45')
     // ...and the raw reason is still there for diagnosis.
     expect(m.text()).toContain('EPERM')
     await m.unmount()
@@ -172,7 +127,7 @@ describe('save keeps the draft unless the write AND the re-read both verify (A-8
     const scope = fakeScope({}, true)
     stubFetch(() => ({ status: 500, body: { errorName: 'Error', error: 'value must be an integer' } }))
     const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved: vi.fn(async () => true) }))
-    await m.type('45')
+    await makeDirty(m)
     await m.click(m.button('row.poolSaved'))
     expect(m.text()).toContain('value must be an integer')
     expect(m.text()).not.toContain('row.saveContentionHint')
@@ -431,6 +386,45 @@ describe('every timestamp is a 24-hour clock (no AM/PM)', () => {
     // The assertion with teeth: `Intl`'s locale default is the only thing that
     // can put a meridiem on screen, so its absence pins `hourCycle: 'h23'`.
     expect(text).not.toMatch(/\d{2}:\d{2}[ \u00a0]?(?:AM|PM)/u)
+    await m.unmount()
+  })
+})
+
+describe('the account in use is marked in words, not only by a tint', () => {
+  it('names it in the pool header and tags its row', async () => {
+    // The pool decides who is billed, so "who is it right now" is the first
+    // question a reader has — and once failover exists it is not a rhetorical
+    // one. A 7%-opacity row wash answers it only for someone already looking.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID, 'second-1'],
+        effectiveMemberAccountIds: [GENUINE_ID, 'second-1'],
+        accounts: [
+          accountOf({ accountId: GENUINE_ID, accountName: 'Real One', current: true }),
+          accountOf({ accountId: 'second-1', accountName: 'Second', current: false }),
+        ],
+      }),
+    }))
+    const text = m.text()
+    expect(text).toContain('row.poolCurrentHeader|account=Real One')
+    expect(text).toContain('row.poolCurrentBadge')
+    // And the hint says what the label means, so a failover that borrows another
+    // account for one request does not look like the label lying.
+    expect(text).toContain('row.poolCurrentHint')
+    // Exactly one row carries the tag, and it is the current one.
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-current-tag')).toHaveLength(1)
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-row-current')).toHaveLength(1)
+    await m.unmount()
+  })
+
+  it('says nothing about a current account when none is in effect', async () => {
+    // A signed-in machine with no selectable account is a real state (an
+    // orphaned saved id). Inventing a name would be worse than staying quiet.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({ accounts: [accountOf({ accountId: GENUINE_ID, accountName: 'Real One', current: false })] }),
+    }))
+    expect(m.text()).not.toContain('row.poolCurrentHeader')
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-current-tag')).toHaveLength(0)
     await m.unmount()
   })
 })

@@ -361,7 +361,7 @@ export async function writeRegionEnabled(
  *
  * @param scope - the bound settings scope for this plugin's namespace.
  * @param region - the region whose pool preferences are written.
- * @param preferences - the four preference fields, as the user set them.
+ * @param preferences - the preference fields, as the user set them.
  * @param slot - the region's COMPLETE next slot (caller owns the merge).
  * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
  */
@@ -370,8 +370,6 @@ export async function writePoolPreferences(
   region: WorkBuddyWebRegion,
   preferences: {
     enabled: boolean
-    rotateByCredits: boolean
-    autoTestIntervalMinutes: number
     targetModelId: string
     memberAccountIds: readonly string[]
   },
@@ -388,8 +386,6 @@ export async function writePoolPreferences(
     // Compare every field: the caller discards the draft on success, so a
     // partially-landed write must NOT read as success.
     if (pool['enabled'] !== preferences.enabled
-      || pool['rotateByCredits'] !== preferences.rotateByCredits
-      || pool['autoTestIntervalMinutes'] !== preferences.autoTestIntervalMinutes
       || pool['targetModelId'] !== preferences.targetModelId) {
       return false
     }

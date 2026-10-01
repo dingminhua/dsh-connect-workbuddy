@@ -584,8 +584,13 @@ export interface WorkBuddyWebPoolAccount {
  */
 export interface WorkBuddyWebPool {
   enabled: boolean
-  rotateByCredits: boolean
-  autoTestIntervalMinutes: number
+  /**
+   * Whether this region offers the daily check-in at all.
+   *
+   * The card hides the action entirely when false, rather than rendering a
+   * button whose only outcome is a refusal.
+   */
+  checkinSupported: boolean
   /** The model a test would use right now; absent when none can be resolved. */
   targetModelId?: string
   /**
@@ -613,15 +618,6 @@ export interface WorkBuddyWebPool {
    * ran on ZERO accounts and reported success.
    */
   effectiveMemberAccountIds?: readonly string[]
-  /**
-   * The account rotation most recently moved billing TO, when it moved.
-   *
-   * Reported so the card can record a switch it did not perform: rotation
-   * happens on the Host (including on a timer), and the card is otherwise
-   * unable to tell a switch from an unchanged state — which would make
-   * "every switch is recorded" a promise the UI could not keep.
-   */
-  rotatedToAccountId?: string
   accounts: readonly WorkBuddyWebPoolAccount[]
   /**
    * The models a manual target can be chosen from.

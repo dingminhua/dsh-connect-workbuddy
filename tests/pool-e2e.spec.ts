@@ -197,24 +197,7 @@ describe('the mounted plugin: defects found by driving the real code (now fixed)
   const sourceOf = async (name: string): Promise<string> =>
     await import('node:fs/promises').then(fs => fs.readFile(new URL(`../src/${name}`, import.meta.url), 'utf8'))
 
-  it('registers a real scheduler, so the interval setting is consumed', async () => {
-    // The defect: `autoTestIntervalMinutes` was stored and never read, so the
-    // card promised "test every N minutes" and nothing ever ran.
-    const source = await sourceOf('index.ts')
-    expect(source).toContain('setInterval')
-    // The tick delegates the decision to the pure helper rather than
-    // re-deriving "is it due" inline.
-    expect(source).toContain('duePoolRegions(')
-    // The timer must be owned by an effect so disposal clears it.
-    expect(source).toContain('clearInterval(timer)')
-  })
 
-  it('arms the schedule from a heartbeat rather than one timer per region', async () => {
-    const source = await sourceOf('index.ts')
-    expect(source).toContain('POOL_TICK_MS')
-    // A single interval registration, not one per region.
-    expect((source.match(/setInterval\(/gu) ?? []).length).toBe(1)
-  })
 
   it('never fires a scheduled test before one full interval has passed', async () => {
     // Firing immediately on enable would bill the user at every startup.
@@ -267,17 +250,6 @@ describe('the mounted plugin: defects found by driving the real code (now fixed)
     expect(Object.keys(models).length).toBeGreaterThan(2)
   })
 
-  it('re-ranks the pool when a scheduled test finishes, not only on a manual click', async () => {
-    const source = await sourceOf('index.ts')
-    // The scheduled pass must persist measurements AND apply rotation, the same
-    // order the manual action uses (persist, then rotate, so the ranking sees
-    // the results it just produced).
-    const at = source.indexOf('async function runScheduledPoolTest')
-    const body = source.slice(at, at + 700)
-    expect(body).toContain('writePoolProbes')
-    expect(body).toContain('applyRotation')
-    expect(body.indexOf('writePoolProbes')).toBeLessThan(body.indexOf('applyRotation'))
-  })
 
   it('keeps the batch callback reading only what it declares as a dependency', async () => {
     // The trap an escaped mutant exposed: `runAction` is memoized on
@@ -310,350 +282,6 @@ describe('the mounted plugin: defects found by driving the real code (now fixed)
     expect(code).toContain('pool?.memberAccountIds')
   })
 })
-
-describe('the pool scheduler lifecycle', () => {
-  it('registers exactly one interval and clears it on dispose', async () => {
-    // A leaked interval would keep firing probes after the plugin was
-    // withdrawn — spending credits with nothing on screen to explain it.
-    const realSet = globalThis.setInterval
-    const realClear = globalThis.clearInterval
-    const handles = new Set<unknown>()
-    globalThis.setInterval = ((fn: () => void, ms?: number) => {
-      const handle = realSet(fn, ms)
-      handles.add(handle)
-      return handle
-    }) as typeof setInterval
-    globalThis.clearInterval = ((handle: unknown) => {
-      handles.delete(handle)
-      return realClear(handle as never)
-    }) as typeof clearInterval
-    try {
-      const authFile = await writeAuthFixture(root)
-      await mount({
-        authFile,
-        regions: { cn: { enabled: true, pool: { enabled: true, autoTestIntervalMinutes: 5 } } },
-      })
-      // Exactly one heartbeat for BOTH regions, not one per region.
-      expect(handles.size).toBe(1)
-      await context?.fiber.dispose()
-      context = undefined
-      expect(handles.size).toBe(0)
-    } finally {
-      globalThis.setInterval = realSet
-      globalThis.clearInterval = realClear
-    }
-  })
-
-  it('does not probe anything before a full interval has elapsed', async () => {
-    // The scheduler must never spend on startup or right after a settings save.
-    //
-    // A REAL member, and the fake clock installed BEFORE mount. Both matter, and
-    // both were missing: with `memberAccountIds: ['x']` (not a local sign-in)
-    // the batch resolves to nothing, so a working scheduler and a dead timer
-    // produced the SAME zero probes — the assertion could not fail. And the
-    // heartbeat is created inside `apply()` (src/index.ts:1317), so installing
-    // the fake clock afterwards left the real interval running on real time and
-    // the fake one never fired. `toFake` is narrowed to the interval plus `Date`
-    // so the mount's own `setTimeout(0)` still settles.
-    const authFile = await writeAuthFixture(root)
-    const memberId = await discoverAccountId(authFile)
-    let probes = 0
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async (url: unknown) => {
-      if (String(url).includes('/chat/completions')) probes += 1
-      return new Response('{}', { status: 200 })
-    }) as typeof fetch
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
-    try {
-      await mount({
-        authFile,
-        regions: {
-          cn: {
-            enabled: true,
-            lastCatalog: [{
-              id: 'free-model', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
-            }],
-            pool: {
-              enabled: true,
-              autoTestIntervalMinutes: 5,
-              memberAccountIds: [memberId],
-            },
-          },
-        },
-      })
-      // Nothing at startup, and nothing after one heartbeat (which only ARMS
-      // the region's clock). Both flushes are load-bearing: without them a
-      // scheduler that DID start a batch here would still read zero probes,
-      // because the batch is waiting on real file I/O that fake timers do not
-      // advance. Measured with "run on first sight" injected: the assertion
-      // passed without the flush and fails with it.
-      await flushRealWork()
-      expect(probes).toBe(0)
-      await vi.advanceTimersByTimeAsync(POOL_TICK_MS)
-      await flushRealWork()
-      expect(probes).toBe(0)
-    } finally {
-      vi.useRealTimers()
-      globalThis.fetch = realFetch
-    }
-  })
-})
-
-describe('the pool scheduler actually runs a due region', () => {
-  it('arms on the first tick, then probes and re-ranks once the interval passes', async () => {
-    // The wiring test: the pure decision is unit-tested elsewhere, but only
-    // this proves the mounted plugin ACTS on it — the gap that let the interval
-    // setting sit unconsumed while every unit test still passed.
-    //
-    // It previously proved nothing. It mounted `memberAccountIds: []`, so the
-    // woken scheduler had nothing to test, and both assertions were
-    // `expect(probes).toBe(0)` — a dead timer satisfies that exactly as well as
-    // a live one. It also mounted on REAL timers and only then called
-    // `vi.useFakeTimers()`, while the heartbeat is created inside `apply()`
-    // (src/index.ts:1317): the fake clock never owned the interval it was
-    // advancing. Driving the real scheduler showed `chatCalls = 0` until the
-    // fake clock was installed before mount. So: a REAL member, the fake clock
-    // BEFORE mount, and an assertion that FAILS when the scheduler does not run.
-    const authFile = await writeAuthFixture(root)
-    const memberId = await discoverAccountId(authFile)
-    let probes = 0
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async (url: unknown) => {
-      const text = String(url)
-      if (text.includes('/chat/completions')) probes += 1
-      if (text.includes('get-user-resource')) {
-        return new Response(JSON.stringify({
-          code: 0,
-          data: { packages: [{ packageName: 'p', remain: 100, size: 100, capacityType: 1 }] },
-        }), { status: 200 })
-      }
-      return new Response(JSON.stringify({
-        code: 0,
-        data: {
-          choices: [{ message: { content: 'ok' } }],
-          usage: { prompt_tokens: 1, completion_tokens: 1 },
-        },
-      }), { status: 200 })
-    }) as typeof fetch
-    // `Date` is faked too: the scheduler compares `Date.now()` against its own
-    // timestamps, so advancing the interval without advancing the clock would
-    // leave the region permanently "not due".
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
-    try {
-      await mount({
-        authFile,
-        regions: {
-          cn: {
-            enabled: true,
-            // A zero-multiplier model so the scheduler has a free target; the
-            // free-target rule is what stops a timer from billing a paid model.
-            lastCatalog: [{
-              id: 'free-model', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
-            }],
-            pool: {
-              enabled: true,
-              autoTestIntervalMinutes: 5,
-              memberAccountIds: [memberId],
-            },
-          },
-        },
-      })
-      // Tick 1: the region is armed, not run.
-      await vi.advanceTimersByTimeAsync(POOL_TICK_MS)
-      expect(probes).toBe(0)
-      // A full interval later: now it MUST run. This is the assertion with
-      // teeth — it fails if the scheduler never fires.
-      await vi.advanceTimersByTimeAsync(5 * 60_000)
-      // Let the batch's REAL work settle. The run reads the auth file through
-      // `fs/promises`, and fake timers do not fake I/O: advancing the clock
-      // fires the tick, but the async batch it starts needs real macrotask
-      // turns to reach the fetch. Without this flush the assertion below reads
-      // zero even though the scheduler fired — measured: `chatCalls = 0` right
-      // after advancing, `1` after draining the loop. Drain UNTIL the probe
-      // lands rather than for a fixed number of turns: N15 proved a constant
-      // count reads zero under CPU contention, and a mutation harness reads
-      // that as a kill.
-      await flushUntil(() => probes >= 1)
-      expect(probes).toBeGreaterThanOrEqual(1)
-    } finally {
-      vi.useRealTimers()
-      globalThis.fetch = realFetch
-    }
-  })
-
-  it('still refreshes measurements when the saved target model is stale (D3)', async () => {
-    // The asymmetry the third round's verification proved with a real plugin and
-    // a real scheduler: a `rate-limited` member clears by the CLOCK alone
-    // (`exclusionOf` consults `retryAtMs`), while an `unavailable` member can
-    // only be cleared by a NEW probe. That is fine while probes keep landing —
-    // but the pass used to return early whenever `resolveTargetModel` produced
-    // no id, which is exactly what a saved model that left the catalog
-    // produces. So one stale *display preference* froze the whole region's
-    // measurement loop and left every `unavailable` member hanging forever.
-    //
-    // The scheduler's job is to keep MEASUREMENTS fresh, so it must not be
-    // starved by a configuration error it can work around without spending:
-    // it falls back to the region's FREE model.
-    const catalog = [{
-      id: 'free-model', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
-    }]
-    const probes = await driveScheduledInterval({ targetModelId: 'model-that-left' }, catalog, 'runs')
-    expect(probes).toBeGreaterThanOrEqual(1)
-  })
-
-  it('does NOT bill a paid model when the target is stale and no free model exists (D3, negative half)', async () => {
-    // The other half of the fix, and the reason the fallback goes through
-    // `pickFreeModel` rather than "any model in the catalog": the free-target
-    // rule is what stops a timer from spending the user's credits. With no
-    // zero-multiplier model there is nothing honest to probe, so the pass must
-    // skip entirely — a paid probe here would be the exact defect the rule
-    // exists to prevent.
-    const catalog = [{
-      id: 'paid-model', name: 'Paid', contextWindow: 1000, maxTokens: 100, creditMultiplier: 2,
-    }]
-    const probes = await driveScheduledInterval({ targetModelId: 'model-that-left' }, catalog, 'skips')
-    expect(probes).toBe(0)
-  })
-})
-
-/**
- * Drain real macrotasks while fake timers are installed.
- *
- * Fake timers do not fake I/O, so a batch the scheduler started is still
- * waiting on `fs/promises` when `advanceTimersByTimeAsync` returns. `setImmediate`
- * is NOT faked here (only the interval and `Date` are), so yielding to it lets
- * the real continuation run to completion.
- */
-async function flushRealWork(turns = 600): Promise<void> {
-  for (let index = 0; index < turns; index += 1) {
-    await new Promise(resolve => setImmediate(resolve))
-  }
-}
-
-/**
- * Drain real macrotasks until `settled()` holds, or the bound is spent.
- *
- * A FIXED turn count cannot express "give the batch as long as it needs": under
- * CPU contention the I/O continuation may not land within any constant number
- * of turns, and the caller's assertion then reads zero **even though the
- * scheduler fired**. Independent verification found exactly that
- * (`docs/audit/I-round4-verification.md` §5, N15: 10/10 serial runs pass, while
- * 4-way parallelism produces `expected 0 to be greater than or equal to 1`).
- * It matters beyond this file: a mutation harness reads such a failure as
- * "the guard caught the mutant" and records a FALSE KILL, which is how a
- * verification campaign reports coverage it does not have.
- *
- * The bound is generous rather than tight, so the assertion still FAILS when
- * the behaviour is genuinely absent — it just no longer fails on timing.
- */
-async function flushUntil(settled: () => boolean, turns = 5_000): Promise<void> {
-  for (let index = 0; index < turns; index += 1) {
-    if (settled()) return
-    await new Promise(resolve => setImmediate(resolve))
-  }
-}
-
-/**
- * Source text with comments AND string literals removed.
- *
- * A guard that reads source TEXT is defeated by anything that merely LOOKS like
- * the code it is looking for, and round-4 adversarial verification
- * (`docs/audit/I-round4-verification.md`) found both halves of that seam:
- *
- * - **N9** — stripping comments was not enough. `const shape = 'return
- *   effectiveMembersOf('` satisfies a `toMatch` on the D6 guard while the call
- *   is never made, so the shared rule could stop deciding the result while the
- *   guard reported delegation.
- * - **N17** — the same seam on the D5 half, in the opposite direction: a string
- *   literal merely MENTIONING a derived name counted as a free-variable read,
- *   so legitimate code failed the guard. A guard that fails correct code gets
- *   edited by whoever hits it, and the cheapest edit is the one that silences
- *   the failure while leaving the real staleness class open.
- *
- * Quotes are what make a mention look like a call or a read, so they are
- * replaced with an empty literal before any matching happens. Comments are
- * removed for the same reason (the earlier attack was a bare `//` line).
- */
-function stripLiterals(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//gu, '')
-    .replace(/\/\/[^\n]*/gu, '')
-    .replace(/'(?:[^'\\\n]|\\.)*'/gu, "''")
-    .replace(/"(?:[^"\\\n]|\\.)*"/gu, '""')
-    .replace(/`(?:[^`\\]|\\.)*`/gu, '``')
-}
-
-/**
- * Mount the plugin with fake timers installed BEFORE `apply()`, advance one
- * full interval, and report how many probe calls reached `/chat/completions`.
- *
- * The fake clock must own the heartbeat, and the heartbeat is created inside
- * `apply()` (`src/index.ts`), so installing the fake clock afterwards leaves the
- * real interval running while the fake one never fires — the harness bug that
- * made the first version of this test prove nothing (D4). `toFake` is narrowed
- * to the interval plus `Date` so the mount's own `setTimeout(0)` still settles.
- *
- * `expected` decides how to drain: a run that MUST happen is drained until the
- * probe lands, so a slow I/O continuation cannot be read as "did not run"
- * (N15); a run that must NOT happen is drained generously, so a run that merely
- * had not finished yet cannot be read as "skipped".
- */
-async function driveScheduledInterval(
-  pool: Record<string, unknown>,
-  catalog: readonly Record<string, unknown>[],
-  expected: 'runs' | 'skips',
-): Promise<number> {
-  const authFile = await writeAuthFixture(root)
-  const memberId = await discoverAccountId(authFile)
-  let probes = 0
-  const realFetch = globalThis.fetch
-  globalThis.fetch = (async (url: unknown) => {
-    const text = String(url)
-    if (text.includes('/chat/completions')) probes += 1
-    if (text.includes('get-user-resource')) {
-      return new Response(JSON.stringify({
-        code: 0,
-        data: { packages: [{ packageName: 'p', remain: 100, size: 100, capacityType: 1 }] },
-      }), { status: 200 })
-    }
-    return new Response(JSON.stringify({
-      code: 0,
-      data: {
-        choices: [{ message: { content: 'ok' } }],
-        usage: { prompt_tokens: 1, completion_tokens: 1 },
-      },
-    }), { status: 200 })
-  }) as typeof fetch
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
-  try {
-    await mount({
-      authFile,
-      regions: {
-        cn: {
-          enabled: true,
-          lastCatalog: catalog,
-          pool: {
-            enabled: true,
-            autoTestIntervalMinutes: 5,
-            memberAccountIds: [memberId],
-            ...pool,
-          },
-        },
-      },
-    })
-    // Tick 1 ARMS the region's clock ("first sight"); it does not run it.
-    await vi.advanceTimersByTimeAsync(POOL_TICK_MS)
-    expect(probes).toBe(0)
-    // A full interval later the pass is due.
-    await vi.advanceTimersByTimeAsync(5 * 60_000)
-    if (expected === 'runs') await flushUntil(() => probes >= 1)
-    else await flushRealWork()
-    return probes
-  } finally {
-    vi.useRealTimers()
-    globalThis.fetch = realFetch
-  }
-}
 
 describe('the pool: regression guards for the audited defects', () => {
   it('H-5: reports EFFECTIVE membership so the card cannot overcount', async () => {
@@ -890,250 +518,22 @@ describe('the pool: regression guards for the audited defects', () => {
   })
 })
 
-describe('the rotation override is applied and cleared correctly (H-3)', () => {
-  /** Two CN sign-ins, so rotation has a choice of account. */
-  async function writeTwoAuthFixtures(root: string): Promise<string> {
-    const { mkdir, writeFile } = await import('node:fs/promises')
-    const dir = join(root, 'auth')
-    await mkdir(dir, { recursive: true })
-    const doc = (uin: string, nick: string): string => JSON.stringify({
-      account: { uid: `uid-${uin}`, uin, nickname: nick, enterpriseId: '' },
-      auth: {
-        accessToken: `token-${uin}`,
-        refreshToken: `refresh-${uin}`,
-        tokenType: 'Bearer',
-        domain: 'www.codebuddy.cn',
-        expiresAt: Date.now() + 86_400_000,
-        refreshExpiresAt: Date.now() + 7 * 86_400_000,
-      },
-    })
-    const live = join(dir, 'workbuddy-desktop.info')
-    await writeFile(live, doc('100000000001', 'Alpha'), 'utf8')
-    await writeFile(join(dir, 'workbuddy-desktop.2026-07-01T00-00-00-000Z.info'), doc('100000000002', 'Beta'), 'utf8')
-    return live
-  }
-
-  it('sets an override when rotation is on, and CLEARS it when the pool is switched off', async () => {
-    // The H-3 defect: rotation was only re-applied on a test run, so switching
-    // the pool off left the runtime override in place and `current()` kept
-    // preferring the rotated account — contradicting the card's promise that
-    // switching the pool off restores the user's own selection.
-    const authFile = await writeTwoAuthFixtures(root)
-    const config: Record<string, unknown> = {
-      authFile,
-      regions: {
-        cn: {
-          enabled: true,
-          lastCatalog: [{
-            id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
-          }],
-          pool: {
-            enabled: true,
-            rotateByCredits: true,
-            autoTestIntervalMinutes: 30,
-            memberAccountIds: [],
-          },
-        },
-      },
-    }
-    const ctx = await mount(config)
-    // Establish membership with the real account ids.
-    const { body: usageBody } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-    const ids = ((usageBody['accounts'] ?? []) as { id: string }[]).map(account => account.id)
-    const pool = (config['regions'] as Record<string, Record<string, unknown>>)['cn']?.['pool'] as Record<string, unknown>
-    pool['memberAccountIds'] = [...ids]
-    // The startup path already ran with the OLD (empty) membership; re-apply.
-    ;(ctx as unknown as { emit(name: string): void }).emit('loader/volatile-update')
-    await new Promise(resolve => setTimeout(resolve, 120))
-
-    const { body: rotated } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-    const rotatedPool = rotated['pool'] as { rotatedToAccountId?: string } | undefined
-    expect(rotatedPool?.rotatedToAccountId).toBeDefined()
-
-    // Now switch the pool OFF and announce the commit, as the Loader does.
-    pool['enabled'] = false
-    pool['rotateByCredits'] = false
-    ;(ctx as unknown as { emit(name: string): void }).emit('loader/volatile-update')
-    await new Promise(resolve => setTimeout(resolve, 120))
-
-    const { body: after } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-    const afterPool = after['pool'] as { rotatedToAccountId?: string } | undefined
-    // Cleared: the card must not still be redirecting billing.
-    expect(afterPool?.rotatedToAccountId).toBeUndefined()
-  })
-
-  it('lets only the NEWEST call write, so a slow ON cannot resurrect the override', async () => {
-    // The race the verifier found (a defect I introduced): `applyRotation`
-    // awaits per-member credits, so a call that read "ON" could resume AFTER a
-    // newer call cleared the override for "OFF" and write the account back —
-    // the card showing the pool off while a rotated account is still billed.
-    //
-    // Driven by delaying the credits response so the ON call is still in flight
-    // when OFF commits.
-    const authFile = await writeTwoAuthFixtures(root)
-    const config: Record<string, unknown> = {
-      authFile,
-      regions: {
-        cn: {
-          enabled: true,
-          lastCatalog: [{
-            id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
-          }],
-          pool: {
-            enabled: true,
-            rotateByCredits: true,
-            autoTestIntervalMinutes: 30,
-            memberAccountIds: [],
-          },
-        },
-      },
-    }
-    const ctx = await mount(config)
-    const { body: usageBody } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-    const ids = ((usageBody['accounts'] ?? []) as { id: string }[]).map(account => account.id)
-    const pool = (config['regions'] as Record<string, Record<string, unknown>>)['cn']?.['pool'] as Record<string, unknown>
-    pool['memberAccountIds'] = [...ids]
-
-    // Make the credits read slow, so the ON re-rank is still awaiting when OFF
-    // is committed and cleared.
-    const realFetch = globalThis.fetch
-    let releaseSlow: (() => void) | undefined
-    const slow = new Promise<void>(resolve => { releaseSlow = resolve })
-    globalThis.fetch = (async (url: unknown, init?: unknown) => {
-      if (String(url).includes('get-user-resource')) await slow
-      return realFetch(url as never, init as never)
-    }) as typeof fetch
-    try {
-      // ON: starts, reads preferences, then parks on the slow credits read.
-      ;(ctx as unknown as { emit(name: string): void }).emit('loader/volatile-update')
-      await new Promise(resolve => setTimeout(resolve, 30))
-      // OFF: commits and clears the override while the ON call is parked.
-      pool['enabled'] = false
-      pool['rotateByCredits'] = false
-      ;(ctx as unknown as { emit(name: string): void }).emit('loader/volatile-update')
-      await new Promise(resolve => setTimeout(resolve, 30))
-      // Let the parked ON call finish. It must NOT write.
-      releaseSlow?.()
-      await new Promise(resolve => setTimeout(resolve, 120))
-
-      const { body: after } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-      const afterPool = after['pool'] as { rotatedToAccountId?: string } | undefined
-      // Without the generation token the stale ON call wrote an account here.
-      expect(afterPool?.rotatedToAccountId).toBeUndefined()
-    } finally {
-      globalThis.fetch = realFetch
-    }
-  })
-})
-
-describe('the generation token itself (H-3, isolated)', () => {
-  it('stops an OLDER still-ON call from overwriting a NEWER decision', async () => {
-    // The previous test removes BOTH defences to fail, so it cannot show the
-    // token does anything — the post-await re-read alone would rescue it. This
-    // one isolates the token by keeping the preferences ON throughout, so the
-    // re-read always agrees and only the token can prevent the stale write.
-    //
-    // Two overlapping ON calls whose credit data disagree must resolve to the
-    // NEWER call's pick. Without the token the older call resumes last and
-    // writes its own (stale) account.
-    const { mkdir, writeFile } = await import('node:fs/promises')
-    const dir = join(root, 'auth')
-    await mkdir(dir, { recursive: true })
-    const doc = (uin: string, nick: string): string => JSON.stringify({
-      account: { uid: `uid-${uin}`, uin, nickname: nick, enterpriseId: '' },
-      auth: {
-        accessToken: `token-${uin}`,
-        refreshToken: `refresh-${uin}`,
-        tokenType: 'Bearer',
-        domain: 'www.codebuddy.cn',
-        expiresAt: Date.now() + 86_400_000,
-        refreshExpiresAt: Date.now() + 7 * 86_400_000,
-      },
-    })
-    const authFile = join(dir, 'workbuddy-desktop.info')
-    await writeFile(authFile, doc('100000000001', 'Alpha'), 'utf8')
-    await writeFile(join(dir, 'workbuddy-desktop.2026-07-01T00-00-00-000Z.info'), doc('100000000002', 'Beta'), 'utf8')
-
-    const config: Record<string, unknown> = {
-      authFile,
-      regions: {
-        cn: {
-          enabled: true,
-          lastCatalog: [{
-            id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
-          }],
-          pool: {
-            enabled: true,
-            rotateByCredits: true,
-            autoTestIntervalMinutes: 30,
-            memberAccountIds: [],
-          },
-        },
-      },
-    }
-    const ctx = await mount(config)
-    const { body: usageBody } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-    const ids = ((usageBody['accounts'] ?? []) as { id: string }[]).map(account => account.id)
-    const pool = (config['regions'] as Record<string, Record<string, unknown>>)['cn']?.['pool'] as Record<string, unknown>
-    pool['memberAccountIds'] = [...ids]
-    expect(ids.length).toBe(2)
-
-    // Credits per ROUND, by the order accounts are read. Round 1 makes the
-    // SECOND-read account richest; round 2 makes the FIRST-read one richest —
-    // so the two calls must pick different accounts.
-    const realFetch = globalThis.fetch
-    let round = 0
-    let readsThisRound = 0
-    let releaseFirstRound: (() => void) | undefined
-    const firstRoundGate = new Promise<void>(resolve => { releaseFirstRound = resolve })
-    globalThis.fetch = (async (url: unknown, init?: unknown) => {
-      const text = String(url)
-      if (text.includes('get-user-resource')) {
-        readsThisRound += 1
-        const position = readsThisRound
-        const isFirstRound = round === 0
-        // Park the FIRST round so the second call can overtake it.
-        if (isFirstRound) await firstRoundGate
-        // Round 1: second account richest. Round 2: first account richest.
-        const remain = isFirstRound
-          ? (position === 1 ? 10 : 900)
-          : (position === 1 ? 900 : 10)
-        return new Response(JSON.stringify({
-          code: 0,
-          data: { packages: [{ packageName: 'p', remain, size: 1000, capacityType: 1 }] },
-        }), { status: 200 })
-      }
-      return realFetch(url as never, init as never)
-    }) as typeof fetch
-
-    try {
-      // Call #1 (older): parks inside its credits read.
-      round = 0
-      readsThisRound = 0
-      ;(ctx as unknown as { emit(name: string): void }).emit('loader/volatile-update')
-      await new Promise(resolve => setTimeout(resolve, 40))
-
-      // Call #2 (newer): runs to completion with its own data and writes a pick.
-      round = 1
-      readsThisRound = 0
-      ;(ctx as unknown as { emit(name: string): void }).emit('loader/volatile-update')
-      await new Promise(resolve => setTimeout(resolve, 120))
-      const { body: afterNewer } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-      const newerPick = (afterNewer['pool'] as { rotatedToAccountId?: string } | undefined)?.rotatedToAccountId
-      expect(newerPick).toBeDefined()
-
-      // Now let the OLDER call finish. It must not overwrite the newer decision.
-      releaseFirstRound?.()
-      await new Promise(resolve => setTimeout(resolve, 150))
-      const { body: afterStale } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
-      const finalPick = (afterStale['pool'] as { rotatedToAccountId?: string } | undefined)?.rotatedToAccountId
-      expect(finalPick).toBe(newerPick)
-    } finally {
-      releaseFirstRound?.()
-      globalThis.fetch = realFetch
-    }
-  })
-})
+/**
+ * Strip comments and string literals from a source excerpt.
+ *
+ * The guards below ask "does this code CALL X", and a source-text search alone
+ * is satisfied by a MENTION: a comment, an error message, or the argument of a
+ * `typeof` can all contain the name without the call existing. Removing
+ * literals and comments first makes the search a search for code.
+ */
+function stripLiterals(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/\/\/[^\n]*/gu, '')
+    .replace(/'(?:[^'\\\n]|\\.)*'/gu, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/gu, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/gu, '``')
+}
 
 describe('the pool section and the card share one refresh path (M-4 / L-5)', () => {
   const sourceOf = async (name: string): Promise<string> =>
@@ -1442,37 +842,40 @@ describe('the pool section and the card share one refresh path (M-4 / L-5)', () 
     expect(card).toContain("import { createLatestWins } from '../account-pool.ts'")
   })
 
-  it('wires the interval field through the tested keystroke rule (M-2 wiring)', async () => {
-    // The verification reverted the CARD's wiring — displaying a re-serialized
-    // clamped number instead of the raw entry — and the whole suite stayed green,
-    // because only the pure helper was pinned. `parseIntervalInput` alone cannot
-    // express "show what was typed"; the card must go through
-    // `intervalEditOnInput`, whose `text` is the raw keystroke.
-    const pool = await sourceOf('client/AccountPool.tsx')
-    const code = pool.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/[^\n]*/gu, '')
-    const at = code.indexOf('const onIntervalInput = useCallback')
-    expect(at, 'onIntervalInput moved — update this guard').toBeGreaterThan(-1)
-    const body = code.slice(at, code.indexOf('\n  }, [editDraft])', at))
-    expect(body, 'the card no longer uses the shared keystroke rule').toContain('intervalEditOnInput(raw)')
-    // The displayed text must come from that rule's `text` (the raw entry), never
-    // from re-serializing a parsed number — that is the `120` → `520` defect.
-    expect(body, 'the field re-serializes a parsed number into the display')
-      .not.toMatch(/setIntervalText\(\s*String\(/u)
-    // POSITIVE form (N6). The negative above is anchored on the first token after
-    // `setIntervalText(`, so a ternary wrapper walks past it:
-    // `setIntervalText(commit === undefined ? text : String(commit))` restores the
-    // defect while still containing `String(`. A guard that names what MUST happen
-    // is strictly stronger than one that names what must not, so name the use:
-    // the rule's own `text` is what reaches the field.
-    expect(body, 'the shared rule\'s `text` never reaches the field')
-      .toContain('setIntervalText(text)')
-    // And the clamp must not be re-derived by hand beside the rule it ignores.
-    expect(body, 'the clamp is re-derived by hand instead of used')
-      .not.toMatch(/String\(/u)
-    // And the input handler must not call the bare parser for its display.
-    expect(body).toContain('const { text, commit } = intervalEditOnInput(raw)')
-    // The controlled value must fall back to the committed number, so the field
-    // is never blank when no edit is in progress.
-    expect(pool).toContain('value: intervalText ?? String(active.autoTestIntervalMinutes)')
+  it('wires the failover policy into the shim, gated on the pool switch', async () => {
+    // The seam this pins is a CALLBACK INJECTION: the shim owns the retry loop
+    // (covered by `tests/shim-failover.spec.ts`) and the Host owns the policy.
+    // Drop the option and the shim silently never retries — the feature would be
+    // gone with every other test still green, because each half is correct on
+    // its own.
+    const host = stripLiterals(await sourceOf('index.ts'))
+
+    // Bound to THIS region: each region owns its own store, pool and shim, and a
+    // retry that consulted the other region's members would bill an account from
+    // a different account pool than the one that failed.
+    expect(host, 'the shim is not given a failover policy').toContain('failoverAccount:')
+    expect(host, 'the policy is not bound to its region').toContain('failoverAccountFor(region,')
+
+    const policyAt = host.indexOf('const failoverAccountFor =')
+    expect(policyAt, 'failoverAccountFor moved — update this guard').toBeGreaterThan(-1)
+    // The policy runs to the next top-level `const` of `apply()`.
+    const rest = host.slice(policyAt + 1)
+    const policy = rest.slice(0, rest.indexOf('\n  const '))
+
+    // Off means OFF: the pool switch is the whole feature's gate, and restoring
+    // "follow the account you selected, report failures as-is" is what it promises.
+    expect(policy, 'the pool switch does not gate failover')
+      .toContain('poolPreferencesOf(current(), region).enabled')
+    // Members a measurement already rules out are skipped, so a retry does not
+    // spend a round trip re-learning what the pool knows.
+    expect(policy, 'excluded members are not skipped').toContain('excludedBy')
+    // The account that just failed must not be offered again.
+    expect(policy, 'the tried set is not consulted').toContain('tried')
+    // Candidates are read WITHOUT touching the selection: `resolve()` would move
+    // the user's choice, the one thing failover must never do.
+    expect(policy, 'candidates are read through the wrong accessor').toContain('credentialFor(')
+    expect(policy, 'the policy resolves the selection instead of borrowing a candidate')
+      .not.toContain('resolve()')
   })
+
 })

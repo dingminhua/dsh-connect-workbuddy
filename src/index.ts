@@ -30,7 +30,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { workbuddyAccountId, WorkBuddyCredentialStore } from './auth.ts'
+import { workbuddyAccountId, WorkBuddyCredentialStore, type WorkBuddyCredential } from './auth.ts'
 import { deriveCatalog, fallbackModelsFor, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
@@ -58,13 +58,8 @@ import type {
 } from './account-pool-run.ts'
 import type { WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
 import {
-  createLatestWins,
   effectiveMembersOf,
-  duePoolRegions,
-  pickAccount,
-  pickFreeModel,
-  POOL_TICK_MS,
-  resolveTargetModel,
+  rankPool,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
@@ -308,18 +303,21 @@ export interface WorkBuddyRegionState {
  * measurement living in the same slot would be rolled back by the next save.
  */
 export interface WorkBuddyPoolPreferences {
-  /** Whether the pool is active for this region. Opt-in: default false. */
-  enabled?: boolean
   /**
-   * Whether the plugin may choose the billed account by credits.
+   * Whether the pool is active for this region — which now means the
+   * FAILOVER switch, not a credit ranking.
    *
-   * Opt-in, and mutually exclusive with manual selection: while it is on, the
-   * card disables the account dropdown, because two writers deciding the same
-   * slot is exactly how "the dropdown says A but B is billed" happens.
+   * Opt-in: default false. While on, a chat request that fails upstream is
+   * retried against the other usable members of this region's pool, in order,
+   * until one serves it or none is left (see `src/shim.ts`). While off the
+   * plugin behaves exactly as it did before the pool existed: the account the
+   * user selected serves every request, and a failure is reported as-is.
+   *
+   * It deliberately does NOT change which account serves NEXT: failover is
+   * per-request borrowing, so the user's selection stays in effect and the
+   * card can keep reporting who really served.
    */
-  rotateByCredits?: boolean
-  /** Minutes between automatic tests; clamped to 5..1440. */
-  autoTestIntervalMinutes?: number
+  enabled?: boolean
   /** Model id to test; `''` means auto-pick a free model from this region. */
   targetModelId?: string
   /**
@@ -387,9 +385,7 @@ const modelConfig = z.object({
  * one "Save" press overwrite results the timer had just written.
  */
 const poolConfig = z.object({
-  enabled: z.boolean().default(false).description('Whether the account pool is active for this region (opt-in)'),
-  rotateByCredits: z.boolean().default(false).description('Whether the plugin may switch the billed account by credits (opt-in; disables manual selection)'),
-  autoTestIntervalMinutes: z.number().step(1).min(5).max(1440).default(30).description('Minutes between automatic pool tests (5..1440)'),
+  enabled: z.boolean().default(false).description('Whether this region\'s account pool is active (opt-in). While on, a failed chat request is retried against the other usable pool members before the error is reported.'),
   targetModelId: z.string().default('').description('Model id to test; empty means pick a zero-multiplier model from this region\'s catalog'),
   memberAccountIds: z.array(z.string()).default([]).description('Account ids checked into this pool (opt-in; empty means the pool covers nothing)'),
 })
@@ -625,15 +621,6 @@ export function apply(ctx: Context, config: Config): void {
     Record<WorkBuddyRegion, Record<string, { checkedIn: boolean, atMs: number }>>
   > = {}
 
-  /**
-   * Latest-wins guard for `applyRotation`, keyed by region.
-   *
-   * Declared here (near the top of `apply`) rather than beside `applyRotation`
-   * itself: that function is CALLED from the startup path above its definition,
-   * so a `const` declared down there would be in its temporal dead zone.
-   */
-  const rotationGuard = createLatestWins<WorkBuddyRegion>()
-
 
   // The namespace the host actually serves (see `settingsNamespaceOf`). On
   // 0.1.7 this is the Loader entry id, and the harness looks it up by EXACT
@@ -652,7 +639,26 @@ export function apply(ctx: Context, config: Config): void {
       refresh: credential => client.refreshToken(credential),
     })
     const catalog = new WorkBuddyCatalog(region)
-    const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+    const shim = createWorkBuddyShim({
+      store,
+      client,
+      catalog,
+      logger: ctx.logger,
+      /**
+       * Pool failover, bound to THIS region.
+       *
+       * The region is captured in the closure rather than passed per call: each
+       * region owns its own store, pool and shim, and a retry that consulted
+       * the other region's members would bill an account from a different
+       * account pool than the one that failed.
+       *
+       * Resolved lazily — `failoverAccountFor` reads `poolMembersOf`, which is
+       * defined below with the rest of the pool plumbing — but never called
+       * before it exists: the shim only takes traffic once the provider is
+       * registered, which happens after this whole setup completes.
+       */
+      failoverAccount: triedAccountIds => failoverAccountFor(region, triedAccountIds),
+    })
     stacks[region] = { store, catalog, shim }
   }
 
@@ -875,11 +881,11 @@ export function apply(ctx: Context, config: Config): void {
      * stacks of accounts, so one region's pool can never rank or bill the
      * other's accounts.
      *
-     * `rotateByCredits` is consumed HERE, by the credential store's selection
-     * hook, rather than by writing `config.accounts[region]`. That separation
-     * is the whole reason "turn rotation off" cleanly restores the user's own
-     * choice: rotation decides who serves at runtime and never overwrites the
-     * record of what the user picked.
+     * The pool decides who serves a FAILED request (see `failoverAccountFor`),
+     * and it does so without writing `config.accounts[region]`: a retry borrows
+     * another member's credential for that one request, leaving the record of
+     * what the user picked — and the account the next request starts from —
+     * untouched.
      */
     pool: {
       preferences: region => poolPreferencesOf(current(), region),
@@ -949,20 +955,20 @@ export function apply(ctx: Context, config: Config): void {
         }))
         return Object.fromEntries(entries.filter(entry => entry !== undefined))
       },
-      /**
-       * The account rotation last moved to, read from the store's runtime
-       * override. Absent means rotation is not currently redirecting billing.
-       */
-      async rotatedToAccountId(region) {
-        return stacks[region].store.rotatedAccount()
-      },
       async currentAccountId(region) {
-        // The account the STORE would actually bill, which is not always the
-        // ranking's winner: rotation is applied to the store below, and the
-        // card must show who is really serving rather than who should be.
+        // The account the STORE would bill at this moment — i.e. the one the
+        // user selected. Failover never edits this: a request that failed over
+        // borrowed another member's credential for that one retry, so the next
+        // request still starts here and the card keeps reporting the user's own
+        // choice rather than a transient fallback.
         const credential = await stacks[region].store.current().catch(() => undefined)
         return credential === undefined ? undefined : workbuddyAccountId(credential)
       },
+      /**
+       * Only the CN app rewards a daily check-in; the international region has
+       * no equivalent here, so its card must not offer the action.
+       */
+      checkinSupported: region => region === 'cn',
       checkin: async region => {
         const rows = await checkinAllAccounts(
           await poolTargets(region),
@@ -984,12 +990,9 @@ export function apply(ctx: Context, config: Config): void {
           modelId,
           poolRunnerDeps(region),
         )
-        // Persist first, then rotate: the ranking reads the measurements this
-        // batch just produced, so rotating before they land would pick from the
-        // PREVIOUS state and could rotate onto an account this test just
-        // proved unusable.
+        // Persist the measurements: they are what keeps failover off an account
+        // that is known to be limited or rejected.
         await writePoolProbes(region, probeUpdatesOf(rows))
-        await applyRotation(region)
         return rows
       },
       catalog: region => displayModels(current(), region),
@@ -1021,43 +1024,42 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * Apply the pool's rotation to one region's store.
+   * The next account to try for a request whose current account just failed,
+   * or `undefined` when this region's pool has nobody left.
    *
-   * The store's runtime override is set only when rotation is switched ON and a
-   * usable account exists; otherwise it is CLEARED, which restores the user's
-   * own selection immediately. Clearing on every non-rotating path is what
-   * makes "turn rotation off" complete rather than leaving a stale override
-   * billing under a switch that reads as off.
+   * Reads the pool's EXISTING measurements instead of probing: a request that
+   * just failed must not spend further requests deciding who serves next (and a
+   * probe of the target model would itself be billed). Candidates are this
+   * region's checked-in members in rank order, minus everyone this request has
+   * already tried, minus anyone a measurement says cannot serve right now — a
+   * limited account whose stated cooldown has not elapsed, or one whose
+   * credential the upstream rejected.
    *
-   * Never writes settings: the user's saved choice is untouched throughout.
+   * The pool switch gates this: off means the user's account serves every
+   * request and a failure is reported as-is, exactly as before the pool existed.
+   *
+   * Reads the candidate through `credentialFor()`, never `resolve()`: the saved
+   * selection and the store's runtime state stay untouched, so this is
+   * per-request borrowing rather than a silent change of who pays. The next
+   * request starts from the user's own account again.
    */
-  const applyRotation = async (region: WorkBuddyRegion): Promise<void> => {
-    const store = stacks[region].store
-    // Latest-wins, per region: this function AWAITS (fetching credits per
-    // member), so two overlapping calls can interleave and only the newest may
-    // write. See `createLatestWins` for the full reasoning.
-    const stale = rotationGuard.begin(region)
-
-    const preferences = poolPreferencesOf(current(), region)
-    if (!preferences.enabled || !preferences.rotateByCredits) {
-      store.setRotatedAccount(undefined)
-      return
+  const failoverAccountFor = async (
+    region: WorkBuddyRegion,
+    triedAccountIds: readonly string[],
+  ): Promise<WorkBuddyCredential | undefined> => {
+    if (!poolPreferencesOf(current(), region).enabled) return undefined
+    const tried = new Set(triedAccountIds)
+    for (const row of rankPool(await poolMembersOf(region), Date.now())) {
+      // `excludedBy` carries the reason a measurement rules an account out.
+      // Skipping on it is what makes "try until none is usable" mean usable
+      // rather than merely "not yet tried": re-hitting an account the upstream
+      // just limited would burn a round trip to learn what we already recorded.
+      if (row.excludedBy !== undefined) continue
+      if (tried.has(row.account.id)) continue
+      const credential = await stacks[region].store.credentialFor(row.account.id)
+      if (credential !== undefined) return credential
     }
-    const members = await poolMembersOf(region)
-    if (stale()) return
-    // An account measured unusable is never rotated to, which is the point of
-    // testing: the pool's measurements are what keep traffic off a dead
-    // account rather than only reporting on it.
-    const picked = pickAccount(members, Date.now())
-    // Re-read the preferences AFTER the await: the settings may have changed
-    // while we were fetching credits, and acting on the pre-await snapshot is
-    // the same class of bug as writing after a newer call.
-    const latest = poolPreferencesOf(current(), region)
-    if (!latest.enabled || !latest.rotateByCredits) {
-      store.setRotatedAccount(undefined)
-      return
-    }
-    store.setRotatedAccount(picked?.id)
+    return undefined
   }
 
   /**
@@ -1107,8 +1109,6 @@ export function apply(ctx: Context, config: Config): void {
     const pool = regionStateOf(config, region).pool
     return {
       enabled: pool?.enabled === true,
-      rotateByCredits: pool?.rotateByCredits === true,
-      autoTestIntervalMinutes: pool?.autoTestIntervalMinutes ?? 30,
       targetModelId: pool?.targetModelId ?? '',
       memberAccountIds: pool?.memberAccountIds ?? [],
     }
@@ -1220,34 +1220,10 @@ export function apply(ctx: Context, config: Config): void {
   ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
     .on('loader/volatile-update', () => {
       applySelection(current())
-      // Re-apply rotation on EVERY committed settings write, not only on a test
-      // run. Without this, switching the pool (or rotation) OFF left the
-      // runtime override in place: `applyRotation`'s clearing branch was
-      // reachable only through the two test paths, and disabling the pool also
-      // disables both of those (the manual route 409s and the scheduler stops
-      // scheduling). `current()` then kept preferring the rotated account for
-      // the rest of the process lifetime, contradicting the card's promise that
-      // switching the pool off restores "follow the account you selected".
-      for (const region of REGION_KEYS) {
-        void applyRotation(region).catch(() => {
-          // A failed re-rank must not break the settings write that triggered
-          // it; the next write or test converges.
-        })
-      }
     })
 
   // Initial wiring: selections, per-region catalogs from the saved state.
   applySelection(config)
-
-  // Apply the pool's rotation once at startup too. A restart must not leave a
-  // region on the WRONG account until the first scheduled test (which, with the
-  // default 30-minute interval, is up to half an hour later) — and a restart
-  // clears the in-memory override, so without this the pool would silently stop
-  // rotating until then. Best-effort: a failure here just leaves the user's own
-  // selection in effect, which is the safe default.
-  for (const region of REGION_KEYS) {
-    void applyRotation(region).catch(() => {})
-  }
 
   // Attribute the legacy single-account selection to its own region once the
   // local scan can tell which one that is, then re-apply. Until this resolves
@@ -1270,108 +1246,6 @@ export function apply(ctx: Context, config: Config): void {
   })()
 
   let stopped = false
-
-  /**
-   * When each region's automatic test last ran, in epoch ms.
-   *
-   * In-memory only, and deliberately NOT persisted: it exists to space out
-   * runs within one session. Persisting it would make a restart skip a test the
-   * user was owed, and losing it only costs one interval.
-   */
-  const poolLastRunMs: Partial<Record<WorkBuddyRegion, number>> = {}
-
-
-  /**
-   * The pool scheduler: ONE heartbeat for both regions.
-   *
-   * A single timer rather than one per region, because the tick does no network
-   * work of its own — it reads the config, compares timestamps, and only then
-   * runs a batch. That also means a settings change needs no re-arming: the next
-   * tick reads whatever interval is now saved.
-   *
-   * This is what makes the "自动测试间隔" setting real. Before it existed the
-   * interval was stored and never consumed, so the card promised a behaviour the
-   * plugin did not have.
-   */
-  ctx.effect(() => {
-    const timer = setInterval(() => {
-      void (async () => {
-        if (stopped) return
-        const nowMs = Date.now()
-        // `duePoolRegions` both ARMS a region's clock on first sight and
-        // decides whether it is due. Arming and running are separate steps on
-        // purpose: `poolDueAt` reports "not due" for a region that has never
-        // run, so a scheduler that only stamped the clock when it ran would
-        // never stamp it at all and would never fire. It also keeps a clock for
-        // an enabled region ONLY, so re-enabling the pool waits a full interval
-        // instead of inheriting a stale timestamp.
-        const schedule = duePoolRegions({
-          state: poolLastRunMs,
-          regions: REGION_KEYS,
-          enabledOf: region => poolPreferencesOf(current(), region).enabled
-            // Both switches must be on: the pool's own, and the region's
-            // provider. A withdrawn region has no traffic to keep healthy.
-            && regionEnabled(current(), region),
-          intervalMinutesOf: region => poolPreferencesOf(current(), region).autoTestIntervalMinutes,
-          nowMs,
-        })
-        for (const region of REGION_KEYS) {
-          const next = schedule.next[region]
-          if (next === undefined) delete poolLastRunMs[region]
-          else poolLastRunMs[region] = next
-        }
-        for (const region of schedule.due) {
-          // The clock is already stamped above, so a slow batch cannot be
-          // re-entered by the next tick and a failure still costs a full
-          // interval instead of hammering a broken upstream every minute.
-          await runScheduledPoolTest(region).catch(() => {
-            // A scheduled run is background work: a failure is not the user's
-            // problem to acknowledge, and the next tick retries.
-          })
-        }
-      })()
-    }, POOL_TICK_MS)
-    return () => { clearInterval(timer) }
-  }, 'dsh-connect-workbuddy: account pool scheduler')
-
-  /**
-   * One scheduled pass for a region: test the pool's members, then re-rank.
-   *
-   * Never bills a paid model on a timer: the target is the user's saved model
-   * when it resolves, and the region's FREE model when the saved one has left
-   * the catalog. An unresolvable target with no free model available stops the
-   * pass — the free-target rule is what stops a timer from spending credits.
-   *
-   * The free FALLBACK for a stale saved model is D3's fix, not a convenience.
-   * The scheduler's job is to keep MEASUREMENTS fresh, and a measurement is
-   * what keeps rotation off a dead account. It used to return early whenever
-   * `resolveTargetModel` produced no id — which is exactly what a saved model
-   * that left the catalog produces — so a stale *display preference* froze the
-   * measurement loop for the whole region. The two exclusions then behaved
-   * asymmetrically: a `rate-limited` member clears by the clock alone
-   * (`exclusionOf` consults `retryAtMs`), while an `unavailable` member can
-   * only be cleared by a NEW probe — and no probe was ever written. The member
-   * hung in the pool's "excluded" state indefinitely, until the user noticed
-   * the stale model and fixed it by hand.
-   *
-   * The manual batch route keeps refusing a stale target (`reason:
-   * 'target-model-stale'`): there the user asked to test THAT model, so
-   * substituting another one would answer a question they did not ask. Here
-   * nobody asked for anything; the pass exists to refresh the pool's own
-   * picture, so it must not be starved by a configuration error it can work
-   * around without spending anything.
-   */
-  async function runScheduledPoolTest(region: WorkBuddyRegion): Promise<void> {
-    const targets = await poolTargets(region)
-    if (targets.length === 0) return
-    const catalog = displayModels(current(), region)
-    const target = resolveTargetModel(catalog, poolPreferencesOf(current(), region).targetModelId)
-    const modelId = target.modelId ?? pickFreeModel(catalog)?.id
-    if (modelId === undefined) return
-    const rows = await testAllAccounts(targets, modelId, poolRunnerDeps(region))
-    await writePoolProbes(region, probeUpdatesOf(rows))
-    await applyRotation(region)
-  }
 
   ctx.effect(() => () => {
     stopped = true

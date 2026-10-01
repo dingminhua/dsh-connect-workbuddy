@@ -4,75 +4,17 @@ import {
   draftBaseFor,
   effectiveMemberIds,
   ghostMemberIds,
-  intervalEditOnInput,
-  POOL_INTERVAL_MAX,
-  POOL_INTERVAL_MIN,
-  parseIntervalInput,
   poolErrorText,
   poolFailureText,
-  rotationLockState,
   usableMemberIds,
 } from '../src/client/pool-state.ts'
 import { en, zh } from '../src/client/locales.ts'
 
 const saved = {
   enabled: true,
-  rotateByCredits: true,
-  autoTestIntervalMinutes: 30,
   targetModelId: '',
   memberAccountIds: ['a'] as readonly string[],
 }
-
-describe('rotationLockState (H-2)', () => {
-  it('locks from the COMMITTED state, not the draft', () => {
-    // The defect: a draft-based lock let one click of "turn off rotation"
-    // re-enable the manual dropdown while the Host kept rotating — so the user
-    // could pick an account, see it marked current, and have a DIFFERENT one
-    // billed.
-    const draft = { ...saved, rotateByCredits: false }
-    const state = rotationLockState(saved, draft)
-    expect(state.locked).toBe(true)
-  })
-
-  it('reports the pending unlock so the UI explains why it is still disabled', () => {
-    // Without this the still-disabled dropdown reads as "the button did
-    // nothing".
-    const draft = { ...saved, rotateByCredits: false }
-    expect(rotationLockState(saved, draft).unlockPending).toBe(true)
-  })
-
-  it('unlocks only once the change is committed', () => {
-    const committed = { ...saved, rotateByCredits: false }
-    const state = rotationLockState(committed, committed)
-    expect(state.locked).toBe(false)
-    expect(state.unlockPending).toBe(false)
-  })
-
-  it('does not lock when the pool itself is off', () => {
-    // Rotation cannot own the choice if the pool is not running at all.
-    const off = { ...saved, enabled: false }
-    expect(rotationLockState(off, off).locked).toBe(false)
-  })
-
-  it('does not lock when rotation is off', () => {
-    const noRotate = { ...saved, rotateByCredits: false }
-    expect(rotationLockState(noRotate, noRotate).locked).toBe(false)
-  })
-
-  it('reports no pending unlock when the draft turns the POOL off instead', () => {
-    // Turning the whole pool off also stops rotation, so the pending state is
-    // still reported (the lock applies until saved) — but it must not claim the
-    // user is only mid-unlock if they are not.
-    const draft = { ...saved, enabled: false }
-    const state = rotationLockState(saved, draft)
-    expect(state.locked).toBe(true)
-    expect(state.unlockPending).toBe(true)
-  })
-
-  it('is not pending while the draft still matches the committed state', () => {
-    expect(rotationLockState(saved, saved).unlockPending).toBe(false)
-  })
-})
 
 describe('draftBaseFor (H-1)', () => {
   it('uses the FRESH saved preferences when no draft exists', () => {
@@ -225,67 +167,6 @@ describe('usableMemberIds (M-9 / C4-3)', () => {
     expect(usableMemberIds(accounts, [], [])).toEqual([])
   })
 })
-describe('parseIntervalInput (M-2 / A-4: the field must be typeable)', () => {
-  it('passes a value inside the range through unchanged', () => {
-    // The defect this pins: clamping on every keystroke and writing the result
-    // back into a controlled value turned "120" into "520" — typing the second
-    // digit appended to the already-clamped 5 the first digit produced.
-    expect(parseIntervalInput('120')).toBe(120)
-  })
-
-  it('accepts every intermediate prefix of a longer number', () => {
-    // Typing "120" passes through "1" and "12". If either were rejected or
-    // rewritten, the field would fight the user; the helper must return the
-    // CLAMPED value while still letting the text stand, so the caller decides.
-    expect(parseIntervalInput('1')).toBe(5)
-    expect(parseIntervalInput('12')).toBe(12)
-  })
-
-  it('clamps below the minimum and above the maximum', () => {
-    expect(parseIntervalInput('0')).toBe(5)
-    expect(parseIntervalInput('3')).toBe(5)
-    expect(parseIntervalInput('9999')).toBe(1440)
-  })
-
-  it('reports undefined for text that is not a whole number', () => {
-    // undefined means "leave the user's text alone" — the caller must NOT fold
-    // a number into the draft, and must not rewrite the control.
-    expect(parseIntervalInput('')).toBeUndefined()
-    expect(parseIntervalInput('-')).toBeUndefined()
-    expect(parseIntervalInput('1.5')).toBeUndefined()
-    expect(parseIntervalInput('12e')).toBeUndefined()
-    expect(parseIntervalInput('abc')).toBeUndefined()
-  })
-
-  it('agrees with the Host schema bounds', () => {
-    // src/index.ts:390 declares min(5).max(1440); a card that allowed anything
-    // else would save a value the Host rejects.
-    expect(POOL_INTERVAL_MIN).toBe(5)
-    expect(POOL_INTERVAL_MAX).toBe(1440)
-  })
-})
-
-describe('intervalEditOnInput (M-2 wiring: the field must not rewrite what was typed)', () => {
-  it('keeps the raw keystroke as the text, never a re-serialized number', () => {
-    // The pure helper alone did not protect the field: the verification reverted
-    // the CARD's wiring (display `String(parsed)` instead of the raw entry) and
-    // the whole suite stayed green. This pins the pairing that makes `120`
-    // typeable: text === what the user typed, even when the commit is clamped.
-    expect(intervalEditOnInput('120').text).toBe('120')
-    // The trap case: '1' commits as 5 (below the minimum) but MUST still display
-    // '1', or the next keystroke appends to the 5 and '120' becomes '520'.
-    expect(intervalEditOnInput('1')).toEqual({ text: '1', commit: 5 })
-    expect(intervalEditOnInput('12')).toEqual({ text: '12', commit: 12 })
-    expect(intervalEditOnInput('120')).toEqual({ text: '120', commit: 120 })
-  })
-
-  it('keeps an unparseable entry on screen and commits nothing', () => {
-    // Clearing the field must NOT snap it to 5 while the user is mid-edit.
-    expect(intervalEditOnInput('')).toEqual({ text: '', commit: undefined })
-    expect(intervalEditOnInput('12e')).toEqual({ text: '12e', commit: undefined })
-  })
-})
-
 /**
  * A `t` that returns the KEY, so a test asserts which copy was chosen rather
  * than what it says. Locale PROSE is covered separately below by checking the

@@ -1,0 +1,358 @@
+/**
+ * Pool failover in the chat path: the retry loop itself.
+ *
+ * The policy (which pool member counts as usable, and in what order) lives in
+ * `src/index.ts` and is covered there; this file pins the WIRE rule the shim
+ * owns — that a failed request may be re-sent against another account, under
+ * exactly which failures, and what happens when nobody is left.
+ *
+ * The distinction that matters most here: a `client` failure is NOT retried.
+ * The upstream rejected the request itself, so every account answers the same
+ * 400 and walking the pool would only multiply the wait before the user sees an
+ * error they must act on anyway.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { rankPool } from '../src/account-pool.ts'
+import { WorkBuddyCatalog } from '../src/catalog.ts'
+import { workbuddyAccountId } from '../src/auth.ts'
+import type { WorkBuddyCredential, WorkBuddyCredentialStore } from '../src/auth.ts'
+import { createWorkBuddyShim } from '../src/shim.ts'
+import type { WorkBuddyShim } from '../src/shim.ts'
+import type { WorkBuddyChatResult, WorkBuddyUpstreamClient } from '../src/upstream.ts'
+
+let shim: WorkBuddyShim | undefined
+afterEach(async () => { await shim?.close(); shim = undefined; attempts.length = 0 })
+
+/** A credential for a distinct account, keyed by `uin`. */
+function credentialFor(uin: string): WorkBuddyCredential {
+  return {
+    accessToken: `access-${uin}`,
+    refreshToken: `refresh-${uin}`,
+    expiresAtMs: Date.now() + 86_400_000,
+    domain: 'www.codebuddy.cn',
+    uid: `uid-${uin}`,
+    uin,
+    source: 'desktop',
+    filePath: `/tmp/auth-${uin}.info`,
+  }
+}
+
+const SELECTED = credentialFor('selected')
+const SELECTED_ID = workbuddyAccountId(SELECTED)
+
+/** A store whose selection never moves, which is the whole point. */
+function storeWith(others: readonly WorkBuddyCredential[]): WorkBuddyCredentialStore {
+  const byId = new Map([SELECTED, ...others].map(c => [workbuddyAccountId(c), c]))
+  return {
+    resolve: async () => SELECTED,
+    credentialFor: async (accountId: string) => byId.get(accountId),
+  } as unknown as WorkBuddyCredentialStore
+}
+
+type Failover = (triedAccountIds: readonly string[]) => Promise<WorkBuddyCredential | undefined>
+
+/** Account ids the shim has sent, in order, across every mounted shim. */
+const attempts: string[] = []
+
+function mount(options: {
+  chatStream: (credential: WorkBuddyCredential, body: string) => Promise<WorkBuddyChatResult>
+  failover?: Failover
+  others?: readonly WorkBuddyCredential[]
+  logger?: { warn: (...args: unknown[]) => void, error: (...args: unknown[]) => void }
+}): WorkBuddyShim {
+  const client = {
+    chatStream: async (credential: WorkBuddyCredential, body: string) => {
+      attempts.push(workbuddyAccountId(credential))
+      return await options.chatStream(credential, body)
+    },
+  } as unknown as WorkBuddyUpstreamClient
+  return createWorkBuddyShim({
+    store: storeWith(options.others ?? []),
+    client,
+    catalog: new WorkBuddyCatalog(),
+    ...options.logger === undefined ? {} : { logger: options.logger },
+    ...options.failover === undefined ? {} : { failoverAccount: options.failover },
+  })
+}
+
+/** The account ids sent during ONE test, reset per `it`. */
+function attemptsOf(): string[] {
+  return attempts
+}
+
+/** Drive a chat completion through the shim, as the plugin's own client does. */
+async function chat(instance: WorkBuddyShim, body = '{"messages":[]}'): Promise<{ status: number, body: string }> {
+  const response = await fetch(`${instance.baseUrl()}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${instance.token()}` },
+    body,
+  })
+  return { status: response.status, body: await response.text() }
+}
+
+const RATE_LIMITED: WorkBuddyChatResult = {
+  ok: false,
+  status: 429,
+  kind: 'soft_rate',
+  message: '您的使用量已超出频率限制，将在 2026-10-02 05:23:27 UTC+8 重置，您也可以切换其他模型继续使用。',
+}
+
+function ok(): WorkBuddyChatResult {
+  return { ok: true, response: new Response('data: [DONE]\n\n', { status: 200 }) }
+}
+
+describe('pool failover: retrying a failed chat on another account', () => {
+  it('retries against the next account and streams the answer it gives', async () => {
+    const other = credentialFor('other')
+    const seen: string[] = []
+    shim = mount({
+      others: [other],
+      chatStream: async credential => {
+        seen.push(credential.uin ?? '')
+        // The selected account is limited; the fallback serves the request.
+        return seen.length === 1 ? RATE_LIMITED : ok()
+      },
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(seen).toEqual(['selected', 'other'])
+    // Served, not refused: the client sees a normal stream.
+    expect(response.status).toBe(200)
+    expect(response.body).toContain('[DONE]')
+    expect(attemptsOf()).toEqual([SELECTED_ID, workbuddyAccountId(other)])
+  })
+
+  it('does NOT retry a failure the request itself caused', async () => {
+    // A 400 means the BODY was rejected. Every account answers the same way, so
+    // walking the pool would burn N round trips to reach the same error.
+    const other = credentialFor('other')
+    let calls = 0
+    shim = mount({
+      others: [other],
+      chatStream: async () => {
+        calls += 1
+        return { ok: false, status: 400, kind: 'client', message: 'bad request' }
+      },
+      failover: async () => other,
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(calls).toBe(1)
+    expect(response.status).toBe(400)
+  })
+
+  it('retries each of the per-account failure classes', async () => {
+    // Rate limit, exhausted credits, a dead session and a gateway error all
+    // describe ONE account's state, so another may well survive them.
+    for (const kind of ['soft_rate', 'hard_credit', 'session_dead', 'server', 'not_found'] as const) {
+      const other = credentialFor(`other-${kind}`)
+      const seen: string[] = []
+      shim = mount({
+        others: [other],
+        chatStream: async credential => {
+          seen.push(credential.uin ?? '')
+          return seen.length === 1 ? { ok: false, status: 429, kind, message: 'nope' } : ok()
+        },
+        failover: async () => other,
+      })
+      await shim.ready
+      const response = await chat(shim)
+      expect(seen, `kind=${kind} should have failed over`).toEqual(['selected', `other-${kind}`])
+      expect(response.status).toBe(200)
+      await shim.close()
+      shim = undefined
+    }
+  })
+
+  it('reports the failure unchanged when the pool offers nobody else', async () => {
+    shim = mount({
+      chatStream: async () => RATE_LIMITED,
+      failover: async () => undefined,
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    // 429 on the wire, with the upstream's own words — including the reset time,
+    // which is what makes the error actionable. A failover that swallowed it for
+    // a generic message would lose the only useful part.
+    expect(response.status).toBe(429)
+    const parsed = JSON.parse(response.body) as { error?: { message?: string }, message?: string }
+    const text = JSON.stringify(parsed)
+    expect(text).toContain('2026-10-02 05:23:27')
+    // One attempt only: no candidates means no extra round trips.
+    expect(attemptsOf()).toHaveLength(1)
+  })
+
+  it('says how many accounts were tried when the whole pool fails', async () => {
+    const first = credentialFor('first')
+    const second = credentialFor('second')
+    const queue = [first, second]
+    shim = mount({
+      others: [first, second],
+      chatStream: async () => RATE_LIMITED,
+      failover: async tried => queue.find(c => !tried.includes(workbuddyAccountId(c))),
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(response.status).toBe(429)
+    // Without the count, a pool that failed over and still lost is
+    // indistinguishable from the single account the user selected failing.
+    expect(response.body).toContain('after trying 3 accounts')
+    expect(attemptsOf()).toHaveLength(3)
+  })
+
+  it('does not retry the same account twice when the pool keeps offering it', async () => {
+    // A policy bug (or a pool whose membership changed mid-request) must not
+    // turn into an unbounded loop: the tried list is the loop's only brake.
+    const other = credentialFor('other')
+    const seen: string[] = []
+    shim = mount({
+      others: [other],
+      chatStream: async credential => {
+        seen.push(credential.uin ?? '')
+        return RATE_LIMITED
+      },
+      // Always answers with the SAME account, whatever it was asked.
+      failover: async () => other,
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(response.status).toBe(429)
+    // The shim stops when the policy returns an account it already tried for
+    // this request, rather than re-sending forever.
+    expect(seen.length).toBeLessThanOrEqual(2)
+    expect(new Set(seen).size).toBe(seen.length)
+  })
+
+  it('stops retrying once the client has gone away', async () => {
+    // Retrying on behalf of a hung-up client spends another account's quota to
+    // fill a socket nobody is reading. The shim learns about the hang-up from
+    // the request's `close` event, so the first attempt WAITS for it before
+    // failing — otherwise the test races the event loop and proves nothing.
+    const other = credentialFor('other')
+    let calls = 0
+    let release: () => void = () => {}
+    const gone = new Promise<void>(resolve => { release = resolve })
+    shim = mount({
+      others: [other],
+      chatStream: async () => {
+        calls += 1
+        await gone
+        return RATE_LIMITED
+      },
+      failover: async () => other,
+    })
+    await shim.ready
+
+    const url = new URL(shim.baseUrl())
+    const { connect } = await import('node:net')
+    const socket = connect(Number(url.port), url.hostname)
+    await new Promise<void>(resolve => socket.once('connect', () => resolve()))
+    const payload = JSON.stringify({ messages: [] })
+    socket.write(
+      'POST /v1/chat/completions HTTP/1.1\r\n'
+      + `Host: ${url.hostname}:${url.port}\r\n`
+      + 'Content-Type: application/json\r\n'
+      + `Authorization: Bearer ${shim.token()}\r\n`
+      + `Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`,
+    )
+    // Hang up, as a user closing the panel does.
+    socket.destroy()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // Now let the first attempt fail: the close event has already landed, so
+    // the retry guard sees it.
+    release()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(calls).toBe(1)
+  })
+
+  it('names the failure class it is retrying, so the log is diagnosable', async () => {
+    const other = credentialFor('other')
+    const warn = vi.fn()
+    shim = mount({
+      others: [other],
+      logger: { warn, error: vi.fn() },
+      chatStream: async credential => (credential.uin === 'selected' ? RATE_LIMITED : ok()),
+      failover: async () => other,
+    })
+    await shim.ready
+    await chat(shim)
+    expect(warn).toHaveBeenCalled()
+    expect(String(warn.mock.calls[0]?.[0])).toContain('soft_rate')
+  })
+
+  it('reads the selection exactly once per request, however many retries it makes', async () => {
+    // Failover borrows a credential for ONE request. The selection is what the
+    // NEXT request and the card read, and a retry that re-resolved it (or, worse,
+    // re-resolved it after another retry moved something) is how "the dropdown
+    // says A but B is billed" starts. One resolution, one request.
+    const other = credentialFor('other')
+    const resolve = vi.fn(async () => SELECTED)
+    const store = { resolve } as unknown as WorkBuddyCredentialStore
+    const sent: string[] = []
+    shim = createWorkBuddyShim({
+      store,
+      client: {
+        chatStream: async (credential: WorkBuddyCredential) => {
+          sent.push(credential.uin ?? '')
+          return credential.uin === 'selected' ? RATE_LIMITED : ok()
+        },
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      failoverAccount: async () => other,
+    })
+    await shim.ready
+    await chat(shim)
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+    // Both accounts served an attempt, and the selection was read only once —
+    // for the first of them.
+    expect(sent).toEqual(['selected', 'other'])
+  })
+})
+
+/**
+ * The candidate RULE, exercised through the real ranking the policy uses.
+ *
+ * `failoverAccountFor` iterates `rankPool(...)` and skips rows carrying
+ * `excludedBy`. That makes the pool's measurement semantics the feature's
+ * semantics, which is exactly what the product asks for — so it is pinned here
+ * rather than left implicit in two files agreeing by accident:
+ *
+ *   - **never tested** ⇒ a candidate. A freshly discovered account must not be
+ *     invisible, or a brand-new pool could not fail over at all;
+ *   - **tested and rate-limited** ⇒ excluded while the stated cooldown runs,
+ *     and back to being a candidate the moment it expires.
+ */
+describe('which pool members failover may try', () => {
+  const NOW = 1_700_000_000_000
+
+  it('includes an account that has never been tested', () => {
+    const ranked = rankPool([{ account: { id: 'untested', accountName: 'Untested' } }], NOW)
+    expect(ranked[0]?.excludedBy).toBeUndefined()
+  })
+
+  it('excludes a rate-limited account until its reset time, then includes it again', () => {
+    const member = {
+      account: { id: 'limited', accountName: 'Limited' },
+      probe: { outcome: 'rate-limited' as const, atMs: NOW, retryAtMs: NOW + 60_000 },
+    }
+    expect(rankPool([member], NOW)[0]?.excludedBy).toBe('rate-limited')
+    // The cooldown elapsed: the same stored measurement is no longer a reason to
+    // skip it, because the account is usable again without another test.
+    expect(rankPool([member], NOW + 60_001)[0]?.excludedBy).toBeUndefined()
+  })
+
+  it('excludes an account whose credential the upstream rejected', () => {
+    const ranked = rankPool([{
+      account: { id: 'dead', accountName: 'Dead' },
+      probe: { outcome: 'credential-rejected' as const, atMs: NOW },
+    }], NOW)
+    expect(ranked[0]?.excludedBy).toBe('credential-rejected')
+  })
+})

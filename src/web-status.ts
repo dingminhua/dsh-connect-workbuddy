@@ -159,8 +159,6 @@ export interface WorkBuddyPoolDeps {
   /** The region's stored preferences, resolved from the Host config. */
   preferences(region: WorkBuddyRegion): {
     enabled: boolean
-    rotateByCredits: boolean
-    autoTestIntervalMinutes: number
     targetModelId: string
     memberAccountIds: readonly string[]
   }
@@ -177,20 +175,14 @@ export interface WorkBuddyPoolDeps {
    */
   effectiveMemberAccountIds?(region: WorkBuddyRegion): Promise<readonly string[]>
   /**
-   * The account rotation last redirected billing to, when it did.
-   *
-   * Reported so the card can log a switch that happened on the Host (possibly
-   * on a timer) — without it, "every switch leaves a record" is a promise the
-   * browser half has no way to keep.
-   */
-  rotatedToAccountId?(region: WorkBuddyRegion): Promise<string | undefined>
-  /**
    * Today's check-in state per account id.
    *
    * Read for the pool's table so the card can state it. Absent (or a missing
    * entry) means "not read", which the card renders as unknown rather than as a
    * definite "not checked in" — a claim that would contradict the check-in the
    * user just performed.
+   *
+   * Only the CN region has a check-in to report; see {@link checkinSupported}.
    */
   checkedInToday?(region: WorkBuddyRegion): Promise<Readonly<Record<string, boolean>>>
   /**
@@ -200,6 +192,16 @@ export interface WorkBuddyPoolDeps {
   otherAccounts?(region: WorkBuddyRegion): Promise<readonly { id: string, accountName: string }[]>
   /** The account currently billing traffic for the region, when known. */
   currentAccountId?(region: WorkBuddyRegion): Promise<string | undefined>
+  /**
+   * Whether this region offers the daily check-in action at all.
+   *
+   * The CN app rewards a daily check-in; the international region is not offered
+   * one here, so its card must not show the button and its route must refuse the
+   * action. A capability rather than a region name compared in the browser: the
+   * policy belongs in the Host, and the card should not have to know which
+   * regions happen to have the feature.
+   */
+  checkinSupported?(region: WorkBuddyRegion): boolean
   /**
    * Claim the daily reward for every account of one region.
    *
@@ -578,7 +580,6 @@ async function workBuddyWebPool(
   const others = await pool.otherAccounts?.(region) ?? []
   // Best-effort: a failure here leaves the column UNKNOWN, which is honest,
   // rather than asserting a state nobody read.
-  const rotatedTo = await pool.rotatedToAccountId?.(region).catch(() => undefined)
   const checkedIn: Readonly<Record<string, boolean>> =
     await pool.checkedInToday?.(region).catch(() => ({} as Record<string, boolean>))
     ?? {} as Record<string, boolean>
@@ -625,8 +626,10 @@ async function workBuddyWebPool(
 
   return {
     enabled: preferences.enabled,
-    rotateByCredits: preferences.rotateByCredits,
-    autoTestIntervalMinutes: preferences.autoTestIntervalMinutes,
+    // Reported so the card can decide whether to render the check-in action at
+    // all. The route still refuses the action for an unsupported region, so a
+    // stale page cannot reach it by calling the endpoint directly.
+    checkinSupported: pool.checkinSupported?.(region) === true,
     ...target.modelId === undefined ? {} : { targetModelId: target.modelId },
     ...target.staleModelId === undefined ? {} : { staleTargetModelId: target.staleModelId },
     targetModelSource: target.source,
@@ -643,7 +646,6 @@ async function workBuddyWebPool(
       accounts.map(account => account.accountId),
       new Set(preferences.memberAccountIds),
     ),
-    ...rotatedTo === undefined ? {} : { rotatedToAccountId: rotatedTo },
     accounts,
     // The same displayed roster the model table uses, so the pool's manual
     // picker can never offer a model id the rest of the card does not know —
@@ -858,6 +860,17 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             })
           }
           if (action === 'checkin') {
+            // Refuse BEFORE reaching the client: a region without a daily
+            // check-in must not spend a request learning that, and the card that
+            // hides the button is the UI half of the same rule. Reported as a
+            // capability refusal rather than a failure, so a caller can tell
+            // "not offered here" from "offered, but it broke".
+            if (pool.checkinSupported?.(region) !== true) {
+              return json(res, 409, {
+                reason: 'checkin-unsupported',
+                error: 'this region does not offer a daily check-in',
+              })
+            }
             if (pool.checkin === undefined) {
               return json(res, 503, { reason: 'pool-unavailable', error: 'pool check-in unavailable' })
             }

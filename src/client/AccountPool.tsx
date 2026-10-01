@@ -7,15 +7,15 @@
  * 改动：把「账号池」这一整块独立成模块。原因是它有三条别的区块没有的规则，
  *   放在卡片里会被淹没：
  *
- *   1. **两项互斥。** 自动轮换开启时，上方卡片原有的手动账号下拉必须停用 ——
- *      否则会出现"下拉显示 A、实际计费 B"。本模块通过 `onRotationChange`
- *      把这个状态交回卡片，由卡片去禁用那个下拉。
- *   2. **两种状态、两套写入。** 四项偏好走草稿 + 保存（保存成功才丢弃草稿）；
- *      测试结果与轮换是**运行时事实**，由 Host 自动落盘，绝不经这个保存按钮。
- *      把它们混在一起，一次「保存」就会用旧草稿覆盖刚测出的结果。
- *   3. **免费模型可能不存在。** 国内版静态目录不带倍率，所以「自动挑免费模型」
+ *   1. **一种状态、两套写入。** 偏好（启用、目标模型、成员）走草稿 + 保存
+ *      （保存成功才丢弃草稿）；**测试结果**是运行时事实，由 Host 在批量测试后
+ *      自动落盘，绝不经这个保存按钮。把它们混在一起，一次「保存」就会用旧草稿
+ *      覆盖刚测出的结果。
+ *   2. **免费模型可能不存在。** 国内版静态目录不带倍率，所以「自动挑免费模型」
  *      在国内版首次刷新前会挑到空。此时**不回退到收费模型**，而是如实说明并
  *      停用测试按钮。
+ *   3. **签到只在有它的区域出现。** 海外区域没有签到，按钮与那一列都不渲染；
+ *      Host 侧同样拒绝该动作，免得留下一个界面看不见、接口却还能打的死角。
  *
  * @module dsh-connect-workbuddy/client/AccountPool
  */
@@ -40,11 +40,7 @@ import {
   draftBaseFor,
   effectiveMemberIds,
   ghostMemberIds,
-  intervalEditOnInput,
-  POOL_INTERVAL_MAX,
-  POOL_INTERVAL_MIN,
   poolFailureText,
-  rotationLockState,
   usableMemberIds,
 } from './pool-state.ts'
 import { isFileContentionWriteError, writePoolPreferences } from './account-selection.ts'
@@ -60,8 +56,6 @@ interface PoolLogEntry {
 /** The preferences the card edits as a draft. */
 export interface PoolPreferences {
   enabled: boolean
-  rotateByCredits: boolean
-  autoTestIntervalMinutes: number
   targetModelId: string
   /**
    * The account ids checked into this pool.
@@ -93,7 +87,7 @@ export interface AccountPoolProps {
   /**
    * Reports whether THIS section's save is in flight, so the model list's save
    * can be held off for the same reason. Fired on change and on unmount with
-   * `false`, mirroring {@link onRotationChange}.
+   * `false`.
    */
   onBusyChange?: (busy: boolean) => void
   /**
@@ -121,13 +115,6 @@ export interface AccountPoolProps {
    * own that fetch, so it asks the card for it, exactly as a save does.
    */
   onRefresh?: () => void
-  /**
-   * Reports the committed rotation state so the card can disable its own manual
-   * account dropdown. Fired on every render where it changes, including on
-   * unmount (with `false`) so a card closed mid-conflict does not leave the
-   * dropdown stuck.
-   */
-  onRotationChange?: (locked: boolean) => void
 }
 
 /** How many activity lines are kept; the oldest are dropped. */
@@ -139,20 +126,10 @@ const LOG_LIMIT = 60
  * The card unmounts its whole body when collapsed (`WorkBuddyCard.tsx:832`
  * renders it only while `open`), and again whenever a poll briefly leaves the
  * region unsigned-in. Component state therefore lost the entire log on every
- * collapse, and — because the rotation bookkeeping reset with it — wrote a
- * PHANTOM "switched from — to X" record on the next open. Holding both here
- * keeps the history across remounts and across tab switches.
+ * collapse. Holding it here keeps the history across remounts and across tab
+ * switches.
  */
 const logStore = new Map<WorkBuddyWebRegion, readonly PoolLogEntry[]>()
-
-/** Per-region rotation bookkeeping, for the same reason as {@link logStore}. */
-interface RotationMemory {
-  /** The account rotation last moved to; `undefined` while it is not rotating. */
-  last: string | undefined
-  /** Whether this region's first observation has been absorbed. */
-  primed: boolean
-}
-const rotationMemory = new Map<WorkBuddyWebRegion, RotationMemory>()
 
 /**
  * Whether two id sets are equal, ignoring order.
@@ -259,7 +236,7 @@ function exclusionText(t: Translate, account: WorkBuddyWebPoolAccount): string |
  * section implying the feature exists.
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
-  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRotationChange } = props
+  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -271,22 +248,10 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   // shown rather than mixing them (the card promised they are independent).
   useEffect(() => {
     setLog(logStore.get(region) ?? [])
-    // The half-typed interval belongs to the tab it was typed on.
-    setIntervalText(undefined)
   }, [region])
   // Which region the drafts belong to. Switching tabs must not carry one
   // region's unsaved edits onto the other, and the two pools are independent.
   const [draftRegion, setDraftRegion] = useState<WorkBuddyWebRegion | undefined>(undefined)
-  /**
-   * The interval field's raw text while it is being typed.
-   *
-   * `undefined` means "not editing" and the control renders the committed
-   * number. Keeping the in-progress string here is what makes the field
-   * typeable: clamping on every keystroke and writing the result straight back
-   * into the controlled `value` turned `120` into `520` and made an empty field
-   * snap to `5`. See `parseIntervalInput`.
-   */
-  const [intervalText, setIntervalText] = useState<string | undefined>(undefined)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -295,8 +260,6 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
 
   const saved: PoolPreferences = {
     enabled: pool?.enabled ?? false,
-    rotateByCredits: pool?.rotateByCredits ?? false,
-    autoTestIntervalMinutes: pool?.autoTestIntervalMinutes ?? 30,
     // Falls back to the STALE id, not to ''. When the saved model has left the
     // catalog the Host reports it as `staleTargetModelId` and omits
     // `targetModelId` (so an unguarded caller cannot test it). Reading that as
@@ -312,15 +275,11 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   const active: PoolPreferences = draftRegion === region && draft !== null ? draft : saved
   const dirty = draftRegion === region && draft !== null && (
     draft.enabled !== saved.enabled
-    || draft.rotateByCredits !== saved.rotateByCredits
-    || draft.autoTestIntervalMinutes !== saved.autoTestIntervalMinutes
     || draft.targetModelId !== saved.targetModelId
     // Order-insensitive: the user's clicks decide the set, not its ordering,
     // so re-checking the same accounts in a different order is not a change.
     || !sameIds(draft.memberAccountIds, saved.memberAccountIds)
   )
-
-  const current = pool?.accounts.find(account => account.current)
 
   /**
    * Membership that actually resolves to a local sign-in — what a batch runs on.
@@ -356,34 +315,9 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
    */
   const usableMemberSet = new Set(usableMemberIds(pool?.accounts ?? [], effectiveMembers, active.memberAccountIds))
   const usable = (pool?.accounts ?? []).filter(account => usableMemberSet.has(account.accountId))
-  /**
-   * Whether rotation currently owns this region's choice — read from the
-   * COMMITTED preferences, not the draft.
-   *
-   * The distinction is the whole point. The Host decides who is billed from the
-   * saved config, so a draft-based lock let one click of "turn off rotation"
-   * re-enable the manual dropdown and hide the conflict notice while the Host
-   * kept rotating — the user then picked an account, the card showed it as
-   * current, and a different account was billed. That is exactly the failure
-   * the lock exists to prevent.
-   *
-   * Reading the committed value means the dropdown stays disabled until the
-   * change is SAVED, which is honest: until then the Host really is still
-   * rotating. The conflict notice says so and offers to save.
-   */
-  const { locked: rotationLocked, unlockPending: rotationUnlockPending } =
-    rotationLockState(saved, active)
   // Membership edits also need the bound settings scope, because they are
   // saved through the same verified write path as the other preferences.
   const canEditPool = settingsScope !== undefined
-
-  // Report the lock upward so the card can disable its manual dropdown. Runs on
-  // unmount too, so closing the card clears the lock rather than stranding a
-  // disabled control on the next open.
-  useEffect(() => {
-    onRotationChange?.(rotationLocked)
-    return () => { onRotationChange?.(false) }
-  }, [onRotationChange, rotationLocked])
 
   // Report this section's save state so the sibling save can hold off: two
   // in-flight saves into one region slot can interleave and revert each other
@@ -400,70 +334,6 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       return next
     })
   }, [region])
-
-  /**
-   * Record a rotation the HOST performed.
-   *
-   * Rotation can happen on a timer with no card interaction, so the browser
-   * cannot infer it — the Host reports which account it moved to and this logs
-   * the transition. Without it "every switch is recorded" was a promise the UI
-   * had no way to keep.
-   */
-  /**
-   * Record rotation transitions the HOST performed.
-   *
-   * Rotation can happen on a timer with no card interaction, so the browser
-   * cannot infer it — the Host reports which account it moved to and this logs
-   * the change.
-   *
-   * Three defects are fixed here, all from keeping one `useRef` for a value
-   * that is per-region and long-lived:
-   *
-   *   1. **No phantom first record.** The ref used to start `undefined`, so the
-   *      first rotation the card ever SAW was reported as a fresh switch ("from
-   *      — to X") even when it had happened long before. The first observation
-   *      now PRIMES the ref instead of logging.
-   *   2. **Per-region state.** The card keeps ONE component instance across
-   *      tabs and only swaps the `region` prop, so a shared ref explained one
-   *      region's rotation with another region's account list — producing
-   *      records for switches that never happened. State is keyed by region.
-   *   3. **The stop event is logged.** Rotation ending (`undefined`) used to
-   *      return early AND leave the ref set, so "rotation stopped, back to your
-   *      own account" never appeared, and rotating to the SAME account again
-   *      was silently skipped.
-   */
-  const rotatedTo = pool?.rotatedToAccountId
-  useEffect(() => {
-    const memory = rotationMemory.get(region) ?? { last: undefined, primed: false }
-    const previous = memory.last
-    if (!memory.primed) {
-      // First sight of this region: adopt the current value silently, so an
-      // already-rotating pool is not reported as a switch that just happened.
-      rotationMemory.set(region, { last: rotatedTo, primed: true })
-      return
-    }
-    if (rotatedTo === previous) return
-    if (rotatedTo === undefined) {
-      // Rotation stopped. Clear `last` so a LATER switch to the same account is
-      // reported rather than mistaken for "no change".
-      rotationMemory.set(region, { last: undefined, primed: true })
-      if (previous !== undefined) {
-        appendLog(t('row.poolLogRotationStopped', {
-          // An account whose stored name is empty must render the placeholder,
-          // not its 24-hex id. `nameOf` returns '' for such an account, so the
-          // `||` fallback has to supply the label — falling back to `previous`
-          // put a raw identifier in front of the user.
-          from: nameOf(previous, pool) || t('row.accountUnnamed'),
-        }), 'info')
-      }
-      return
-    }
-    rotationMemory.set(region, { last: rotatedTo, primed: true })
-    appendLog(t('row.poolLogRotated', {
-      from: previous === undefined ? '—' : (nameOf(previous, pool) || t('row.accountUnnamed')),
-      to: nameOf(rotatedTo, pool) || t('row.accountUnnamed'),
-    }), 'info')
-  }, [appendLog, pool, region, rotatedTo, t])
 
   /**
    * The latest saved preferences, for callbacks that must not capture a stale
@@ -513,13 +383,10 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   const discard = useCallback((): void => {
     setDraft(null)
     setDraftRegion(undefined)
-    // Drop the in-progress text too: after a discard the control must show the
-    // committed number again, not whatever was half-typed before it.
-    setIntervalText(undefined)
     setSaveError(undefined)
   }, [])
 
-  /** Save the four preferences through the plugin's VERIFIED write path. */
+  /** Save the pool preferences through the plugin's VERIFIED write path. */
   const save = useCallback(async (): Promise<void> => {
     if (settingsScope === undefined || !dirty || draft === null) return
     setSaving(true)
@@ -591,31 +458,6 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       memberAccountIds: next ? (pool?.accounts ?? []).map(account => account.accountId) : [],
     }))
   }, [editDraft, pool])
-
-  /**
-   * The interval control's two halves, kept apart so the field is typeable.
-   *
-   * `onIntervalInput` records what the user typed and only folds a VALID value
-   * into the draft; `onIntervalCommit` (blur / Enter) forces the text back to
-   * the committed number, clamping an out-of-range or non-numeric entry exactly
-   * once, after the user is done. Committing on every keystroke is what made
-   * `120` land as `520`.
-   */
-  const onIntervalInput = useCallback((raw: string): void => {
-    // The displayed text and the committed number come from ONE rule
-    // (`intervalEditOnInput`), so the field cannot clamp on every keystroke: the
-    // text it renders is the raw entry, and only a parseable integer is folded
-    // into the draft. Re-serializing the parsed number into `text` is the defect
-    // that turned `120` into `520`.
-    const { text, commit } = intervalEditOnInput(raw)
-    setIntervalText(text)
-    if (commit === undefined) return
-    editDraft(current => ({ ...current, autoTestIntervalMinutes: commit }))
-  }, [editDraft])
-
-  const onIntervalCommit = useCallback((): void => {
-    setIntervalText(undefined)
-  }, [])
 
   /** Run one batch action against the Host. */
   const runAction = useCallback(async (action: 'checkin' | 'test'): Promise<void> => {
@@ -745,6 +587,18 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
         ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' })
         : t('row.poolTargetNone')
 
+  /**
+   * The account the next request will start from.
+   *
+   * Read from the Host's `current` flag rather than re-derived here: the Host
+   * owns the selection, and a browser-side guess is how the card would start
+   * disagreeing with the account actually billed.
+   */
+  const currentAccount = pool.accounts.find(account => account.current)
+  const currentName = currentAccount === undefined
+    ? undefined
+    : currentAccount.accountName === '' ? t('row.accountUnnamed') : currentAccount.accountName
+
   return h('section', { className: 'dsm-workbuddy-pool' },
     h('div', { className: 'dsm-workbuddy-pool-head' },
       h('div', null,
@@ -761,22 +615,36 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
                 : t('row.poolTargetAuto')),
         })),
       ),
-      rotationLocked && current !== undefined
-        ? h('span', { className: 'dsm-workbuddy-pool-badge' }, t('row.poolRotating'))
-        : null,
+      // Which account is serving, stated in the header rather than left to a row
+      // tint the user has to go looking for. The pool's whole job is deciding who
+      // gets billed, so "who is it right now" belongs where the eye lands first —
+      // and once failover exists it is the question a reader actually has.
+      currentName === undefined
+        ? null
+        : h('div', { className: 'dsm-workbuddy-pool-current' },
+            h('span', { className: 'dsm-workbuddy-pool-current-badge' },
+              t('row.poolCurrentHeader', { account: currentName })),
+            h('span', { className: 'dsm-workbuddy-pool-current-hint' },
+              t('row.poolCurrentHint')),
+          ),
     ),
 
-    // The two batch buttons. Testing is disabled when no free model resolved,
-    // so a press cannot silently bill a paid model.
+    // The batch buttons. Testing is disabled when no free model resolved, so a
+    // press cannot silently bill a paid model. The check-in button exists only
+    // where the region HAS a check-in: the international region has none, and a
+    // button whose only outcome is a refusal is worse than no button.
     h('div', { className: 'dsm-workbuddy-pool-actions' },
-      h('button', {
-        type: 'button',
-        className: 'dsm-btn dsm-btn-primary',
-        // Disabled with an EMPTY pool too: the buttons act on checked accounts
-        // only, and an enabled-with-nothing-checked pool has nothing to run.
-        disabled: busy !== undefined || !active.enabled || effectiveMembers.length === 0,
-        onClick: () => { void runAction('checkin') },
-      }, busy === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll')),
+      pool.checkinSupported
+        ? h('button', {
+            type: 'button',
+            className: 'dsm-btn dsm-btn-primary',
+            // Disabled with an EMPTY pool too: the buttons act on checked
+            // accounts only, and an enabled-with-nothing-checked pool has
+            // nothing to run.
+            disabled: busy !== undefined || !active.enabled || effectiveMembers.length === 0,
+            onClick: () => { void runAction('checkin') },
+          }, busy === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll'))
+        : null,
       h('button', {
         type: 'button',
         className: 'dsm-btn dsm-btn-outline',
@@ -813,8 +681,10 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       ? h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolEnabledHint'))
       : null,
 
-    // The current billing account: the ranking's answer, or the manual choice.
-    rotationLocked && usable.length === 0
+    // Failover needs somewhere to go. With every member measured unusable (or
+    // none checked at all) a failure is reported instead of retried, so say so
+    // rather than leaving the user to infer it from a failed request.
+    active.enabled && usable.length === 0
       ? h('p', { className: 'dsm-workbuddy-pool-warn', role: 'status' },
           `${t('row.poolNoCandidate')} ${t('row.poolNoCandidateHint')}`)
       : null,
@@ -852,13 +722,14 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           h('span', null, t('row.poolColumnAccount')),
           h('span', null, t('row.poolColumnCredits')),
           h('span', null, t('row.poolColumnProbe')),
-          h('span', null, t('row.poolColumnCheckin')),
+          pool.checkinSupported ? h('span', null, t('row.poolColumnCheckin')) : null,
         ),
         ...pool.accounts.map(account => renderAccountRow({
           t,
           account,
           checked: active.memberAccountIds.includes(account.accountId),
           canEdit: canEditPool,
+          checkinSupported: pool.checkinSupported,
           onToggle: next => toggleMember(account.accountId, next),
         })),
       ),
@@ -905,11 +776,8 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
 
     renderSettings({
       t, pool, active, dirty, saving, siblingBusy: siblingBusy === true,
-      rotationLocked, rotationUnlockPending, saveError, settingsScope,
-      intervalText,
-      onIntervalInput, onIntervalCommit,
+      saveError, settingsScope,
       onEdit: editDraft, onSave: () => { void save() }, onDiscard: discard,
-      onUnlock: () => { editDraft(current => ({ ...current, rotateByCredits: false })) },
       appendLog,
     }),
 
@@ -931,9 +799,11 @@ function renderAccountRow(input: {
   account: WorkBuddyWebPoolAccount
   checked: boolean
   canEdit: boolean
+  /** Whether this region has a check-in at all; the column is omitted when not. */
+  checkinSupported: boolean
   onToggle: (next: boolean) => void
 }): ReturnType<typeof h> {
-  const { t, account, checked, canEdit, onToggle } = input
+  const { t, account, checked, canEdit, checkinSupported, onToggle } = input
   const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
   const excluded = exclusionText(t, account)
   const probe = account.probe
@@ -969,6 +839,12 @@ function renderAccountRow(input: {
       }),
       h('span', { className: 'dsm-workbuddy-pool-account-name' },
         h('b', null, name),
+        // Which account is serving, in WORDS. The row tint alone is a 7%-opacity
+        // background: enough to spot when you already know to look, and no help
+        // at all when the question is "which one is it?".
+        account.current
+          ? h('span', { className: 'dsm-workbuddy-pool-current-tag' }, t('row.poolCurrentBadge'))
+          : null,
         // Membership is stated on every row, because an unchecked account's
         // empty credit/probe columns are otherwise indistinguishable from a
         // checked account that simply has no data yet.
@@ -995,17 +871,21 @@ function renderAccountRow(input: {
               t('row.poolCreditNearest', { at: formatShort(account.nearestExpiryMs) })),
     ),
     h('span', { className: 'dsm-workbuddy-pool-probe' }, probeLine),
-    h('span', { className: 'dsm-workbuddy-pool-checkin' },
-      // Three states, not two: an unread account says nothing rather than
-      // claiming "not checked in", which would contradict a check-in the user
-      // just watched succeed.
-      account.checkedInToday === undefined
-        ? h('span', { className: 'dsm-workbuddy-pool-unknown', title: t('row.poolNeverTested') },
-            t('row.poolCheckinUnknown'))
-        : account.checkedInToday
-          ? h('span', { className: 'dsm-workbuddy-pool-checked' }, t('row.poolCheckedIn'))
-          : t('row.poolNotCheckedIn'),
-    ),
+    checkinSupported
+      ? h('span', { className: 'dsm-workbuddy-pool-checkin' },
+          // Three states, not two: an unread account says nothing rather than
+          // claiming "not checked in", which would contradict a check-in the user
+          // just watched succeed.
+          account.checkedInToday === undefined
+            ? h('span', { className: 'dsm-workbuddy-pool-unknown', title: t('row.poolNeverTested') },
+                t('row.poolCheckinUnknown'))
+            : account.checkedInToday
+              ? h('span', { className: 'dsm-workbuddy-pool-checked' }, t('row.poolCheckedIn'))
+              : t('row.poolNotCheckedIn'),
+        )
+      // Absent entirely where the region has no check-in: an empty column would
+      // still imply the state exists and is merely unknown.
+      : null,
   )
 }
 
@@ -1016,10 +896,6 @@ function renderSettings(input: {
   active: PoolPreferences
   dirty: boolean
   saving: boolean
-  /** Rotation owns the region's choice, per the COMMITTED preferences. */
-  rotationLocked: boolean
-  /** Rotation is drafted off but not saved, so the lock still applies. */
-  rotationUnlockPending: boolean
   /**
    * The card's other save is in flight. Both sections write into one region
    * slot, and the Host merges per-region — concurrent saves could interleave
@@ -1028,20 +904,15 @@ function renderSettings(input: {
   siblingBusy: boolean
   saveError: string | undefined
   settingsScope: WorkBuddyAccountScope | undefined
-  /** The half-typed interval text, or undefined when the field is not being edited. */
-  intervalText: string | undefined
-  onIntervalInput: (raw: string) => void
-  onIntervalCommit: () => void
   onEdit: (edit: (current: PoolPreferences) => PoolPreferences) => void
   onSave: () => void
   onDiscard: () => void
-  onUnlock: () => void
   appendLog: (text: string, tone: PoolLogEntry['tone']) => void
 }): ReturnType<typeof h> {
   const {
-    t, pool, active, dirty, saving, siblingBusy, rotationLocked, rotationUnlockPending,
-    saveError, settingsScope, intervalText,
-    onEdit, onSave, onDiscard, onUnlock, onIntervalInput, onIntervalCommit,
+    t, pool, active, dirty, saving, siblingBusy,
+    saveError, settingsScope,
+    onEdit, onSave, onDiscard,
   } = input
   const canEdit = settingsScope !== undefined
 
@@ -1082,41 +953,6 @@ function renderSettings(input: {
         t('row.poolEnabledHint'),
         active.enabled,
         next => onEdit(current => ({ ...current, enabled: next })),
-      ),
-      toggle(
-        t('row.poolRotate'),
-        t('row.poolRotateHint'),
-        active.rotateByCredits,
-        next => onEdit(current => ({ ...current, rotateByCredits: next })),
-        !active.enabled,
-      ),
-      h('div', { className: 'dsm-workbuddy-pool-set' },
-        h('span', { className: 'dsm-workbuddy-pool-set-copy' },
-          h('b', null, t('row.poolInterval')),
-          h('span', null, t('row.poolIntervalHint')),
-        ),
-        h('span', { className: 'dsm-workbuddy-pool-set-ctl' },
-          h('input', {
-            className: 'dsm-workbuddy-pool-num',
-            type: 'number',
-            min: POOL_INTERVAL_MIN,
-            max: POOL_INTERVAL_MAX,
-            step: 5,
-            // While the user is typing, show EXACTLY what they typed — including
-            // an empty field or a value outside 5..1440. Clamping here is what
-            // made `120` become `520`; the clamp now happens once, on commit.
-            value: intervalText ?? String(active.autoTestIntervalMinutes),
-            disabled: !active.enabled || !canEdit,
-            onChange: (event: { currentTarget: { value: string } }) => {
-              onIntervalInput(event.currentTarget.value)
-            },
-            onBlur: () => onIntervalCommit(),
-            onKeyDown: (event: { key: string }) => {
-              if (event.key === 'Enter') onIntervalCommit()
-            },
-          }),
-          h('span', { className: 'dsm-workbuddy-pool-hint' }, t('row.poolIntervalUnit')),
-        ),
       ),
       h('div', { className: 'dsm-workbuddy-pool-set' },
         h('span', { className: 'dsm-workbuddy-pool-set-copy' },
@@ -1179,29 +1015,6 @@ function renderSettings(input: {
       ? null
       : h('p', { className: 'dsm-workbuddy-pool-error', role: 'alert' },
           t('row.poolSaveFailed', { message: saveError })),
-
-    // The conflict notice, rendered where the user meets it: right under the
-    // controls it explains. It carries its own unlock button so the fix is one
-    // click away rather than requiring the user to find the switch.
-    rotationLocked
-      ? h('div', { className: 'dsm-workbuddy-pool-conflict' },
-          h('span', { className: 'dsm-workbuddy-pool-conflict-main' },
-            h('b', null, t('row.poolManualLocked')),
-            h('span', null, t('row.poolManualLockedHint')),
-          ),
-          // Drafted-off but unsaved: say so, or the still-disabled dropdown
-          // reads as "the button did nothing".
-          rotationUnlockPending
-            ? h('span', { className: 'dsm-workbuddy-pool-pending' }, t('row.poolUnlockPending'))
-            : null,
-          h('button', {
-            type: 'button',
-            className: 'dsm-btn dsm-btn-outline',
-            disabled: !canEdit || rotationUnlockPending,
-            onClick: onUnlock,
-          }, rotationUnlockPending ? t('row.poolUnlockSaved') : t('row.poolManualUnlock')),
-        )
-      : null,
   )
 }
 

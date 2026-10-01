@@ -56,8 +56,7 @@ function usageOf(overrides: Record<string, unknown> = {}): Record<string, unknow
     },
     pool: {
       enabled: true,
-      rotateByCredits: false,
-      autoTestIntervalMinutes: 30,
+      checkinSupported: true,
       targetModelSource: 'free',
       targetModelId: 'free-1',
       staleTargetModelId: '',
@@ -173,10 +172,10 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
     await m.settle()
     expect(calls.length).toBeGreaterThan(0)
     expect(m.text()).toContain('row.signedIn')
-    // Edit the pool interval so the draft is dirty.
-    const input = m.container.querySelector('input.dsm-workbuddy-pool-num') as HTMLInputElement | null
-    if (input === null) throw new Error('no pool interval input rendered')
-    await m.type('45')
+    // Edit the pool membership so the draft is dirty.
+    const box = m.container.querySelector<HTMLInputElement>('.dsm-workbuddy-pool-table input[type=checkbox]')
+    if (box === null) throw new Error('no pool member checkbox rendered')
+    await m.click(box)
     expect(m.text()).toContain('row.poolSaveDirty')
     // The save writes through the Host endpoint (stubbed to succeed) but the
     // re-read then fails: `refreshUsage` resolves `undefined` → `onSaved`

@@ -29,7 +29,7 @@ A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bund
 
   **Two things to know.** ① **It really does spend credits** — one measured probe reported `credit` 0.02 (a refused one 429s and costs almost nothing). So testing is **manual and per-model only**: there is deliberately no “Test selected” batch button, because sweeping the whole list from one click is an uncontrolled spend — and the Host enforces the same rule, **accepting a single model only** and refusing multi-model requests. ② The upstream advertises a 1M context yet throttles far below it, and the plugin advertises up to 200K to DSH, so DSH compacts very late — hitting the throttle in a long session follows directly from that.
 - **Local account switching** — discovers the multiple sign-in credentials WorkBuddy's desktop app leaves behind and lets you switch per region. Tokens are never written to DSH settings.
-- **Account pool: batch actions across several accounts, plus credit-aware rotation** — tick the accounts you want into a pool and you get **one-click check-in for every account**, **one-click testing of every account against a model you choose** (defaulting to the region's zero-multiplier free model), and — when you want it — **rotation by credits**, letting the plugin pick which pool member gets billed. Membership starts **empty and is an explicit opt-in**: "signed in on this machine" is not the same as "spend this account's credits and claim its rewards". Rotation and manual selection are **mutually exclusive** and the card says why, in place; rotation only decides who serves at runtime and **never writes back your manual choice**, so switching it off restores that choice verbatim. Testing reuses the model rows' real-volume probe, so it **does cost real credits**; **automatic check-in is deliberately not offered** — a check-in claims real rewards, so it only ever runs when you press the button. See [Account pool](#account-pool).
+- **Account pool: batch actions across several accounts, plus automatic failover** — tick the accounts you want into a pool and you get **one-click check-in for every account**, **one-click testing of every account against a model you choose** (defaulting to the region's zero-multiplier free model), and with **Enable the account pool** switched on, **automatic failover**: a request that fails upstream is retried against the pool's other usable accounts, in order, until one serves it or none is left. Membership starts **empty and is an explicit opt-in**: "signed in on this machine" is not the same as "spend this account's credits and claim its rewards". Failover **never changes your selection** — your account always goes first and the next request starts from it — so manual selection keeps applying and the card keeps showing your own account. Testing reuses the model rows' real-volume probe, so it **does cost real credits**; **automatic check-in is deliberately not offered** — a check-in claims real rewards, so it only ever runs when you press the button. See [Account pool](#account-pool).
 - **Actionable advice when a credential is refused** — when the upstream rejects the selected account's token, the plugin actually **probes** the other local sign-ins: if one still answers, it tells you to switch to it (with a one-click switch) instead of vaguely asking you to sign in again — re-authenticating fixes nothing while you are pinned to a revoked backup. Only when there is genuinely no other local account does it ask you to sign in again.
 - **Read-only credits overview** — remaining credit aggregated per package, plus each model's credit multiplier. Queries consume no credits.
 - **Multi-candidate credential paths** — probes the platform defaults for macOS / Windows / Linux in turn, overridable by environment variable or directly in the card. **When nothing is found, the card lists which paths were probed and why each one failed**: five distinct reasons (absent / unreadable / no usable token / encrypted with no key available / belongs to the other region), so the easiest case to misdiagnose — signed in, but the desktop app is not present — says the app must be there instead of telling you to sign in again. The **belongs to the other region** reason is different in kind: that sign-in is real and usable, it is simply filed under the other tab, so the card states the fix outright — switch tabs, no need to sign in again. The list says it once: the paragraph states the conclusion, the collapsed list supplies the per-path detail, and the two never repeat each other.
@@ -59,12 +59,12 @@ Credentials are read (read-only) from the WorkBuddy desktop app's own auth file.
 ## Account pool
 
 <p align="center">
-  <img src="docs/assets/dsh-connect-workbuddy-account-pool.png" width="900" alt="dsh-connect-workbuddy account pool: check-in all, test all, membership selection and credit-aware rotation" />
+  <img src="docs/assets/dsh-connect-workbuddy-account-pool.png" width="900" alt="dsh-connect-workbuddy account pool: check-in all, test all, membership selection and automatic failover" />
 </p>
 
-A machine usually carries more than one WorkBuddy sign-in. The **account pool** turns that into a single click: tick the accounts you want into the pool, then press **Check in all accounts** or **Test all accounts**; open **rotation by credits** when you want the plugin to choose the billed account for you.
+A machine usually carries more than one WorkBuddy sign-in. The **account pool** turns that into a single click: tick the accounts you want into the pool, then press **Check in all accounts** or **Test all accounts**; switch on **Enable the account pool** and the plugin will carry on through a failure by itself.
 
-**Each region (domestic / international) has its own independent pool** — membership, target model, interval, and the rotation switch never affect the other side, because the two sides' accounts belong to different upstream stacks.
+**Each region (domestic / international) has its own independent pool** — membership and target model never affect the other side, because the two sides' accounts belong to different upstream stacks.
 
 ### The two batch actions
 
@@ -81,25 +81,20 @@ A machine usually carries more than one WorkBuddy sign-in. The **account pool** 
 
 Ticking boxes is a **draft edit**: it lands on **Save**, the save button carries a dirty marker until then, and the draft survives switching tabs or closing the card.
 
-### Rotation by credits: turning "pick an account by balance" into an explicit grant
+### Automatic failover: what "Enable the account pool" actually turns on
 
-This plugin's standing rule is that it **never reorders accounts to seek credits** — which account gets billed has to be predictable. Rotation is the exception **you switch on yourself**:
+This plugin's standing rule is that it **never silently switches who pays** — which account gets billed has to be predictable. Failover does not break that rule, because **it does not change your choice**:
 
-1. Once on, the plugin ranks the usable members by **① highest credit balance first → ② credits expiring soonest first → ③ freshest credential as the tie-break** and bills the winner.
-2. **It is mutually exclusive with manual selection**: turning it on **greys out the account dropdown immediately** and explains why in place, with a switch-off button right there. Otherwise you get the worst possible state — **the dropdown reads account A while account B is actually billed**.
-3. **Rotation only decides who serves at runtime and never writes back your manual choice** (it does not touch `config.accounts[region]`). Switch it off and your last manual pick returns untouched.
-
-**Every rotation leaves a line in the card** (when, and from whom to whom) rather than happening silently.
-
-### The automatic test interval
-
-A timer ticks every 60 seconds and runs a "test all accounts" pass on your interval (**5 to 1440 minutes, default 30**). The 5-minute floor is deliberate: anything denser only throttles the whole pool.
-
-**One easily missed edge:** if the model you named has left the catalog, the scheduled pass **does not stop** — it falls back to the region's free model and keeps the measurements fresh. It has to: a member comes back into the pool through a **new probe result** (below), and a stale display preference must not freeze the whole pool's measurements. The manual action still refuses, for the reason given above.
+1. A request that fails upstream is **retried against the pool's other usable members, in order**, until one serves it or none is left. Only then is the error reported — annotated with how many accounts were tried, so a pool that failed over and still lost does not read like a single account failing.
+2. **Your own account always goes first, and the next request starts from it again.** A retry borrows another member's credential for THAT ONE request; the saved selection and the card's "current account" are untouched. That is also why there is no "manual selection is disabled" state to explain: manual selection always applies.
+3. **Which failures trigger it:** 429 rate limits, 402 exhausted credits, 401 dead sessions, 502 gateway/network errors — all of these describe **one account's** state, and another may well survive them.
+4. **Which do not:** a malformed request (HTTP 400). Every account answers the same 400, so walking the pool would only multiply the wait before the user sees an error they must act on anyway. A stream that dies **mid-flight** is not retried either — bytes are already on the wire, and replaying would splice two answers together.
+5. **Members already known to be unusable are skipped** — a rate-limited account still inside its stated cooldown, or one whose credential the upstream rejected. They would only spend a round trip to re-learn what the measurements already say. This is what the batch test is for: its results decide who takes part in failover.
+6. Every retry leaves a `warn` line in the host log naming the failure and the account that follows.
 
 ### Why an account leaves the pool, and when it comes back
 
-| Probe outcome | What it means for rotation |
+| Probe outcome | What it means for failover |
 | --- | --- |
 | Usable | Eligible |
 | Rate limited | Out of the pool **temporarily**, returning on the reset time the upstream stated (and when it states none, the card says so rather than **inventing a countdown**) |
@@ -112,7 +107,7 @@ The key line: **"rate limited" is not "unusable"**. It is precisely the state mo
 
 One for model management, one for the pool — **deliberately kept apart** rather than merged: the two draft domains differ, and merging them means one failed write drags the other down (a catalog that will not save would stop you saving pool preferences too); a shared Discard would also throw away both drafts on a single misclick. Both sides use a **verified write** — **a write that did not land never discards the draft**, or your edits are lost for good.
 
-One class of state in the pool **does not go through a draft**: probe results, cooldowns, and the account rotation currently picked. Those are **observations**, written frequently by the plugin itself. The reason is practical — drafts are overwrite-based, so if observations lived in one, a single manual **Save** could roll the result a timer had just written **back to a several-minute-old value**.
+One class of state in the pool **does not go through a draft**: probe results, cooldowns, and the account that served a request. Those are **observations**, written frequently by the plugin itself. The reason is practical — drafts are overwrite-based, so if observations lived in one, a single manual **Save** could roll the result a timer had just written **back to a several-minute-old value**.
 
 ## Install
 
