@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- **修复国际版每一步都 400 / 业务码 11128（`first message is not system prompt`），而国内版正常。**
+  - **现象**：用户切到 `workbuddy-global` 后，每一步都失败；同一会话里国内版 18 个 turn 全部成功。响应体里带的是 `displayMsg: "The request was blocked by security policy"`，看起来像风控，实际不是。
+  - **根因（真机复现）**：两个网关都要求会话**以 `system` 消息开头**，**国际网关强制、国内网关容忍**——这就是「只有国际版报」的全部原因。而 system 消息会在到达本插件的 shim 之前就消失：`dsh-llm-pi-ai` 把首条 `system` 消息抽成 `Context.systemPrompt`，pi-ai 只在 `if (context.systemPrompt)` 为真时才发它——**空串或空文本是 falsy**，于是它一条 system 都不发，并把 `messages` 里那条 `system` 降级成 `user`。出站因此以 user 打头。
+  - **实测矩阵**（真实国际网关，插件真实 shim + adapter 路径）：首条 system 文本为空 → 线上 `["user"]` → 11128；`system=""` 且 `messages` 首条是 system → 线上 `["user","user"]` → 11128；system 是空格 `"   "` → 线上 `["system","user"]` → 200。**空格能过、空串不能**，正好卡在 pi-ai 的真值判断上。
+  - **修法**（两道，都在出站前）：
+    1. `src/adapter.ts` 的 `adaptLegacyPiAiContext` 把 `systemPrompt !== undefined` 改成真值判断。空串不再被当作「已经设好了」而提前返回，于是 `messages` 里真实存在的那条 system 会被折回 `systemPrompt`——**把用户真正的提示词救回来**，而不是替换掉。
+    2. 兜底：确实一条 system 都没有时，补一条最小占位（`WORKBUDDY_FALLBACK_SYSTEM_PROMPT`，定义在 `src/upstream.ts`）。同时 `prepareChatBody` 增加 `ensureSystemHead()` 作为最后一道：出站前首条不是 `system` 就补。
+  - **占位提示词刻意极短**（`You are a helpful assistant.`）：它是最后手段，不是人格设定；编一段长的会悄悄改变所有受影响请求的模型行为。
+  - **与探测路径对齐**：`src/probe.ts` 早就知道这条规则（注释写着「探测请求总是带一条 system 消息，两个网关都接受」），但聊天这条路一直没有这道防护——本次补齐。
+  - **守卫**：`tests/adapter.spec.ts` 新增「空 `systemPrompt` 不吞掉真实 system 文本」与「无 system 时补占位」两例，并**修正了一条编码旧契约的用例**（原先断言「没有 system 消息时返回同一个对象」，而这正是必须改动的输入）；`tests/upstream.spec.ts` 新增三例：user 打头时补占位、已是 system 打头时不重复补、无历史时一条都不补。
+  - **未验证**：生产宿主里究竟是哪条路径进入该分支（空文本被丢弃，还是 `options.system=''` 导致降级）——两者都被兜底覆盖，且都已在真实国际网关上端到端验证返回 200。
+
+- **修复 issue #26（以及 #25 的完整根因）：3.0.2 的 `adaptLegacyPiAiContext` 折叠会丢掉 system prompt 与全部工具声明——上一条只治了 400 症状，本条治根。**
+  - **现象（#26）**：升级 3.0.2 后 desktop profile 下所有 WorkBuddy 模型都无法调用工具：模型不产生 `tool_calls`，而是在正文里用 Markdown 代码块**编造**工具调用与"执行结果"，`stopReason` 恒为 `stop`（报告者实测 15 个请求 `calls=0`；编造的工具名是 `Bash` 而非 DSH 真实的 `pwsh`——连工具清单都没收到）。国际版则先撞上网关校验表现为 #25 的硬 400。
+  - **根因（逐条对照两版 pi-ai 源码核实）**：pi-ai 0.87 的 `normalizeContext` 把 system prompt 与工具声明**只**放在 `messages` 首条 system 消息上（`content` 与 `toolsAdded`），顶层 `systemPrompt`/`tools` 字段就此消失；而 0.87 的 `openai-completions` **全文没有一处读顶层 `systemPrompt`**，工具只从首条 system 消息的 `toolsAdded` 取（宿主 asar 里的 0.87.1 已逐行核实）。3.0.2 的 `withLegacyContext` 按 **context 形状**判断"要修"，把首条 system 消息删掉、文本折回顶层——恰好删掉了两个代次 api 各自唯一的载体：
+    - 插件解析到 **0.87**（干净安装，无磁盘 0.85 副本，#26 报告者的机器）：顶层 `systemPrompt` 没人读 → **提示词丢**；`toolsAdded` 被删 → **工具丢** → 模型编造工具调用；
+    - 插件解析到 **0.85**（本机：`~/.dsh/profiles/desktop` 里的安装是指向本仓库的符号链接，嵌套 dev 依赖 0.85.1，而宿主 asar 是 0.87.1）：折回的文本 0.85 认，但折叠**只搬文本不搬工具**——0.85 只读顶层 `context.tools`，而 `toolsAdded` 被丢弃 → **工具同样丢**。两个方向都是错的，区别只是症状。
+  - **为什么不能照 #26 的"最小修复"直接删掉 wrapper**：本机插件解析的正是 0.85.1，宿主却用 0.87.1 归一化 context——删掉 wrapper 会立刻复活 issue #24 的崩溃（0.85 的 `estimateMessageTokens` 对字符串 content 的 system 消息抛 `Cannot read properties of undefined (reading 'length')`，已在本机复现为流内 error、请求未发出）。报告者机器与作者机器**环境互补**，任何基于单一环境的修法都会弄坏另一台。
+  - **修法（按代次门控，而不是按 context 形状猜）**：新增 `src/pi-ai-runtime.ts`，判定**插件自己解析到的那份 pi-ai**：
+    1. **modern（0.87+）**：`withLegacyContext` 原样返回 api，context **字节级透传**——0.87 自己就能消费归一化 transcript（#26 的复现脚本证明了这条路 tools 与 prompt 都在）；
+    2. **legacy（0.85）**：折叠照旧，但**把工具状态一并提升**——按 0.87 自己 `getCurrentTools` 的语义重放每条 system 消息的 `toolsRemoved`/`toolsAdded`（先删后加、按名去重），写回顶层 `context.tools`（顶层已有 `tools` 数组时不覆盖）。
+  - **检测刻意不 import pi-ai 本体**：用 `import.meta.resolve` 定位入口文件（不执行模块）+ 读取**所属 manifest 的版本号**判定代次（0.87+ → modern；peer 范围内版本与 `normalizeContext` 特征一致）。原因是 standalone CLI 必须在**市场安装**（本地无 pi-ai 副本、模块只由宿主提供）下也能跑 `doctor`——静态 import 会让它在加载期就 `ERR_MODULE_NOT_FOUND`（已用 3.0.2 官方包在裸目录复现同一现象：缺 peer 时谁都跑不起来，本次新增的这条依赖则被彻底避免）。
+  - **解析失败 = 宿主提供**（市场安装的常态）：此时默认走 modern 透传，因为**会归一化 context 的宿主（0.2.0+）都提供 0.87.1**；该默认对旧宿主同样安全——旧宿主从不归一化，原生 0.85 形状在两个分支下都是恒等。
+  - **实测（本机 0.85.1，真实 api + fetch 注入捕获出站 body）**：修复前有 wrapper → `tools = MISSING`、system 文本在；修复后 → **`tools = 1`（pwsh）、首条 `system` 消息文本完整**。无 wrapper 的对照 → system 也丢、且 #24 崩溃以流内 error 出现。
+  - **doctor 可见性（#26 的附加建议）**：`doctor` 输出新增 `piAiRuntime` 块（generation / version / resolvedFrom / **resolvedLocally** / adapter 行为说明），人类可读行同步打印；legacy 时追加 hint 提示"插件解析到 0.85 而 DSH 0.2.0+ 宿主用 0.87 归一化，适配器在桥接，若工具异常请清理嵌套 pi-ai 副本"。JSON schemaVersion 2 → 3。**两种环境的真实输出已分别实测**：仓库检出（嵌套 0.85.1）→ `legacy 0.85.1 (<pnpm 真实路径>) — folds…`；市场式安装（有 peer、无 pi-ai）→ `modern, host-provided (no local copy; DSH 0.2.0+ ships 0.87.1) — passes…`。
+  - **守卫**：接线用例从一条拆成**三条**——legacy 折叠并提升工具（含 `tools` 断言）、modern **同一对象引用**透传（`toBe`，最强度断言）、默认跟随实际解析代次；新增 `tests/adapter-outgoing-body.spec.ts` 按 #26 建议的测法**直接断言出站请求体**（`body.tools` 与首条 system 文本，并在失败信息里带出流内错误）；新增 `tests/pi-ai-runtime.spec.ts` 四例钉住检测自洽（generation 与模块特征一致、路径与版本来自同一份 manifest、结果缓存稳定）——**不钉具体版本号**，peer 范围内换版本时检测必须跟着走而不是被测试冻住。
+  - **对上一条（#25 修复）的关系**：`ensureSystemHead`/兜底占位保留——它们是 wire 层最后防线（空文本 system、`options.system=''` 等退化输入仍需兜底），但 400 消失后若不修本条，国际版会立刻从"报错"变成"不报错但没工具"（#26 原文预测，本机复现坐实）。
+
 ### Features
 
 - **模型区可折叠**：模型列表现在折在标题行下面（标题、已启用数量、「从 WorkBuddy 刷新」按钮留在外面），点标题行即可收起，把下方的账号池一次露出来。用原生 `<details>` 实现，因此键盘可达、助记语义正确，且不引入任何状态库。

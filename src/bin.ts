@@ -32,10 +32,11 @@ import type { WorkBuddyRegion } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
+import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
 
 type Action = 'doctor' | 'logout' | 'status'
 
-const JSON_SCHEMA_VERSION = 2
+const JSON_SCHEMA_VERSION = 3
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -96,11 +97,33 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     accounts: await makeStore(region).accounts(),
   })))
   const anySignedIn = regionLists.some(({ accounts }) => accounts.length > 0)
+  /**
+   * Which pi-ai copy the PROVIDER resolves, and hence which context shape its
+   * api consumes. This is the #24/#26 gate made visible: a legacy (0.85)
+   * resolution while the DSH host normalizes with 0.87 is exactly the mixed
+   * generation the adapter has to bridge, and the only way to SEE it is to
+   * report it. `resolvedLocally: false` is the normal state of a market
+   * install probed outside the host — inside DSH the host supplies pi-ai
+   * (0.2.0+ ships 0.87.1, i.e. the pass-through branch). Nothing here reads
+   * or reports key material.
+   */
+  const piAi = piAiRuntimeInfo()
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-connect-workbuddy',
     version: WORKBUDDY_CONNECT_VERSION,
     node: process.version,
+    piAiRuntime: {
+      generation: piAi.generation,
+      version: piAi.version ?? (piAi.resolvedLocally ? '(unreadable)' : '(host-provided)'),
+      resolvedFrom: piAi.resolvedFrom ?? '(host-provided; not resolvable outside DSH)',
+      resolvedLocally: piAi.resolvedLocally,
+      adapterBehaviour: piAi.generation === 'legacy'
+        ? 'folds 0.87 transcripts (system text + tool state) into the 0.85 context shape'
+        : piAi.resolvedLocally
+          ? 'passes provider contexts through unchanged'
+          : 'passes provider contexts through unchanged (pi-ai comes from the DSH host; 0.2.0+ ships 0.87.1)',
+    },
     desktopAuthFile: {
       path: anyStore.desktopAuthPath() ?? '(no platform default; set WORKBUDDY_AUTH_FILE)',
       dir: defaultDesktopAuthDirs()[0] ?? '(no platform default)',
@@ -147,6 +170,9 @@ async function doctor(jsonOutput: boolean): Promise<number> {
         ? [`The WorkBuddy desktop app was not found, so encrypted credential fields cannot be opened; set ${WORKBUDDY_APP_EXECUTABLE_ENV} to its executable if it is installed elsewhere.`]
         : [],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and providers are unavailable until DSH starts the plugin.'],
+      ...piAi.generation === 'legacy' && piAi.resolvedLocally
+        ? [`This plugin resolves pi-ai ${piAi.version ?? '(unreadable version)'} (the 0.85 context shape) while DSH 0.2.0+ hosts normalize with 0.87; the adapter bridges that gap, but if tools still misbehave, remove any nested pi-ai copy so the plugin resolves the host's.`]
+        : [],
     ],
   }
   if (jsonOutput) {
@@ -154,6 +180,9 @@ async function doctor(jsonOutput: boolean): Promise<number> {
   } else {
     process.stdout.write([
       `WorkBuddy Connect ${WORKBUDDY_CONNECT_VERSION} on ${process.version}`,
+      ...piAi.resolvedLocally
+        ? [`pi-ai runtime: ${piAi.generation}${piAi.version === undefined ? '' : ` ${piAi.version}`} (${piAi.resolvedFrom}) — ${report.piAiRuntime.adapterBehaviour}`]
+        : [`pi-ai runtime: ${piAi.generation}, host-provided (no local copy; DSH 0.2.0+ ships 0.87.1) — passes provider contexts through unchanged`],
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
       `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable})`,
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,

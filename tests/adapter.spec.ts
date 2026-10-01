@@ -202,19 +202,97 @@ describe('adaptLegacyPiAiContext', () => {
     expect(adaptLegacyPiAiContext(legacy as never)).toBe(legacy)
   })
 
-  it('is an identity when no system message is present', async () => {
+  it('is an identity when there is no history to repair at all', async () => {
+    // The identity property now holds only where nothing needs fixing: with a
+    // user-first history the adapter MUST change the context (see below), since
+    // the international gateway refuses a request that does not open with a
+    // system message.
     const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
-    const plain = { messages: [{ role: 'user', content: 'hi' }] }
-    expect(adaptLegacyPiAiContext(plain as never)).toBe(plain)
+    const empty = { messages: [] }
+    expect(adaptLegacyPiAiContext(empty as never)).toBe(empty)
+    const noArray = { messages: 'not-an-array' }
+    expect(adaptLegacyPiAiContext(noArray as never)).toBe(noArray)
+  })
+
+  it('treats an EMPTY systemPrompt as absent, so a real system message survives', async () => {
+    // pi-ai emits the prompt under `if (context.systemPrompt)`, so '' emits no
+    // system message AND pi-ai demotes the `system` entry still sitting in
+    // `messages` to `user` — a wire body that opens with `user`, which the
+    // international gateway rejects (11128). Treating '' as "already set" would
+    // skip the fold and lose the real prompt; the fold preserves it.
+    const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
+    const adapted = adaptLegacyPiAiContext({
+      systemPrompt: '',
+      messages: [
+        { role: 'system', content: 'The real prompt', timestamp: 0 },
+        { role: 'user', content: 'hi', timestamp: 0 },
+      ],
+    } as never)
+    expect(adapted.systemPrompt).toBe('The real prompt')
+    expect(adapted.messages).toHaveLength(1)
+  })
+
+  it('supplies a fallback system message when nothing else carries one', async () => {
+    // A request with no system message at all reaches the gateway as user-first
+    // and is refused there; a minimal placeholder is strictly better than a
+    // guaranteed 400.
+    const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
+    const { WORKBUDDY_FALLBACK_SYSTEM_PROMPT } = await import('../src/upstream.ts')
+    const adapted = adaptLegacyPiAiContext({
+      messages: [{ role: 'user', content: 'hi', timestamp: 0 }],
+    } as never)
+    expect(adapted.systemPrompt).toBe(WORKBUDDY_FALLBACK_SYSTEM_PROMPT)
+    expect(adapted.messages).toHaveLength(1)
   })
 
   it('keeps tools and unrelated context fields', async () => {
+    // A top-level `tools` array is authoritative for the caller's shape: the
+    // fold must never overwrite it with anything harvested from messages.
     const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
     const adapted = adaptLegacyPiAiContext({
       ...normalized(),
       tools: [{ name: 't' }],
     } as never) as { tools?: unknown[] }
     expect(adapted.tools).toEqual([{ name: 't' }])
+  })
+
+  it('promotes toolsAdded from the folded system message into context.tools', async () => {
+    // Issue #26: pi-ai 0.87's normalizeContext deletes the top-level `tools`
+    // field and carries the declarations ONLY as `toolsAdded` on the leading
+    // system message — which 0.85's api never reads (it looks at
+    // `context.tools` exclusively). Folding the text without promoting the
+    // tools traded #24's loud crash for #26's silent one: requests with no
+    // tool declarations, so no model can ever emit a toolCall.
+    const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
+    const adapted = adaptLegacyPiAiContext({
+      messages: [
+        { role: 'system', content: 'You are helpful.', toolsAdded: [{ name: 'pwsh' }], timestamp: 0 },
+        { role: 'user', content: 'hi', timestamp: 0 },
+      ],
+    } as never) as { systemPrompt?: string, tools?: { name: string }[] }
+    expect(adapted.tools).toEqual([{ name: 'pwsh' }])
+    expect(adapted.systemPrompt).toBe('You are helpful.')
+  })
+
+  it('replays toolsRemoved then toolsAdded across system messages', async () => {
+    // The merge mirrors pi-ai 0.87's own getCurrentTools: removals before
+    // additions, keyed by name, so a mid-conversation redeclaration replaces
+    // the original and a removal drops the earlier declaration.
+    const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
+    const adapted = adaptLegacyPiAiContext({
+      messages: [
+        { role: 'system', content: 'Base.', toolsAdded: [{ name: 'a' }, { name: 'b' }], timestamp: 0 },
+        { role: 'user', content: 'hi', timestamp: 0 },
+        { role: 'system', content: '', toolsRemoved: [{ name: 'a' }], toolsAdded: [{ name: 'c' }], timestamp: 1 },
+      ],
+    } as never) as { tools?: { name: string }[] }
+    expect(adapted.tools?.map(tool => tool.name)).toEqual(['b', 'c'])
+  })
+
+  it('sets no tools when the folded system messages declared none', async () => {
+    const { adaptLegacyPiAiContext } = await import('../src/adapter.ts')
+    const adapted = adaptLegacyPiAiContext(normalized() as never) as { tools?: unknown[] }
+    expect(adapted.tools).toBeUndefined()
   })
 
   it('never leaves systemPrompt as an empty string', async () => {
@@ -240,9 +318,15 @@ describe('adaptLegacyPiAiContext', () => {
  * the fix — must fail something. It did not, until this test existed: every
  * assertion above calls `adaptLegacyPiAiContext` itself, so none of them notice
  * that the wrapper is gone from the provider.
+ *
+ * The gate has two branches and each is pinned by its own test: the legacy
+ * branch must fold (issue #24's crash returns without it), the modern branch
+ * must NOT fold (issues #25/#26: folding deletes the only carrier of the
+ * prompt and the tool declarations), and the default must follow whatever
+ * generation this plugin actually resolves.
  */
 describe('the provider stream actually receives an adapted context', () => {
-  it('folds the 0.87 system message before the api sees it', async () => {
+  it('folds the 0.87 system message (and promotes its tools) before the LEGACY api sees it', async () => {
     receivedContexts.length = 0
     const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } = await import('../src/adapter.ts')
     const { WorkBuddyCatalog } = await import('../src/catalog.ts')
@@ -251,6 +335,7 @@ describe('the provider stream actually receives an adapted context', () => {
       shim: { baseUrl: () => 'http://127.0.0.1:1', token: async () => 'shared-secret' } as never,
       store: {} as never,
       catalog: new WorkBuddyCatalog(),
+      piAiGeneration: 'legacy',
     })
     const profile = (adapter as unknown as {
       config: { profiles: () => ReadonlyMap<string, { piProvider: { streamSimple: (m: unknown, c: unknown, o: unknown) => unknown } }> }
@@ -259,7 +344,7 @@ describe('the provider stream actually receives an adapted context', () => {
 
     const normalized = {
       messages: [
-        { role: 'system', content: 'You are helpful.', toolsAdded: [], timestamp: 0 },
+        { role: 'system', content: 'You are helpful.', toolsAdded: [{ name: 'pwsh' }], timestamp: 0 },
         { role: 'user', content: 'hi', timestamp: 0 },
       ],
     }
@@ -270,9 +355,85 @@ describe('the provider stream actually receives an adapted context', () => {
     )
 
     expect(receivedContexts).toHaveLength(1)
-    const seen = receivedContexts[0] as { systemPrompt?: string, messages: { role: string }[] }
-    // THE assertion: the api must not be handed the system entry it cannot read.
+    const seen = receivedContexts[0] as { systemPrompt?: string, tools?: { name: string }[], messages: { role: string }[] }
+    // THE assertion: the api must not be handed the system entry it cannot
+    // read — and must be handed BOTH things that entry carried.
     expect(seen.systemPrompt).toBe('You are helpful.')
+    expect(seen.tools).toEqual([{ name: 'pwsh' }])
     expect(seen.messages.some(m => m.role === 'system')).toBe(false)
+  })
+
+  it('passes the transcript through byte-for-byte on a MODERN pi-ai', async () => {
+    // A 0.87+ api consumes the normalized transcript natively: the prompt
+    // lives on the leading system message and the tools on its `toolsAdded`.
+    // Any fold here would delete the only carrier of both — the reported
+    // #26 symptom (models that can never call tools) and #25's 400 on the
+    // international gateway. Same object reference, not merely an equal one.
+    receivedContexts.length = 0
+    const { createWorkBuddyAdapter, WORKBUDDY_GLOBAL_PROVIDER } = await import('../src/adapter.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+
+    const { adapter } = createWorkBuddyAdapter({
+      shim: { baseUrl: () => 'http://127.0.0.1:1', token: async () => 'shared-secret' } as never,
+      store: {} as never,
+      catalog: new WorkBuddyCatalog(),
+      provider: WORKBUDDY_GLOBAL_PROVIDER,
+      piAiGeneration: 'modern',
+    })
+    const profile = (adapter as unknown as {
+      config: { profiles: () => ReadonlyMap<string, { piProvider: { streamSimple: (m: unknown, c: unknown, o: unknown) => unknown } }> }
+    }).config.profiles().get(WORKBUDDY_GLOBAL_PROVIDER)
+    expect(profile).toBeDefined()
+
+    const normalized = {
+      messages: [
+        { role: 'system', content: 'You are helpful.', toolsAdded: [{ name: 'pwsh' }], timestamp: 0 },
+        { role: 'user', content: 'hi', timestamp: 0 },
+      ],
+    }
+    profile?.piProvider.streamSimple(
+      { id: 'hy3', api: 'openai-completions', provider: WORKBUDDY_GLOBAL_PROVIDER },
+      normalized,
+      { apiKey: 'k' },
+    )
+
+    expect(receivedContexts).toHaveLength(1)
+    expect(receivedContexts[0]).toBe(normalized)
+  })
+
+  it('defaults to the generation this plugin actually resolves', async () => {
+    // Whatever pi-ai copy this checkout resolves, the default wiring must
+    // agree with the feature-detected generation: fold iff legacy.
+    receivedContexts.length = 0
+    const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } = await import('../src/adapter.ts')
+    const { piAiRuntimeInfo } = await import('../src/pi-ai-runtime.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+
+    const { adapter } = createWorkBuddyAdapter({
+      shim: { baseUrl: () => 'http://127.0.0.1:1', token: async () => 'shared-secret' } as never,
+      store: {} as never,
+      catalog: new WorkBuddyCatalog(),
+    })
+    const profile = (adapter as unknown as {
+      config: { profiles: () => ReadonlyMap<string, { piProvider: { streamSimple: (m: unknown, c: unknown, o: unknown) => unknown } }> }
+    }).config.profiles().get(WORKBUDDY_PROVIDER)
+    const normalized = {
+      messages: [
+        { role: 'system', content: 'You are helpful.', toolsAdded: [{ name: 'pwsh' }], timestamp: 0 },
+        { role: 'user', content: 'hi', timestamp: 0 },
+      ],
+    }
+    profile?.piProvider.streamSimple(
+      { id: 'hy3', api: 'openai-completions', provider: WORKBUDDY_PROVIDER },
+      normalized,
+      { apiKey: 'k' },
+    )
+    expect(receivedContexts).toHaveLength(1)
+    if (piAiRuntimeInfo().generation === 'legacy') {
+      const seen = receivedContexts[0] as { systemPrompt?: string }
+      expect(seen.systemPrompt).toBe('You are helpful.')
+    } else {
+      expect(receivedContexts[0]).toBe(normalized)
+    }
   })
 })

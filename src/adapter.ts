@@ -26,7 +26,10 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyShim } from './shim.ts'
+import { WORKBUDDY_FALLBACK_SYSTEM_PROMPT } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
+import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
+import type { PiAiGeneration } from './pi-ai-runtime.ts'
 
 /** Provider route this bundle owns for the domestic (CN) gateway. */
 export const WORKBUDDY_PROVIDER = 'workbuddy'
@@ -103,6 +106,12 @@ export interface WorkBuddyAdapterOptions {
   displayName?: string
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined
+  /**
+   * Override the pi-ai generation gate (see {@link piAiRuntimeInfo}); tests
+   * inject both branches because this checkout only ever RESOLVES one of
+   * them. Production callers leave it unset.
+   */
+  piAiGeneration?: PiAiGeneration
 }
 
 /** What {@link createWorkBuddyAdapter} hands back. */
@@ -172,8 +181,8 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string
 }
 
 /**
- * Rewrite a pi-ai 0.87-shaped context into the 0.85 shape this plugin's pi-ai
- * understands.
+ * Rewrite a pi-ai 0.87-shaped transcript into the 0.85 shape this plugin's
+ * pi-ai understands — prompt AND tools.
  *
  * WHY THIS EXISTS (issue #24). pi-ai 0.87's `normalizeContext` moves the system
  * prompt INTO `messages` as `{ role: 'system', content: '<string>' }`. pi-ai
@@ -189,26 +198,56 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string
  * built — so every model fails instantly and no upstream traffic is sent. A
  * host running 0.87 hands us the normalized transcript while our own provider
  * is 0.85, and the plugin cannot patch the library. What it CAN do is not hand
- * a 0.87 transcript to a 0.85 API object: fold the system text back into
- * `Context.systemPrompt`, which is where 0.85 expects it.
+ * a 0.87 transcript to a 0.85 API object.
  *
- * Deliberately SHAPE-based, not version-based: it asks "does this context carry
- * a system message inside `messages`?" rather than "which pi-ai version is
- * loaded?". A version check would be wrong the moment either side moves, and
- * this plugin has to survive both host generations.
+ * The 0.87 transcript carries MORE than the prompt on that leading system
+ * message: `toolsAdded` (and `toolsRemoved`) are the ONLY place the tool
+ * declarations live — `normalizeContext` deleted the top-level `tools` field,
+ * and 0.85's api reads tools ONLY from `context.tools`. So folding the text
+ * without promoting the tool state would trade issue #24's loud crash for
+ * issue #26's silent one: models that can never emit a `toolCall` because the
+ * request never declared any tools. The fold here promotes both, replaying
+ * every system message's `toolsRemoved`/`toolsAdded` in order — exactly the
+ * merge pi-ai 0.87's own `getCurrentTools` performs — and leaves an existing
+ * top-level `tools` array untouched.
+ *
+ * Deliberately SHAPE-based within the legacy branch, not version-based: it
+ * asks "does this context carry a system message inside `messages`?" rather
+ * than "which pi-ai version is loaded?". A version check would be wrong the
+ * moment either side moves. Which BRANCH runs at all IS generation-gated —
+ * see {@link withLegacyContext}: a modern (0.87+) api consumes this very
+ * transcript natively, and folding for it would destroy its only carrier of
+ * prompt and tools (issues #25/#26).
  *
  * Returns the SAME object when there is nothing to adapt — in particular when
  * `systemPrompt` is already set (the native 0.85 shape), so the ordinary path
  * is byte-for-byte untouched.
+ *
+ * Two guards beyond the 0.87 fold, both about a request reaching the upstream
+ * with NO system message — which the international gateway refuses outright
+ * (business code 11128) while the domestic one tolerates:
+ *
+ * - an EMPTY `systemPrompt` is treated as absent rather than "already set".
+ *   pi-ai emits the prompt under `if (context.systemPrompt)`, so an empty one
+ *   produces no system message at all and pi-ai demotes any `system` entry still
+ *   in `messages` to `user`. Falling through here lets a real system message
+ *   that IS present in `messages` be folded up and preserved.
+ * - when nothing supplies a prompt, {@link WORKBUDDY_FALLBACK_SYSTEM_PROMPT} is
+ *   used, because a placeholder beats a guaranteed 400. A system message whose
+ *   text is empty but which carries `toolsAdded` still folds its TOOLS up; the
+ *   placeholder for the missing prompt then comes from `ensureSystemHead` at
+ *   the wire (the last of the three layers).
  */
 export function adaptLegacyPiAiContext(context: Context): Context {
   if (context === null || typeof context !== 'object') return context
-  if (context.systemPrompt !== undefined) return context
+  // Truthiness, not `!== undefined`: see the empty-prompt guard above.
+  if (context.systemPrompt) return context
   const messages = Array.isArray(context.messages) ? context.messages : undefined
   if (messages === undefined) return context
 
   const systemTexts: string[] = []
   const rest: Message[] = []
+  const toolState = new Map<string, NonNullable<Context['tools']>[number]>()
   let sawSystemMessage = false
   for (const message of messages) {
     const role = (message as { role?: unknown } | null)?.role
@@ -219,17 +258,56 @@ export function adaptLegacyPiAiContext(context: Context): Context {
     sawSystemMessage = true
     const text = systemTextOf(message)
     if (text !== '') systemTexts.push(text)
+    replayToolState(message, toolState)
   }
-  if (!sawSystemMessage) return context
+
+  const head = rest[0] as { role?: unknown } | undefined
+  const needsFallback = !sawSystemMessage
+    && head !== undefined
+    && head.role !== 'system'
+  if (!sawSystemMessage && !needsFallback) return context
 
   // Dropped from `messages` even when no text could be extracted: leaving it
   // there is precisely what crashes 0.85, and a system entry with no text has
   // nothing to lose. `systemPrompt` stays ABSENT rather than '' so a provider
   // never receives an empty system message.
+  const systemPrompt = systemTexts.length > 0
+    ? systemTexts.join('\n\n')
+    : sawSystemMessage ? undefined : WORKBUDDY_FALLBACK_SYSTEM_PROMPT
+
+  // Only a context with NO top-level tools gets the promoted set: when the
+  // caller supplied one, it is authoritative for their shape.
+  const tools = Array.isArray(context.tools)
+    ? undefined
+    : [...toolState.values()]
+
   return {
     ...context,
-    ...systemTexts.length === 0 ? {} : { systemPrompt: systemTexts.join('\n\n') },
+    ...systemPrompt === undefined ? {} : { systemPrompt },
+    ...tools !== undefined && tools.length > 0 ? { tools } : {},
     messages: rest,
+  }
+}
+
+/**
+ * Replay one 0.87 system message's tool deltas into `state`, the same merge
+ * pi-ai 0.87's `getCurrentTools` performs: removals first, then additions,
+ * keyed by name so a mid-conversation redeclaration replaces the original.
+ */
+function replayToolState(message: Message, state: Map<string, NonNullable<Context['tools']>[number]>): void {
+  const removed = (message as { toolsRemoved?: unknown }).toolsRemoved
+  if (Array.isArray(removed)) {
+    for (const tool of removed) {
+      const name = (tool as { name?: unknown } | null)?.name
+      if (typeof name === 'string') state.delete(name)
+    }
+  }
+  const added = (message as { toolsAdded?: unknown }).toolsAdded
+  if (Array.isArray(added)) {
+    for (const tool of added) {
+      const name = (tool as { name?: unknown } | null)?.name
+      if (typeof name === 'string') state.set(name, tool as NonNullable<Context['tools']>[number])
+    }
   }
 }
 
@@ -249,11 +327,25 @@ function systemTextOf(message: Message): string {
 
 /**
  * Wrap one pi-ai API module so both stream entry points receive a context this
- * build can actually consume (see {@link adaptLegacyPiAiContext}).
+ * build can actually consume (see {@link adaptLegacyPiAiContext}) — but only
+ * when the module RESOLVED for this plugin is the legacy generation.
  *
- * The deferred-fetch entry points take no context and are passed through as-is.
+ * The gate is the plugin's own module, resolved via {@link piAiRuntimeInfo}
+ * (manifest version of the copy this plugin resolves — no pi-ai import): a
+ * modern (0.87+) api consumes the normalized
+ * transcript natively — its request builder reads the prompt from the leading
+ * system message and the tools from that message's `toolsAdded`, and never
+ * reads the top-level `systemPrompt`/`tools` fields at all. Folding for it
+ * would delete the only carrier of both (issues #25/#26: the international
+ * gateway answers the prompt-less body with 400 / 11128, the domestic one
+ * accepts it and the model fabricates tool calls it can never actually make).
+ * The unwrapped modern api is returned AS-IS — byte-for-byte pass-through.
+ *
+ * The deferred-fetch entry points take no context and are passed through as-is
+ * in both branches.
  */
-function withLegacyContext(api: ProviderStreams): ProviderStreams {
+function withLegacyContext(api: ProviderStreams, generation: PiAiGeneration): ProviderStreams {
+  if (generation === 'modern') return api
   return {
     ...api,
     stream: (model, context, options) => api.stream(model, adaptLegacyPiAiContext(context), options),
@@ -270,6 +362,10 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   const { shim, store, catalog, resolveAttachments } = options
   const providerId = options.provider ?? WORKBUDDY_PROVIDER
   const providerName = options.displayName ?? 'WorkBuddy'
+  // The generation gate: what THIS plugin resolves, not what the host runs —
+  // a nested 0.85 on disk shadows the host's 0.87 and vice versa, and only
+  // the resolved copy decides which context shape the api below can consume.
+  const generation = options.piAiGeneration ?? piAiRuntimeInfo().generation
   void store
 
   const buildModels = (): Model<Api>[] => {
@@ -294,7 +390,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
       },
     },
     models: buildModels(),
-    api: withLegacyContext(openAICompletionsApi()),
+    api: withLegacyContext(openAICompletionsApi(), generation),
   })
 
   // `getModels` is delegated to a live read (the reuse-catalog pattern from

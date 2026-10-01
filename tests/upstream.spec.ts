@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import {
   WorkBuddyUpstreamClient,
+  WORKBUDDY_FALLBACK_SYSTEM_PROMPT,
   classifyUpstreamError,
   parseCreditMultiplier,
   parseReasoning,
@@ -39,6 +40,43 @@ describe('prepareChatBody', () => {
     }))) as Record<string, unknown>
     expect(prepared['tool_choice']).toBeUndefined()
     expect(prepared['tools']).toBeUndefined()
+  })
+
+  it('prepends the fallback system message when the body opens with a user turn', () => {
+    // The international gateway refuses a user-first body with business code
+    // 11128, which it surfaces as "blocked by security policy"; the domestic one
+    // tolerates it. A system message can vanish before this module ever sees the
+    // body (pi-ai emits a prompt only `if (context.systemPrompt)`, and demotes a
+    // `system` entry left in `messages` to `user`), so the head is checked here.
+    const prepared = JSON.parse(prepareChatBody(JSON.stringify({
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'user', content: 'still here' },
+      ],
+    }))) as { messages: { role: string; content: unknown }[] }
+    expect(prepared.messages.map(message => message.role)).toEqual(['system', 'user', 'user'])
+    expect(prepared.messages[0]?.content).toBe(WORKBUDDY_FALLBACK_SYSTEM_PROMPT)
+    expect(prepared.messages[1]?.content).toBe('hello')
+  })
+
+  it('leaves an already system-first body alone', () => {
+    const prepared = JSON.parse(prepareChatBody(JSON.stringify({
+      messages: [
+        { role: 'system', content: 'the real prompt' },
+        { role: 'user', content: 'hello' },
+      ],
+    }))) as { messages: { role: string; content: unknown }[] }
+    expect(prepared.messages).toHaveLength(2)
+    expect(prepared.messages[0]?.content).toBe('the real prompt')
+  })
+
+  it('adds no system message when the body carries no history', () => {
+    // Nothing to repair, and inventing a turn for a body with no conversation
+    // would change requests this rule is not about.
+    const prepared = JSON.parse(prepareChatBody(JSON.stringify({ messages: [] }))) as { messages: unknown[] }
+    expect(prepared.messages).toEqual([])
+    const noMessages = JSON.parse(prepareChatBody(JSON.stringify({ model: 'glm-5.3' }))) as Record<string, unknown>
+    expect(noMessages['messages']).toBeUndefined()
   })
 
   it('passes non-JSON bodies through untouched', () => {

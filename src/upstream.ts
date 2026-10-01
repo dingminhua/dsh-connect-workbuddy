@@ -335,9 +335,52 @@ function billingHeaders(credential: WorkBuddyCredential): Record<string, string>
 }
 
 /**
+ * Stand-in system message for a request that reached the wire carrying none.
+ *
+ * Not a stylistic default: both WorkBuddy gateways want the conversation to
+ * OPEN with a system message, and the international one enforces it — a
+ * user-first body there is refused with business code 11128
+ * (`first message is not system prompt`), which the gateway surfaces as
+ * "blocked by security policy". The domestic gateway tolerates the same body,
+ * so the fault only ever shows up on the international route (issue: a global
+ * model failing every step while the CN one is fine).
+ *
+ * A system message can go missing before this module ever sees the body:
+ * `dsh-llm-pi-ai` folds a leading `system` message into `Context.systemPrompt`
+ * and pi-ai only emits that prompt `if (context.systemPrompt)` — so an EMPTY
+ * prompt emits no system message at all, and pi-ai demotes any `system` entry
+ * left in `messages` to `user`. By the time the shim holds the JSON, the real
+ * prompt is no longer recoverable, and a minimal placeholder is strictly better
+ * than a guaranteed 400.
+ *
+ * Deliberately tiny: this is a last-resort placeholder, not a persona. Inventing
+ * a longer one would quietly change model behaviour on every affected request.
+ */
+export const WORKBUDDY_FALLBACK_SYSTEM_PROMPT = 'You are a helpful assistant.'
+
+/**
+ * Make the conversation open with a system message, prepending the fallback
+ * when nothing else supplies one.
+ *
+ * `developer` is normalized to `system` first (the gateways reject
+ * `developer`), so an ordinary DSH request already satisfies this and the
+ * function is a no-op for it.
+ */
+function ensureSystemHead(obj: Record<string, unknown>): void {
+  const messages = obj['messages']
+  if (!Array.isArray(messages) || messages.length === 0) return
+  const head = messages[0]
+  if (typeof head !== 'object' || head === null || Array.isArray(head)) return
+  const role = (head as Record<string, unknown>)['role']
+  if (typeof role === 'string' && role.trim().toLowerCase() === 'system') return
+  messages.unshift({ role: 'system', content: WORKBUDDY_FALLBACK_SYSTEM_PROMPT })
+}
+
+/**
  * Normalize an OpenAI chat-completions body for the WorkBuddy upstream:
- * force `stream: true` (the upstream rejects non-streaming) and flatten
- * `tool_choice` (the upstream's field is a string; object forms return 400).
+ * force `stream: true` (the upstream rejects non-streaming), flatten
+ * `tool_choice` (the upstream's field is a string; object forms return 400),
+ * and guarantee a leading system message.
  */
 export function prepareChatBody(source: string): string {
   let body: unknown
@@ -359,6 +402,7 @@ export function prepareChatBody(source: string): string {
       if (message['role'] === 'developer') message['role'] = 'system'
     }
   }
+  ensureSystemHead(obj)
   normalizeToolChoice(obj)
   return JSON.stringify(obj)
 }
