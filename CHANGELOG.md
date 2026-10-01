@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 (2026-10-01)
 
 ### Bug Fixes
 
@@ -31,6 +31,8 @@
   - **doctor 可见性（#26 的附加建议）**：`doctor` 输出新增 `piAiRuntime` 块（generation / version / resolvedFrom / **resolvedLocally** / adapter 行为说明），人类可读行同步打印；legacy 时追加 hint 提示"插件解析到 0.85 而 DSH 0.2.0+ 宿主用 0.87 归一化，适配器在桥接，若工具异常请清理嵌套 pi-ai 副本"。JSON schemaVersion 2 → 3。**两种环境的真实输出已分别实测**：仓库检出（嵌套 0.85.1）→ `legacy 0.85.1 (<pnpm 真实路径>) — folds…`；市场式安装（有 peer、无 pi-ai）→ `modern, host-provided (no local copy; DSH 0.2.0+ ships 0.87.1) — passes…`。
   - **守卫**：接线用例从一条拆成**三条**——legacy 折叠并提升工具（含 `tools` 断言）、modern **同一对象引用**透传（`toBe`，最强度断言）、默认跟随实际解析代次；新增 `tests/adapter-outgoing-body.spec.ts` 按 #26 建议的测法**直接断言出站请求体**（`body.tools` 与首条 system 文本，并在失败信息里带出流内错误）；新增 `tests/pi-ai-runtime.spec.ts` 四例钉住检测自洽（generation 与模块特征一致、路径与版本来自同一份 manifest、结果缓存稳定）——**不钉具体版本号**，peer 范围内换版本时检测必须跟着走而不是被测试冻住。
   - **对上一条（#25 修复）的关系**：`ensureSystemHead`/兜底占位保留——它们是 wire 层最后防线（空文本 system、`options.system=''` 等退化输入仍需兜底），但 400 消失后若不修本条，国际版会立刻从"报错"变成"不报错但没工具"（#26 原文预测，本机复现坐实）。
+  - **跨机真机验证（发布前）**：Windows 11 与 macOS 两台机器、国内版与国际版两个区域，均完成真实工具调用（`pwsh` 执行 `echo`，输出逐字一致；模型列出的工具名是 DSH 真名而非编造的 `Bash`）。Windows 那台先复现了 #25 的 400 报文与 #26 的「我没有可用的 shell 工具」，部署修复后同一路径通过——红绿对照。存档见 `docs/ISSUE-25-26-WINDOWS-VERIFY.md`。
+  - **本次未覆盖**：两台机器都是 junction 到仓库本体（解析到嵌套 0.85.1）→ 都走 legacy 桥接分支；**modern（市场安装、宿主提供 pi-ai）分支尚无真机端到端观测**，仅有单元测试的恒等断言与模拟安装树上的 `doctor` 选中验证。
 
 ### Features
 
