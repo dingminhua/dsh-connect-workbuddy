@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
 import {
+  WORKBUDDY_GITHUB_URL,
   WORKBUDDY_POOL_PATH,
   withWorkBuddyRegionAndAction,
 } from '../status-paths.ts'
@@ -1071,21 +1072,38 @@ function renderSettings(input: {
       ),
     ),
 
+    // Same shape as the model section's action row, deliberately: the two are
+    // the card's two "commit your edits" rows, and a user who learns where the
+    // buttons are in one should not have to look in the other. Encouragement
+    // (the star link) leads on the left, the buttons sit on the right.
     h('div', { className: 'dsm-workbuddy-pool-save-bar' },
-      h('button', {
-        type: 'button',
-        className: 'dsm-btn dsm-btn-primary',
-        disabled: !dirty || saving || siblingBusy || !canEdit,
-        onClick: onSave,
-      }, saving ? t('row.poolSaving') : t('row.poolSaved')),
-      h('button', {
-        type: 'button',
-        className: 'dsm-btn dsm-btn-outline',
-        disabled: !dirty || saving || siblingBusy,
-        onClick: onDiscard,
-      }, t('row.poolDiscard')),
+      h('a', {
+        className: 'dsm-workbuddy-usage-cheer',
+        href: WORKBUDDY_GITHUB_URL,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      },
+        t('row.cheer'),
+        h('span', { className: 'dsm-workbuddy-usage-cheer-star', 'aria-hidden': 'true' }, '★'),
+      ),
+      // Kept between the two: it reports whether there is anything to save, and
+      // neither the buttons nor the star say that on their own.
       h('span', { className: 'dsm-workbuddy-pool-hint' },
         dirty ? t('row.poolSaveDirty') : t('row.poolSaveIdle')),
+      h('div', { className: 'dsm-workbuddy-pool-save-buttons' },
+        h('button', {
+          type: 'button',
+          className: 'dsm-btn dsm-btn-outline',
+          disabled: !dirty || saving || siblingBusy,
+          onClick: onDiscard,
+        }, t('row.poolDiscard')),
+        h('button', {
+          type: 'button',
+          className: 'dsm-btn dsm-btn-primary',
+          disabled: !dirty || saving || siblingBusy || !canEdit,
+          onClick: onSave,
+        }, saving ? t('row.poolSaving') : t('row.poolSaved')),
+      ),
     ),
 
     saveError === undefined

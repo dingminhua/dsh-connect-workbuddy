@@ -436,3 +436,38 @@ describe('the model list comes last', () => {
     await m.unmount()
   })
 })
+
+describe('the two commit rows now look alike', () => {
+  it('renders the encouragement link in BOTH the pool row and the model row', async () => {
+    // The request was to make the pool row match the model row. Asserting the star
+    // link exists in both, from the CARD (not the isolated section), catches the
+    // case where the two rows drift apart again.
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    const poolBar = m.container.querySelector('.dsm-workbuddy-pool-save-bar')
+    const modelBar = m.container.querySelector('.dsm-workbuddy-model-actions')
+    expect(poolBar, 'no pool commit row').not.toBeNull()
+    expect(modelBar, 'no model commit row').not.toBeNull()
+    for (const [name, bar] of [['pool', poolBar], ['model', modelBar]] as const) {
+      const cheer = bar?.querySelector('a.dsm-workbuddy-usage-cheer')
+      expect(cheer, `the ${name} row lost its encouragement link`).not.toBeNull()
+      // And in both rows it is the FIRST child, i.e. on the left.
+      expect(bar?.firstElementChild?.className, `the ${name} row does not lead with it`)
+        .toContain('dsm-workbuddy-usage-cheer')
+    }
+    await m.unmount()
+  })
+
+  it('keeps the pool buttons in the LAST group, matching the model row', async () => {
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    const poolBar = m.container.querySelector('.dsm-workbuddy-pool-save-bar')
+    const modelBar = m.container.querySelector('.dsm-workbuddy-model-actions')
+    // Model row: buttons wrapper is last. Pool row must agree.
+    expect(modelBar?.lastElementChild?.className).toContain('dsm-workbuddy-model-actions-buttons')
+    expect(poolBar?.lastElementChild?.className).toContain('dsm-workbuddy-pool-save-buttons')
+    await m.unmount()
+  })
+})

@@ -14,6 +14,15 @@
 
 /** Plugin-owned usage endpoint consumed by its browser half. */
 export const WORKBUDDY_USAGE_PATH = '/plugins/dsh-connect-workbuddy/usage'
+/**
+ * The project's public repository.
+ *
+ * Lives here rather than beside one component because TWO sections link to it
+ * now — the model section and the account pool — and a second copy of a URL is
+ * a second thing to forget when it moves. Node-free and side-effect free, so it
+ * costs nothing on the Host side either.
+ */
+export const WORKBUDDY_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-workbuddy'
 /** Plugin-owned live model refresh endpoint. */
 export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/models/refresh'
 /** Plugin-owned local account rescan endpoint. */

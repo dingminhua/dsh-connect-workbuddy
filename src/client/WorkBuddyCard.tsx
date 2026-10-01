@@ -33,6 +33,7 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_GITHUB_URL,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_REGIONS,
   WORKBUDDY_USAGE_PATH,
@@ -89,7 +90,6 @@ export type WorkBuddyCardProps =
   & { view?: string }
 
 const POLL_INTERVAL_MS = 60_000
-const WORKBUDDY_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-workbuddy'
 
 /**
  * Tooltip for one model's image checkbox. The box is pre-checked only for

@@ -539,3 +539,41 @@ describe('manual mode can actually pick the serving account', () => {
     await m.unmount()
   })
 })
+
+describe('the settings commit row matches the model section', () => {
+  it('leads with the encouragement link and puts the buttons last', async () => {
+    // The card has exactly two "commit your edits" rows: the pool's and the model
+    // section's. They must not teach different muscle memory — the model row
+    // already leads with the star link and ends with its buttons, and the pool row
+    // used to do the opposite (buttons first, hint last).
+    const m = await mount(AccountPool, baseProps({ pool: poolOf({ enabled: true }) }))
+    const bar = m.container.querySelector('.dsm-workbuddy-pool-save-bar')
+    expect(bar, 'no commit row rendered').not.toBeNull()
+
+    const order = Array.from(bar?.children ?? []).map(node => node.className)
+    // Cheer first, then the hint, then the buttons wrapper.
+    expect(order[0], 'the encouragement link must lead, as in the model row')
+      .toContain('dsm-workbuddy-usage-cheer')
+    expect(order[1]).toContain('dsm-workbuddy-pool-hint')
+    expect(order[2], 'the buttons must be the last group').toContain('dsm-workbuddy-pool-save-buttons')
+
+    // The link is a real external link, not decoration.
+    const cheer = bar?.querySelector<HTMLAnchorElement>('a.dsm-workbuddy-usage-cheer')
+    expect(cheer?.href, 'the encouragement link lost its target').toContain('github.com')
+    expect(cheer?.getAttribute('rel')).toContain('noopener')
+    await m.unmount()
+  })
+
+  it('keeps 放弃修改 to the left of 保存, inside the buttons group', async () => {
+    // Same order as the model row. Swapping them puts the destructive action where
+    // the confirming one was, one click away from a habit.
+    const m = await mount(AccountPool, baseProps({ pool: poolOf({ enabled: true }) }))
+    const buttons = m.container.querySelector('.dsm-workbuddy-pool-save-buttons')
+    expect(buttons, 'no buttons group rendered').not.toBeNull()
+    const labels = Array.from(buttons?.querySelectorAll('button') ?? []).map(b => b.textContent ?? '')
+    expect(labels).toHaveLength(2)
+    expect(labels[0], 'the secondary action must come first').toContain('row.poolDiscard')
+    expect(labels[1], 'the primary action must come last').toContain('row.poolSaved')
+    await m.unmount()
+  })
+})
