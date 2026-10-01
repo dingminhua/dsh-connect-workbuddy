@@ -146,22 +146,23 @@ export const WORKBUDDY_CARD_CSS = `
 
 /* ---- Account pool ---- */
 .dsm-workbuddy-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:16px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
-.dsm-workbuddy-pool-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.dsm-workbuddy-pool-current{display:flex;flex-direction:column;align-items:flex-end;gap:4px;max-width:340px;text-align:right}
+.dsm-workbuddy-pool-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .dsm-workbuddy-pool-current-badge{padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
-.dsm-workbuddy-pool-current-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999)}
 /* Sits under the header block, before the batch buttons: account discovery is
    the first step of using the pool, so it reads above the actions it enables. */
-.dsm-workbuddy-pool-rescan{display:flex;justify-content:flex-end;margin-top:8px}
 /* Manual-mode account picker: shares the settings row layout (.pool-set), and
    only the select itself needs a hint that it is a PICKER of accounts rather
    than of models — the two sit near each other and used to be indistinguishable
    to a selector query as well as to the eye. */
 .dsm-workbuddy-pool-account-select{min-width:200px}
 .dsm-workbuddy-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
-.dsm-workbuddy-pool-summary{margin:2px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}
-.dsm-workbuddy-pool-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+/* One row, two clusters: LEFT acts on the accounts you checked, RIGHT re-reads
+   which accounts exist. Before this the rescan button was on its own row pushed
+   right while the batch buttons were on the next row pushed left — two
+   alignments two lines apart, with nothing explaining the split. */
+.dsm-workbuddy-pool-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px}
+.dsm-workbuddy-pool-actions-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsm-workbuddy-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-pool-warn{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-warn-primary,#f59e0b);background:rgba(245,158,11,.09);border:1px solid rgba(245,158,11,.3)}

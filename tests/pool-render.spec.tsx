@@ -408,9 +408,13 @@ describe('the account in use is marked in words, not only by a tint', () => {
     const text = m.text()
     expect(text).toContain('row.poolCurrentHeader|account=Real One')
     expect(text).toContain('row.poolCurrentBadge')
-    // And the hint says what the label means, so a failover that borrows another
-    // account for one request does not look like the label lying.
-    expect(text).toContain('row.poolCurrentHint')
+    // The paragraph that used to explain the badge here is GONE, along with the
+    // header subtitle: both stated what the rest of the block already shows, and
+    // two lines of prose above the first control is a lot of reading before
+    // anything can be acted on. What must SURVIVE is the naming itself (asserted
+    // above and by the row tag below), because a tint alone answers "who is in
+    // use" only for someone already looking for it.
+    expect(text, 'the removed explanation came back').not.toContain('row.poolCurrentHint')
     // Exactly one row carries the tag, and it is the current one.
     expect(m.container.querySelectorAll('.dsm-workbuddy-pool-current-tag')).toHaveLength(1)
     expect(m.container.querySelectorAll('.dsm-workbuddy-pool-row-current')).toHaveLength(1)
@@ -604,5 +608,63 @@ describe('the commit row states its own availability', () => {
     expect(dirty.button('row.poolSaved').disabled, 'Save must turn on once dirty').toBe(false)
     expect(dirty.button('row.poolDiscard').disabled, 'Discard must turn on once dirty').toBe(false)
     await dirty.unmount()
+  })
+})
+
+describe('the pool header states nothing twice', () => {
+  it('leaves the header to the title and the badge', async () => {
+    // The subtitle ("N accounts in this region · target model X") was removed:
+    // the account count IS the member table's row count, and the target model is
+    // the value of the control right below. Two lines of prose before the first
+    // control is a lot of reading before anything can be acted on.
+    const m = await mount(AccountPool, baseProps())
+    expect(m.container.querySelector('.dsm-workbuddy-pool-summary'), 'the subtitle came back').toBeNull()
+    expect(m.text(), 'the target model is stated outside its setting row').not.toContain('row.poolSummary')
+    // The title is still there — this is a removal of the SUBTITLE, not the head.
+    expect(m.container.querySelector('.dsm-workbuddy-pool-title')).not.toBeNull()
+    await m.unmount()
+  })
+
+  it('states the target model once, inside its own setting row', async () => {
+    // Provenance moved INTO the row, next to the control it describes. It used to
+    // be a separate note under the buttons AND in the header subtitle; the header
+    // copies are gone, so this row is now the single place it is stated.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({ targetModelSource: 'preferred', targetModelId: 'deepseek-v4.1-flash' }),
+    }))
+    const texts = m.text()
+    expect(texts, 'the provenance is not shown at all').toContain('row.poolTargetCurrentPreferred')
+    // Exactly one occurrence: once in the row, nowhere else.
+    const matches = texts.split('row.poolTargetCurrentPreferred').length - 1
+    expect(matches, 'the target model is stated more than once').toBe(1)
+    await m.unmount()
+  })
+})
+
+describe('the pool toolbar is one row of two clusters', () => {
+  it('groups account actions on the left and discovery on the right', async () => {
+    // Before: the rescan button sat alone on a row pushed right, and the batch
+    // buttons sat on the NEXT row pushed left — two alignments two lines apart
+    // with nothing explaining the split.
+    const m = await mount(AccountPool, baseProps({ onRescan: () => {} }))
+    const bar = m.container.querySelector('.dsm-workbuddy-pool-actions')
+    expect(bar, 'no toolbar rendered').not.toBeNull()
+    const groups = Array.from(bar?.children ?? []).filter(n => n.className.includes('dsm-workbuddy-pool-actions-group'))
+    expect(groups, 'the toolbar is not two clusters').toHaveLength(2)
+    // Left cluster: the batch actions. Right cluster: the rescan.
+    expect(groups[0]?.textContent, 'the batch actions are not in the left cluster')
+      .toContain('row.poolCheckinAll')
+    expect(groups[1]?.textContent, 'the rescan is not in the right cluster')
+      .toContain('row.accountsRescan')
+    // And nothing sits outside a cluster (a stray child would break the layout).
+    expect(Array.from(bar?.children ?? []).every(n => n.className.includes('dsm-workbuddy-pool-actions-group'))).toBe(true)
+    await m.unmount()
+  })
+
+  it('keeps the rescan OUT of the header', async () => {
+    // It moved into the toolbar, so the old standalone row must not linger.
+    const m = await mount(AccountPool, baseProps({ onRescan: () => {} }))
+    expect(m.container.querySelector('.dsm-workbuddy-pool-rescan')).toBeNull()
+    await m.unmount()
   })
 })

@@ -597,19 +597,24 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   if (pool === undefined) return null
 
   /**
-   * Where the target model came from.
+   * Where the target model came from, and which model it is.
    *
-   * Rendered under the buttons. This was computed and then never used, so the
-   * card never explained its own target — which is the entire reason
-   * `targetModelSource` is sent by the Host.
+   * Shown INSIDE the 「目标 test model」 setting row (as its description line)
+   * rather than as a note under the buttons, which is where it used to be — one
+   * of two places that stated the target model, the other being the header
+   * subtitle. Both are gone from the header, so this is now the single place the
+   * provenance is stated, right beside the control it describes.
+   *
+   * Returns null when there is nothing to say, so the caller can fall back to the
+   * static explanation instead of rendering an empty "current:" prefix.
    */
-  const targetLabel = pool.targetModelSource === 'preferred'
-    ? t('row.poolTargetPreferred', { model: pool.targetModelId ?? '' })
+  const targetProvenance = pool.targetModelSource === 'preferred'
+    ? t('row.poolTargetCurrentPreferred', { model: pool.targetModelId ?? '' })
     : pool.targetModelSource === 'free'
-      ? t('row.poolTargetFree', { model: pool.targetModelId ?? '' })
+      ? t('row.poolTargetCurrentFree', { model: pool.targetModelId ?? '' })
       : pool.targetModelSource === 'stale'
         ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' })
-        : t('row.poolTargetNone')
+        : pool.targetModelSource === 'none' ? t('row.poolTargetNone') : null
 
   /**
    * The account the next request will start from.
@@ -624,47 +629,25 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     : currentAccount.accountName === '' ? t('row.accountUnnamed') : currentAccount.accountName
 
   return h('section', { className: 'dsm-workbuddy-pool' },
+    // The header is now just the title and the serving-account badge.
+    //
+    // The subtitle ("4 accounts in this region · target model X") and the
+    // paragraph beside the badge are both GONE. Neither was wrong, but both
+    // stated things the rest of the block already shows: the account count is
+    // the member table's row count, and the target model is the value of the
+    // 「target test model」 control right below — including where that value came
+    // from. Two extra lines of prose above the first control is a lot of reading
+    // before anything can be acted on.
     h('div', { className: 'dsm-workbuddy-pool-head' },
-      h('div', null,
-        h('h3', { className: 'dsm-workbuddy-pool-title' }, t('row.poolTitle')),
-        h('p', { className: 'dsm-workbuddy-pool-summary' }, t('row.poolSummary', {
-          count: effectiveMembers.length,
-          // Never claim "auto" when no model could be resolved: the notice
-          // below says there is none, and the two lines contradicted each other.
-          model: pool.targetModelId
-            ?? (pool.targetModelSource === 'stale'
-              ? t('row.poolTargetStaleShort')
-              : pool.targetModelSource === 'none'
-                ? t('row.poolTargetNoneShort')
-                : t('row.poolTargetAuto')),
-        })),
-      ),
+      h('h3', { className: 'dsm-workbuddy-pool-title' }, t('row.poolTitle')),
       // Which account is serving, stated in the header rather than left to a row
       // tint the user has to go looking for. The pool's whole job is deciding who
-      // gets billed, so "who is it right now" belongs where the eye lands first —
-      // and once failover exists it is the question a reader actually has.
+      // gets billed, so "who is it right now" belongs where the eye lands first.
       currentName === undefined
         ? null
-        : h('div', { className: 'dsm-workbuddy-pool-current' },
-            h('span', { className: 'dsm-workbuddy-pool-current-badge' },
-              t('row.poolCurrentHeader', { account: currentName })),
-            h('span', { className: 'dsm-workbuddy-pool-current-hint' },
-              t('row.poolCurrentHint')),
-          ),
+        : h('span', { className: 'dsm-workbuddy-pool-current-badge' },
+            t('row.poolCurrentHeader', { account: currentName })),
     ),
-    // Re-read the local sign-ins. Beside the member table rather than in the
-    // card header: a sign-in that appeared externally shows up as a new row to
-    // tick, so this is the control that makes it appear.
-    onRescan === undefined
-      ? null
-      : h('div', { className: 'dsm-workbuddy-pool-rescan' },
-          h('button', {
-            type: 'button',
-            className: 'dsm-btn dsm-btn-outline',
-            disabled: rescanning === true,
-            onClick: onRescan,
-          }, rescanning === true ? t('row.accountsScanning') : t('row.accountsRescan')),
-        ),
 
     // Manual account selection, shown ONLY with the pool off.
     //
@@ -704,53 +687,73 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
         )
       : null,
 
-    // The batch buttons. These are MANUAL actions, so they are deliberately NOT
-    // gated on the pool switch: the switch decides whether the plugin picks the
-    // serving account by itself, not whether the user may act on the accounts
-    // they checked. Gating them on the switch made "switch the pool off" mean
-    // "you can no longer check in or test anything", which is the opposite of
-    // what the switch is for — and left a user with no manual path at all.
+    // One row, two clusters. Before this the rescan button sat on its own row
+    // pushed to the right edge while the batch buttons sat on the next row pushed
+    // to the left — two different alignments two lines apart, with nothing to
+    // explain the split. The grouping is by WHAT the buttons act on: on the left,
+    // things done TO the accounts you checked; on the right, re-reading which
+    // accounts exist at all.
+    //
+    // The batch buttons are MANUAL actions, so they are deliberately NOT gated on
+    // the pool switch: the switch decides whether the plugin picks the serving
+    // account by itself, not whether the user may act on the accounts they
+    // checked. Gating them on the switch made "switch the pool off" mean "you can
+    // no longer check in or test anything", which is the opposite of what the
+    // switch is for — and left a user with no manual path at all.
     h('div', { className: 'dsm-workbuddy-pool-actions' },
-      pool.checkinSupported
-        ? h('button', {
-            type: 'button',
-            className: 'dsm-btn dsm-btn-primary',
-            // Disabled with an EMPTY pool: the buttons act on checked accounts
-            // only, so a pool with nothing checked has nothing to run.
-            disabled: busy !== undefined || effectiveMembers.length === 0,
-            onClick: () => { void runAction('checkin') },
-          }, busy === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll'))
-        : null,
-      h('button', {
-        type: 'button',
-        className: 'dsm-btn dsm-btn-outline',
-        disabled: busy !== undefined
-          // Same criterion as the check-in button beside it. This one still
-          // counted the SAVED list, so a ghost id (a member whose sign-in is
-          // gone) left the button enabled while the batch ran on zero accounts
-          // — and the log then announced a test that never happened. The two
-          // buttons act on the same set and must gate on the same set.
-          || effectiveMembers.length === 0
-          // Refuse BOTH unresolvable-target states. Previously only 'none' was
-          // checked, so a saved id that had dropped out of the catalog enabled
-          // this button and the Host ran a batch against a model the region no
-          // longer offers.
-          || pool.targetModelSource === 'none'
-          || pool.targetModelSource === 'stale',
-        title: pool.targetModelSource === 'none'
-          ? t('row.poolTargetNone')
-          : pool.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined,
-        onClick: () => { void runAction('test') },
-      }, busy === 'test' ? t('row.poolTesting') : t('row.poolTestAll')),
-      // The Host answers a batch only when it is done, so there is no per-row
-      // progress to report. The line therefore states the one thing that IS
-      // true while it runs — accounts are being handled one at a time — instead
-      // of naming an account that may not be the one in flight.
-      busy === undefined ? null
-        : h('span', { className: 'dsm-workbuddy-pool-hint' }, t('row.poolBusyHint')),
+      h('div', { className: 'dsm-workbuddy-pool-actions-group' },
+        pool.checkinSupported
+          ? h('button', {
+              type: 'button',
+              className: 'dsm-btn dsm-btn-primary',
+              // Disabled with an EMPTY pool: the buttons act on checked accounts
+              // only, so a pool with nothing checked has nothing to run.
+              disabled: busy !== undefined || effectiveMembers.length === 0,
+              onClick: () => { void runAction('checkin') },
+            }, busy === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll'))
+          : null,
+        h('button', {
+          type: 'button',
+          className: 'dsm-btn dsm-btn-outline',
+          disabled: busy !== undefined
+            // Same criterion as the check-in button beside it. This one still
+            // counted the SAVED list, so a ghost id (a member whose sign-in is
+            // gone) left the button enabled while the batch ran on zero accounts
+            // — and the log then announced a test that never happened. The two
+            // buttons act on the same set and must gate on the same set.
+            || effectiveMembers.length === 0
+            // Refuse BOTH unresolvable-target states. Previously only 'none' was
+            // checked, so a saved id that had dropped out of the catalog enabled
+            // this button and the Host ran a batch against a model the region no
+            // longer offers.
+            || pool.targetModelSource === 'none'
+            || pool.targetModelSource === 'stale',
+          title: pool.targetModelSource === 'none'
+            ? t('row.poolTargetNone')
+            : pool.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined,
+          onClick: () => { void runAction('test') },
+        }, busy === 'test' ? t('row.poolTesting') : t('row.poolTestAll')),
+        // The Host answers a batch only when it is done, so there is no per-row
+        // progress to report. The line therefore states the one thing that IS
+        // true while it runs — accounts are being handled one at a time — instead
+        // of naming an account that may not be the one in flight.
+        busy === undefined ? null
+          : h('span', { className: 'dsm-workbuddy-pool-hint' }, t('row.poolBusyHint')),
+      ),
+      // Re-reading the local sign-ins. Beside the member table rather than in the
+      // card header: a sign-in that appeared externally shows up as a new row to
+      // tick, so this is the control that makes it appear.
+      onRescan === undefined
+        ? null
+        : h('div', { className: 'dsm-workbuddy-pool-actions-group' },
+            h('button', {
+              type: 'button',
+              className: 'dsm-btn dsm-btn-outline',
+              disabled: rescanning === true,
+              onClick: onRescan,
+            }, rescanning === true ? t('row.accountsScanning') : t('row.accountsRescan')),
+          ),
     ),
-
-    h('p', { className: 'dsm-workbuddy-pool-note' }, targetLabel),
 
     !active.enabled
       ? h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolEnabledHint'))
@@ -853,7 +856,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       t, pool, active, dirty, saving, siblingBusy: siblingBusy === true,
       saveError, settingsScope,
       onEdit: editDraft, onSave: () => { void save() }, onDiscard: discard,
-      appendLog,
+      appendLog, targetProvenance,
     }),
 
     h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolRegionNote')),
@@ -983,11 +986,17 @@ function renderSettings(input: {
   onSave: () => void
   onDiscard: () => void
   appendLog: (text: string, tone: PoolLogEntry['tone']) => void
+  /**
+   * Where the target model came from, already localized — or null when the Host
+   * had nothing to report. Passed in rather than recomputed here because the
+   * source lives on the pool snapshot this renderer does not own.
+   */
+  targetProvenance: string | null
 }): ReturnType<typeof h> {
   const {
     t, pool, active, dirty, saving, siblingBusy,
     saveError, settingsScope,
-    onEdit, onSave, onDiscard,
+    onEdit, onSave, onDiscard, targetProvenance,
   } = input
   const canEdit = settingsScope !== undefined
 
@@ -1032,7 +1041,11 @@ function renderSettings(input: {
       h('div', { className: 'dsm-workbuddy-pool-set' },
         h('span', { className: 'dsm-workbuddy-pool-set-copy' },
           h('b', null, t('row.poolTargetLabel')),
-          h('span', null, t('row.poolTargetHint')),
+          // The provenance leads, so the answer to "which model is it, and did I
+          // choose it?" is read before the static explanation of how auto works.
+          h('span', null,
+            targetProvenance === null ? null : `${targetProvenance} `,
+            t('row.poolTargetHint')),
         ),
         h('span', { className: 'dsm-workbuddy-pool-set-ctl' },
           h('select', {

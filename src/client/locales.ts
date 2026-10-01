@@ -112,7 +112,6 @@ export const en = {
 
   // ---- Account pool ----
   'row.poolTitle': 'Account pool',
-  'row.poolSummary': '{count} account(s) in this region · target model {model}',
   'row.poolNoCandidate': 'No account in this pool can be used right now.',
   'row.poolNoCandidateHint': 'Every account is rate-limited, out of credits, rejected, unreachable, or in a state this build cannot use. Re-check the accounts, or sign in again in the desktop app.',
   'row.poolCheckinAll': 'Check in all accounts',
@@ -125,6 +124,8 @@ export const en = {
   'row.poolTargetNoneShort': 'no free model',
   'row.poolTargetFree': 'Auto-picked free model: {model}',
   'row.poolTargetPreferred': 'Your chosen model: {model}',
+  'row.poolTargetCurrentPreferred': 'Current: {model} (your choice).',
+  'row.poolTargetCurrentFree': 'Current: {model} (auto-picked free model).',
   'row.poolTargetNone': 'This region has no zero-multiplier model yet.',
   'row.poolTargetStale': 'The target model you saved is no longer offered: {model}',
   'row.poolTargetStaleHint': 'The region\'s catalog changed and no longer lists this model, so testing is off rather than running against a model the upstream may not accept. Pick another target, or switch back to automatic.',
@@ -191,7 +192,6 @@ export const en = {
   'row.poolMember': 'In pool',
   'row.poolCurrentBadge': 'In use',
   'row.poolCurrentHeader': 'In use: {account}',
-  'row.poolCurrentHint': 'This is the account your next request starts from. When the pool is on, a request that fails upstream may be retried on another pool member — that borrowing lasts one request and never changes this choice.',
   'row.poolNotMember': 'Not in pool',
   'row.poolUnsavedMembers': 'Selection changed — save to apply',
 } as const
@@ -296,7 +296,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
 
   // ---- 账号池 ----
   'row.poolTitle': '账号池',
-  'row.poolSummary': '本区域 {count} 个账号 · 目标模型 {model}',
   'row.poolNoCandidate': '账号池里目前没有可用的账号。',
   'row.poolNoCandidateHint': '每个账号要么被限流、要么积分耗尽、要么被上游拒绝、要么连不上上游，或处于本版本无法使用的状态。请重新检测账号，或在桌面端重新登录。',
   'row.poolCheckinAll': '一键签到所有账号',
@@ -309,6 +308,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolTargetNoneShort': '无免费模型',
   'row.poolTargetFree': '自动选中的免费模型：{model}',
   'row.poolTargetPreferred': '你指定的模型：{model}',
+  'row.poolTargetCurrentPreferred': '当前：{model}（你指定）。',
+  'row.poolTargetCurrentFree': '当前：{model}（自动挑选的免费模型）。',
   'row.poolTargetNone': '本区域暂时没有倍率为 0 的免费模型。',
   'row.poolTargetStale': '你保存的目标模型已不在目录中：{model}',
   'row.poolTargetStaleHint': '本区域的模型目录已变化，不再包含这个模型，因此测试被停用——而不是拿一个上游可能不接受的模型去跑。请改选一个目标模型，或切回自动。',
@@ -375,7 +376,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolMember': '已在池中',
   'row.poolCurrentBadge': '当前使用',
   'row.poolCurrentHeader': '当前使用：{account}',
-  'row.poolCurrentHint': '这是你下一个请求会使用的账号。启用账号池后，请求在上游失败时可能改用池里另一个账号重试——那只是为这一次请求借用额度，不会改变这里的选定。',
   'row.poolNotMember': '未入池',
   'row.poolUnsavedMembers': '勾选已改动 —— 保存后生效',
 }
