@@ -69,12 +69,9 @@ export const en = {
   // buttons live inside the fold, so without this a user could hide their own
   // unsaved edits behind it with nothing on screen saying so.
   'row.modelsDirty': 'unsaved changes',
-  'row.modelsFoldHint': 'Expand or collapse the model list',
   // The faint hint in the header's middle. It names the ACTION available right
   // now, so it reads as an instruction rather than as a label for the section —
   // a static "expand or collapse" would make the reader work out which applies.
-  'row.modelsFoldShow': 'Click to expand',
-  'row.modelsFoldHide': 'Click to collapse',
   'row.modelsRefresh': 'Refresh from WorkBuddy',
   'row.modelsRefreshing': 'Refreshing models…',
   'row.discard': 'Discard changes',
@@ -254,11 +251,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 折叠态显示在标题行。保存/放弃按钮在折叠区里面，没有这个提示，用户会把
   // 自己未保存的改动藏到折叠后面，而界面上什么都不说。
   'row.modelsDirty': '有未保存的修改',
-  'row.modelsFoldHint': '展开或收起模型列表',
   // 标题行中间的淡色提示。它说的是「此刻能做的动作」，因此读起来像一句指引，
   // 而不是区块的标签——写成固定的「展开或收起」会让读者自己去想该按哪个。
-  'row.modelsFoldShow': '点击展开',
-  'row.modelsFoldHide': '点击收起',
   'row.modelsRefresh': '从 WorkBuddy 刷新',
   'row.modelsRefreshing': '正在刷新模型…',
   'row.discard': '放弃修改',

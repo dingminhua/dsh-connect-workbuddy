@@ -230,16 +230,11 @@ describe('the card implements the pool contract it hands down (M15, M18, M19)', 
   })
 })
 
-describe('the model list folds, and the fold cannot hide unsaved edits', () => {
-  const foldOf = (m: { container: HTMLElement }): HTMLDetailsElement => {
-    const found = m.container.querySelector('details.dsm-workbuddy-models-fold')
-    if (found === null) throw new Error('the model section is not rendered as a <details> fold')
-    return found as HTMLDetailsElement
-  }
-  const summaryOf = (m: { container: HTMLElement }): HTMLElement => {
-    const found = foldOf(m).querySelector('summary')
-    if (found === null) throw new Error('the fold has no summary')
-    return found
+describe('the model list no longer folds', () => {
+  const headOf = (m: { container: HTMLElement }): HTMLElement => {
+    const found = m.container.querySelector('.dsm-workbuddy-models-head')
+    if (found === null) throw new Error('no model section header rendered')
+    return found as HTMLElement
   }
   const modelCheckbox = (m: { container: HTMLElement }): HTMLInputElement => {
     const found = m.container.querySelector<HTMLInputElement>('.dsm-workbuddy-model-enabled input[type=checkbox]')
@@ -253,103 +248,36 @@ describe('the model list folds, and the fold cannot hide unsaved edits', () => {
     return m
   }
 
-  it('starts EXPANDED — the list users already see must not move behind a click', async () => {
+  it('renders no disclosure at all — the list is simply always there', async () => {
+    // It used to be a native <details>: clickable header, chevron, "click to
+    // collapse" hint. The list is what users came for, so folding it only ever
+    // hid the thing they wanted — and it made this the card's only
+    // click-to-hide section, which reads as a different kind of section.
     const m = await openCard()
-    // The header keeps the title and the count OUTSIDE the fold, so a collapsed
-    // section still says what it contains and how many are enabled.
-    expect(summaryOf(m).textContent).toContain('row.modelsTitle')
-    expect(summaryOf(m).textContent).toContain('row.modelsSummary|count=1')
-    expect(foldOf(m).open).toBe(true)
+    expect(m.container.querySelector('details.dsm-workbuddy-models-fold')).toBeNull()
+    expect(m.container.querySelector('summary')).toBeNull()
+    expect(m.container.querySelector('.dsm-workbuddy-models-chevron')).toBeNull()
+    expect(m.container.querySelector('.dsm-workbuddy-models-fold-hint')).toBeNull()
+    // The header and the list are both still rendered, and the header still says
+    // what the section holds.
+    expect(headOf(m).textContent).toContain('row.modelsTitle')
+    expect(headOf(m).textContent).toContain('row.modelsSummary|count=1')
+    expect(m.container.querySelectorAll('.dsm-workbuddy-model').length).toBeGreaterThan(0)
+    // A click on the header must NOT hide anything any more.
+    await m.click(headOf(m))
+    expect(m.container.querySelectorAll('.dsm-workbuddy-model').length).toBeGreaterThan(0)
     await m.unmount()
   })
 
-  it('toggles when the header itself is clicked', async () => {
-    // Asserted on `open`, not on rendered text: jsdom keeps a closed
-    // <details>' descendants in the DOM (it does not implement the UA's
-    // closed-content rendering), so a textContent assertion would pass whether
-    // or not the fold works at all. `open` is what a browser acts on.
+  it('still says so in the header when there are unsaved edits', async () => {
+    // Kept from the fold era, and it matters MORE now: with no fold there is no
+    // way to hide the pending edit, but the header marker is still what tells a
+    // reader — without scrolling a long model list to the buttons — that
+    // something is unsaved. The "looks settled, is not" shape this card avoids.
     const m = await openCard()
-    await m.click(summaryOf(m))
-    expect(foldOf(m).open).toBe(false)
-    await m.click(summaryOf(m))
-    expect(foldOf(m).open).toBe(true)
-    await m.unmount()
-  })
-
-  it('draws a chevron, and the open ATTRIBUTE it rotates on tracks the state', async () => {
-    // The chevron itself is CSS: it points right when closed and rotates to
-    // down under `.dsm-workbuddy-models-fold[open]`. That selector keys off the
-    // ATTRIBUTE, not the `open` property, so a change that kept the fold
-    // working while dropping the attribute would leave the icon permanently
-    // pointing right — the fold would work but stop looking foldable. Both are
-    // therefore asserted.
-    const m = await openCard()
-    const chevron = summaryOf(m).querySelector('.dsm-workbuddy-models-chevron')
-    expect(chevron).not.toBeNull()
-    // Decorative: the <details> element already announces the state, so the
-    // icon must stay out of the accessibility tree.
-    expect(chevron?.getAttribute('aria-hidden')).toBe('true')
-    expect(chevron?.querySelector('svg')).not.toBeNull()
-    expect(foldOf(m).hasAttribute('open')).toBe(true)
-    await m.click(summaryOf(m))
-    expect(foldOf(m).hasAttribute('open')).toBe(false)
-    await m.unmount()
-  })
-
-  it('names the action available now in the header hint, and swaps it on toggle', async () => {
-    // The chevron alone was not an obvious enough affordance, so the header
-    // carries a faint hint. It must name the action that is available NOW:
-    // a static "expand or collapse" leaves the reader to work out which one
-    // applies, which is the very thing the hint is there to remove.
-    const m = await openCard()
-    const hint = (): string => summaryOf(m).querySelector('.dsm-workbuddy-models-fold-hint')?.textContent ?? ''
-    expect(hint()).toContain('row.modelsFoldHide')
-    expect(hint()).not.toContain('row.modelsFoldShow')
-    await m.click(summaryOf(m))
-    // jsdom dispatches `toggle` on a turn AFTER the click, so React's
-    // `onToggle` — the only thing that updates this hint — may not have run yet
-    // when `click` resolves. Settle first, or this asserts on a stale render and
-    // fails on correct code (the hint still says "click to collapse"). The test
-    // above survives without this because it reads `open`, which jsdom has
-    // already updated and which no re-render is needed to observe; the RENDERED
-    // WORD is what needs the extra turn, and the word is the subject here.
-    await m.settle()
-    expect(hint()).toContain('row.modelsFoldShow')
-    expect(hint()).not.toContain('row.modelsFoldHide')
-    // aria-hidden, like the chevron: the <details> element already announces the
-    // state, and this text would otherwise be appended to the accessible name.
-    expect(summaryOf(m).querySelector('.dsm-workbuddy-models-fold-hint')?.getAttribute('aria-hidden')).toBe('true')
-    await m.unmount()
-  })
-
-  it('refreshing does NOT also fold the list', async () => {
-    // The refresh button lives INSIDE <summary>, and a click anywhere inside a
-    // summary activates the disclosure — so without the guard in the summary's
-    // onClick, pressing "Refresh from WorkBuddy" would also collapse the list, a
-    // side effect of an unrelated control. This is what the guard exists for, so
-    // it is pinned rather than trusted.
-    const m = await openCard()
-    await m.click(m.button('row.modelsRefresh'))
-    expect(foldOf(m).open).toBe(true)
-    // And the fold must still work for a click that did NOT land on the button.
-    await m.click(summaryOf(m))
-    expect(foldOf(m).open).toBe(false)
-    await m.unmount()
-  })
-
-  it('says so in the header when there are unsaved edits (the fold cannot hide them)', async () => {
-    // The save/discard buttons are inside the fold and are only enabled while
-    // `dirty`. Without a marker in the header a user could tick a model and
-    // collapse the list, hiding their own pending edit with nothing on screen
-    // saying so — the "looks settled, is not" shape this card avoids.
-    const m = await openCard()
-    expect(summaryOf(m).textContent).not.toContain('row.modelsDirty')
+    expect(headOf(m).textContent).not.toContain('row.modelsDirty')
     await m.click(modelCheckbox(m))
-    expect(summaryOf(m).textContent).toContain('row.modelsDirty')
-    // Still true while collapsed — which is the whole point.
-    await m.click(summaryOf(m))
-    expect(foldOf(m).open).toBe(false)
-    expect(summaryOf(m).textContent).toContain('row.modelsDirty')
+    expect(headOf(m).textContent).toContain('row.modelsDirty')
     await m.unmount()
   })
 })

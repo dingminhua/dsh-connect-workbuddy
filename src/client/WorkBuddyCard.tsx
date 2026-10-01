@@ -296,16 +296,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
   /**
-   * Whether the model list is unfolded.
-   *
-   * Mirrored in state purely to supply the INITIAL value: a bare `<details>` is
-   * COLLAPSED by default, and the list is what users already see, so unfolding
-   * has to be the starting point. Deliberately NOT persisted — only the active
-   * region is mounted, so remembering it would need a settings field for a
-   * cosmetic preference; it resets when the card is closed or the tab changes.
-   */
-  const [modelsOpen, setModelsOpen] = useState(true)
-  /**
    * Last-known usage per region, so tab dots survive tab switches.
    *
    * The placeholder carries `selectionExplicit: false` because that is the
@@ -1022,56 +1012,17 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                     />
 
                     <section className="dsm-workbuddy-models" aria-label={t('row.modelsTitle')}>
-                      {/* The model LIST folds; its header does not. Native
-                          <details> so the toggle is keyboard-operable and
-                          announced as a disclosure — the card already uses the
-                          same element for the searched-paths list. The state
-                          exists only to supply the INITIAL value (a bare
-                          <details> starts collapsed) and to mirror what the user
-                          did; it is deliberately not persisted. */}
-                      <details
-                        className="dsm-workbuddy-models-fold"
-                        open={modelsOpen}
-                        onToggle={event => { setModelsOpen(event.currentTarget.open) }}
-                      >
-                        <summary
-                          className="dsm-workbuddy-models-head"
-                          title={t('row.modelsFoldHint')}
-                          onClick={event => {
-                            // The refresh button lives INSIDE <summary>, and a
-                            // click anywhere in a summary activates the
-                            // disclosure — so refreshing would fold the list as
-                            // a side effect. Cancel the toggle only for clicks
-                            // that landed in the actions area; a click on the
-                            // title still toggles, which is what a disclosure
-                            // must do.
-                            if (event.target instanceof Element
-                              && event.target.closest('.dsm-workbuddy-models-head-actions') !== null) {
-                              event.preventDefault()
-                            }
-                          }}
-                        >
+                      {/* The model list no longer folds. It used to be a native
+                          <details>: a header that toggled on click, with a
+                          chevron and a "click to collapse" hint. The list is what
+                          users came for, so collapsing it only ever hid the thing
+                          they wanted — and it made this section the only one on
+                          the card with a click-to-hide header, which reads as a
+                          different kind of section rather than the same one. */}
+                      <div className="dsm-workbuddy-models-fold">
+                        <div className="dsm-workbuddy-models-head">
                           <div>
                             <div className="dsm-workbuddy-models-title-row">
-                              {/* A visible disclosure affordance, because a
-                                  header that merely reacts to a click does not
-                                  LOOK clickable. Decorative only — the
-                                  <details> element already announces the
-                                  expanded/collapsed state — so it is hidden
-                                  from assistive tech and the rotation is pure
-                                  CSS off the element's own `open` attribute. */}
-                              <span className="dsm-workbuddy-models-chevron" aria-hidden="true">
-                                <svg viewBox="0 0 12 12" width="12" height="12" focusable="false">
-                                  <path
-                                    d="M4.5 2.5 L8 6 L4.5 9.5"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.6"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                              </span>
                               <h3 className="dsm-workbuddy-models-title">
                                 {t('row.modelsTitle')}
                                 {dirty
@@ -1081,17 +1032,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                             </div>
                             <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                           </div>
-                          {/* Faint hint naming the action available RIGHT NOW.
-                              It sits in the header's empty middle because that
-                              is where a reader looks when wondering whether a
-                              section is clickable, and it names which way the
-                              click goes instead of making them work it out.
-                              aria-hidden: the <details> element already
-                              announces the state, and this text would otherwise
-                              be appended to the section's accessible name. */}
-                          <span className="dsm-workbuddy-models-fold-hint" aria-hidden="true">
-                            {modelsOpen ? t('row.modelsFoldHide') : t('row.modelsFoldShow')}
-                          </span>
                           <div className="dsm-workbuddy-models-head-actions">
                             {/* No "test selected" batch: every probe now sends a
                                 real-volume request and therefore costs real
@@ -1106,7 +1046,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                               {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
                             </button>
                           </div>
-                        </summary>
+                        </div>
                       {probeError === undefined ? null
                         : <p className="dsm-workbuddy-model-probe-result dsm-workbuddy-model-probe-result-bad" role="alert">
                             {t('row.probeError', { message: probeError })}
@@ -1240,7 +1180,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                           </button>
                         </div>
                       </div>
-                      </details>
+                      </div>
                     </section>
                   </>
                 : null}
