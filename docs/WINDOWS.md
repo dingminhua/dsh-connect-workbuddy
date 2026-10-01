@@ -98,6 +98,7 @@ WMI 服务（`Win32_Process.Create`）创建的进程与 Electron 宿主同为�
 | 子进程启动选项（`windowsHide`）与测试 | `src/host-heartbeat.ts` `PROCESS_PROBE_OPTIONS`、`src/at-rest.ts` `fetchAtRestKeyPayload()`；`tests/platform-standing.spec.ts`、`tests/host-heartbeat.spec.ts` |
 | 写入回读校验与测试 | `src/client/account-selection.ts`；`tests/client-account-selection.spec.ts` |
 | 设置隔离（供测试） | `vitest.config.ts`（`LOCALAPPDATA` / `APPDATA` / `HOME` / `USERPROFILE` / `XDG_CONFIG_HOME`） |
+| 诊断脚本的跨平台写法 | `scripts/verify-dsml.mjs`：用 Node 读源码代替 `grep`（Windows 上没有 `grep`，而 `tryExec` 会吞掉失败，于是「工具缺失」会伪装成「没找到」）；仓库根用 `fileURLToPath` 而不是 `new URL(...).pathname`（后者在 Windows 上给出 `/C:/...`，任何 fs 调用都不接受） |
 
 ## 6. 尚未做的（如实登记）
 

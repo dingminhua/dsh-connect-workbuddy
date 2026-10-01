@@ -275,6 +275,7 @@ dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 
 - [corrinehu/dsh-workbuddy-connect](https://github.com/corrinehu/dsh-workbuddy-connect)（MIT，Copyright (c) 2026 Corrine Hu）— **本项目的主要参照**。WorkBuddy 接入 DeepSeek Harness 的完整可行方案由该项目首先验证：桌面端凭据的发现与刷新机制、上游协议与请求头约定、loopback shim 的入站加固、pi-ai provider 的装配方式、以及状态诊断 CLI，均以其为参照。本项目在保留这些已验证能力的基础上重写，着重改善使用体验。
 - [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)（MIT）— WorkBuddy 上游协议（`copilot.tencent.com` 的 wire behavior）的参照实现，经 `dsh-workbuddy-connect` 转引。
+- [hawklithm/workbuddy2api](https://github.com/hawklithm/workbuddy2api)（MIT，Copyright (c) 2026 Mayer）— **本项目的致谢名单里唯一一项「代码移植」而非「思路参照」**：其 `src/codebuddy_proxy/dsml_parser.py` 是一份代理同一 WorkBuddy/CodeBuddy 上游的 DSML 工具调用解析器，本项目把它移植为 `src/dsml-recovery.ts`（标签状态机、忽略区域判定、缺包裹修复、参数递归解析、流式缓冲），并在其上补了它没有的两道闸（工具名必须在本次请求声明的工具里、无声明工具完全不做恢复）。三处有意偏离逐条写在该文件头部，义务声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ### 插件呈现与结构的基线
 
