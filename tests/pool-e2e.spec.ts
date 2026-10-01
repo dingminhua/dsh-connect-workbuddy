@@ -65,6 +65,31 @@ const FakeSettings = {
   },
 }
 
+/**
+ * Write a SECOND CN sign-in beside the first, so a test can express "one account
+ * is limited, another is available" — the scenario the pool exists for, and the
+ * one where "the available account becomes the current one" is observable.
+ *
+ * Returns the second account's real id, discovered the same way as the first's.
+ */
+async function writeSecondAuthFixture(root: string): Promise<string> {
+  const dir = join(root, 'auth')
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, 'workbuddy-desktop-2.info')
+  await writeFile(path, JSON.stringify({
+    account: { uid: 'uid-2', uin: '100000000002', nickname: 'Beta', enterpriseId: '' },
+    auth: {
+      accessToken: 'token-beta',
+      refreshToken: 'refresh-beta',
+      tokenType: 'Bearer',
+      domain: 'www.codebuddy.cn',
+      expiresAt: Date.now() + 86_400_000,
+      refreshExpiresAt: Date.now() + 7 * 86_400_000,
+    },
+  }), 'utf8')
+  return path
+}
+
 /** Write one CN sign-in and return its path, so a region has an account. */
 async function writeAuthFixture(root: string): Promise<string> {
   const dir = join(root, 'auth')
@@ -91,6 +116,16 @@ async function writeAuthFixture(root: string): Promise<string> {
  * the id is the one the plugin actually computes rather than a guess — tests
  * that need a RESOLVABLE member must not hard-code an id.
  */
+/** Both fixture accounts' real ids, in the order the Host lists them. */
+async function discoverAccountIds(dir: string): Promise<string[]> {
+  await mount({ authFile: dir, regions: { cn: { enabled: true } } })
+  const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+  const accounts = (body['accounts'] ?? []) as { id: string }[]
+  await context?.fiber.dispose()
+  context = undefined
+  return accounts.map(account => account.id)
+}
+
 async function discoverAccountId(authFile: string): Promise<string> {
   await mount({ authFile, regions: { cn: { enabled: true } } })
   const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
@@ -987,5 +1022,124 @@ describe('a live failure becomes a measurement the next request reads', () => {
     // writing measurements would be bookkeeping nobody reads.
     expect(recorder, 'recording ignores the pool switch')
       .toContain('poolPreferencesOf(current(), region).enabled')
+  })
+})
+
+
+describe('a recorded 429 moves the serving account to an available one', () => {
+  /** Write the pool's measured facts for a region, exactly as the Host would. */
+  async function writeProbes(region: string, probes: Record<string, unknown>): Promise<void> {
+    const home = process.env.DSH_HOME
+    if (home === undefined) throw new Error('DSH_HOME is not isolated')
+    await import('node:fs/promises').then(fs =>
+      fs.writeFile(join(home, `.workbuddy-pool.${region}.json`), JSON.stringify({ version: 1, probes }), 'utf8'))
+  }
+
+  interface PoolRow { accountId: string, current: boolean, excludedBy?: string }
+  async function poolRows(region: string): Promise<PoolRow[]> {
+    const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=${region}` })
+    const pool = (body['pool'] ?? {}) as { accounts?: PoolRow[] }
+    return pool.accounts ?? []
+  }
+
+  it('serves from the other account once the current one is measured as limited', async () => {
+    // The property being confirmed: 429 on the account in use → the pool serves
+    // from an available account AND that account becomes the current one.
+    //
+    // It holds only because a live failure is RECORDED as a measurement — the
+    // ranking reads stored measurements, so without that write the limited
+    // account keeps reading as "untested" and keeps being picked first. This test
+    // writes what the Host writes and then reads the very document the card
+    // renders from, so the routing and the display are checked as one answer.
+    await writeAuthFixture(root)
+    await writeSecondAuthFixture(root)
+    // Point at the LIVE file; the second fixture sits beside it and is found the
+    // same way the plugin finds the app's own timestamped backups.
+    const livePath = join(root, 'auth', 'workbuddy-desktop.info')
+    const ids = await discoverAccountIds(livePath)
+    expect(ids.length, 'the two fixtures did not produce two accounts').toBe(2)
+    const [first, second] = ids as [string, string]
+
+    await mount({
+      authFile: livePath,
+      regions: {
+        cn: {
+          enabled: true,
+          pool: { enabled: true, memberAccountIds: [first, second] },
+          lastCatalog: [{ id: 'free-1', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0 }],
+        },
+      },
+    })
+
+    // Baseline: exactly one of the two is serving, and neither is excluded.
+    const before = await poolRows('cn')
+    const serving = before.find(row => row.current)
+    expect(serving, 'no account is serving').toBeDefined()
+    expect(before.every(row => row.excludedBy === undefined)).toBe(true)
+
+    // The account that was serving answers 429 with the upstream's own reset time.
+    const limitedId = serving?.accountId as string
+    await writeProbes('cn', {
+      [limitedId]: { outcome: 'rate-limited', atMs: Date.now(), retryAtMs: Date.now() + 3_600_000 },
+    })
+
+    const after = await poolRows('cn')
+    const limited = after.find(row => row.accountId === limitedId)
+    // It stays LISTED (the user must see it), but out of rotation...
+    expect(limited, 'the limited account vanished from the table').toBeDefined()
+    expect(limited?.excludedBy, 'the limited account is still a candidate').toBe('rate-limited')
+    // ...and no longer the account in use: the pool moved to the other one, which
+    // is the "switch to the available account as the current one" the user asked
+    // for.
+    expect(limited?.current, 'the limited account is still the one in use').toBe(false)
+    const nowServing = after.find(row => row.current)
+    expect(nowServing, 'nothing is serving after a member was limited').toBeDefined()
+    expect(nowServing?.accountId, 'the pool did not move to the available account').not.toBe(limitedId)
+  })
+})
+
+describe('when every member is limited', () => {
+  async function writeProbes(region: string, probes: Record<string, unknown>): Promise<void> {
+    const home = process.env.DSH_HOME
+    if (home === undefined) throw new Error('DSH_HOME is not isolated')
+    await import('node:fs/promises').then(fs =>
+      fs.writeFile(join(home, `.workbuddy-pool.${region}.json`), JSON.stringify({ version: 1, probes }), 'utf8'))
+  }
+
+  it('reports every member as excluded rather than inventing a healthy one', async () => {
+    // There is no "available account" to switch to, so the honest answer is that
+    // none is available — the card states it and the request's failure is
+    // reported as-is. What must NOT happen is the pool quietly picking a limited
+    // account and presenting it as fine: that would hide the very state the user
+    // needs to see (and the next request would just hit the same 429).
+    await writeAuthFixture(root)
+    await writeSecondAuthFixture(root)
+    const livePath = join(root, 'auth', 'workbuddy-desktop.info')
+    const ids = await discoverAccountIds(livePath)
+    expect(ids.length).toBe(2)
+
+    await mount({
+      authFile: livePath,
+      regions: {
+        cn: {
+          enabled: true,
+          pool: { enabled: true, memberAccountIds: ids },
+          lastCatalog: [{ id: 'free-1', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0 }],
+        },
+      },
+    })
+
+    const reset = Date.now() + 3_600_000
+    await writeProbes('cn', Object.fromEntries(
+      ids.map(id => [id, { outcome: 'rate-limited', atMs: Date.now(), retryAtMs: reset }]),
+    ))
+
+    const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+    const pool = (body['pool'] ?? {}) as { accounts?: { accountId: string, current: boolean, excludedBy?: string }[] }
+    const rows = pool.accounts ?? []
+    expect(rows).toHaveLength(2)
+    // Both listed, both excluded, neither claimed as the one in use.
+    expect(rows.every(row => row.excludedBy === 'rate-limited')).toBe(true)
+    expect(rows.some(row => row.current)).toBe(false)
   })
 })

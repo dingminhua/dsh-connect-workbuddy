@@ -975,7 +975,14 @@ export function apply(ctx: Context, config: Config): void {
         // store.
         await applyPoolSelection(region).catch(() => undefined)
         const credential = await stacks[region].store.current().catch(() => undefined)
-        return credential === undefined ? undefined : workbuddyAccountId(credential)
+        if (credential === undefined) return undefined
+        // With a member measured unusable and nobody else to take over, the
+        // request still falls back to the saved selection — but reporting that
+        // account as "in use" would contradict the table right below it, which
+        // says the same account is rate-limited. Answer "nobody" instead: the
+        // card already has a state for that, and it is the truth.
+        if (await servingAccountIsExcluded(region).catch(() => false)) return undefined
+        return workbuddyAccountId(credential)
       },
       /**
        * Only the CN app rewards a daily check-in; the international region has
@@ -1190,10 +1197,34 @@ export function apply(ctx: Context, config: Config): void {
     }
     const winner = rankPool(await localPoolMembers(region), Date.now())
       .find(row => row.excludedBy === undefined)
-    // Nobody usable is NOT "no account": clearing the override hands the request
-    // to the saved selection, and the failure (if any) is then reported honestly
-    // instead of being masked by a pool that has nothing better to offer.
+    // Nobody usable is NOT "no account": clearing the override hands the REQUEST
+    // to the saved selection, and the failure is then reported honestly instead of
+    // being masked by a pool with nothing better to offer. (The card does not
+    // present that fallback as healthy — see `servingAccountIsExcluded`.)
     store.setRotatedAccount(winner?.account.id)
+  }
+
+  /**
+   * Whether the account the store would bill is one the pool has measured as
+   * unusable.
+   *
+   * The two questions differ exactly when the pool runs out of usable members: a
+   * REQUEST still has to go somewhere (the saved selection), but the CARD must
+   * not label that account "in use" while the same table says it is rate-limited.
+   * One screen contradicting itself is how a user learns to trust neither half —
+   * and "the pool moved to an available account" is unverifiable if the display
+   * keeps naming an account the table calls excluded.
+   */
+  const servingAccountIsExcluded = async (region: WorkBuddyRegion): Promise<boolean> => {
+    if (!poolPreferencesOf(current(), region).enabled) return false
+    const credential = await stacks[region].store.current().catch(() => undefined)
+    if (credential === undefined) return false
+    const servingId = workbuddyAccountId(credential)
+    const row = rankPool(await localPoolMembers(region), Date.now())
+      .find(candidate => candidate.account.id === servingId)
+    // Not a member at all (unchecked, or the pool is empty) means the pool has no
+    // opinion, so it must not assert one.
+    return row !== undefined && row.excludedBy !== undefined
   }
 
   /**
