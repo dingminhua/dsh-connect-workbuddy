@@ -816,18 +816,15 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           return json(res, 503, { reason: 'pool-unavailable', error: 'account pool unavailable' })
         }
         try {
-          // The pool's own switch is enforced HERE, not only in the card: a
-          // hidden or stale card must not be able to run batches the user has
-          // switched off. This is the same reasoning as the probe route's
-          // one-model limit.
-          if (!pool.preferences(region).enabled) {
-            return json(res, 409, {
-              // Structured cause, not just prose: the card localizes this
-              // rather than echoing the English sentence into a Chinese UI.
-              reason: 'pool-disabled',
-              error: 'account pool is disabled for this region',
-            })
-          }
+          // The pool's switch is deliberately NOT enforced here.
+          //
+          // It gates AUTOMATIC routing — whether the plugin picks the serving
+          // account by itself and retries on another after a failure — not
+          // whether the user may act on the accounts they checked. Refusing the
+          // batch when it is off left a user with the pool off no way to check
+          // in or test anything at all: the card disabled the buttons AND the
+          // Host refused the request, so "manual" had no manual path.
+          //
           // Membership is an explicit opt-in, so an empty pool runs NOTHING.
           // Enforced here as well as in the card: "no accounts checked" must
           // never degrade into "then do all of them" — that is the one reading

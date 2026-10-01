@@ -181,7 +181,6 @@ describe('poolErrorText (H7/H8: the client branch had no guard at all)', () => {
     // whole 618-test suite still passed, because this function lived inside the
     // browser-only `.tsx` card. Each cause is spelled out so a branch deleted
     // from the switch is a failure rather than a silent fallback.
-    expect(poolErrorText(keyT, 'pool-disabled')).toBe('row.poolErrDisabled')
     expect(poolErrorText(keyT, 'no-members')).toBe('row.poolErrNoMembers')
     expect(poolErrorText(keyT, 'no-live-members')).toBe('row.poolErrNoLiveMembers')
     expect(poolErrorText(keyT, 'no-free-model')).toBe('row.poolErrNoFreeModel')
@@ -208,7 +207,6 @@ describe('the locale tables carry every pool error key (H8)', () => {
    * written into the tables — which is exactly the failure being guarded.
    */
   const REQUIRED = [
-    'row.poolErrDisabled',
     'row.poolErrNoMembers',
     'row.poolErrNoLiveMembers',
     'row.poolErrNoFreeModel',

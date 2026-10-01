@@ -653,19 +653,20 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           }, rescanning === true ? t('row.accountsScanning') : t('row.accountsRescan')),
         ),
 
-    // The batch buttons. Testing is disabled when no free model resolved, so a
-    // press cannot silently bill a paid model. The check-in button exists only
-    // where the region HAS a check-in: the international region has none, and a
-    // button whose only outcome is a refusal is worse than no button.
+    // The batch buttons. These are MANUAL actions, so they are deliberately NOT
+    // gated on the pool switch: the switch decides whether the plugin picks the
+    // serving account by itself, not whether the user may act on the accounts
+    // they checked. Gating them on the switch made "switch the pool off" mean
+    // "you can no longer check in or test anything", which is the opposite of
+    // what the switch is for — and left a user with no manual path at all.
     h('div', { className: 'dsm-workbuddy-pool-actions' },
       pool.checkinSupported
         ? h('button', {
             type: 'button',
             className: 'dsm-btn dsm-btn-primary',
-            // Disabled with an EMPTY pool too: the buttons act on checked
-            // accounts only, and an enabled-with-nothing-checked pool has
-            // nothing to run.
-            disabled: busy !== undefined || !active.enabled || effectiveMembers.length === 0,
+            // Disabled with an EMPTY pool: the buttons act on checked accounts
+            // only, so a pool with nothing checked has nothing to run.
+            disabled: busy !== undefined || effectiveMembers.length === 0,
             onClick: () => { void runAction('checkin') },
           }, busy === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll'))
         : null,
@@ -673,7 +674,6 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
         type: 'button',
         className: 'dsm-btn dsm-btn-outline',
         disabled: busy !== undefined
-          || !active.enabled
           // Same criterion as the check-in button beside it. This one still
           // counted the SAVED list, so a ghost id (a member whose sign-in is
           // gone) left the button enabled while the batch ran on zero accounts
@@ -987,7 +987,10 @@ function renderSettings(input: {
           h('select', {
             className: 'dsm-workbuddy-pool-select',
             value: active.targetModelId,
-            disabled: !active.enabled || !canEdit,
+            // Not gated on the switch: the manual test needs this choice in both
+            // modes, and with the pool off the test is the ONLY way to measure an
+            // account — disabling its model picker would make that impossible.
+            disabled: !canEdit,
             onChange: (event: { currentTarget: { value: string } }) => {
               const value = event.currentTarget.value
               onEdit(current => ({ ...current, targetModelId: value }))

@@ -247,28 +247,31 @@ describe('the account-pool route', () => {
     expect(asked).toBe('glm-5.3')
   })
 
-  it('refuses the batch when the pool is switched off, even if the card asks', async () => {
-    // The switch is enforced on the Host, not only in the card: a hidden or
-    // stale card must not be able to run a batch the user turned off.
+  it('runs the batch even when the pool is switched off', async () => {
+    // The switch gates AUTOMATIC routing (does the plugin pick the serving
+    // account by itself, does it retry elsewhere after a failure), NOT whether
+    // the user may act on the accounts they checked. Refusing here — together
+    // with the card disabling the buttons — left "manual mode" with no way to
+    // check in or test anything, which is the opposite of what the switch is for.
+    //
+    // Membership is still required, so this test checks an account to get past
+    // that guard: "the pool is off" must not be read as "then run nothing".
     let called = false
     const handler = await mountPoolHandler(deps(poolDeps({
       preferences: () => ({
         enabled: false,
         targetModelId: '',
-        memberAccountIds: [],
+        memberAccountIds: ['a'],
       }),
       test: async () => {
         called = true
-        return []
+        return [{ accountId: 'a', accountName: 'Alpha', result: { modelId: 'free-1', outcome: 'ok' } }]
       },
     })))
-    const { res, status, body } = response()
+    const { res, status } = response()
     await handler(request(), res)
-    expect(status()).toBe(409)
-    expect(called).toBe(false)
-    // `pool-disabled` must be its own reason: the card tells the user to switch
-    // the pool on, which is a different instruction from "check an account".
-    expect(body()['reason']).toBe('pool-disabled')
+    expect(status(), 'a manual batch must not be refused just because the pool switch is off').toBe(200)
+    expect(called).toBe(true)
   })
 
   it('refuses a non-POST method', async () => {

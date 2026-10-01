@@ -444,7 +444,12 @@ describe('the pool: regression guards for the audited defects', () => {
     })
     expect(status).toBe(409)
     // The card localizes `reason`; the English `error` stays as the fallback.
-    expect(body['reason']).toBe('pool-disabled')
+    //
+    // The reason here is `no-members`, NOT `pool-disabled`: the switch is off by
+    // default, but that is no longer a refusal — a manual batch is allowed with
+    // the pool off. What IS still refused is a batch over NOTHING, because an
+    // empty pool must never degrade into "then do all of them".
+    expect(body['reason']).toBe('no-members')
   })
 
   it('M-5: does not read check-in state while the pool is off', async () => {

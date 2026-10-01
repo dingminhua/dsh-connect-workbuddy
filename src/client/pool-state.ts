@@ -132,7 +132,6 @@ export function poolErrorText(
   detail?: string,
 ): string | undefined {
   switch (reason) {
-    case 'pool-disabled': return t('row.poolErrDisabled')
     case 'no-members': return t('row.poolErrNoMembers')
     case 'no-live-members': return t('row.poolErrNoLiveMembers')
     case 'no-free-model': return t('row.poolErrNoFreeModel')

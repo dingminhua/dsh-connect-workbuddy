@@ -428,3 +428,53 @@ describe('the account in use is marked in words, not only by a tint', () => {
     await m.unmount()
   })
 })
+
+describe('the switch controls AUTOMATIC routing, not manual actions', () => {
+  /** The pool switched off, with one checked account so a batch would be runnable. */
+  function poolSwitchedOff(): Record<string, unknown> {
+    return poolOf({
+      enabled: false,
+      memberAccountIds: [GENUINE_ID],
+      effectiveMemberAccountIds: [GENUINE_ID],
+      accounts: [GENUINE_ACCOUNT],
+    })
+  }
+
+  it('keeps check-in and test usable while the pool is off', async () => {
+    // "Manual mode" has to have a manual path. Gating these on the switch meant
+    // switching the pool off ALSO disabled check-in and testing — and the Host
+    // refused the request too, so there was no way to check in at all without
+    // turning automatic routing back on. The switch answers "does the plugin
+    // decide by itself", not "may the user act".
+    const m = await mount(AccountPool, baseProps({ pool: poolSwitchedOff() }))
+    const checkin = m.button('row.poolCheckinAll')
+    const test = m.button('row.poolTestAll')
+    expect(checkin.disabled, 'check-in must stay available with the pool off').toBe(false)
+    expect(test.disabled, 'testing must stay available with the pool off').toBe(false)
+    // And the switch really is off — otherwise this would pass on a pool that is
+    // on and the test would be asserting nothing.
+    expect(m.text()).toContain('row.poolEnabledHint')
+    await m.unmount()
+  })
+
+  it('keeps the target-model choice editable while the pool is off', async () => {
+    // The manual test needs a model to test against; disabling the picker with
+    // the pool off made the one remaining manual measurement impossible to aim.
+    const m = await mount(AccountPool, baseProps({ pool: poolSwitchedOff() }))
+    const select = m.container.querySelector<HTMLSelectElement>('select.dsm-workbuddy-pool-select')
+    expect(select, 'no target-model select rendered').not.toBeNull()
+    expect(select?.disabled).toBe(false)
+    await m.unmount()
+  })
+
+  it('still refuses a batch over nothing, with the pool off', async () => {
+    // The one guard that survives: an empty pool must never degrade into "then
+    // do all of them". Unchecking everything is how a user says "none".
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({ enabled: false, memberAccountIds: [], effectiveMemberAccountIds: [], accounts: [GENUINE_ACCOUNT] }),
+    }))
+    expect(m.button('row.poolCheckinAll').disabled).toBe(true)
+    expect(m.button('row.poolTestAll').disabled).toBe(true)
+    await m.unmount()
+  })
+})
