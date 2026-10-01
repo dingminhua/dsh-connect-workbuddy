@@ -46,7 +46,8 @@ import {
 } from './adapter.ts'
 import type { WorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
-import { probeModel } from './probe.ts'
+import { cooldownOf, outcomeOfFailure, probeModel } from './probe.ts'
+import type { UpstreamErrorKind } from './upstream.ts'
 import {
   checkinAllAccounts,
   probeUpdatesOf,
@@ -661,6 +662,11 @@ export function apply(ctx: Context, config: Config): void {
        */
       prepareAccount: () => applyPoolSelection(region),
       failoverAccount: triedAccountIds => failoverAccountFor(region, triedAccountIds),
+      // Record what a live request learned, so the NEXT one starts from an
+      // account that works instead of re-discovering this failure.
+      onAccountFailure: (accountId, failure) => {
+        void recordAccountFailure(region, accountId, failure)
+      },
     })
     stacks[region] = { store, catalog, shim }
   }
@@ -1108,6 +1114,53 @@ export function apply(ctx: Context, config: Config): void {
         ...probes[account.id] === undefined ? {} : { probe: probes[account.id] as WorkBuddyPoolProbe },
         tokenExpiresAtMs: account.tokenExpiresAtMs,
       }
+    })
+  }
+
+  /**
+   * Record a failure a LIVE request hit, so the NEXT request starts from a
+   * usable account.
+   *
+   * Without this the ranking only knew what the manual batch test had measured:
+   * an account that had just answered 429 carried no measurement, so
+   * `exclusionOf` returned "candidate" and the ranking kept picking it — every
+   * request paid one failed round trip before failing over. Keeping traffic off
+   * an account the upstream just refused is the pool's whole point
+   * (`account-pool.ts` says exactly that about `rate-limited`), and it only
+   * works if live failures count as measurements.
+   *
+   * Deliberately NOT recorded for `client` (HTTP 400): the upstream rejected the
+   * REQUEST, which says nothing about the account, and recording it would
+   * sideline a good account over a bad body.
+   *
+   * The reset time comes from the upstream's own words — the 429 body carries
+   * 「将在 … 重置」 — which `cooldownOf` parses. When it states no time, the store's
+   * own short window applies rather than a guess at a long one.
+   */
+  const recordAccountFailure = async (
+    region: WorkBuddyRegion,
+    accountId: string,
+    failure: { status: number, kind: UpstreamErrorKind, message: string },
+  ): Promise<void> => {
+    if (!poolPreferencesOf(current(), region).enabled) return
+    if (failure.kind === 'client') return
+    // Only accounts this pool covers. Membership is the explicit "yes, spend
+    // this account's credits" tick, and a measurement steers routing.
+    const members = poolPreferencesOf(current(), region).memberAccountIds
+    if (members.length > 0 && !members.includes(accountId)) return
+    const outcome = outcomeOfFailure(failure.status, failure.message)
+    const { retryAtMs } = cooldownOf({
+      outcome,
+      retryAfter: null,
+      nowMs: Date.now(),
+      body: failure.message,
+    })
+    await writePoolProbes(region, {
+      [accountId]: {
+        outcome,
+        atMs: Date.now(),
+        ...retryAtMs === undefined ? {} : { retryAtMs },
+      },
     })
   }
 

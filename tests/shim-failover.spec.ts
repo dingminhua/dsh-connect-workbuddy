@@ -414,3 +414,108 @@ describe('the pool decides who serves the FIRST attempt', () => {
     expect(warn).toHaveBeenCalled()
   })
 })
+
+describe('live failures are reported so the NEXT request avoids them', () => {
+  const RATE_LIMIT_BODY = '{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-10-02 05:23:27 UTC+8 重置，您也可以切换其他模型继续使用。"}'
+
+  it('reports every failed attempt, including the last one', async () => {
+    // The last failure is the one that matters MOST: an account that failed with
+    // nobody left to try it will be picked first again unless it is recorded.
+    // Reporting only the ones that had a successor would miss exactly that case.
+    const other = credentialFor('other')
+    const reports: Array<{ id: string, status: number, kind: string }> = []
+    shim = createWorkBuddyShim({
+      store: storeWith([other]),
+      client: {
+        chatStream: async () => ({ ok: false, status: 429, kind: 'soft_rate', message: RATE_LIMIT_BODY }),
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      failoverAccount: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+      onAccountFailure: (accountId, failure) => {
+        reports.push({ id: accountId, status: failure.status, kind: failure.kind })
+      },
+    })
+    await shim.ready
+    await chat(shim)
+
+    expect(reports).toHaveLength(2)
+    expect(reports.every(r => r.status === 429 && r.kind === 'soft_rate')).toBe(true)
+    expect(new Set(reports.map(r => r.id)).size, 'both accounts must be reported').toBe(2)
+  })
+
+  it('carries the upstream body through, so the reset time survives', async () => {
+    // The reset sentence lives in the failure BODY. Dropping it would leave the
+    // host unable to compute a cooldown, and the account would come straight back
+    // into rotation instead of waiting out the limit the upstream named.
+    let message = ''
+    shim = createWorkBuddyShim({
+      store: storeWith([]),
+      client: {
+        chatStream: async () => ({ ok: false, status: 429, kind: 'soft_rate', message: RATE_LIMIT_BODY }),
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      onAccountFailure: (_id, failure) => { message = failure.message },
+    })
+    await shim.ready
+    await chat(shim)
+    expect(message).toContain('2026-10-02 05:23:27')
+  })
+
+  it('survives a reporting callback that throws', async () => {
+    // Bookkeeping must never take down a request the user is waiting on.
+    const warn = vi.fn()
+    shim = createWorkBuddyShim({
+      store: storeWith([]),
+      client: {
+        chatStream: async () => ({ ok: false, status: 429, kind: 'soft_rate', message: RATE_LIMIT_BODY }),
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      logger: { warn, error: vi.fn() },
+      onAccountFailure: () => { throw new Error('disk on fire') },
+    })
+    await shim.ready
+    const response = await chat(shim)
+    // The failure is still reported to the caller as a 429.
+    expect(response.status).toBe(429)
+    expect(warn).toHaveBeenCalled()
+  })
+})
+
+describe('failure reporting without a pool to fail over to', () => {
+  it('reports the single failed attempt exactly once', async () => {
+    // No `failoverAccount` at all (pool off): the request fails once and that
+    // one account must still be recorded — otherwise turning the pool ON later
+    // would start from a stale picture.
+    const reports: string[] = []
+    shim = createWorkBuddyShim({
+      store: storeWith([]),
+      client: {
+        chatStream: async () => ({ ok: false, status: 429, kind: 'soft_rate', message: '{"code":6004}' }),
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      onAccountFailure: accountId => { reports.push(accountId) },
+    })
+    await shim.ready
+    const response = await chat(shim)
+    expect(response.status).toBe(429)
+    expect(reports).toEqual([SELECTED_ID])
+  })
+
+  it('reports a 400 too — the CLASS is filtered by the plugin, not here', async () => {
+    // The shim reports what happened; deciding that a malformed request says
+    // nothing about the account is the plugin's call (and its own test). Keeping
+    // that policy in one place is why the shim does not filter kinds.
+    const reports: string[] = []
+    shim = createWorkBuddyShim({
+      store: storeWith([]),
+      client: {
+        chatStream: async () => ({ ok: false, status: 400, kind: 'client', message: 'bad request' }),
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      onAccountFailure: accountId => { reports.push(accountId) },
+    })
+    await shim.ready
+    await chat(shim)
+    expect(reports).toEqual([SELECTED_ID])
+  })
+})

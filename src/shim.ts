@@ -20,7 +20,7 @@ import { Readable } from 'node:stream'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import { workbuddyAccountId } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
-import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind, type WorkBuddyChatResult } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -87,6 +87,23 @@ export interface WorkBuddyShimOptions {
    * Absent means the store's own selection always serves.
    */
   prepareAccount?: () => Promise<void>
+  /**
+   * Called for every attempt that failed upstream, before the next one is tried.
+   *
+   * Exists so the plugin can RECORD the failure as a measurement. The ranking
+   * that picks the serving account reads the pool's STORED measurements, so
+   * without this an account that just answered 429 still reads as untested — and
+   * the next request picks it again and pays the same failed round trip before
+   * failing over.
+   *
+   * Fired without awaiting: a slow write must never delay the retry the user is
+   * waiting on, and the measurement only matters for LATER requests.
+   */
+  onAccountFailure?: (accountId: string, failure: {
+    status: number
+    kind: UpstreamErrorKind
+    message: string
+  }) => void
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -184,6 +201,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const logger = options.logger
   const failoverAccount = options.failoverAccount
   const prepareAccount = options.prepareAccount
+  const onAccountFailure = options.onAccountFailure
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
@@ -334,9 +352,45 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // refresh still happens exactly once, before any retry.
     let result = await client.chatStream(credential, prepared, controller.signal)
     const triedAccountIds: string[] = []
+
+    /**
+     * Tell the plugin about a failed attempt so it can store the measurement.
+     *
+     * Every failed attempt is reported exactly once, INCLUDING the last one — an
+     * account that failed with nobody left to try it is precisely the one the
+     * next request must avoid, so reporting only the attempts that had a
+     * successor would miss the case that matters most.
+     *
+     * Reported after the loop rather than inside it, so the account that broke
+     * out of the loop is not also reported by the post-loop call. Not awaited: the
+     * user is waiting on the retry, and the write only affects later requests.
+     */
+    const failures: Array<{ accountId: string, failure: WorkBuddyChatResult }> = []
+    const recordAttempt = (credential: WorkBuddyCredential, failure: WorkBuddyChatResult): void => {
+      if (failure.ok) return
+      failures.push({ accountId: workbuddyAccountId(credential), failure })
+    }
+    const reportFailures = (): void => {
+      if (onAccountFailure === undefined) return
+      for (const entry of failures) {
+        if (entry.failure.ok) continue
+        try {
+          onAccountFailure(entry.accountId, {
+            status: entry.failure.status,
+            kind: entry.failure.kind,
+            message: entry.failure.message,
+          })
+        } catch (error: unknown) {
+          // Reporting is bookkeeping; it must never take down a request.
+          logger?.warn('dsh-connect-workbuddy: recording an account failure failed', error)
+        }
+      }
+    }
+
     while (!result.ok && isFailoverWorthy(result.kind) && failoverAccount !== undefined) {
       // A client that hung up is not waiting for a better account.
       if (controller.signal.aborted) break
+      recordAttempt(credential, result)
       triedAccountIds.push(workbuddyAccountId(credential))
       const next = await failoverAccount(triedAccountIds).catch(() => undefined)
       if (next === undefined) break
@@ -352,6 +406,13 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       credential = next
       result = await client.chatStream(credential, prepared, controller.signal)
     }
+    // The final attempt's failure — recorded only if the loop did not already
+    // record it (it does not: the loop records each attempt as it starts the
+    // next one, and the last attempt has no next).
+    if (failures.length === 0 || failures[failures.length - 1]?.accountId !== workbuddyAccountId(credential)) {
+      recordAttempt(credential, result)
+    }
+    reportFailures()
 
     if (!result.ok) {
       // Say how many accounts were tried when more than one was: without it, a

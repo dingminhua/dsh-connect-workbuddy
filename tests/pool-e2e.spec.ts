@@ -938,3 +938,54 @@ describe('the pool section and the card share one refresh path (M-4 / L-5)', () 
   })
 
 })
+
+describe('a live failure becomes a measurement the next request reads', () => {
+  //  is scoped to another describe, so this block needs its own copy.
+  const sourceOf = async (name: string): Promise<string> =>
+    await import('node:fs/promises').then(fs => fs.readFile(new URL(`../src/${name}`, import.meta.url), 'utf8'))
+
+  it('wires live failures into the pool store, filtered by kind and membership', async () => {
+    // The property the user cares about: after a 429, the NEXT request should
+    // start from an account that works — not re-discover the same failure. That
+    // only holds if the chat path WRITES what it learned, because the ranking
+    // reads stored measurements. Before this, only the manual batch test wrote
+    // them, so a just-refused account still read as "untested" and kept being
+    // picked first.
+    const host = stripLiterals(await sourceOf('index.ts'))
+    expect(host, 'the shim is not given a failure report callback').toContain('onAccountFailure:')
+    expect(host, 'live failures are not recorded').toContain('recordAccountFailure(region, accountId, failure)')
+
+    const at = host.indexOf('const recordAccountFailure =')
+    expect(at, 'recordAccountFailure moved — update this guard').toBeGreaterThan(-1)
+    const rest = host.slice(at + 1)
+    const recorder = rest.slice(0, rest.indexOf('\n  const '))
+
+    // A 400 says the REQUEST was rejected, which is not evidence about the
+    // account; recording it would sideline a good account over a bad body.
+    //
+    // Asserted on the CODE SHAPE, not the literal: `'client'` is a string, and
+    // `stripLiterals` deliberately blanks strings — so the surviving text is
+    // `failure.kind === ''` (empty-quoted). Searching for the quoted form the
+    // source actually contains can never match here, which produced a false
+    // failure the first time this guard ran.
+    expect(recorder, 'a client-class failure is recorded, which would sideline a good account')
+      .toContain(`failure.kind === ''`)
+    // Membership is the explicit "spend this account's credits" tick, and a
+    // measurement steers routing — so an unchecked account must not be measured.
+    //
+    // Asserted as the COMPARISON, not as a mention of `memberAccountIds`: the
+    // declaration `const members = …memberAccountIds` satisfies a mention-search
+    // even after the check itself is deleted, which is precisely how a mutant
+    // that removed this guard survived the first version of this test.
+    expect(recorder, 'an unchecked account can be measured')
+      .toContain('members.includes(accountId)')
+    // The measurement has to carry the reset time the upstream stated, or the
+    // account returns to rotation immediately instead of waiting out the limit.
+    expect(recorder, 'the upstream reset time is not parsed').toContain('cooldownOf(')
+    expect(recorder, 'the outcome is not derived from the failure').toContain('outcomeOfFailure(')
+    // And the pool switch still gates it: with the pool off nothing routes, so
+    // writing measurements would be bookkeeping nobody reads.
+    expect(recorder, 'recording ignores the pool switch')
+      .toContain('poolPreferencesOf(current(), region).enabled')
+  })
+})
