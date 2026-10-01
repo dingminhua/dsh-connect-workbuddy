@@ -668,3 +668,216 @@ describe('the pool toolbar is one row of two clusters', () => {
     await m.unmount()
   })
 })
+
+describe('the pool table says WHY a member is out, not just THAT it is', () => {
+  it('appends a SHORT reason, not the raw upstream body', async () => {
+    // Before the message was persisted, a DNS failure, a gateway 502 and a
+    // request the user cancelled all rendered as the SAME sentence. That left a
+    // message nobody could act on, and no way to tell a broken account from a
+    // broken network — which is exactly the question this table exists to
+    // answer. The upstream's own words are what separate them.
+    //
+    // But "the upstream's own words" cannot mean the raw body: what is appended
+    // here is the SHORT form (`probe-reason.ts`), which is also why the redundant
+    // `transport error:` prefix is gone. The full text stays as a tooltip.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['down-1'],
+        effectiveMemberAccountIds: ['down-1'],
+        accounts: [
+          accountOf({
+            accountId: 'down-1',
+            accountName: 'Down',
+            probe: {
+              outcome: 'unavailable',
+              atMs: 1_800_000_000_000,
+              message: 'transport error: AbortError',
+            },
+          }),
+        ],
+      }),
+    }))
+    const text = m.text()
+    expect(text).toContain('AbortError')
+    expect(text, 'the redundant English prefix is noise in a Chinese card')
+      .not.toContain('transport error:')
+    // The label must survive alongside it: the message replaces nothing, it
+    // explains the outcome the row already states.
+    expect(text).toContain('row.probeUnavailable')
+    // Shortened, never lost.
+    expect(m.html()).toContain('transport error: AbortError')
+    await m.unmount()
+  })
+
+  it('renders the bare outcome when no message was recorded', async () => {
+    // Probe files written before the field existed carry no `message`. They must
+    // still render — an `undefined` leaking into the cell would be worse than the
+    // generic sentence, because it reads as a plugin bug rather than a fact.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['down-2'],
+        effectiveMemberAccountIds: ['down-2'],
+        accounts: [
+          accountOf({
+            accountId: 'down-2',
+            accountName: 'Down Two',
+            probe: { outcome: 'unavailable', atMs: 1_800_000_000_000 },
+          }),
+        ],
+      }),
+    }))
+    const text = m.text()
+    expect(text).toContain('row.probeUnavailable')
+    expect(text).not.toContain('undefined')
+    await m.unmount()
+  })
+
+  it('adds how long is left beside the instant the upstream named', async () => {
+    // The instant alone answers "when" but forces a subtraction from the clock
+    // in the reader's head. Both must appear: the instant is the upstream's own
+    // answer and stays authoritative, while the relative form is what makes the
+    // wait scannable. Two hours out, so the expected unit is unambiguous.
+    const retryAt = Date.now() + 2 * 60 * 60_000
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['limited-9'],
+        effectiveMemberAccountIds: ['limited-9'],
+        accounts: [
+          accountOf({
+            accountId: 'limited-9',
+            accountName: 'Limited Nine',
+            probe: { outcome: 'rate-limited', atMs: Date.now(), retryAtMs: retryAt },
+          }),
+        ],
+      }),
+    }))
+    const text = m.text()
+    expect(text).toContain('row.poolRetryAt|at=')
+    expect(text).toContain('row.remainingHours|count=2')
+    await m.unmount()
+  })
+
+  it('adds no relative text for an outcome that named no time', async () => {
+    // The whole feature forbids inventing a countdown. An outcome without a
+    // stated time must keep saying exactly that, with nothing appended — a
+    // fabricated "in 30 minutes" would look like an upstream answer.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['limited-8'],
+        effectiveMemberAccountIds: ['limited-8'],
+        accounts: [
+          accountOf({
+            accountId: 'limited-8',
+            accountName: 'Limited Eight',
+            probe: { outcome: 'rate-limited', atMs: Date.now() },
+          }),
+        ],
+      }),
+    }))
+    const text = m.text()
+    expect(text).toContain('row.poolRetryUnknown')
+    expect(text).not.toContain('row.remaining')
+    await m.unmount()
+  })
+
+  it('does not restate a limit body that only duplicates the time beside it', async () => {
+    // A 429 body is `{"code":6004,…将在 <the same instant> 重置…,"requestId":…}`.
+    // Inlining it would print the reset time THREE times and bury the row's real
+    // content under a duplicate of itself. Suppressed inline — but it must stay
+    // reachable, so the same text goes on the element as a tooltip.
+    const body = '{"code":6004,"msg":"将在 2026-10-02 05:23:27 重置","requestId":"abc"}'
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['limited-7'],
+        effectiveMemberAccountIds: ['limited-7'],
+        accounts: [
+          accountOf({
+            accountId: 'limited-7',
+            accountName: 'Limited Seven',
+            probe: {
+              outcome: 'rate-limited',
+              atMs: Date.now(),
+              retryAtMs: Date.now() + 2 * 60 * 60_000,
+              message: body,
+            },
+          }),
+        ],
+      }),
+    }))
+    const text = m.text()
+    expect(text, 'the duplicate body was inlined').not.toContain('requestId')
+    expect(text, 'the row lost its recovery time').toContain('row.remainingHours|count=2')
+    expect(m.html(), 'the upstream text is unreachable once suppressed').toContain('title=')
+    await m.unmount()
+  })
+})
+
+describe('a streamed test batch reports each account as it lands', () => {
+  /** One NDJSON frame. */
+  const frame = (payload: Record<string, unknown>): string => `${JSON.stringify(payload)}\n`
+
+  /** A streamed answer: a header line, two accounts, then completion. */
+  function streamOf(): string {
+    return frame({ action: 'test', modelId: 'free-1' })
+      + frame({ row: { accountId: GENUINE_ID, accountName: 'Real One', result: { modelId: 'free-1', outcome: 'ok' } } })
+      + frame({ row: { accountId: 'beta', accountName: 'Beta', result: { modelId: 'free-1', outcome: 'rate-limited' } } })
+      + frame({ done: true })
+  }
+
+  /**
+   * Empty the activity log before asserting on it.
+   *
+   * The log is deliberately per-REGION and outlives a mount (a remount continues
+   * the same history), so within one test file it accumulates. An assertion that
+   * something was NOT logged would otherwise pass or fail on a previous test's
+   * entries rather than on this one's.
+   */
+  async function clearLog(m: Awaited<ReturnType<typeof mount>>): Promise<void> {
+    const clear = m.buttons().find(button => button.textContent?.includes('row.poolLogClear'))
+    if (clear !== undefined) await m.click(clear)
+  }
+
+  it('logs one line per account from the stream, then the completion', async () => {
+    // The route streams NDJSON for tests so the card can report progress instead
+    // of holding everything until the slowest member answers. This pins the
+    // CLIENT half: each `row` frame becomes one log entry, and the completion
+    // line comes from `done` rather than from the response ending.
+    stubFetch(url => url.includes('/pool')
+      ? { body: streamOf(), contentType: 'application/x-ndjson' }
+      : { body: {} })
+    const onRefresh = vi.fn()
+    const m = await mount(AccountPool, baseProps({ onRefresh }))
+    await clearLog(m)
+    await m.click(m.button('row.poolTestAll'))
+    await m.settle()
+    const text = m.text()
+    // The outcome is rendered through the SAME labels the table uses, so one
+    // measurement cannot be described two ways in one card.
+    expect(text).toContain('row.poolLogTestRow|accountName=Real One|outcome=row.probeOk')
+    expect(text).toContain('row.poolLogTestRow|accountName=Beta|outcome=row.poolExcludedRateLimited')
+    expect(text).toContain('row.poolLogTestDone')
+    expect(onRefresh, 'a successful stream must still re-read the usage').toHaveBeenCalledTimes(1)
+    await m.unmount()
+  })
+
+  it('reports a mid-stream failure as the batch error and does NOT re-read', async () => {
+    // Once the first line is written the status code is committed, so a failure
+    // arrives as a frame. It must still be treated as a failure: no completion
+    // line, and no usage re-read that would paper over it.
+    stubFetch(url => url.includes('/pool')
+      ? { body: frame({ row: { accountId: GENUINE_ID, accountName: 'Real One', result: { modelId: 'free-1', outcome: 'ok' } } })
+          + frame({ reason: 'pool-failed', error: 'upstream exploded' }), contentType: 'application/x-ndjson' }
+      : { body: {} })
+    const onRefresh = vi.fn()
+    const m = await mount(AccountPool, baseProps({ onRefresh }))
+    await clearLog(m)
+    await m.click(m.button('row.poolTestAll'))
+    await m.settle()
+    const text = m.text()
+    expect(text).toContain('row.poolLogTestRow|accountName=Real One|outcome=row.probeOk')
+    expect(text, 'a failed stream must not be announced as complete').not.toContain('row.poolLogTestDone')
+    expect(text).toContain('row.poolLogBatchFailed')
+    expect(onRefresh, 'a failed batch must not re-read').not.toHaveBeenCalled()
+    await m.unmount()
+  })
+})

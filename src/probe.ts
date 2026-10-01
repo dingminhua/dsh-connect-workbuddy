@@ -339,12 +339,18 @@ const PROBE_MESSAGE_LIMIT = 300
 /**
  * Redact token-shaped content out of upstream text before it is stored or sent.
  *
- * Duplicated from the route layer on purpose rather than imported: this module
- * is the one that reads raw failure bodies, so the redaction belongs at the
- * point of capture. A probe failure body is the one place a raw upstream string
- * from an arbitrary endpoint enters the plugin's data flow.
+ * Lives here rather than in the route layer because this module is the one that
+ * reads raw failure bodies, so the redaction belongs at the point of capture. A
+ * probe failure body is the one place a raw upstream string from an arbitrary
+ * endpoint enters the plugin's data flow.
+ *
+ * EXPORTED because a failed CHAT request now persists its reason into the pool
+ * store too (`recordAccountFailure` in `src/index.ts`), and that text is a raw
+ * upstream body as well. One implementation, so the two writers cannot drift
+ * into redacting differently — the same "one definition" rule this codebase
+ * applies to `effectiveMembersOf`.
  */
-function redact(text: string): string {
+export function redactUpstreamText(text: string): string {
   return text
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[redacted token]')
     .replace(/(\b(?:code|token|refresh_token|access_token)=)[^&\s]+/giu, '$1[redacted]')
@@ -383,7 +389,7 @@ export async function probeModel(input: {
     return {
       modelId: input.modelId,
       outcome: 'unavailable',
-      message: redact(error instanceof Error ? error.message : String(error)),
+      message: redactUpstreamText(error instanceof Error ? error.message : String(error)),
     }
   }
   const elapsedMs = Date.now() - startedAt
@@ -420,7 +426,7 @@ export async function probeModel(input: {
     outcome,
     elapsedMs,
     status: answer.status,
-    ...body === '' ? {} : { message: redact(body) },
+    ...body === '' ? {} : { message: redactUpstreamText(body) },
     ...cooldownOf({
       outcome,
       retryAfter: answer.retryAfter,

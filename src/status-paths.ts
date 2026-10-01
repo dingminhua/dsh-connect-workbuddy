@@ -559,6 +559,15 @@ export interface WorkBuddyWebPoolAccount {
     atMs: number
     /** Only when the upstream named a time; never invented locally. */
     retryAtMs?: number
+    /**
+     * Why it failed, in the upstream's own redacted words.
+     *
+     * Carried so the pool table can distinguish a DNS failure from a gateway
+     * 502 from a request the user cancelled, instead of repeating one generic
+     * sentence for all three. ABSENT on success and on measurements written
+     * before this field existed, so the card must render the bare outcome then.
+     */
+    message?: string
   }
   /** Set when this account cannot serve right now. */
   excludedBy?: WorkBuddyWebPoolExclusion

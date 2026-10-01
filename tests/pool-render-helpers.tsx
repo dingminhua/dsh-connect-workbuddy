@@ -135,19 +135,36 @@ export function fakeScope(initial: Record<string, unknown> = {}, failWrites = fa
   }
 }
 
-/** Records every fetch and answers with a canned body. */
+/**
+ * Records every fetch and answers with a canned body.
+ *
+ * `contentType` matters: the card picks its parser from it. The default is a
+ * single JSON document — what check-in and an older Host answer with — while a
+ * test that drives the streamed test route passes `application/x-ndjson`, which
+ * also attaches a readable `body` so the card's NDJSON reader has a stream to
+ * consume (its `json()` would have nothing to parse).
+ */
 export function stubFetch(
-  answer: (url: string, init: any) => { status?: number, body: unknown },
+  answer: (url: string, init: any) => { status?: number, body: unknown, contentType?: string },
 ): { url: string, init: any }[] {
   const calls: { url: string, init: any }[] = []
   const stub = vi.fn(async (url: any, init: any) => {
     calls.push({ url: String(url), init })
     const result = answer(String(url), init)
     const status = result.status ?? 200
+    const contentType = result.contentType ?? 'application/json'
+    const text = typeof result.body === 'string' ? result.body : JSON.stringify(result.body)
     return {
       ok: status < 400,
       status,
-      json: async () => result.body,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? contentType : null },
+      json: async () => JSON.parse(text) as unknown,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(text))
+          controller.close()
+        },
+      }),
     }
   })
   vi.stubGlobal('fetch', stub)

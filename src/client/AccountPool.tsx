@@ -36,6 +36,9 @@ import type {
   WorkBuddyWebRegion,
 } from '../status-paths.ts'
 import type { Translate } from './searched-paths.ts'
+import { readNdjson } from './ndjson.ts'
+import { inlineProbeReason } from './probe-reason.ts'
+import { remainingText } from './remaining.ts'
 import {
   announcedBatchCount,
   draftBaseFor,
@@ -242,7 +245,8 @@ function exclusionText(t: Translate, account: WorkBuddyWebPoolAccount): string |
     case 'credential-rejected': return t('row.poolExcludedRejected')
     // These four used to be folded into 'credential-rejected', which made the
     // name column contradict the probe column right beside it: "被拒绝，请重新
-    // 登录" next to "连不上上游——这是网络问题". They now reuse the probe labels,
+    // 登录" next to "连不上上游——这是网络问题" (that probe label is now
+    // cause-neutral; see `locales.ts`). They now reuse the probe labels,
     // so one measurement yields one consistent story.
     case 'not-found': return t('row.probeNotFound')
     case 'unavailable': return t('row.probeUnavailable')
@@ -513,68 +517,132 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
         : t('row.poolLogTestStart', { count: memberCount, model: pool?.targetModelId ?? '' }),
       'info',
     )
+    /**
+     * One test row into the activity log.
+     *
+     * Shared by the STREAMED shape (a line per account) and the whole-batch
+     * shape (an older Host's single document), so the two can never report the
+     * same measurement differently — the failure mode this file's history is
+     * mostly made of.
+     */
+    const logTestRow = (row: WorkBuddyWebPoolTestRow): void => {
+      // Tolerate a malformed row instead of dereferencing it blind: one bad
+      // entry used to throw a TypeError out of the whole loop, which the outer
+      // catch turned into a batch error — so the remaining rows were never
+      // reported and no completion line was written.
+      const outcome = row?.result?.outcome
+      if (outcome === undefined) {
+        appendLog(t('row.poolLogTestRowMalformed', {
+          accountName: row?.accountName === '' || row?.accountName === undefined
+            ? t('row.accountUnnamed')
+            : row.accountName,
+        }), 'warn')
+        return
+      }
+      appendLog(t('row.poolLogTestRow', {
+        accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
+        outcome: outcomeText(t, outcome),
+      }), outcomeOk(outcome) ? 'ok' : 'warn')
+    }
     try {
       const response = await fetch(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, action), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
       })
-      const body = await response.json().catch(() => undefined) as
-        | { rows?: unknown, error?: string, modelId?: string, reason?: string }
-        | undefined
-      if (!response.ok) {
-        // `poolFailureText` owns the three-tier rule (localized cause → the
-        // Host's own words → a message keyed on the status). It lives in the
-        // browser-free module so every tier, including the status one, is
-        // pinned by a test — a rule kept here could not be.
-        throw new Error(poolFailureText(t, {
-          status: response.status,
-          reason: body?.reason,
-          error: body?.error,
-        }))
-      }
-      if (!mounted.current) return
-      if (action === 'checkin') {
-        for (const row of (body?.rows ?? []) as WorkBuddyWebPoolCheckinRow[]) {
-          if (row.status === 'claimed') {
-            appendLog(t('row.poolLogCheckinClaimed', {
-              accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
-              credit: String(row.credit ?? 0),
-            }), 'ok')
-          } else if (row.status === 'already') {
-            appendLog(t('row.poolLogCheckinAlready', {
-              accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
-            }), 'info')
-          } else {
-            appendLog(t('row.poolLogCheckinFailed', {
-              accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
-              message: row.message ?? t('row.requestFailed'),
-            }), 'error')
-          }
+      // The TEST route answers with NDJSON, one line per account, so each result
+      // can be reported as it lands. Check-in still answers in one document, and
+      // an older Host sends the whole batch as JSON — hence the content-type
+      // check rather than assuming either shape.
+      //
+      // Both shapes converge on ONE success tail — the refresh call and the
+      // completion logs sit after this if/else, not inside each arm. The refresh
+      // is structurally pinned to a single site on the success path, because a
+      // second one is how a failed batch ends up re-reading the usage too.
+      let failed = false
+      const streamed = (response.headers.get('content-type') ?? '').includes('ndjson')
+      if (streamed) {
+        if (!response.ok) {
+          throw new Error(poolFailureText(t, { status: response.status }))
         }
-        appendLog(t('row.poolLogCheckinDone'), 'ok')
+        // Read the whole stream even after unmount: dropping the reader would
+        // leave the Host writing into a socket nobody drains.
+        let sawRow = false
+        await readNdjson(response.body, line => {
+          const row = line['row'] as WorkBuddyWebPoolTestRow | undefined
+          if (row !== undefined) {
+            sawRow = true
+            // Rows arrive one at a time, so this is the per-account progress the
+            // batch never used to give. Skip the DOM work once unmounted; the
+            // reader above still has to drain.
+            if (mounted.current) logTestRow(row)
+            return
+          }
+          const reason = line['reason']
+          if (typeof reason === 'string') {
+            // The status is committed by the first line, so a mid-batch failure
+            // arrives HERE rather than as a non-2xx response.
+            failed = true
+            const message = poolFailureText(t, {
+              status: 200,
+              reason,
+              error: typeof line['error'] === 'string' ? line['error'] : undefined,
+            })
+            if (mounted.current) {
+              setActionError(message)
+              appendLog(t('row.poolLogBatchFailed', { message }), 'error')
+            }
+          }
+        })
+        if (!mounted.current) return
+        // No completion line for a stream that errored, and none for one that
+        // reported nothing at all: both would announce a batch that did not run.
+        if (!failed && sawRow) appendLog(t('row.poolLogTestDone'), 'ok')
       } else {
-        for (const row of (body?.rows ?? []) as WorkBuddyWebPoolTestRow[]) {
-          // Tolerate a malformed row instead of dereferencing it blind: one bad
-          // entry used to throw a TypeError out of the whole loop, which the
-          // outer catch turned into a batch error — so the remaining rows were
-          // never reported and no completion line was written.
-          const outcome = row?.result?.outcome
-          if (outcome === undefined) {
-            appendLog(t('row.poolLogTestRowMalformed', {
-              accountName: row?.accountName === '' || row?.accountName === undefined
-                ? t('row.accountUnnamed')
-                : row.accountName,
-            }), 'warn')
-            continue
-          }
-          appendLog(t('row.poolLogTestRow', {
-            accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
-            outcome: outcomeText(t, outcome),
-          }), outcomeOk(outcome) ? 'ok' : 'warn')
+        const body = await response.json().catch(() => undefined) as
+          | { rows?: unknown, error?: string, modelId?: string, reason?: string }
+          | undefined
+        if (!response.ok) {
+          // `poolFailureText` owns the three-tier rule (localized cause → the
+          // Host's own words → a message keyed on the status). It lives in the
+          // browser-free module so every tier, including the status one, is
+          // pinned by a test — a rule kept here could not be.
+          throw new Error(poolFailureText(t, {
+            status: response.status,
+            reason: body?.reason,
+            error: body?.error,
+          }))
         }
-        appendLog(t('row.poolLogTestDone'), 'ok')
+        if (!mounted.current) return
+        if (action === 'checkin') {
+          for (const row of (body?.rows ?? []) as WorkBuddyWebPoolCheckinRow[]) {
+            if (row.status === 'claimed') {
+              appendLog(t('row.poolLogCheckinClaimed', {
+                accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
+                credit: String(row.credit ?? 0),
+              }), 'ok')
+            } else if (row.status === 'already') {
+              appendLog(t('row.poolLogCheckinAlready', {
+                accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
+              }), 'info')
+            } else {
+              appendLog(t('row.poolLogCheckinFailed', {
+                accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
+                message: row.message ?? t('row.requestFailed'),
+              }), 'error')
+            }
+          }
+          appendLog(t('row.poolLogCheckinDone'), 'ok')
+        } else {
+          // An older Host (or a non-streaming answer): every row arrives at once.
+          // Same reporter as the streamed path, so the log reads identically.
+          for (const row of (body?.rows ?? []) as WorkBuddyWebPoolTestRow[]) logTestRow(row)
+          appendLog(t('row.poolLogTestDone'), 'ok')
+        }
       }
+      // A failed stream is not a success: re-reading would mask the error the
+      // log just reported, which is exactly what this placement forbids.
+      if (failed) return
       // The batch has changed credits and probe state on the Host, but the
       // numbers on screen come from the usage route. Re-read it here, or the
       // panel keeps showing pre-check-in credits until the next 60s poll and a
@@ -885,7 +953,7 @@ function renderAccountRow(input: {
   const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
   const excluded = exclusionText(t, account)
   const probe = account.probe
-  const probeLine = probe === undefined
+  const outcomeLine = probe === undefined
     ? t('row.poolNeverTested')
     : probe.retryAtMs !== undefined
       ? `${outcomeText(t, probe.outcome)} · ${t('row.poolRetryAt', { at: formatShort(probe.retryAtMs) })}`
@@ -896,6 +964,24 @@ function renderAccountRow(input: {
       : probe.outcome === 'rate-limited' || probe.outcome === 'out-of-credit'
         ? `${outcomeText(t, probe.outcome)} · ${t('row.poolRetryUnknown')}`
         : outcomeText(t, probe.outcome)
+  // The reason worth inlining, from the ONE rule both tables share (see
+  // `probe-reason.ts`). It is absent for a limited account — whose body just
+  // repeats the reset time printed beside it — and shortened otherwise, because
+  // "the request was cancelled" versus "the network is down" is the question
+  // this table exists to answer. The full text stays as a tooltip below.
+  //
+  // The relative form of the recovery time sits between them: "05:23:27 之后可
+  // 再用 · 约 1 小时后". It is derived from that same instant, so the reader gets
+  // "how long do I wait" without subtracting from the clock in their head, and
+  // the two can never disagree. Empty once the moment has passed — which is
+  // exactly when the account is back and the absolute time is the honest answer.
+  const remaining = probe?.retryAtMs === undefined
+    ? ''
+    : remainingText(t, probe.retryAtMs, Date.now())
+  const reason = probe === undefined ? undefined : inlineProbeReason(probe.outcome, probe.message)
+  const probeLine = [outcomeLine, remaining, reason]
+    .filter(part => part !== undefined && part !== '')
+    .join(' · ')
 
   return h('div', {
     className: `dsm-workbuddy-pool-row${account.current ? ' dsm-workbuddy-pool-row-current' : ''}`,
@@ -948,7 +1034,14 @@ function renderAccountRow(input: {
           : h('span', { className: 'dsm-workbuddy-pool-soon-plain' },
               t('row.poolCreditNearest', { at: formatShort(account.nearestExpiryMs) })),
     ),
-    h('span', { className: 'dsm-workbuddy-pool-probe' }, probeLine),
+    // The full upstream text stays on the element as a tooltip even when the
+    // line above suppressed it as redundant. Suppressing it inline must not mean
+    // "unreachable": a rate-limited row still has the upstream's exact wording
+    // one hover away, requestId included.
+    h('span', {
+      className: 'dsm-workbuddy-pool-probe',
+      ...probe?.message === undefined ? {} : { title: probe.message },
+    }, probeLine),
     checkinSupported
       ? h('span', { className: 'dsm-workbuddy-pool-checkin' },
           // Three states, not two: an unread account says nothing rather than

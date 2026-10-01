@@ -47,6 +47,7 @@ function isProbe(value: unknown): value is WorkBuddyPoolProbe {
   return typeof candidate['outcome'] === 'string'
     && typeof candidate['atMs'] === 'number'
     && (candidate['retryAtMs'] === undefined || typeof candidate['retryAtMs'] === 'number')
+    && (candidate['message'] === undefined || typeof candidate['message'] === 'string')
 }
 
 /**
@@ -62,9 +63,11 @@ export function workbuddyPoolStorePath(region: WorkBuddyRegion): string {
 /**
  * Read one region's measured facts.
  *
- * Contains NO credentials — only outcome words and timestamps — so it is not
- * written with the credential store's stricter secrecy requirements, though it
- * still uses the same atomic-write helpers.
+ * Contains NO credentials. The one free-text field is `message`, and it is
+ * REDACTED BY THE WRITER before it ever reaches this file (`probe.ts`'s
+ * `redactUpstreamText`), so a token-shaped string cannot survive into storage.
+ * Because of that the file is not written with the credential store's stricter
+ * secrecy requirements, though it still uses the same atomic-write helpers.
  *
  * Returns an empty map for a missing, unreadable, malformed, or
  * version-mismatched file: all four mean "nothing measured yet", which is a
@@ -96,6 +99,7 @@ export async function readPoolProbes(
       outcome: probe.outcome,
       atMs: probe.atMs,
       ...probe.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs },
+      ...probe.message === undefined ? {} : { message: probe.message },
     }
   }
   return probes

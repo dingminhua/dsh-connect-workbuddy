@@ -271,6 +271,54 @@ describe('pool failover: retrying a failed chat on another account', () => {
     expect(calls).toBe(1)
   })
 
+  it('records NO measurement when the client hung up (D1b)', async () => {
+    // The defect this pins: our OWN abort reaches the plugin as a transport
+    // failure (`status: 0`, `kind: 'server'`), which is indistinguishable from a
+    // dead network where the host reads it. It was therefore recorded as
+    // `unavailable` — a statement about the ACCOUNT — even though nothing was
+    // wrong with the account. One closed panel could idle a healthy member, and
+    // once every member was idled the pool had no candidate at all, so failover
+    // had nowhere to go and the raw upstream error was reported to the user.
+    //
+    // Same hang-up choreography as the test above: the attempt waits for the
+    // socket to die, so the abort is observable rather than raced.
+    const reports: string[] = []
+    let release: () => void = () => {}
+    const gone = new Promise<void>(resolve => { release = resolve })
+    shim = createWorkBuddyShim({
+      store: storeWith([]),
+      client: {
+        chatStream: async () => {
+          await gone
+          // Exactly what an aborted `fetch` produces in `chatStream`'s catch.
+          return { ok: false, status: 0, kind: 'server', message: 'transport error: AbortError' }
+        },
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      onAccountFailure: accountId => { reports.push(accountId) },
+    })
+    await shim.ready
+
+    const url = new URL(shim.baseUrl())
+    const { connect } = await import('node:net')
+    const socket = connect(Number(url.port), url.hostname)
+    await new Promise<void>(resolve => socket.once('connect', () => resolve()))
+    const payload = JSON.stringify({ messages: [] })
+    socket.write(
+      'POST /v1/chat/completions HTTP/1.1\r\n'
+      + `Host: ${url.hostname}:${url.port}\r\n`
+      + 'Content-Type: application/json\r\n'
+      + `Authorization: Bearer ${shim.token()}\r\n`
+      + `Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`,
+    )
+    // Hang up, as a user closing the panel does.
+    socket.destroy()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    release()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(reports).toEqual([])
+  })
+
   it('names the failure class it is retrying, so the log is diagnosable', async () => {
     const other = credentialFor('other')
     const warn = vi.fn()

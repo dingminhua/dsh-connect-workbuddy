@@ -210,10 +210,18 @@ export interface WorkBuddyPoolDeps {
    * reports "unavailable" instead of appearing to succeed.
    */
   checkin?(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolCheckinRow[]>
-  /** Test every account of one region against the resolved target model. */
+  /**
+   * Test every account of one region against the resolved target model.
+   *
+   * `onRow` is optional and exists so the route can STREAM each account as it
+   * finishes. An older Host ignores it and answers with the whole batch at once;
+   * the route handles both, because a missing reporter must degrade to the
+   * previous behaviour rather than to no rows at all.
+   */
   test?(
     region: WorkBuddyRegion,
     modelId: string,
+    onRow?: (row: WorkBuddyPoolTestRow) => void,
   ): Promise<readonly WorkBuddyPoolTestRow[]>
   /** The region's live catalog, used to resolve the free target model. */
   catalog?(region: WorkBuddyRegion): readonly WorkBuddyModelInfo[]
@@ -615,6 +623,7 @@ async function workBuddyWebPool(
           outcome: measured.probe.outcome as WorkBuddyWebProbeOutcome,
           atMs: measured.probe.atMs,
           ...measured.probe.retryAtMs === undefined ? {} : { retryAtMs: measured.probe.retryAtMs },
+          ...measured.probe.message === undefined ? {} : { message: measured.probe.message },
         },
       },
       ...row?.excludedBy === undefined ? {} : { excludedBy: row.excludedBy },
@@ -897,11 +906,43 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
                 : 'no zero-multiplier model in this region; refresh the catalog or set a target model',
             })
           }
-          const rows = await pool.test(region, target.modelId)
+          // STREAM one line per account instead of holding the whole batch.
+          //
+          // The batch is serial on purpose (driving the whole pool at once is the
+          // fastest way to trip the upstream's volume limit), so a single
+          // response meant the card could say nothing until the SLOWEST member
+          // answered. With a stuck account that is seconds of a dead-looking
+          // button and no way to tell which member was the problem. NDJSON keeps
+          // the ordering and the one-batch semantics while letting each row land
+          // as it happens.
+          //
+          // The status code is already committed once the first line is written,
+          // so a mid-batch failure travels as a LINE rather than as a 500 — the
+          // client treats it as the batch's error, which is what it is.
+          //
           // Measurements are persisted by the Host's own `test` implementation,
-          // alongside the rotation they feed. Doing it here as well would write
-          // the same facts twice and could interleave with a concurrent batch.
-          return json(res, 200, { action: 'test', modelId: target.modelId, rows })
+          // never here: doing it in this layer as well would write the same facts
+          // twice and could interleave with a concurrent batch.
+          res.writeHead(200, {
+            'Content-Type': 'application/x-ndjson',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            // Proxies must not buffer this: progress the user cannot see is
+            // exactly the defect being fixed.
+            'X-Accel-Buffering': 'no',
+          })
+          const writeLine = (payload: unknown): void => {
+            res.write(`${JSON.stringify(payload)}\n`)
+          }
+          writeLine({ action: 'test', modelId: target.modelId })
+          try {
+            await pool.test(region, target.modelId, row => { writeLine({ row }) })
+            writeLine({ done: true })
+          } catch (error: unknown) {
+            writeLine({ reason: 'pool-failed', error: safeMessage(error) })
+          }
+          res.end()
+          return
         } catch (error: unknown) {
           json(res, 500, { reason: 'pool-failed', error: safeMessage(error) })
         }

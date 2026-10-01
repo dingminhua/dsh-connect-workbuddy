@@ -20,21 +20,48 @@ function request(
   return { method, url, headers: origin === undefined ? {} : { origin } }
 }
 
-/** Response recorder: `json()` only needs writeHead + end. */
+/**
+ * Response recorder.
+ *
+ * `json()` needs writeHead + end; the TEST action additionally STREAMS (one
+ * NDJSON line per account), so `write` is recorded too. Everything written lands
+ * in one buffer, so `body()` reads a single-document answer and `lines()` reads a
+ * streamed one — the shape a given test expects is the shape it reaches for.
+ */
 function response(): {
-  res: { writeHead: (status: number, headers?: Record<string, string>) => void, end: (payload?: string) => void }
+  res: {
+    writeHead: (status: number, headers?: Record<string, string>) => void
+    write: (chunk: string) => void
+    end: (payload?: string) => void
+  }
   status: () => number
+  headers: () => Record<string, string>
   body: () => Record<string, unknown>
+  lines: () => Record<string, unknown>[]
 } {
   let statusCode = 0
-  let payload = ''
+  let headers: Record<string, string> = {}
+  const chunks: string[] = []
+  const written = (): string => chunks.join('')
   return {
     res: {
-      writeHead: (status: number) => { statusCode = status },
-      end: (body?: string) => { payload = body ?? '' },
+      writeHead: (status: number, next?: Record<string, string>) => {
+        statusCode = status
+        if (next !== undefined) headers = next
+      },
+      write: (chunk: string) => { chunks.push(chunk) },
+      end: (body?: string) => {
+        if (body !== undefined) chunks.push(body)
+      },
     },
     status: () => statusCode,
-    body: () => JSON.parse(payload) as Record<string, unknown>,
+    headers: () => headers,
+    body: () => JSON.parse(written()) as Record<string, unknown>,
+    lines: () => written()
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line !== '')
+      .map(line => JSON.parse(line) as Record<string, unknown>),
   }
 }
 
@@ -182,6 +209,36 @@ async function mountUsage(
 }
 
 describe('the account-pool route', () => {
+  it('streams one line per account, in order, so the card can report progress', async () => {
+    // The defect: the route held the whole batch, and the batch is SERIAL, so the
+    // card could not say anything until the slowest member answered. One stuck
+    // account therefore looked like a dead button. Each row now lands as it
+    // happens: a header line naming the model, then one line per account, then a
+    // completion line.
+    const handler = await mountPoolHandler(deps(poolDeps({
+      test: async (_region, modelId, onRow) => {
+        const rows = [
+          { accountId: 'a', accountName: 'Alpha', result: { modelId, outcome: 'ok' as const } },
+          { accountId: 'b', accountName: 'Beta', result: { modelId, outcome: 'rate-limited' as const } },
+        ]
+        for (const row of rows) onRow?.(row)
+        return rows
+      },
+    })))
+    const { res, status, headers, lines } = response()
+    await handler(request(), res)
+    expect(status()).toBe(200)
+    expect(headers()['Content-Type']).toBe('application/x-ndjson')
+    expect(lines()).toHaveLength(4)
+    // The model first, so the card can label the progress before any account runs.
+    expect(lines()[0]?.['modelId']).toBe('deepseek-v4.1-flash')
+    const rowOf = (line: Record<string, unknown> | undefined): { accountId?: string } =>
+      (line?.['row'] ?? {}) as { accountId?: string }
+    expect(rowOf(lines()[1]).accountId).toBe('a')
+    expect(rowOf(lines()[2]).accountId).toBe('b')
+    expect(lines()[3]?.['done']).toBe(true)
+  })
+
   it('runs the check-in batch for the addressed region', async () => {
     const handler = await mountPoolHandler(deps(poolDeps()))
     const { res, status, body } = response()
@@ -201,11 +258,13 @@ describe('the account-pool route', () => {
         return [{ accountId: 'a', accountName: 'Alpha', result: { modelId, outcome: 'ok' } }]
       },
     })))
-    const { res, status, body } = response()
+    const { res, status, lines } = response()
     await handler(request(), res)
     expect(status()).toBe(200)
     expect(asked).toBe('deepseek-v4.1-flash')
-    expect(body()['modelId']).toBe('deepseek-v4.1-flash')
+    // The stream OPENS by naming the model it resolved, before any account is
+    // touched — so the card can label the progress it is about to show.
+    expect(lines()[0]?.['modelId']).toBe('deepseek-v4.1-flash')
   })
 
   it('refuses a test when the region has no free model, instead of billing a paid one', async () => {
@@ -461,15 +520,23 @@ describe('the account-pool route', () => {
     expect((international.body() as { pool?: { checkinSupported?: boolean } }).pool?.checkinSupported).toBe(false)
   })
 
-  it('reports a failing batch as a server error rather than a silent success', async () => {
+  it('reports a failing batch as a streamed error line rather than a silent success', async () => {
+    // The route streams, so the status is committed by the first line and a
+    // mid-batch failure can no longer become a 500. It travels as a LINE instead
+    // — and it must still be an explicit failure, because a truncated stream with
+    // no error line is indistinguishable from a batch that tested nothing.
     const handler = await mountPoolHandler(deps(poolDeps({
       test: async () => { throw new Error('upstream exploded') },
     })))
-    const { res, status, body } = response()
+    const { res, status, lines } = response()
     await handler(request(), res)
-    expect(status()).toBe(500)
-    expect(body()['reason']).toBe('pool-failed')
-    expect(String(body()['error'])).toContain('upstream exploded')
+    expect(status()).toBe(200)
+    const failure = lines().find(line => line['reason'] !== undefined)
+    expect(failure?.['reason']).toBe('pool-failed')
+    expect(String(failure?.['error'])).toContain('upstream exploded')
+    // No completion line: the batch did not finish, and saying otherwise would
+    // let the card log a success it never had.
+    expect(lines().some(line => line['done'] === true)).toBe(false)
   })
 
   it('redacts token-shaped text out of a failure message', async () => {
@@ -478,10 +545,11 @@ describe('the account-pool route', () => {
         throw new Error('failed with eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij')
       },
     })))
-    const { res, body } = response()
+    const { res, lines } = response()
     await handler(request(), res)
-    expect(String(body()['error'])).not.toContain('eyJhbGciOiJIUzI1NiJ9')
-    expect(String(body()['error'])).toContain('[redacted token]')
+    const failure = lines().find(line => line['reason'] !== undefined)
+    expect(String(failure?.['error'])).not.toContain('eyJhbGciOiJIUzI1NiJ9')
+    expect(String(failure?.['error'])).toContain('[redacted token]')
   })
 
   it('defaults to the domestic region when none is named', async () => {

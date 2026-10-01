@@ -51,6 +51,28 @@ describe('readPoolProbes', () => {
     expect(probes['beta']?.retryAtMs).toBe(1_800_000_600_000)
   })
 
+  it('round-trips the failure message, so the card can name the reason', async () => {
+    // The message is what separates "the request was cancelled" from "the
+    // network is down" in the pool table. Dropping it in storage would put every
+    // failure of a kind back behind one identical sentence.
+    await writePoolProbes('cn', {
+      alpha: { outcome: 'unavailable', atMs: 7, message: 'transport error: AbortError' },
+    })
+    expect((await readPoolProbes('cn'))['alpha']?.message).toBe('transport error: AbortError')
+  })
+
+  it('treats a missing message as a complete record, not a corrupt one', async () => {
+    // Measurements written before the field existed must stay readable: reading
+    // them as corrupt would silently erase a real observation.
+    await writePoolProbes('cn', { alpha: { outcome: 'ok', atMs: 1 } })
+    const raw = JSON.parse(await readFile(workbuddyPoolStorePath('cn'), 'utf8')) as {
+      probes: Record<string, Record<string, unknown>>
+    }
+    expect(raw.probes['alpha']).not.toHaveProperty('message')
+    const probes = await readPoolProbes('cn')
+    expect(probes['alpha']).toEqual({ outcome: 'ok', atMs: 1 })
+  })
+
   it('keeps the two regions fully separate', async () => {
     await writePoolProbes('cn', { alpha: { outcome: 'ok', atMs: 1 } })
     expect(await readPoolProbes('global')).toEqual({})

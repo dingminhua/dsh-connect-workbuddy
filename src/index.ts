@@ -46,7 +46,7 @@ import {
 } from './adapter.ts'
 import type { WorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
-import { cooldownOf, outcomeOfFailure, probeModel } from './probe.ts'
+import { cooldownOf, outcomeOfFailure, probeModel, redactUpstreamText } from './probe.ts'
 import type { UpstreamErrorKind } from './upstream.ts'
 import {
   checkinAllAccounts,
@@ -1004,11 +1004,16 @@ export function apply(ctx: Context, config: Config): void {
         }
         return rows
       },
-      test: async (region, modelId) => {
+      test: async (region, modelId, onRow) => {
         const rows = await testAllAccounts(
           await poolTargets(region),
           modelId,
           poolRunnerDeps(region),
+          // Forwarded so the route can report each account as it lands. The
+          // measurements are still persisted ONCE, after the whole batch: a
+          // per-row write would interleave with a concurrent batch and re-read
+          // the file on every account for nothing.
+          onRow,
         )
         // Persist the measurements: they are what keeps failover off an account
         // that is known to be limited or rejected.
@@ -1061,6 +1066,14 @@ export function apply(ctx: Context, config: Config): void {
    * Reads the candidate through `credentialFor()`, never `resolve()`: the saved
    * selection and the store's runtime state stay untouched, so this is
    * per-request borrowing rather than a silent change of who pays.
+   *
+   * Uses `localPoolMembers`, NOT `poolMembersOf`. This runs on the failure path
+   * of a request the user is already waiting on, and `poolMembersOf` fetches
+   * credits per member — so the expensive version turned one failed request into
+   * N extra upstream calls before the retry even left. The doc above always said
+   * "must not spend further requests"; the code used to contradict it. Credits
+   * still steer the ranking when a recent snapshot exists, because
+   * `localPoolMembers` reads the one the card's poll already paid for.
    */
   const failoverAccountFor = async (
     region: WorkBuddyRegion,
@@ -1068,7 +1081,7 @@ export function apply(ctx: Context, config: Config): void {
   ): Promise<WorkBuddyCredential | undefined> => {
     if (!poolPreferencesOf(current(), region).enabled) return undefined
     const tried = new Set(triedAccountIds)
-    for (const row of rankPool(await poolMembersOf(region), Date.now())) {
+    for (const row of rankPool(await localPoolMembers(region), Date.now())) {
       // `excludedBy` carries the reason a measurement rules an account out.
       // Skipping on it is what makes "try until none is usable" mean usable
       // rather than merely "not yet tried": re-hitting an account the upstream
@@ -1143,6 +1156,11 @@ export function apply(ctx: Context, config: Config): void {
    * The reset time comes from the upstream's own words — the 429 body carries
    * 「将在 … 重置」 — which `cooldownOf` parses. When it states no time, the store's
    * own short window applies rather than a guess at a long one.
+   *
+   * The upstream's text is persisted alongside the outcome so the card can name
+   * the reason. It is REDACTED first because this message is a raw upstream body:
+   * without that, a failure containing a token-shaped string would write it into
+   * a file on disk.
    */
   const recordAccountFailure = async (
     region: WorkBuddyRegion,
@@ -1162,11 +1180,13 @@ export function apply(ctx: Context, config: Config): void {
       nowMs: Date.now(),
       body: failure.message,
     })
+    const message = failure.message === '' ? '' : redactUpstreamText(failure.message)
     await writePoolProbes(region, {
       [accountId]: {
         outcome,
         atMs: Date.now(),
         ...retryAtMs === undefined ? {} : { retryAtMs },
+        ...message === '' ? {} : { message },
       },
     })
   }

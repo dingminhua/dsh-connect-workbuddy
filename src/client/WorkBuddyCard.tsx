@@ -54,6 +54,8 @@ import { AccountPool } from './AccountPool.tsx'
 // and one set of tests.
 import { createLatestWins } from '../account-pool.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
+import { inlineProbeReason } from './probe-reason.ts'
+import { remainingText } from './remaining.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import { searchReasonLabel, searchedView, signedOutNotice, signedOutText } from './searched-paths.ts'
@@ -248,9 +250,24 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
  * would look like an upstream answer while being a guess, and the user would
  * wait for a moment that means nothing.
  */
+/**
+ * ` · 约 1 小时后` for a future instant, or `''` when there is none.
+ *
+ * Kept beside {@link probeResultView} rather than inlined three times so the
+ * "append only when non-empty" rule cannot drift between the two limited
+ * outcomes. The absolute instant stays the primary text: it is the upstream's
+ * own answer, and the relative form is a convenience derived from it.
+ */
+function retrySuffix(t: Translate, untilMs: number | undefined, nowMs: number): string {
+  if (untilMs === undefined) return ''
+  const remaining = remainingText(t, untilMs, nowMs)
+  return remaining === '' ? '' : ` · ${remaining}`
+}
+
 function probeResultView(
   result: WorkBuddyWebProbeResult,
   t: Translate,
+  nowMs: number = Date.now(),
 ): { text: string, tone: 'ok' | 'warn' | 'bad' } {
   switch (result.outcome) {
     case 'ok': {
@@ -264,7 +281,8 @@ function probeResultView(
       return {
         text: result.retryAtMs === undefined
           ? t('row.probeRateLimitedUnknown')
-          : t('row.probeRateLimitedAt', { at: formatDate(result.retryAtMs) }),
+          : t('row.probeRateLimitedAt', { at: formatDate(result.retryAtMs) })
+            + retrySuffix(t, result.retryAtMs, nowMs),
         tone: 'warn',
       }
     case 'out-of-credit':
@@ -273,7 +291,8 @@ function probeResultView(
       return {
         text: result.retryAtMs === undefined
           ? t('row.probeOutOfCreditUnknown')
-          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) }),
+          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) })
+            + retrySuffix(t, result.retryAtMs, nowMs),
         tone: 'bad',
       }
     case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }
@@ -1145,13 +1164,17 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                 const result = probes[activeRegion]?.[model.id]
                                 if (result === undefined) return null
                                 const view = probeResultView(result, t)
+                                const reason = inlineProbeReason(result.outcome, result.message)
                                 return (
                                   <p
                                     className={`dsm-workbuddy-model-probe-result dsm-workbuddy-model-probe-result-${view.tone}`}
                                     role="status"
+                                    // The full upstream text, kept reachable even
+                                    // when the line below shortens or drops it.
+                                    {...result.message === undefined ? {} : { title: result.message }}
                                   >
                                     {view.text}
-                                    {result.message === undefined ? null : ' · ' + result.message}
+                                    {reason === undefined ? null : ' · ' + reason}
                                   </p>
                                 )
                               })()}

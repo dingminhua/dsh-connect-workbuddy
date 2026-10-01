@@ -149,16 +149,29 @@ async function checkinOne(
  * exactly the silent spend the plan forbids.
  *
  * Never throws: a failed probe is a ROW, not an aborted batch.
+ *
+ * `onRow` fires the moment one account's row exists, which is what lets a caller
+ * report progress. The loop is SERIAL by design (one account at a time — hitting
+ * the whole pool at once is the fastest way to trip the upstream's volume limit),
+ * so without this a caller cannot say anything until the SLOWEST member answers:
+ * one stuck account made a working batch look like a dead button. The return
+ * value is unchanged, so every existing caller keeps all rows at the end.
  */
 export async function testAllAccounts(
   targets: readonly WorkBuddyPoolTarget[],
   modelId: string,
   deps: WorkBuddyPoolRunnerDeps,
+  /** Called after each account finishes, in the order they were tested. */
+  onRow?: (row: WorkBuddyPoolTestRow) => void,
 ): Promise<WorkBuddyPoolTestRow[]> {
   const rows: WorkBuddyPoolTestRow[] = []
   for (const [index, target] of targets.entries()) {
     if (index > 0) await (deps.wait ?? defaultWait)(POOL_BATCH_GAP_MS)
-    rows.push(await testOne(target, modelId, deps))
+    const row = await testOne(target, modelId, deps)
+    rows.push(row)
+    // A throwing reporter must not lose the rows already collected, so it is
+    // called outside any structure that would abort the loop.
+    onRow?.(row)
   }
   return rows
 }
@@ -202,6 +215,11 @@ async function testOne(
  *
  * `atMs` is stamped here, once for the batch, so the card's "tested N minutes
  * ago" reflects when the batch finished rather than drifting per row.
+ *
+ * `message` is carried through as well. `probeModel` already redacted it before
+ * returning, so persisting it cannot leak a token, and without it the pool table
+ * could only repeat one generic sentence for a DNS failure, a gateway 502 and a
+ * cancelled request alike.
  */
 export function probeUpdatesOf(
   rows: readonly WorkBuddyPoolTestRow[],
@@ -214,6 +232,7 @@ export function probeUpdatesOf(
       outcome: row.result.outcome,
       atMs,
       ...row.result.retryAtMs === undefined ? {} : { retryAtMs: row.result.retryAtMs },
+      ...row.result.message === undefined ? {} : { message: row.result.message },
     }
   }
   return updates

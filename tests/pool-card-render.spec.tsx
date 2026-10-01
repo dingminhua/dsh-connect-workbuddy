@@ -28,7 +28,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyCard } from '../src/client/WorkBuddyCard.tsx'
-import { fakeScope, mount, t } from './pool-render-helpers.tsx'
+import { fakeScope, mount, stubFetch, t } from './pool-render-helpers.tsx'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -86,16 +86,15 @@ interface FetchCall { url: string, init: any }
 function routeFetch(
   routes: Array<[string, () => { status?: number, body: unknown }]>,
 ): FetchCall[] {
-  const calls: FetchCall[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: any, init: any) => {
-    const href = String(url)
-    calls.push({ url: href, init })
-    const route = routes.find(([pattern]) => pattern === '*' || href.includes(pattern))
-    const result = route === undefined ? { body: {} } : route[1]()
-    const status = result.status ?? 200
-    return { ok: status < 400, status, json: async () => result.body }
-  }))
-  return calls
+  // Built on the SHARED stub rather than hand-rolling a second response shape:
+  // this file's private version answered without `headers`, so the moment the
+  // card started reading `content-type` to pick its parser every test here threw
+  // inside the batch's catch and silently reported a failed batch. One double,
+  // one shape, no drift.
+  return stubFetch(url => {
+    const route = routes.find(([pattern]) => pattern === '*' || url.includes(pattern))
+    return route === undefined ? { body: {} } : route[1]()
+  }) as FetchCall[]
 }
 
 const usageCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url.startsWith(USAGE_PATH))

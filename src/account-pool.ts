@@ -57,6 +57,20 @@ export interface WorkBuddyPoolProbe {
    * must never be turned into a locally invented countdown.
    */
   retryAtMs?: number
+  /**
+   * The upstream's own words on the failure, already redacted.
+   *
+   * Kept so the card can say WHY an account left the pool instead of repeating
+   * one generic sentence for a DNS failure, a gateway 502 and a request the user
+   * cancelled alike. Those three used to render as the SAME line, which left the
+   * user with a message they could not act on and no way to tell a broken
+   * account from a broken network.
+   *
+   * ABSENT for a success, and for any measurement written before this field
+   * existed: an `outcome` without a `message` is a complete, valid record, so
+   * old probe files stay readable rather than being discarded.
+   */
+  message?: string
 }
 
 /** One account's live credit situation, as the pool ranks it. */
@@ -107,14 +121,18 @@ export interface WorkBuddyPoolRanked {
 }
 
 /**
- * How long a limited account is considered out of the pool when the upstream
- * stated no reset time.
+ * How long an account stays out of the pool when the upstream stated no time.
  *
- * A conservative FALLBACK, not a measurement: it applies only to a limited
- * outcome with no `retryAtMs`, where "when can I use this again" has no honest
- * answer. Keeping such an account in the pool would re-bill it immediately and
- * re-trip the same limit; dropping it forever would discard a working account.
- * A short, stated cooldown is the least-wrong of the two.
+ * A conservative FALLBACK, not a measurement: it applies whenever a failed
+ * outcome carries no `retryAtMs`, which is every rate limit that came without a
+ * reset sentence AND every transient failure (a transport error, a 5xx). In both
+ * cases "when can I use this again" has no honest answer.
+ *
+ * The two failure directions it avoids: keeping the account in the pool would
+ * re-bill it immediately and re-trip the same limit; dropping it FOREVER would
+ * discard a working account over an event that said nothing about it. A short,
+ * stated cooldown is the least-wrong of the two — and it is what lets the pool
+ * heal itself, since nothing else re-probes an excluded member.
  */
 export const POOL_UNKNOWN_COOLDOWN_MS = 30 * 60_000
 
@@ -126,18 +144,37 @@ export const POOL_UNKNOWN_COOLDOWN_MS = 30 * 60_000
  *
  * - A `credential-rejected` account is excluded regardless of any cooldown: its
  *   token is not accepted, so waiting cannot help and the user must re-auth.
- * - A limited outcome is checked against its stated (or fallback) cooldown, so
- *   an account whose limit has already reset is back in the pool without
- *   needing another test first.
+ * - A limited, unreachable or failed outcome is checked against its stated (or
+ *   fallback) cooldown, so an account whose limit has already reset — or whose
+ *   gateway blipped once — is back in the pool without needing another test
+ *   first.
  * - An `ok` measurement, and no measurement at all, are both candidates. The
  *   latter matters: a freshly discovered account has never been tested and must
  *   not be invisible.
+ *
+ * WHY TRANSIENT OUTCOMES GET A COOLDOWN. They are not statements about the
+ * ACCOUNT. A transport failure can be a DNS blip, and — before the shim learned
+ * to skip reporting an aborted request — it was routinely the user closing the
+ * panel mid-flight. A 5xx is the gateway's afternoon, not this account's health.
+ * Excluding them permanently meant one transient event idled a perfectly good
+ * account until the user happened to press "test" again, and with every member
+ * so idled the pool had no candidate at all: failover then had nowhere to go and
+ * the raw upstream error was reported as-is. The cooldown is what makes the pool
+ * RECOVER instead of staying broken.
+ *
+ * `not-found` and `credential-rejected` deliberately get none: one describes a
+ * model the region no longer offers (a catalog fact, not a transient one) and
+ * the other needs the user to sign in again. Neither is fixed by waiting, and
+ * pretending otherwise would re-bill a token the upstream has already refused.
  *
  * Each unusable outcome keeps its OWN value rather than being folded into
  * `credential-rejected`. The fold made one row state two contradictory things —
  * the name column said "被拒绝" (sign in again) while the probe column, reading
  * the same measurement, said "连不上上游——这是网络问题，不是模型问题" — and it
  * told a user whose upstream had merely blipped that their sign-in was bad.
+ * (That label has since been made cause-NEUTRAL: it used to assert "not the
+ * model" for a bucket that also holds gateway 5xx and request timeouts, where
+ * the claim is simply unfounded. The recorded `message` now carries the cause.)
  * The distinctions are already computed upstream in `outcomeOfFailure`
  * (`src/probe.ts:290-299`); this only stops discarding them.
  */
@@ -154,9 +191,9 @@ export function exclusionOf(
     case 'not-found':
       return 'not-found'
     case 'unavailable':
-      return 'unavailable'
+      return retryDue(probe, nowMs) ? undefined : 'unavailable'
     case 'failed':
-      return 'failed'
+      return retryDue(probe, nowMs) ? undefined : 'failed'
     case 'rate-limited':
       return retryDue(probe, nowMs) ? undefined : 'rate-limited'
     case 'out-of-credit':
@@ -164,12 +201,22 @@ export function exclusionOf(
     default:
       // An outcome this build does not know is treated as unusable rather than
       // as a candidate: billing through a state we cannot interpret is worse
-      // than leaving the account out until a later version explains it.
+      // than leaving the account out until a later version explains it. It keeps
+      // the no-cooldown treatment too — a state we cannot read is not one we
+      // should re-enter on a timer.
       return 'unusable'
   }
 }
 
-/** Whether a limited account's cooldown has elapsed (or was never stated). */
+/**
+ * Whether an account's cooldown has elapsed (or was never stated).
+ *
+ * The fallback is the ONLY thing a transient outcome relies on: `cooldownOf`
+ * attaches `retryAtMs` for a rate limit or a drained quota, never for a
+ * transport failure, so `atMs + POOL_UNKNOWN_COOLDOWN_MS` is what brings those
+ * back. That is deliberate — the alternative is a permanent exclusion decided by
+ * an event that said nothing about the account.
+ */
 function retryDue(probe: WorkBuddyPoolProbe, nowMs: number): boolean {
   const until = probe.retryAtMs ?? probe.atMs + POOL_UNKNOWN_COOLDOWN_MS
   return nowMs >= until
@@ -344,99 +391,23 @@ export function createLatestWins<Key extends string>(): {
 }
 
 /**
- * How often the pool scheduler wakes to check whether a region is due.
+ * WHY THERE IS NO SCHEDULER HERE.
  *
- * A fixed, coarse heartbeat rather than one timer per region: the heartbeat
- * itself does no network work (it only reads config and compares timestamps),
- * so it is free, and it makes re-arming on a config change unnecessary — the
- * next tick simply reads the new interval.
+ * This module used to carry `POOL_TICK_MS`, `poolDueAt` and `duePoolRegions` for
+ * an automatic re-test timer. That timer was removed as a product decision
+ * (`8c17fef`): rotation is a PERSISTENT change of who pays while failover is a
+ * PER-REQUEST borrow of another account, and having both made "who is being
+ * billed right now" unanswerable on one card.
+ *
+ * The pure helpers were left behind and kept green by their own unit tests —
+ * this project's most misleading kind of dead weight, because the suite asserted
+ * a capability the shipped plugin no longer had. "All tests pass" then said
+ * nothing about whether an account ever came back.
+ *
+ * Recovery is expressed as the cooldown in {@link exclusionOf} instead, which
+ * needs no timer: it is evaluated at ranking time, so a cooled-down member simply
+ * becomes a candidate again on the next request.
  */
-export const POOL_TICK_MS = 60_000
-
-/** The smallest interval a schedule may use, matching the config schema. */
-export const POOL_MIN_INTERVAL_MINUTES = 5
-
-/**
- * Whether an automatic test is due for one region.
- *
- * `lastRunMs === undefined` means "never armed", and returns FALSE: the clock
- * starts when the scheduler first sees the region, so enabling the pool does
- * not immediately spend credits at startup or after a restart. Waiting one
- * interval is the least surprising reading of "test every N minutes" — the
- * alternative (fire immediately) would bill the user on every launch.
- *
- * Pure and total so the scheduling rule can be pinned without real timers.
- */
-export function poolDueAt(input: {
-  lastRunMs: number | undefined
-  intervalMinutes: number
-  nowMs: number
-}): boolean {
-  if (input.lastRunMs === undefined) return false
-  const minutes = Math.max(POOL_MIN_INTERVAL_MINUTES, Math.round(input.intervalMinutes))
-  return input.nowMs - input.lastRunMs >= minutes * 60_000
-}
-
-/** One region's scheduling inputs. */
-export interface PoolScheduleInput<Region extends string> {
-  /** The persisted clock: when each region's last scheduled run happened. */
-  state: Partial<Record<Region, number>>
-  regions: readonly Region[]
-  /** Whether the pool is switched on for the region. */
-  enabledOf(region: Region): boolean
-  /** The region's saved interval, in minutes. */
-  intervalMinutesOf(region: Region): number
-  nowMs: number
-}
-
-/** Which regions are due now, and the clock state to carry forward. */
-export interface PoolScheduleResult<Region extends string> {
-  /** Regions to run, in the order given. */
-  due: readonly Region[]
-  /** The clock to store for the next tick. */
-  next: Partial<Record<Region, number>>
-}
-
-/**
- * Decide which regions a scheduler tick should run.
- *
- * The FIRST sighting of an enabled region ARMS its clock instead of running it.
- * That split is the whole reason this is a function rather than an `if`:
- * {@link poolDueAt} answers "has enough time passed", which is FALSE for a
- * region that has never run — so a scheduler that only armed the clock when it
- * decided to run would never arm it at all, and the scheduled test would
- * silently never fire. Returning the clock state explicitly makes that
- * impossible to get wrong, and testable without real timers.
- *
- * A region that is switched off keeps NO clock: enabling it later must wait a
- * full interval rather than inheriting a stale timestamp and firing at once.
- */
-export function duePoolRegions<Region extends string>(
-  input: PoolScheduleInput<Region>,
-): PoolScheduleResult<Region> {
-  const due: Region[] = []
-  const next: Partial<Record<Region, number>> = {}
-  for (const region of input.regions) {
-    if (!input.enabledOf(region)) continue
-    const last = input.state[region]
-    if (last === undefined) {
-      // Arm, do not run.
-      next[region] = input.nowMs
-      continue
-    }
-    if (!poolDueAt({
-      lastRunMs: last,
-      intervalMinutes: input.intervalMinutesOf(region),
-      nowMs: input.nowMs,
-    })) {
-      next[region] = last
-      continue
-    }
-    next[region] = input.nowMs
-    due.push(region)
-  }
-  return { due, next }
-}
 
 /**
  * Where the pool's target model came from.

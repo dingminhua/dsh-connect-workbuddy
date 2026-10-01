@@ -754,13 +754,27 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       failures.push({ accountId: workbuddyAccountId(credential), failure })
     }
     const reportFailures = (): void => {
-      if (onAccountFailure === undefined) {
-        failures.length = 0
-        return
-      }
-      // Drains, so a second call (the markup-only retry path reports its own
-      // attempts) cannot re-report a measurement that was already stored.
-      for (const entry of failures.splice(0, failures.length)) {
+      // Drain FIRST, unconditionally. A second call (the markup-only retry path
+      // reports its own attempts) must never re-report a measurement that was
+      // already stored, and every early return below has to consume what it
+      // discards — an earlier version cleared this and then iterated the cleared
+      // array, which silently reported nothing at all.
+      const batch = failures.splice(0, failures.length)
+      if (onAccountFailure === undefined) return
+      // A client that hung up leaves NO measurement worth keeping.
+      //
+      // Our own abort surfaces as a transport failure (`status: 0`, `kind:
+      // 'server'`), so it is indistinguishable from a dead network where the
+      // plugin reads it — and it used to be recorded as `unavailable`, which the
+      // pool then treated as a statement about the ACCOUNT. One closed panel
+      // could therefore idle a healthy account, and with every member idled the
+      // pool had no candidate and failover had nowhere to go.
+      //
+      // The retry loop already refuses to fail over for an aborted request (see
+      // the `controller.signal.aborted` guard below); this is the same rule
+      // applied one step later, to the bookkeeping.
+      if (controller.signal.aborted) return
+      for (const entry of batch) {
         if (entry.failure.ok) continue
         try {
           onAccountFailure(entry.accountId, {

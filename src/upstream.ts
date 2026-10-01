@@ -204,6 +204,20 @@ const DESKTOP_UA = 'WorkBuddy/5.5.2'
 const JSON_TIMEOUT_MS = 30_000
 const ERROR_BODY_LIMIT = 4096
 
+/**
+ * Ceiling for one real-volume probe to get a RESPONSE, which is not a metadata
+ * call.
+ *
+ * Much larger than {@link JSON_TIMEOUT_MS} on purpose: a probe posts ~25k input
+ * tokens, so prompt processing legitimately takes a while before the first byte
+ * comes back. It exists only to stop a connection that will NEVER answer — the
+ * pool's batch is serial, so one hung member would otherwise block all the rest
+ * with nothing in the UI to say which one it was. Ten seconds is comfortably
+ * above a working gateway's first byte and far below a user's patience; the
+ * budget covers the response only, never the one-line body that follows.
+ */
+const PROBE_TIMEOUT_MS = 10_000
+
 /** Insufficient-credit markers, ASCII lowercase plus the original Chinese. */
 const HARD_CREDIT_MARKERS: readonly string[] = [
   'insufficient credit', 'no credit', 'credit exhausted', 'out of credit',
@@ -781,6 +795,19 @@ export class WorkBuddyUpstreamClient {
     signal?: AbortSignal,
   ): Promise<WorkBuddyChatResult> {
     let response: Response
+    // Deliberately NO ceiling of our own here, unlike `probeChat`.
+    //
+    // A chat answer has to prefill the whole prompt before its first byte, and
+    // that legitimately varies by an order of magnitude with context size — a
+    // bound tight enough to matter would eventually cut a real answer short, and
+    // cutting a real answer is worse than waiting for a slow one. What remains is
+    // the caller's cancellation (the shim's controller, which aborts when the
+    // client hangs up) plus the HTTP client's own default headers timeout.
+    //
+    // Detecting a DEAD endpoint is the probe's job, not this path's: the pool
+    // tests liveness with a cheap fixed request (see `PROBE_TIMEOUT_MS`) and
+    // excludes what does not answer. Bounding the real request as well would be a
+    // second, far more expensive detector for the same fact.
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
@@ -813,6 +840,19 @@ export class WorkBuddyUpstreamClient {
    *
    * The caller MUST drain {@link WorkBuddyProbeAnswer.response}; an unread body
    * holds the connection open.
+   *
+   * ALWAYS bounded in time. The pool's batch runner is serial and passes no
+   * signal, so without a ceiling here one stalled connection blocks every account
+   * behind it — the batch looks hung with no way to tell which member did it.
+   * A supplied signal is COMBINED with the timeout rather than replacing it, so
+   * the single-model route keeps its cancellation behaviour and still cannot
+   * hang forever.
+   *
+   * The ceiling covers ONLY the wait for a response — it is cleared the moment
+   * `fetch` resolves. Holding a timer over the body would put a healthy but slow
+   * model on the same clock as a dead endpoint, and the whole point of the
+   * period is to answer "did the upstream answer at all". A probe asks for a
+   * single token, so the body that follows is one SSE line.
    */
   async probeChat(
     credential: WorkBuddyCredential,
@@ -820,17 +860,23 @@ export class WorkBuddyUpstreamClient {
     signal?: AbortSignal,
   ): Promise<WorkBuddyProbeAnswer> {
     let response: Response
+    const ceiling = new AbortController()
+    const timer = setTimeout(() => {
+      ceiling.abort(new Error(`no response within ${PROBE_TIMEOUT_MS}ms`))
+    }, PROBE_TIMEOUT_MS)
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
         headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
         body: bodyJson,
-        ...signal === undefined ? {} : { signal },
+        signal: signal === undefined ? ceiling.signal : AbortSignal.any([signal, ceiling.signal]),
       })
     } catch (error: unknown) {
       // status 0 is the transport-failure convention the shim already maps to
       // its `server` class; reusing it keeps one meaning for one number.
       return { ok: false, status: 0, retryAfter: null, body: `transport error: ${String(error)}` }
+    } finally {
+      clearTimeout(timer)
     }
     const retryAfter = response.headers.get('retry-after')
     if (response.ok) return { ok: true, status: response.status, retryAfter, response }

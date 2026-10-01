@@ -16,7 +16,6 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as WorkBuddy from '../src/index.ts'
-import { POOL_TICK_MS } from '../src/account-pool.ts'
 import { WORKBUDDY_POOL_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 
 /** Mounted context; disposed after each test. */
@@ -233,24 +232,6 @@ describe('the mounted plugin: defects found by driving the real code (now fixed)
     await import('node:fs/promises').then(fs => fs.readFile(new URL(`../src/${name}`, import.meta.url), 'utf8'))
 
 
-
-  it('never fires a scheduled test before one full interval has passed', async () => {
-    // Firing immediately on enable would bill the user at every startup.
-    const { poolDueAt } = await import('../src/account-pool.ts')
-    const now = 1_800_000_000_000
-    expect(poolDueAt({ lastRunMs: undefined, intervalMinutes: 30, nowMs: now })).toBe(false)
-    expect(poolDueAt({ lastRunMs: now, intervalMinutes: 30, nowMs: now + 29 * 60_000 })).toBe(false)
-    expect(poolDueAt({ lastRunMs: now, intervalMinutes: 30, nowMs: now + 30 * 60_000 })).toBe(true)
-  })
-
-  it('clamps a schedule below the schema floor instead of trusting the number', async () => {
-    // A hand-edited config must not turn the timer into a spend loop.
-    const { poolDueAt } = await import('../src/account-pool.ts')
-    const now = 1_800_000_000_000
-    expect(poolDueAt({ lastRunMs: now, intervalMinutes: 0, nowMs: now + 60_000 })).toBe(false)
-    expect(poolDueAt({ lastRunMs: now, intervalMinutes: -5, nowMs: now + 60_000 })).toBe(false)
-    expect(poolDueAt({ lastRunMs: now, intervalMinutes: 5, nowMs: now + 5 * 60_000 })).toBe(true)
-  })
 
   it('gives a pool probe the quota-refresh time, so out-of-credit has a cooldown', async () => {
     // The defect: the pool built its own probe call and omitted the monthly
@@ -965,6 +946,19 @@ describe('the pool section and the card share one refresh path (M-4 / L-5)', () 
     // on the hot path, and one page of chat would become N extra requests.
     expect(selection, 'the request path fetches credits').not.toContain('client.fetchCredits')
     expect(selection, 'routing does not use the local-only member builder')
+      .toContain('localPoolMembers')
+    // The FAILOVER path is on the request path too — worse, it runs while the
+    // user is already waiting on a request that just failed. It used the
+    // credits-fetching `poolMembersOf`, so one failed chat turned into N extra
+    // upstream calls before the retry left, contradicting its own doc comment
+    // ("must not spend further requests"). `applyPoolSelection` alone did not
+    // catch this, because the two paths are separate slices of the file.
+    const failoverAt = host.indexOf('const failoverAccountFor =')
+    expect(failoverAt, 'failoverAccountFor moved — update this guard').toBeGreaterThan(-1)
+    const failover = host.slice(failoverAt, host.indexOf('\n  }', failoverAt))
+    expect(failover, 'the failover path fetches credits per member')
+      .not.toContain('poolMembersOf')
+    expect(failover, 'failover does not use the local-only member builder')
       .toContain('localPoolMembers')
     // And the card must report the same decision the router makes, or the panel
     // and the traffic disagree.

@@ -2,13 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   createLatestWins,
   effectiveMembersOf,
-  duePoolRegions,
   exclusionOf,
   pickAccount,
   pickFreeModel,
-  POOL_MIN_INTERVAL_MINUTES,
   POOL_UNKNOWN_COOLDOWN_MS,
-  poolDueAt,
   rankPool,
   resolveTargetModel,
 } from '../src/account-pool.ts'
@@ -338,127 +335,6 @@ describe('pickAccount', () => {
   })
 })
 
-describe('poolDueAt', () => {
-  const NOW = 1_800_000_000_000
-
-  it('is never due before the region has been armed', () => {
-    // Firing on first sight would bill the user at every startup.
-    expect(poolDueAt({ lastRunMs: undefined, intervalMinutes: 30, nowMs: NOW })).toBe(false)
-  })
-
-  it('is due exactly at the interval, not before', () => {
-    expect(poolDueAt({ lastRunMs: NOW, intervalMinutes: 30, nowMs: NOW + 30 * 60_000 - 1 })).toBe(false)
-    expect(poolDueAt({ lastRunMs: NOW, intervalMinutes: 30, nowMs: NOW + 30 * 60_000 })).toBe(true)
-  })
-
-  it('clamps an interval below the schema floor', () => {
-    // A hand-edited config must not turn the timer into a spend loop.
-    expect(poolDueAt({ lastRunMs: NOW, intervalMinutes: 0, nowMs: NOW + 60_000 })).toBe(false)
-    expect(poolDueAt({ lastRunMs: NOW, intervalMinutes: -99, nowMs: NOW + 60_000 })).toBe(false)
-    expect(poolDueAt({
-      lastRunMs: NOW,
-      intervalMinutes: POOL_MIN_INTERVAL_MINUTES,
-      nowMs: NOW + POOL_MIN_INTERVAL_MINUTES * 60_000,
-    })).toBe(true)
-  })
-
-  it('rounds a fractional interval rather than ignoring it', () => {
-    expect(poolDueAt({ lastRunMs: NOW, intervalMinutes: 30.4, nowMs: NOW + 30 * 60_000 })).toBe(true)
-  })
-})
-
-describe('duePoolRegions', () => {
-  const NOW = 1_800_000_000_000
-
-  it('ARMS a region on first sight instead of running it', () => {
-    // This is the defect that made the whole scheduler dead: `poolDueAt` says
-    // "not due" for an unarmed region, so a scheduler that only stamped the
-    // clock when it decided to run would never stamp it and never fire.
-    const result = duePoolRegions({
-      state: {},
-      regions: ['cn'],
-      enabledOf: () => true,
-      intervalMinutesOf: () => 30,
-      nowMs: NOW,
-    })
-    expect(result.due).toEqual([])
-    expect(result.next.cn).toBe(NOW)
-  })
-
-  it('runs a region once its armed interval has passed', () => {
-    const result = duePoolRegions({
-      state: { cn: NOW },
-      regions: ['cn'],
-      enabledOf: () => true,
-      intervalMinutesOf: () => 30,
-      nowMs: NOW + 30 * 60_000,
-    })
-    expect(result.due).toEqual(['cn'])
-    expect(result.next.cn).toBe(NOW + 30 * 60_000)
-  })
-
-  it('keeps the previous stamp while a region is not yet due', () => {
-    const result = duePoolRegions({
-      state: { cn: NOW },
-      regions: ['cn'],
-      enabledOf: () => true,
-      intervalMinutesOf: () => 30,
-      nowMs: NOW + 60_000,
-    })
-    expect(result.due).toEqual([])
-    expect(result.next.cn).toBe(NOW)
-  })
-
-  it('drops the clock of a DISABLED region, so re-enabling waits a full interval', () => {
-    // Inheriting a stale stamp would fire the moment the pool was switched back
-    // on, spending credits on a decision the user had just reversed.
-    const result = duePoolRegions({
-      state: { cn: NOW },
-      regions: ['cn'],
-      enabledOf: () => false,
-      intervalMinutesOf: () => 30,
-      nowMs: NOW + 365 * 24 * 60 * 60_000,
-    })
-    expect(result.due).toEqual([])
-    expect(result.next.cn).toBeUndefined()
-  })
-
-  it('schedules the two regions independently', () => {
-    const result = duePoolRegions<'cn' | 'global'>({
-      state: { cn: NOW, global: NOW },
-      regions: ['cn', 'global'],
-      enabledOf: () => true,
-      intervalMinutesOf: region => region === 'cn' ? 30 : 60,
-      nowMs: NOW + 30 * 60_000,
-    })
-    // cn is due at 30 minutes, global is not until 60.
-    expect(result.due).toEqual(['cn'])
-    expect(result.next.global).toBe(NOW)
-  })
-
-  it('leaves an unmentioned region out of the clock entirely', () => {
-    const result = duePoolRegions<'cn' | 'global'>({
-      state: { global: NOW },
-      regions: ['cn'],
-      enabledOf: () => true,
-      intervalMinutesOf: () => 30,
-      nowMs: NOW,
-    })
-    expect(result.next.global).toBeUndefined()
-  })
-
-  it('handles no regions at all', () => {
-    const result = duePoolRegions({
-      state: {},
-      regions: [],
-      enabledOf: () => true,
-      intervalMinutesOf: () => 30,
-      nowMs: NOW,
-    })
-    expect(result).toEqual({ due: [], next: {} })
-  })
-})
-
 describe('createLatestWins (H-3 race guard)', () => {
   it('reports the FIRST caller fresh and invalidates it once a newer call begins', () => {
     // The defect: `applyRotation` awaits per-member credits, so a slow call that
@@ -525,6 +401,8 @@ describe('exclusionOf keeps each unusable outcome distinct (D1)', () => {
     // 'credential-rejected', so ONE row simultaneously rendered "被拒绝" (name
     // column) and "连不上上游——这是网络问题，不是模型问题" (probe column), and a
     // user whose upstream merely blipped was told to sign in again.
+    // (The probe wording is now cause-neutral — it claimed "not the model" for a
+    // bucket holding gateway 5xx and timeouts too. Only the FOLD is pinned here.)
     expect(exclusionOf({ outcome: 'unavailable', atMs: NOW }, NOW)).toBe('unavailable')
     expect(exclusionOf({ outcome: 'not-found', atMs: NOW }, NOW)).toBe('not-found')
     expect(exclusionOf({ outcome: 'failed', atMs: NOW }, NOW)).toBe('failed')
@@ -547,12 +425,57 @@ describe('exclusionOf keeps each unusable outcome distinct (D1)', () => {
     }
   })
 
-  it('still gives no cooldown to an unreachable upstream', () => {
-    // A year later it is still excluded — recovery comes from the next probe,
-    // not the clock. Pinned so a future "add a cooldown here" change is a
-    // deliberate decision rather than an accident.
+  it('still gives no cooldown to an unreachable upstream (D1b: reversed on purpose)', () => {
+    // DELIBERATE REVERSAL of the earlier pin, which read "a year later it is
+    // still excluded — recovery comes from the next probe, not the clock".
+    //
+    // That reasoning stopped holding when the automatic re-test was removed
+    // (`8c17fef`): "the next probe" now only happens if the user presses
+    // "test", so a member measured `unavailable` was out of the pool FOREVER.
+    // With every member so measured, the pool had no candidate at all and
+    // failover had nowhere to go — the raw upstream error was then reported
+    // as-is, which is exactly the failure this change fixes.
+    //
+    // Worse, the recorded event said nothing about the ACCOUNT: a transport
+    // failure can be a DNS blip, and before the shim stopped reporting aborted
+    // requests it was routinely the user closing the panel mid-flight.
+    expect(exclusionOf({ outcome: 'unavailable', atMs: NOW }, NOW)).toBe('unavailable')
+    expect(exclusionOf(
+      { outcome: 'unavailable', atMs: NOW },
+      NOW + POOL_UNKNOWN_COOLDOWN_MS - 1,
+    )).toBe('unavailable')
+    expect(exclusionOf(
+      { outcome: 'unavailable', atMs: NOW },
+      NOW + POOL_UNKNOWN_COOLDOWN_MS,
+    )).toBeUndefined()
+  })
+
+  it('gives `failed` the same self-healing cooldown as an unreachable upstream', () => {
+    expect(exclusionOf({ outcome: 'failed', atMs: NOW }, NOW)).toBe('failed')
+    expect(exclusionOf(
+      { outcome: 'failed', atMs: NOW },
+      NOW + POOL_UNKNOWN_COOLDOWN_MS,
+    )).toBeUndefined()
+  })
+
+  it('honours a stated retry time over the fallback, for a transient outcome too', () => {
+    // A 5xx body that names a time is a better answer than the 30-minute
+    // guess, and `retryDue` must prefer it rather than adding to it.
+    const stated = NOW + 60_000
+    expect(exclusionOf({ outcome: 'unavailable', atMs: NOW, retryAtMs: stated }, stated - 1))
+      .toBe('unavailable')
+    expect(exclusionOf({ outcome: 'unavailable', atMs: NOW, retryAtMs: stated }, stated))
+      .toBeUndefined()
+  })
+
+  it('never heals a rejected credential or a missing model on a timer', () => {
+    // Waiting fixes neither: one needs a new sign-in, the other needs the
+    // catalog to change. A cooldown here would re-bill a token the upstream has
+    // already refused, and would keep offering a model the region does not have.
     const year = 365 * 24 * 60 * 60_000
-    expect(exclusionOf({ outcome: 'unavailable', atMs: NOW }, NOW + year)).toBe('unavailable')
+    expect(exclusionOf({ outcome: 'credential-rejected', atMs: NOW }, NOW + year))
+      .toBe('credential-rejected')
+    expect(exclusionOf({ outcome: 'not-found', atMs: NOW }, NOW + year)).toBe('not-found')
   })
 })
 

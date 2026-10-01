@@ -511,3 +511,117 @@ describe('declaredTools', () => {
       .toBeUndefined()
   })
 })
+
+describe('WorkBuddyUpstreamClient.probeChat', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  function credential(): WorkBuddyCredential {
+    return {
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresAtMs: 0,
+      domain: 'www.codebuddy.cn',
+      uid: 'u',
+      source: 'desktop',
+      filePath: '/tmp/workbuddy-desktop.info',
+    }
+  }
+
+  it('gives up on an endpoint that never answers, instead of hanging the batch', async () => {
+    // The pool's batch is SERIAL, so one endpoint that accepts the connection and
+    // never replies blocks every account behind it — that is the "dead button"
+    // making the response streamed alone would NOT have fixed.
+    //
+    // Ten seconds: comfortably above a working gateway's first byte, far below a
+    // user's patience.
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        reject(new Error('no response within 10000ms'))
+      })
+    })))
+    const answer = new WorkBuddyUpstreamClient().probeChat(credential(), '{}')
+    await vi.advanceTimersByTimeAsync(9_999)
+    await vi.advanceTimersByTimeAsync(1)
+    // status 0 is the transport-failure convention the shim already maps to
+    // `server`, so this reads as "the upstream is unreachable" — not as a
+    // statement about the account.
+    await expect(answer).resolves.toMatchObject({ ok: false, status: 0 })
+  })
+
+  it('stops counting time once a response arrives, so a slow body is not cut off', async () => {
+    // The Discriminating Case: a naive `AbortSignal.timeout` keeps running while
+    // the body drains, which would put a healthy but slow model on the same clock
+    // as a dead endpoint. The ceiling answers "did the upstream answer AT ALL",
+    // so it is cleared the moment headers land.
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('data: [DONE]\n\n', { status: 200 })))
+    const client = new WorkBuddyUpstreamClient()
+    const answer = await client.probeChat(credential(), '{}')
+    expect(answer.ok).toBe(true)
+    // Well past the ceiling — if the timer were still armed, this read would
+    // throw and a working account would be reported unreachable.
+    await vi.advanceTimersByTimeAsync(60_000)
+    await expect(answer.response?.text()).resolves.toContain('[DONE]')
+  })
+})
+
+describe('WorkBuddyUpstreamClient.chatStream', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  function credential(): WorkBuddyCredential {
+    return {
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresAtMs: 0,
+      domain: 'www.codebuddy.cn',
+      uid: 'u',
+      source: 'desktop',
+      filePath: '/tmp/workbuddy-desktop.info',
+    }
+  }
+
+  it('does NOT impose a first-byte ceiling of its own', async () => {
+    // The Discriminating Case, and it is a NEGATIVE assertion: a chat answer has
+    // to prefill the whole prompt before its first byte, and that varies by an
+    // order of magnitude with context size. A bound tight enough to matter would
+    // eventually cut a real answer short — and cutting a real answer is worse than
+    // waiting for a slow one.
+    //
+    // Liveness is the probe's job (see `PROBE_TIMEOUT_MS`), not the real request's.
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      // Rejects only if a timer is armed; a bare caller signal still aborts.
+      init.signal?.addEventListener('abort', () => { reject(new Error('aborted')) })
+    })))
+    const answer = new WorkBuddyUpstreamClient().chatStream(credential(), '{}')
+    // Far past any plausible ceiling — if this path grew one, this is where it
+    // would fire and turn a slow-but-working request into "unreachable".
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(answer).toBeInstanceOf(Promise)
+    // Still pending: nothing on this path is allowed to time out on its own.
+    await expect(Promise.race([answer, Promise.resolve('pending')])).resolves.toBe('pending')
+  })
+
+  it('still honours the caller\'s cancellation', async () => {
+    // What DOES bound a real request: the caller hanging up. The shim's controller
+    // aborts on client disconnect, and that must win immediately — aborting is
+    // what turns "the user closed the panel" into a stop rather than a completed
+    // upstream call.
+    vi.useFakeTimers()
+    const caller = new AbortController()
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => { reject(new Error('aborted')) })
+    })))
+    const answer = new WorkBuddyUpstreamClient().chatStream(credential(), '{}', caller.signal)
+    await vi.advanceTimersByTimeAsync(1_000)
+    caller.abort()
+    await expect(answer).resolves.toMatchObject({ ok: false, status: 0, kind: 'server' })
+  })
+})
