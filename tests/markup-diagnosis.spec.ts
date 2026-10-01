@@ -280,3 +280,81 @@ describe('explainShape', () => {
     }
   })
 })
+
+describe('bar tolerance: the marker is spelled with one or two bars', () => {
+  /**
+   * The exact five marker shapes from ONE real captured emission.
+   *
+   * Transcribed from this project's own session log (a `｜DSML｜ validate` block):
+   * the bars are doubled only on the final closer, so a detector keyed on the
+   * doubled spelling reported nothing for a session that had leaked four times.
+   */
+  const REAL_EMISSION = [
+    `prefix line`,
+    `<${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR} validate>`,
+    `<${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR} parameter name="spec">{"title":"x"}</${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR} parameter>`,
+    `</${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR} invoke>`,
+    `</${FULLWIDTH_BAR}${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR}${FULLWIDTH_BAR} calls>`,
+  ].join('\n')
+
+  it('finds a single-bar marker', () => {
+    // The canonical spelling upstream uses: vLLM's own reproduction of this
+    // defect writes `<｜DSML｜invoke name="terminal"><｜DSML｜parameter …>`.
+    expect(findMarkup(`<${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR}invoke name="bash">`)).not.toBeNull()
+  })
+
+  it('finds a doubled-bar marker', () => {
+    expect(findMarkup(`<${FULLWIDTH_BAR}${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR}${FULLWIDTH_BAR} calls>`)).not.toBeNull()
+  })
+
+  it('counts every occurrence in a mixed-spelling block', () => {
+    const hit = findMarkup(REAL_EMISSION)
+    // Five markers, three of them single-bar. A doubled-only matcher sees ONE.
+    expect(hit?.count).toBe(5)
+  })
+
+  it('reports the offset of the first marker, in any spelling', () => {
+    const hit = findMarkup(REAL_EMISSION)
+    // The offset points at the MARKER (the first bar), not at the `<` that opens
+    // the tag — that is what "where the markup sits" means to a reader of the
+    // excerpt.
+    const tagAt = REAL_EMISSION.indexOf('<')
+    expect(hit?.at).toBe(tagAt + 1)
+  })
+
+  it('classifies the real emission as an emission, not a mention', () => {
+    expect(classifyRecordedText(REAL_EMISSION)).toBe('emission')
+  })
+
+  it('still classifies a fenced quotation as a mention', () => {
+    const quoted = 'Here is how it looks:\n\n```\n' + REAL_EMISSION + '\n```\n'
+    expect(classifyRecordedText(quoted)).toBe('mention')
+  })
+
+  it('classifies an inline-backtick quotation as a mention', () => {
+    // Prose explaining the grammar writes the tag in backticks. Counting that as
+    // an occurrence would inflate the number by exactly the messages that are
+    // trying to describe the defect — and the parameter clause is now one of the
+    // call-attempt shapes, so this case had to be handled with it.
+    const prose = 'The opener is `<' + FULLWIDTH_BAR + 'DSML' + FULLWIDTH_BAR
+      + ' parameter name="spec">` in that block.'
+    expect(classifyRecordedText(prose)).toBe('mention')
+  })
+
+  it('counts a session that leaked with single bars', () => {
+    // The regression this whole change exists for: a session with four real
+    // emissions reported ZERO because every one of them used single bars.
+    const report = analyzeSessionEvents([
+      { blockTypes: ['text'], text: REAL_EMISSION, provider: 'p', model: 'm', seq: 1 },
+      { blockTypes: ['text'], text: REAL_EMISSION, provider: 'p', model: 'm', seq: 2 },
+    ])
+    expect(report.emissions).toBe(2)
+    expect(report.emissionsWithStructuredCall).toBe(0)
+  })
+
+  it('does not count ordinary prose that merely mentions the word', () => {
+    // No marker, no defect — the token is the only thing that counts.
+    expect(findMarkup('DSML is a markup format used by DeepSeek.')).toBeNull()
+    expect(classifyRecordedText('DSML is a markup format.')).toBe('none')
+  })
+})

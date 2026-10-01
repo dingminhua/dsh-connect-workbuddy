@@ -53,8 +53,36 @@ export const FULLWIDTH_BAR = '\uff5c'
  * closing tags doubled to `｜｜DSML｜｜ calls>`), so anything that pattern-
  * matched the full shape would miss the next variant. Detection keys on the
  * token; {@link findMarkup} reports the messy surroundings as-is.
+ *
+ * This constant is the DOUBLED spelling only, kept as the reference form that
+ * documentation and callers quote. Matching must go through {@link MARKUP_RE},
+ * because the bars are not stable either — see the note there.
  */
 export const MARKUP_TOKEN = `${FULLWIDTH_BAR}${FULLWIDTH_BAR}DSML${FULLWIDTH_BAR}${FULLWIDTH_BAR}`
+
+/**
+ * One or two full-width bars.
+ *
+ * The bar count is a VARIABLE, not part of the token. Measured on this project's
+ * own transcript: a single captured emission spelled the marker all five ways in
+ * one block — `｜DSML｜ validate` (one bar), `｜DSML｜ parameter name="spec"` (one),
+ * `｜DSML｜ invoke` (one), and the closer `｜｜DSML｜｜ calls` (two). A detector built
+ * on the doubled spelling alone returned a clean bill of health for a session
+ * that had leaked four times, and a check that never matches looks exactly like a
+ * clean report — the same trap {@link FULLWIDTH_BAR} documents one level up.
+ *
+ * Upstream agrees the single-bar spelling is normal: vLLM's own reproduction for
+ * this defect writes `<｜DSML｜invoke name="terminal"><｜DSML｜parameter …>`.
+ */
+const BARS = `${FULLWIDTH_BAR}${FULLWIDTH_BAR}?`
+
+/**
+ * The marker in any spelling: one or two bars on each side.
+ *
+ * Global so callers can count occurrences; the lastIndex is reset on every use
+ * through {@link markupMatches}.
+ */
+export const MARKUP_RE = new RegExp(`${BARS}DSML${BARS}`, 'g')
 
 /** How one upstream response answered the request. */
 export type StreamShape =
@@ -179,12 +207,27 @@ export function classifyStream(body: string): StreamVerdict {
 
 /** One located occurrence of the markup token. */
 export interface MarkupHit {
-  /** Number of {@link MARKUP_TOKEN} occurrences in the text. */
+  /** Number of marker occurrences in the text, in ANY bar spelling. */
   count: number
   /** Text around the FIRST occurrence, for a human to eyeball. */
   excerpt: string
   /** Character offset of the first occurrence. */
   at: number
+}
+
+/**
+ * Every marker occurrence in a string, in any bar spelling.
+ *
+ * A fresh array per call, so a shared global regex cannot carry `lastIndex`
+ * between callers — a stateful matcher silently skipping the first occurrence of
+ * the next string is the kind of bug this module exists to catch, not to have.
+ */
+export function markupMatches(text: string): { at: number, text: string }[] {
+  const out: { at: number, text: string }[] = []
+  for (const match of text.matchAll(new RegExp(MARKUP_RE.source, 'g'))) {
+    out.push({ at: match.index ?? 0, text: match[0] })
+  }
+  return out
 }
 
 /**
@@ -196,11 +239,14 @@ export interface MarkupHit {
  * been routed, so what a reader needs to see is how it was malformed.
  */
 export function findMarkup(text: string, radius = 160): MarkupHit | null {
-  const at = text.indexOf(MARKUP_TOKEN)
-  if (at < 0) return null
-  let count = 0
-  for (let i = text.indexOf(MARKUP_TOKEN); i >= 0; i = text.indexOf(MARKUP_TOKEN, i + 1)) count += 1
-  return { count, excerpt: text.slice(Math.max(0, at - radius), at + radius), at }
+  const hits = markupMatches(text)
+  const first = hits[0]
+  if (first === undefined) return null
+  return {
+    count: hits.length,
+    excerpt: text.slice(Math.max(0, first.at - radius), first.at + radius),
+    at: first.at,
+  }
 }
 
 /**
@@ -209,8 +255,24 @@ export function findMarkup(text: string, radius = 160): MarkupHit | null {
  * Requiring the `invoke` clause is what separates a CALL ATTEMPT from a bare
  * mention of the token. Without it, an assistant writing "the marker looks like
  * `｜｜DSML｜｜`" counts as an occurrence of the defect.
+ *
+ * Two clause shapes count, in any bar spelling:
+ *
+ *   - `invoke name="tool"` — the canonical opener; group 1 is the tool name, and
+ *     it is what {@link SessionMarkupReport.sampleTool} reports.
+ *   - `parameter name=` — a parameter clause. Added because a real captured
+ *     emission had a MANGLED opener (`｜DSML｜ validate`, the tool name where
+ *     `invoke name="…"` belongs) while every parameter clause was intact. Keying
+ *     on `invoke name=` alone missed it; the parameter grammar is the same block
+ *     seen from a different angle.
+ *
+ * The cost of that second shape is that prose *describing* a parameter clause
+ * could count as an emission, which is the overcounting this module's mention
+ * rule exists to prevent — so quoting in inline backticks is handled there too.
  */
-const CALL_ATTEMPT = new RegExp(`${MARKUP_TOKEN}\\s*invoke\\s+name="([^"]+)"`)
+const CALL_ATTEMPT = new RegExp(
+  `${BARS}DSML${BARS}\\s*(?:invoke\\s+name="([^"]+)"|invoke\\b|parameter\\s+name=)`,
+)
 
 /** One recorded message, reduced to what the diagnosis needs. */
 export interface RecordedMessage {
@@ -283,9 +345,21 @@ export interface SessionMarkupReport {
 export function classifyRecordedText(text: string): RecordedMarkupKind {
   const attempt = CALL_ATTEMPT.exec(text)
   if (attempt === null) return 'none'
-  // An odd number of fences before the attempt means it sits inside an open one.
-  const fencesBefore = text.slice(0, attempt.index).split('```').length - 1
-  return fencesBefore % 2 === 1 ? 'mention' : 'emission'
+  // Quoted in a fence, or wrapped in inline backticks. Both are someone WRITING
+  // ABOUT the markup: an odd number of fences before the attempt means it sits
+  // inside an open one, and a backtick run immediately before it is how prose
+  // quotes a tag (`</｜DSML｜parameter>`). The backtick case matters because the
+  // parameter clause is one of the call-attempt shapes, so an explanation of the
+  // grammar would otherwise be counted as an occurrence of the defect.
+  const before = text.slice(0, attempt.index)
+  const fencesBefore = before.split('```').length - 1
+  if (fencesBefore % 2 === 1) return 'mention'
+  // Match the opening backtick of an inline span that is not closed before the
+  // attempt: prose quoting a tag puts the backtick before the tag's `<` (or `/`),
+  // so those punctuation characters are skipped before looking for the run.
+  const stripped = before.replace(/[</]+$/, '')
+  const ticksBefore = stripped.length - stripped.replace(/`+$/, '').length
+  return ticksBefore >= 1 ? 'mention' : 'emission'
 }
 
 /**

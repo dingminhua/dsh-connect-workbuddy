@@ -279,7 +279,13 @@ async function liveChecks(rounds) {
 const liveIndex = process.argv.indexOf('--live')
 const rounds = liveIndex >= 0 ? Math.max(1, Math.min(20, Number(process.argv[liveIndex + 1]) || 3)) : 0
 
-console.log(`标记检测 token：${MARKUP_TOKEN}（全角竖线 U+FF5C）`)
+// The constant is the DOUBLED spelling, but matching accepts one or two bars on
+// each side — a real captured emission mixed both spellings inside ONE block, and
+// the bar count is not part of what identifies the marker. Printing the constant
+// as "the detected token" understates what is actually matched, which is exactly
+// the kind of quiet mismatch this script exists to catch elsewhere.
+console.log('标记检测：｜DSML｜ 与 ｜｜DSML｜｜（任意 1–2 个全角竖线 U+FF5C，两种写法都命中）')
+void MARKUP_TOKEN
 console.log(`仓库：${REPO}\n`)
 staticChecks()
 if (rounds > 0) await liveChecks(rounds)
