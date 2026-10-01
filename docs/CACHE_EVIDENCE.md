@@ -6,6 +6,14 @@
 > 日期：2026-09-22 · 取证时版本：2.0.4
 > （复核于 2.0.5：该版本只改账号选择的语义与写入校验，`src/adapter.ts` /
 > `src/shim.ts` / `src/upstream.ts` **零改动**，本结论不受影响。）
+>
+> **2026-10-01 复核（3.3.0）**：下表「插件是否重编码 SSE」一行在实现 DSML 恢复后**不再成立**——
+> 响应路径不再是 `body.pipe(res)` 的原样直通，而是逐帧改写（见 `docs/DSML-RECOVERY-PLAN.md`）。
+> **但本节的结论仍然成立**，且理由比原来更窄、更明确：改写是**逐帧原位替换**，只动
+> `delta.content`（转换成功时另加 `delta.tool_calls`），不重建帧、不解释 JSON 以外的任何字段，
+> 因此 `prompt_tokens_details.cached_tokens` 这类它不认识的字段依旧原样到达。风险点也从
+> 「有没有翻译层」变成了「改写会不会碰到 usage 帧」——实现上它只处理带 `choices[0].delta` 的帧，
+> `usage` 帧与解析失败的帧一律原样转发。
 
 ## 结论
 
@@ -14,14 +22,15 @@
 | 环节 | trae | workbuddy |
 | --- | --- | --- |
 | 上游是否报缓存 | ✅ 实测命中 9216 | ✅ 实测命中 7936 |
-| 插件是否重编码 SSE | ✅ 有解码层（`sse.ts` + `solo-bridge.ts`） | ❌ 无，字节直通（`shim.ts` 的 `body.pipe(res)`） |
-| 字段是否被丢 | ❌ 曾丢 → 2.0.5 修 | ✅ 不可能丢 |
+| 插件是否重编码 SSE | ✅ 有解码层（`sse.ts` + `solo-bridge.ts`） | ✅ 逐帧改写（3.3.0 起，`RecoveryStream`）——但**原位替换、不重建帧**，见上方复核注 |
+| 字段是否被丢 | ❌ 曾丢 → 2.0.5 修 | ✅ 不可能丢（改写只碰 `delta.content`／新增 `delta.tool_calls`） |
 | 上游字段名 | `cache_read_input_tokens`（pi-ai 不认） | `prompt_tokens_details.cached_tokens`（pi-ai 认） |
 | 是否需要翻译层 | ✅ 需要，已补 | ❌ 不需要 |
 
 **架构差异决定了这个结果**：trae 的 bug 出在「自己把上游事件重编码成 OpenAI 格式」这一步，
-workbuddy 根本没有这一步——shim 只做鉴权与 body 规范化，SSE 回包原样 pipe 给 pi-ai。
-没有翻译层，就不存在「翻译时丢字段」。
+workbuddy 没有这一步——shim 做鉴权、body 规范化，SSE 回包逐帧转发给 pi-ai（3.3.0 起会在
+`delta.content` 上做一次原位改写，用于把写进正文的工具调用转回 `tool_calls`）。没有把上游事件
+**重建成另一套结构**的翻译层，就不存在「翻译时丢字段」。
 
 ## 证据
 

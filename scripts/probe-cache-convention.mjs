@@ -5,9 +5,13 @@
  *
  * Background: dsh-connect-trae issue #10 ("一直0缓存") turned out to be the
  * PLUGIN dropping the upstream's cache fields while re-encoding the stream.
- * dsh-connect-workbuddy has no re-encoding layer — `shim.ts` pipes the
- * upstream's SSE bytes through untouched (`body.pipe(res)`) — so it cannot
- * commit that bug. But it can still display 0 forever, for a different reason:
+ * dsh-connect-workbuddy has no such re-encoding layer: since 3.3.0 `shim.ts`
+ * rewrites the SSE stream frame by frame (DSML recovery), but it is an IN-PLACE
+ * edit of `delta.content` only — frames are not rebuilt and no field is
+ * re-interpreted — so the upstream's `usage` fields still arrive verbatim and
+ * the bug trae had cannot occur here. (Before 3.3.0 the same was true for the
+ * blunter reason that the bytes were piped through untouched.) It can still
+ * display 0 forever, for a different reason:
  *
  *   pi-ai's `parseChunkUsage` only recognises three cache-read spellings —
  *     - usage.prompt_tokens_details.cached_tokens   (OpenAI)

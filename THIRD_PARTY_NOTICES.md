@@ -25,6 +25,7 @@
 | --- | --- | --- | --- |
 | `dsh-workbuddy-connect` | <https://github.com/corrinehu/dsh-workbuddy-connect> | WorkBuddy 接入的完整参照：凭据发现、上游协议、shim、适配器、CLI | **MIT**（Copyright (c) 2026 Corrine Hu） |
 | `workbuddy2api` | <https://github.com/Sliverkiss/workbuddy2api> | WorkBuddy 上游协议（`copilot.tencent.com` 的 wire behavior）的参照实现 | **MIT** |
+| `workbuddy2api`（DSML 解析器） | <https://github.com/hawklithm/workbuddy2api> | **代码移植**（本清单中唯一一项不只是思路参照）：`src/codebuddy_proxy/dsml_parser.py` 的标签状态机、忽略区域判定（Markdown 围栏 / 行内代码 / CDATA / 注释）、缺包裹修复、参数递归解析与流式缓冲，移植为 `src/dsml-recovery.ts`；并在其上补了该实现没有的两道闸（工具名必须在本次请求声明的工具里、无声明工具完全不做恢复）。逐条改动与理由见该文件头部注释与 `docs/DSML-RECOVERY-PLAN.md` | **MIT**（Copyright (c) 2026 Mayer） |
 
 ### 与 DSH 插件结构 / 外观相关
 
@@ -48,8 +49,9 @@
 ## 四、本项目的使用方式
 
 - **借鉴设计思路 + 独立实现**：关键模块均为本项目独立编写，并在各源文件头部注释中标注所参考的具体项目与模式。
-- **不整体复制源码**：未复制、修改或再分发上述任何参考项目的源文件。
-- **版权声明保留**：所有参考项目的版权归各自作者所有；本项目代码不构成对它们的再分发。
+- **唯一一处代码移植**：`src/dsml-recovery.ts` 是 [`hawklithm/workbuddy2api`](https://github.com/hawklithm/workbuddy2api) 的 `src/codebuddy_proxy/dsml_parser.py`（MIT，Copyright (c) 2026 Mayer）的 **TypeScript 移植**，不是思路参照。该文件的头部注释逐条列出了三处**有意偏离**（参考实现里重复定义的 `find_invoke_blocks`、其流式注入与自身解析器输出形状不一致、以及它没有的两道闸）。按 MIT 条款，本项目保留其版权与许可声明，并在上表与本条中同时标注。
+- **除此之外不复制源码**：其余各参考项目均只借鉴设计思路，未复制、修改或再分发其源文件。
+- **版权声明保留**：所有参考项目的版权归各自作者所有。
 - **后续引入依赖时**：引入任何新的 WorkBuddy 相关外部依赖、或复用其他项目代码时，必须同步更新本文件，并遵守对应许可证的署名与声明要求。
 
 ## 五、随包分发

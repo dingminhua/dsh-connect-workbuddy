@@ -3,8 +3,11 @@
  * Is the WorkBuddy markup leak real, and is it still happening? Answers it
  * with evidence a reader can re-derive rather than a claim they must trust.
  *
- *   node scripts/verify-dsml.mjs              # 静态核对（不联网，约 1 秒）
- *   node scripts/verify-dsml.mjs --live 3     # 再加 3 轮真上游请求（花积分）
+ *   node scripts/verify-dsml.mjs                   # 静态核对（不联网，约 1 秒）
+ *   node scripts/verify-dsml.mjs --live 3          # 再加 3 轮真上游请求（花积分）
+ *   node scripts/verify-dsml.mjs --live 3 --through-shim
+ *                                                  # 同上，但让响应经过 shim，
+ *                                                  # 于是量到的是「客户端最终看到什么」
  *
  * Two modes, on purpose:
  *
@@ -18,22 +21,31 @@
  *   single clean live run therefore proves nothing, and the script says so
  *   instead of implying the defect is gone.
  *
+ *   `--through-shim` matters now that the shim CONVERTS markup: a direct
+ *   `client.chatStream` call measures the model and bypasses the conversion
+ *   entirely, so it would report "still leaking" for a leak the user never
+ *   sees. Going through the shim measures what actually reaches the client.
+ *
  * Detection logic lives in `src/markup-diagnosis.ts` (pure, unit-tested); this
  * file only does the reading. Both are read-only: nothing here writes to the
  * repo, the profile, or the upstream.
  */
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   analyzeSessionEvents,
   classifyStream,
   MARKUP_TOKEN,
 } from '../src/markup-diagnosis.ts'
 
-const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+// `new URL(...).pathname` yields `/C:/Users/...` on Windows, which no fs call
+// accepts — and this project verifies on Windows. `fileURLToPath` is the
+// platform-correct spelling.
+const REPO = fileURLToPath(new URL('..', import.meta.url))
 const SESSION_ROOT = join(homedir(), '.dsh', 'sessions')
 
 /** Strip anything token-like before it can reach a terminal or a log. */
@@ -42,6 +54,56 @@ function redact(text) {
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[token]')
     .replace(/((?:token|refresh_token|access_token|code)"?\s*[:=]\s*"?)[A-Za-z0-9._-]{12,}/giu, '$1[redacted]')
     .replaceAll(homedir(), '~')
+}
+
+/** Read a text file, or '' when it is missing (a probe must never throw). */
+function readTextFile(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Text files under `dir` containing any of `needles`, as {file, line, text}.
+ *
+ * A Node-side replacement for `grep -rIn`: the report must read the same on
+ * Windows as on POSIX, and `grep` does not exist there.
+ */
+function scanSources(dir, needles) {
+  const found = []
+  const wanted = needles ?? ['DSML', 'uff5c', 'FF5C']
+  const walk = (current) => {
+    let entries
+    try {
+      entries = readdirSync(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const path = join(current, entry.name)
+      if (entry.isDirectory()) {
+        walk(path)
+        continue
+      }
+      if (!/\.(ts|tsx|mjs|cjs|js)$/.test(entry.name)) continue
+      let text
+      try {
+        if (statSync(path).size > 2_000_000) continue
+        text = readFileSync(path, 'utf8')
+      } catch {
+        continue
+      }
+      text.split('\n').forEach((line, index) => {
+        if (wanted.some(needle => line.includes(needle))) {
+          found.push({ file: path.startsWith(REPO) ? path.slice(REPO.length).replace(/^[\\/]/, '') : path, line: index + 1, text: line })
+        }
+      })
+    }
+  }
+  walk(dir)
+  return found
 }
 
 /** Run a command that is EXPECTED to fail without matching anything. */
@@ -159,34 +221,52 @@ function staticChecks() {
   }
 
   console.log('\n=== 2. 现在的代码有没有能力拦住它 ===')
-  const grepHits = tryExec('grep', ['-rIn', 'DSML\\|uff5c\\|FF5C', join(REPO, 'src')])
-  const shimLine = tryExec('grep', ['-n', 'body.pipe(res)', join(REPO, 'src', 'shim.ts')])
+  // Read the sources with Node rather than shelling out to `grep`: this project
+  // is verified on Windows too, where `grep` does not exist — and `tryExec`
+  // swallows that failure, so a grep-based probe would print "未找到" on Windows
+  // for code that is right there. A check that reports "not found" because the
+  // TOOL is missing looks exactly like a check that found nothing, which is the
+  // failure mode this whole script exists to avoid.
+  const sourceHits = scanSources(join(REPO, 'src'))
+  const shimSource = readTextFile(join(REPO, 'src', 'shim.ts'))
+  const takeoverLines = shimSource.split('\n')
+    .map((line, index) => ({ line: index + 1, text: line }))
+    .filter(entry => entry.text.includes('new RecoveryStream('))
+  const recoveryFile = existsSync(join(REPO, 'src', 'dsml-recovery.ts'))
   const commits = tryExec('git', ['-C', REPO, 'log', '--all', '--oneline', '--grep=DSML'])
-  console.log(`  src/ 里提到标记的代码：${grepHits === '' ? '只有本诊断模块（见下）' : `${grepHits.split('\n').length} 处`}`)
-  for (const line of grepHits.split('\n').filter(Boolean).slice(0, 6)) {
-    console.log(`    ${redact(line).slice(0, 140)}`)
+  console.log(`  src/ 里提到标记的代码：${sourceHits.length === 0 ? '没有' : `${sourceHits.length} 处`}`)
+  for (const hit of sourceHits.slice(0, 6)) {
+    console.log(`    ${redact(`${hit.file}:${hit.line}: ${hit.text.trim()}`).slice(0, 140)}`)
   }
-  console.log(`  响应路径：${shimLine === '' ? '未找到' : redact(shimLine)}`)
+  console.log(`  响应路径接管点：${takeoverLines.length === 0
+    ? '未找到（响应路径可能又退回原样透传）'
+    : takeoverLines.map(entry => `shim.ts:${entry.line}`).join('、')}`)
+  console.log(`  恢复模块：${recoveryFile ? 'src/dsml-recovery.ts 存在' : '不存在'}`)
   console.log(`  修过这个问题的提交：${commits === '' ? '没有' : commits}`)
 
   console.log('\n=== 结论 ===')
   const branch = tryExec('git', ['-C', REPO, 'rev-parse', '--short', 'HEAD'])
   const dirty = tryExec('git', ['-C', REPO, 'status', '--porcelain'])
   console.log(`  仓库状态：${branch}${dirty === '' ? '（干净）' : '（有未提交改动）'}`)
-  const stillPassThrough = /body\.pipe\(res\)/.test(shimLine)
-  if (unrouted > 0 && !stillPassThrough) {
-    console.log('  ⚠ 记录里有泄漏，而响应路径已不再原样透传——需要人工确认是谁拦的。')
+  const recoveryWired = /new RecoveryStream\(/.test(shimLine) && recoveryFile
+  if (unrouted > 0 && recoveryWired) {
+    console.log(`  → 记录证明泄漏真实发生过（${unrouted} 次调用无法被路由）。`)
+    console.log('    响应路径现已被接管：泄漏在被交给客户端之前就会尝试转换，能恢复的变成真正的')
+    console.log('    调用，不能恢复的（例如工具名被写坏的那一类）原样作为正文显示——两种都不会丢内容。')
+    console.log('    要量"客户端最终看到什么"，跑 --live N --through-shim；直接 --live 量的是模型本身，')
+    console.log('    它会绕过转换，对已经能恢复的泄漏给出"仍在泄漏"的假结论。')
   } else if (unrouted > 0) {
     console.log(`  → 记录证明泄漏真实发生过（${unrouted} 次调用无法被路由），而响应路径仍是原样透传、`)
-    console.log('    src/ 里除了本诊断模块没有任何转换器：所以"能拦住它的代码"今天并不存在。')
+    console.log('    src/ 里没有任何转换器：所以"能拦住它的代码"今天并不存在。')
     console.log('    这不是"修复后回归"，是从来没修过。')
   } else {
     console.log('  → 本次没有找到真实发出的记录。（模型会摇摆，这不等于问题不存在。）')
   }
 }
 
-async function liveChecks(rounds) {
+async function liveChecks(rounds, throughShim) {
   console.log(`\n=== 3. 现在再问一次上游（${rounds} 轮，会花积分）===`)
+  if (throughShim) console.log('  模式：经过 shim（量的是客户端最终看到什么）')
   let plugin
   try {
     plugin = await import('../lib/index.js')
@@ -238,9 +318,31 @@ async function liveChecks(rounds) {
       parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
     },
   }]
+  // In `--through-shim` mode the shim is mounted on the REAL store, so the
+  // request it forwards is authenticated exactly like the plugin's own traffic.
+  // The catalog is not used by the chat route; it is required only because the
+  // shim takes one at construction.
+  let shim
+  if (throughShim) {
+    if (typeof plugin.createWorkBuddyShim !== 'function' || typeof plugin.WorkBuddyCatalog !== 'function') {
+      console.log('  跳过：构建产物里没有 createWorkBuddyShim / WorkBuddyCatalog（先跑 pnpm run build）。')
+      return
+    }
+    shim = plugin.createWorkBuddyShim({
+      store,
+      client,
+      catalog: new plugin.WorkBuddyCatalog(),
+    })
+    await shim.ready
+    console.log(`  shim：${shim.baseUrl()}（仅回环）`)
+  }
+
   const shapes = { 'markup-in-content': 0, 'native-tool-call': 0, 'text-only': 0, empty: 0 }
   for (let i = 1; i <= rounds; i++) {
-    const body = prepareChatBody(JSON.stringify({
+    // Without the shim the body is prepared here and sent straight upstream;
+    // with it, the RAW body is posted and the shim prepares and recovers — which
+    // is the only way to measure the conversion rather than the model.
+    const payload = JSON.stringify({
       model,
       messages: [
         { role: 'system', content: 'You are an AI agent. Use the provided tools to act; never describe a tool call in prose.' },
@@ -248,27 +350,55 @@ async function liveChecks(rounds) {
       ],
       tools,
       stream: true,
-    }))
-    const result = await client.chatStream(credential, body, AbortSignal.timeout(120_000))
-    if (!result.ok) {
-      console.log(`  第 ${i} 轮：上游返回 ${result.status}，本轮不算`)
-      continue
+    })
+
+    let raw
+    if (shim !== undefined) {
+      const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${shim.token()}`, 'content-type': 'application/json' },
+        body: payload,
+      })
+      if (response.status !== 200) {
+        console.log(`  第 ${i} 轮：shim 返回 ${response.status}，本轮不算`)
+        continue
+      }
+      raw = await response.text()
+    } else {
+      const result = await client.chatStream(credential, prepareChatBody(payload), AbortSignal.timeout(120_000))
+      if (!result.ok) {
+        console.log(`  第 ${i} 轮：上游返回 ${result.status}，本轮不算`)
+        continue
+      }
+      raw = await result.response.text()
     }
-    const verdict = classifyStream(await result.response.text())
+
+    const verdict = classifyStream(raw)
     shapes[verdict.shape] += 1
     const icon = verdict.shape === 'markup-in-content' ? '❌' : verdict.shape === 'native-tool-call' ? '✅' : '·'
     console.log(`  ${icon} 第 ${i} 轮：${verdict.shape}`
       + `　content 分片 ${verdict.contentFrames}／tool_calls 分片 ${verdict.toolCallFrames}`
       + `／finish_reason=${verdict.finishReason || '-'}`)
-    if (verdict.markup) console.log(`      ${redact(verdict.markup.excerpt).slice(0, 200)}`)
+    if (verdict.markup) {
+      console.log(`      ${redact(verdict.markup.excerpt).slice(0, 200)}`)
+      if (shim !== undefined) {
+        console.log('      ↑ 标记在【经过 shim 之后】仍然出现在正文里——这一轮没有被转换过来。')
+      }
+    }
   }
+  if (shim !== undefined) await shim.close()
   console.log(`\n  实际分布：标记 ${shapes['markup-in-content']}／原生 ${shapes['native-tool-call']}`
     + `／纯文字 ${shapes['text-only']}／空 ${shapes.empty}（共 ${rounds} 轮）`)
   // The summary sentence is generated, not asserted: telling a reader "the
   // defect is back" from one bad round, or "it's fixed" from one clean one,
   // would misuse exactly the oscillation this script warns about.
-  if (shapes['markup-in-content'] > 0) {
+  if (shapes['markup-in-content'] > 0 && shim !== undefined) {
+    console.log('  → 客户端仍然看到了标记：这一段文本既没被转成调用，也不是普通正文。')
+    console.log('    多数情况属于"不可恢复"的那一类（工具名被写坏，见 §5），默认按原文显示；')
+    console.log('    若正文里本应有一个合法的 invoke 块，那才是转换的问题。')
+  } else if (shapes['markup-in-content'] > 0) {
     console.log(`  → 复现了：这一次模型把调用写进了正文。`)
+    console.log('    注意：这是直连上游的结果，绕过了 shim 的转换——它量的是模型，不是客户端看到的东西。')
   } else if (shapes['native-tool-call'] > 0) {
     console.log('  → 本次没复现。注意：这个模型在两种形态之间摇摆，一次干净**不能**证明问题消失——多跑几轮才有效。')
   } else {
@@ -278,6 +408,7 @@ async function liveChecks(rounds) {
 
 const liveIndex = process.argv.indexOf('--live')
 const rounds = liveIndex >= 0 ? Math.max(1, Math.min(20, Number(process.argv[liveIndex + 1]) || 3)) : 0
+const throughShim = process.argv.includes('--through-shim')
 
 // The constant is the DOUBLED spelling, but matching accepts one or two bars on
 // each side — a real captured emission mixed both spellings inside ONE block, and
@@ -288,5 +419,5 @@ console.log('标记检测：｜DSML｜ 与 ｜｜DSML｜｜（任意 1–2 个�
 void MARKUP_TOKEN
 console.log(`仓库：${REPO}\n`)
 staticChecks()
-if (rounds > 0) await liveChecks(rounds)
+if (rounds > 0) await liveChecks(rounds, throughShim)
 console.log('\n（本脚本只读：不写仓库、不改配置、不发任何非 AI 请求。）')
