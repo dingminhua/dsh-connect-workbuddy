@@ -84,24 +84,6 @@ body{
 /* 账号选择器已整块删除：账号一律在账号池里管（成员勾选就是选择面），
    而池开启时由排序决定谁服务，一个「改了也不生效」的下拉比没有更糟。 */
 .dsm-workbuddy-account-state{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-.wb-credits-panels{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.dsm-workbuddy-credit-panel{display:flex;flex-direction:column;min-width:0;gap:7px;padding:14px;
-  border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
-.dsm-workbuddy-credit-panel-title{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-.dsm-workbuddy-credit-panel-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  color:var(--dsw-alias-label-primary);font-size:15px;line-height:21px}
-.dsm-workbuddy-credit-panel-meta{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-.wb-credit-soon{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
-  color:var(--dsw-alias-label-secondary);font-size:12px}
-.wb-credit-soon strong{color:var(--dsw-alias-state-warn-primary)}
-.dsm-workbuddy-credit-panel-total{position:relative;align-items:center;text-align:center;overflow:hidden}
-.dsm-workbuddy-credit-panel-total::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;opacity:.9;background:#4d9b6d}
-.wb-credit-total-body{display:flex;flex-direction:column;align-items:center;gap:2px}
-.wb-credit-total-value{color:var(--dsw-alias-label-primary);font-size:26px;line-height:32px;font-weight:600;
-  font-variant-numeric:tabular-nums}
-.dsm-workbuddy-checkin{display:flex;flex-direction:column;align-items:center;width:100%;
-  padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsm-workbuddy-checkin-button{width:100%;padding:4px 10px;font-size:12px}
 .wb-models-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .wb-models-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary)}
 .wb-models-summary{margin:2px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
@@ -321,25 +303,6 @@ body{
           <!-- 「重新检测账号」已移到下面的账号池区块：那里才是管理账号的地方，
                新登录的账号会以「一行待勾选」的形式出现。（真机同样如此；未登录状态
                下卡片仍保留一个副本，因为那时账号池整块不渲染。） -->
-        </div>
-
-        <!-- ==================== [原有] 积分 / 签到 ==================== -->
-        <div class="wb-credits-panels">
-          <section class="dsm-workbuddy-credit-panel">
-            <span class="dsm-workbuddy-credit-panel-title">积分包</span>
-            <span class="dsm-workbuddy-credit-panel-value">2 个有效</span>
-            <span class="dsm-workbuddy-credit-panel-meta">最近过期：21 天后</span>
-            <div class="wb-credit-soon"><span>3 天内过期</span><strong>0</strong></div>
-          </section>
-          <section class="dsm-workbuddy-credit-panel dsm-workbuddy-credit-panel-total">
-            <div class="wb-credit-total-body">
-              <span class="dsm-workbuddy-credit-panel-title">剩余总积分</span>
-              <strong class="wb-credit-total-value">1,240</strong>
-            </div>
-            <div class="dsm-workbuddy-checkin">
-              <button class="dsm-btn dsm-btn-primary dsm-workbuddy-checkin-button" type="button">签到领积分</button>
-            </div>
-          </section>
         </div>
 
         <!-- ==================== 【新增】账号池区块 ==================== -->
