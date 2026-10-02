@@ -171,14 +171,66 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   client: 400,
 }
 
+/**
+ * The `code` spelling the HOST is expected to classify each upstream failure by.
+ *
+ * The host decides whether a failed request may be retried IN PLACE (5 attempts
+ * with backoff) or must be handed to cross-provider failover by reading English
+ * phrases out of `type + " " + code + " " + message` — see
+ * `isQuotaExceededError` in `@deepseek-ai/dsh-llm`. Only `RATE_LIMIT`, `SERVER`,
+ * `TIMEOUT`, `TRANSPORT` and `EMPTY_RESPONSE` are in its retry set, so the
+ * spelling decides which of two very different things happens next.
+ *
+ * `soft_rate` is the one kind that spelling got wrong. The upstream's 429 says
+ * "usage exceeds the frequency limit, and it resets at 13:37" — hours away, not
+ * two seconds. Sent as `soft_rate` it reads as an ordinary rate limit, enters
+ * the in-place retry set, and spends the whole retry budget on an endpoint that
+ * cannot recover within it; by the time cross-provider failover is offered, the
+ * turn has already failed. The upstream's own words are Chinese, so the
+ * phrase-based classifier cannot see the distinction either — the label is the
+ * only channel left to carry it.
+ *
+ * `quota_exceeded` is the minimal honest translation: it is the WORDS the host
+ * recognises, and it matches what the upstream is actually saying. The HTTP
+ * status stays 429 (that is what the upstream returned — relabelling it 402
+ * would misreport the upstream), and the upstream's own message is still passed
+ * through verbatim for a human to read.
+ *
+ * Every other kind already lands outside the retry set by its status alone
+ * (`hard_credit` 402 → quota, `session_dead` 401 → auth, 502/400 → other), so
+ * none of them is listed: a translation nobody needs is a lie waiting to drift.
+ */
+const KIND_HOST_CODE: Partial<Readonly<Record<UpstreamErrorKind, string>>> = {
+  soft_rate: 'quota_exceeded',
+}
+
+/**
+ * The `code` to write for an upstream failure, given its classified kind.
+ *
+ * `type` deliberately stays the plugin's own kind: it is what a human reads in
+ * a log or a bug report, and it keeps the two fields individually meaningful.
+ * Only `code` carries the host-facing translation.
+ */
+function hostErrorCode(kind: UpstreamErrorKind): string {
+  return KIND_HOST_CODE[kind] ?? kind
+}
+
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
   res.end(payload)
 }
 
-function writeOpenAIError(res: ServerResponse, status: number, kind: string, message: string): void {
-  writeJson(res, status, { error: { message, type: kind, code: kind } })
+/**
+ * Write a JSON error the way an OpenAI-compatible client expects.
+ *
+ * `code` defaults to `type`, which is right for every error THIS shim raises on
+ * its own (`unauthorized`, `not_found`, …): those are not upstream failures and
+ * must not be disguised as one. The upstream failure path passes an explicit
+ * `code` so the host classifies it correctly — see {@link KIND_HOST_CODE}.
+ */
+function writeOpenAIError(res: ServerResponse, status: number, kind: string, message: string, code?: string): void {
+  writeJson(res, status, { error: { message, type: kind, code: code ?? kind } })
 }
 
 /** Read a request body with a size cap; over-limit bodies fail the request. */
@@ -832,6 +884,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         KIND_STATUS[result.kind],
         result.kind,
         `workbuddy upstream ${result.kind} (http ${result.status})${note}: ${result.message.slice(0, 400)}`,
+        hostErrorCode(result.kind),
       )
       return
     }

@@ -194,6 +194,87 @@ describe('shim inbound hardening', () => {
     shim = undefined
   })
 
+  /**
+   * The `code` an upstream failure is written back with decides whether the HOST
+   * retries in place or hands the turn to cross-provider failover — so these
+   * assert the wire body, not just the HTTP status the test above covers.
+   *
+   * The assertion that matters is the one at the bottom: it runs the HOST'S OWN
+   * classifier (`isQuotaExceededError`, imported from `@deepseek-ai/dsh-llm`)
+   * over the exact string this shim produces. Retyping the regex here would
+   * prove only that two copies of it agree today.
+   */
+  it('writes a quota code the host classifies as terminal, not as a rate limit', async () => {
+    shim = makeShim({ chatStream: async () => ({ ok: false, status: 429, kind: 'soft_rate', message: '用量超限' }) })
+    await shim.ready
+    const response = await request(shim, {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: await authed(shim, { 'content-type': 'application/json' }),
+      body: '{}',
+    })
+
+    expect(response.status).toBe(429)
+    const body = JSON.parse(response.body) as { error: { type: string, code: string, message: string } }
+    // `type` stays the plugin's own kind — it is what a human reads in a log.
+    expect(body.error.type).toBe('soft_rate')
+    expect(body.error.code).toBe('quota_exceeded')
+    // The upstream's own words still reach the reader.
+    expect(body.error.message).toContain('用量超限')
+
+    // The claim, checked against the host's real rule rather than a copy of it.
+    const { isQuotaExceededError } = await import('@deepseek-ai/dsh-llm')
+    expect(isQuotaExceededError(`${body.error.type} ${body.error.code}`)).toBe(true)
+    // …and the spelling it replaced would NOT have been, which is the whole bug.
+    expect(isQuotaExceededError('soft_rate soft_rate')).toBe(false)
+  })
+
+  it('leaves every other upstream kind spelled as its own kind', async () => {
+    // Only `soft_rate` moves: `hard_credit` is 402 (quota by status anyway) and
+    // the rest already land outside the host's retry set. A translation nobody
+    // needs is a lie waiting to drift.
+    for (const kind of ['hard_credit', 'session_dead', 'server', 'not_found', 'client'] as const) {
+      shim = makeShim({ chatStream: async () => ({ ok: false, status: 500, kind, message: 'x' }) })
+      await shim.ready
+      const response = await request(shim, {
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: await authed(shim, { 'content-type': 'application/json' }),
+        body: '{}',
+      })
+      const body = JSON.parse(response.body) as { error: { type: string, code: string } }
+      expect([kind, body.error.code]).toEqual([kind, kind])
+      await shim.close()
+    }
+    shim = undefined
+  })
+
+  it('does not disguise the shim\'s own errors as upstream quota failures', async () => {
+    // `writeOpenAIError` serves both paths; only the upstream one translates.
+    // A 401 with no credential, or a 404 route, must stay themselves — telling
+    // the host "quota exceeded" about our own bug would send it to failover
+    // over an error no other provider can fix.
+    const { isQuotaExceededError } = await import('@deepseek-ai/dsh-llm')
+
+    shim = makeShim({ chatStream: async () => ({ ok: true, response: new Response('') }) })
+    await shim.ready
+    const unauthorised = await request(shim, { method: 'POST', path: '/v1/chat/completions', body: '{}' })
+    expect(unauthorised.status).toBe(401)
+    const unauthorisedBody = JSON.parse(unauthorised.body) as { error: { type: string, code: string } }
+    expect(unauthorisedBody.error.type).toBe('unauthorized')
+    expect(unauthorisedBody.error.code).toBe('unauthorized')
+    expect(isQuotaExceededError(`${unauthorisedBody.error.type} ${unauthorisedBody.error.code}`)).toBe(false)
+
+    const missing = await request(shim, {
+      method: 'GET',
+      path: '/v1/nope',
+      headers: await authed(shim),
+    })
+    expect(missing.status).toBe(404)
+    const missingBody = JSON.parse(missing.body) as { error: { type: string, code: string } }
+    expect(missingBody.error.code).toBe('not_found')
+  })
+
   it('never forwards the caller\'s bearer to the upstream', async () => {
     let seenAuth: string | undefined
     const local = makeShim({

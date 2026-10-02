@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **「要等几小时才恢复」的配额错误不再被宿主当成「等两秒就好」的瞬时抖动（issue #28）。**
+  - **现象**：上游 429 / code 6004 的原文是「您的使用量已超出频率限制，**将在 13:37:03 重置**」——要等几小时。本插件把它正确分类成 `soft_rate`（`src/upstream.ts`），但写回宿主时 `type` 与 `code` 都用了 `soft_rate` 这个内部名字。
+  - **根因**：宿主决定「这个失败要不要在原地重试」靠的是从 `type + code + message` 里匹配**几个英文措辞**（`@deepseek-ai/dsh-llm` 的 `isQuotaExceededError`）。`soft_rate` 不在那份名单里，上游原话又是中文，于是宿主只能按 `429` 的默认含义理解——进入 `RATE_LIMIT`，而 `RATE_LIMIT` **在**宿主的重试集合里（`DEFAULT_RETRYABLE_CODES`），`QUOTA` **不在**。宿主于是原地重试 5 次、指数退避，把预算烧光；而真正能救场的跨供应商故障转移（`dsh-subagent-default-model` 的 `failoverEnabled`）根本没被叫到——实测一次会话 1228 个 step、只切换过 1 次供应商、以 429 收场，`models` 里其它供应商全程闲置。
+  - **修法**：只翻译写回宿主的 `code`——`soft_rate` → `quota_exceeded`（宿主认得这个词，且它符合上游实际在说的事）。**HTTP 状态码仍是 429**（那才是上游返回的东西，改成 402 是谎报），上游原话仍原样留在 `message` 里给人看。`type` 保持插件自己的内部名字，便于读日志与报错。
+  - **只翻译这一处**：其余 kind 本来就落在重试集合之外（`hard_credit` 402 → 按状态就是 QUOTA，`session_dead` 401 → AUTH，502/400 → OTHER），所以**不做多余翻译**——没有人需要的翻译只是等着漂移的谎言。插件**自己的**错误（`unauthorized` / `not_found` / `host_not_allowed` / `internal`）也一律不翻译：把自身的 401/404 说成「配额用尽」，会让宿主去为一个换供应商也治不好的错误做故障转移。
+  - 测试直接调用**宿主自己的** `isQuotaExceededError`（`@deepseek-ai/dsh-llm` 导出）来钉住这件事，而不是在测试里抄一份正则——抄一份只能证明两份副本今天一致。三次变异验证：撤回翻译 / 把翻译扩大到所有 kind / 让本地错误也翻译，均会变红。
+
 ## 3.4.0 (2026-10-02)
 
 ### Fixes
