@@ -116,6 +116,20 @@ export interface WorkBuddyShimOptions {
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
 
+/**
+ * Pause between failover attempts, after one account's request failed.
+ *
+ * The upstream's rate limit (6004) fires on request volume — firing retries at
+ * zero gap makes every candidate hit the same wall, and 4 accounts can all fail
+ * in under a second. The batch test already waits `POOL_BATCH_GAP_MS` (400ms)
+ * between accounts for exactly this reason; the failover loop used to wait
+ * nothing. 2 seconds is longer than the batch's 400 because a failover retry is
+ * a real request the user is waiting on, not a probe — it needs enough room for
+ * the upstream's window to breathe, not just enough to avoid self-inflicted
+ * rate-limiting.
+ */
+const FAILOVER_ACCOUNT_GAP_MS = 2_000
+
 /** Loopback hostnames the shim's own in-process client uses. */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
 
@@ -854,6 +868,21 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // with no upper bound. `triedAccountIds` is the only brake there is, so
       // the identity check lives here as well as in the policy.
       if (triedAccountIds.includes(workbuddyAccountId(next))) break
+      // Wait before hitting another account: the upstream's rate limit (6004)
+      // fires on request volume, so hammering it with zero-gap retries makes
+      // every candidate hit the same wall — 4 accounts can fail in under a
+      // second. The batch test already waits 400ms between accounts for exactly
+      // this reason; the failover loop used to wait nothing. The wait is
+      // abortable: if the client hung up we stop instead of sleeping on, and the
+      // check AFTER it ends the loop rather than spending the remaining accounts
+      // on requests whose signal is already dead.
+      if (controller.signal.aborted) break
+      await new Promise<void>(resolve => {
+        if (controller.signal.aborted) return resolve()
+        const timer = setTimeout(resolve, FAILOVER_ACCOUNT_GAP_MS)
+        controller.signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
+      })
+      if (controller.signal.aborted) break
       logger?.warn(
         `dsh-connect-workbuddy: retrying chat on another pool account after ${result.kind} (http ${result.status})`,
       )

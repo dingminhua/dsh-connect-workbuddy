@@ -566,4 +566,33 @@ describe('failure reporting without a pool to fail over to', () => {
     await chat(shim)
     expect(reports).toEqual([SELECTED_ID])
   })
+
+  it('waits between failover attempts so zero-gap retries do not hammer the upstream', async () => {
+    // The upstream's rate limit (6004) fires on request volume. Firing retries
+    // at zero gap makes every candidate hit the same wall — 4 accounts can all
+    // fail in under a second. The gap is what prevents that; this test pins it.
+    const other = credentialFor('other')
+    const timestamps: number[] = []
+    let calls = 0
+    shim = createWorkBuddyShim({
+      store: storeWith([other]),
+      client: {
+        chatStream: async () => {
+          timestamps.push(Date.now())
+          calls += 1
+          return RATE_LIMITED
+        },
+      } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      failoverAccount: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+    await chat(shim)
+
+    // Two attempts (SELECTED then other), so one gap between them.
+    expect(calls).toBe(2)
+    const gap = timestamps[1]! - timestamps[0]!
+    // The constant is 2_000ms; allow a small margin for scheduler jitter.
+    expect(gap).toBeGreaterThanOrEqual(1_900)
+  })
 })
