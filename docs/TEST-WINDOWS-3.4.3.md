@@ -6,6 +6,43 @@
 
 ---
 
+## 结果速览（2026-10-03 真机一轮）
+
+一台 Windows 机器按本手册跑过一轮，结论如下。**A 轮的核心判据没有达成**，所以「注册表回退」至今**未经真机验证**——这份记录是为了避免日后被误读成已验证。
+
+| 检查项 | 结果 |
+| --- | --- |
+| 版本号 | ✅ `WorkBuddy Connect 3.4.3` |
+| `doctor` 来源字段 | ✅ 显示 `via default-layout` |
+| 凭据读取 / 宿主加载 | ✅ `present` / `running (pid 27700)` |
+| A 轮核心：`via registry` | ❌ **未触发**（见下） |
+| `pnpm run check` | ✅ 870 全绿、typecheck 干净、build 成功 |
+| CI（ubuntu + windows） | ✅ 双绿 |
+| B 轮：403 策略拒绝 | ⏸️ 无法主动构造，未观测 |
+
+### 为什么 `via default-layout` 不等于验证通过
+
+那台机器上 App 装在标准路径，于是 `findWorkbuddyAppExecutableWithSource()` 在**候选循环里就提前 `return` 了**，`platform === 'win32'` 那段查注册表的代码**一次都没执行**：
+
+```
+via default-layout  → 证明「来源字段能显示」
+via registry        → 才证明「回退能工作」
+```
+
+前者只覆盖到新加的**报告**字段，没有覆盖新加的**功能**。方向恰好相反：这次验证的环境（标准路径）与这个功能要解决的场景（非标准路径）正好互补。
+
+### 要真正验证 A 轮，需要让默认路径全部落空
+
+最小可逆做法：把 `%LOCALAPPDATA%\Programs\WorkBuddy` 临时改名 → 跑 `doctor`（此时必须靠注册表，期望 `via registry`）→ **立刻改回**。注意改名期间 WorkBuddy 桌面端本身不可用，第三步别忘。
+
+### 已知未覆盖
+
+- 注册表回退的端到端行为（三个 hive 的遍历、`DisplayIcon` / `InstallLocation` 的解析）**只由单元测试覆盖**，无真机证据。
+- 非默认安装（如 `E:\`、`F:\`）从未在真机上跑过——而 issue #30 报告的正是这类环境。
+- 因此 3.4.3 的注册表回退**不能宣称已真机验证**；它是「CI 双绿 + 单元测试 + 已在 macOS 上确认不会误触发」，仅此而已。
+
+---
+
 ## 0. 准备
 
 ```powershell
