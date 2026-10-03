@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **装在非默认目录的 Windows 安装也能找到了：注册表回退（issue #30）。**
+  - **现象**：WorkBuddy 桌面端装在 `E:\workbuddy`、`F:\AGENTS\WorkBuddy` 这类非默认位置时，插件报「未登录」——而用户明明已经登录。
+  - **根因**：`workbuddyAppExecutableCandidates()` 只探四个**默认布局**路径（`%LOCALAPPDATA%\Programs\WorkBuddy`、`%LOCALAPPDATA%\WorkBuddy`、`%ProgramFiles%\WorkBuddy`、`%ProgramFiles(x86)%\WorkBuddy`）。装在别处时四个候选全落空，于是拿不到加密字段的密钥，**已登录的账号被报成未登录**。README 的答案是手工设 `WORKBUDDY_APP_EXECUTABLE`——而安装器其实早就把答案记在注册表里了。
+  - **修法**：四个候选全落空后，在 `win32` 上查询卸载注册表（`HKCU` / `HKLM` / `HKLM\WOW6432Node` 三处），从 `DisplayIcon` 优先、`InstallLocation` 兜底推出可执行文件路径。路径必须 basename 为 `WorkBuddy.exe` 且 `existsSync` 通过才会被采用（该路径最终会传给 `execFile`）；注册表只是**回退**，默认安装零开销。`queryRegistry` 作为可注入 seam，测试不依赖主机状态。
+  - `doctor` 现在同时报告**来源**（`via env` / `default-layout` / `registry`）：只看路径的话，「默认布局命中」和「回退救了你」输出的字符串一模一样，而这正是用户排查时唯一有用的区别。
+
+### Fixes
+
+- **Windows 路径不再用宿主平台的分隔符构造（非 Windows 上会静默失效）。**
+  - **现象**：在 Linux/macOS 上构建/运行时，Windows 专用路径会带上 `/` 分隔符，永远不可能命中真实安装。
+  - **根因**：`workbuddyAppExecutableCandidates()` 的四个 Windows 候选、以及注册表回退的 `normalizeRegistryExecutable()` / `registryInstallLocationFromQuery()`，都用了 `path.join` / `path.basename`——它们跟随**运行平台**，不是数据的平台。在 POSIX 宿主上 `basename('E:\workbuddy\WorkBuddy.exe')` 返回整串，于是**每一个合法路径都被 basename 白名单拒绝**，注册表回退等于从未生效。
+  - **修法**：凡处理 Windows 数据一律改用 `path.win32.join` / `path.win32.basename`——**分隔符由数据决定，不由宿主决定**。
+  - **测试同样是错的**：期望值也用 `join()` 构造，生产与测试一起漂移，所以本地绿、CI（ubuntu）绿，而 Windows 上根本不命中。已改为 `win32.*` 并补一条**形状守卫**（断言每个 Windows 候选都不含 `/`、末段为 `WorkBuddy.exe`），变异验证（把 `win32.join` 换回 `join`）必红。
+  - 顺带修正一条与环境耦合的断言：原测试断言 `darwin` 返回 `undefined`，但本机装了 WorkBuddy 时 macOS 分支会**合法**命中，于是「开发者机器红、CI 绿」。该用例真正要断言的是注册表 seam 未被调用，已按此重写。
+
 ## 3.4.2 (2026-10-03)
 
 ### Fixes
@@ -62,7 +81,6 @@
 
 - README 的「账号为什么出池」表按新规则改写：区分「限流/欠费/瞬时故障会自动回池」与「凭据被拒/模型不存在只能手动重测」，并删掉已不存在的「定时器」表述。
 - 清理死代码：`POOL_TICK_MS`、`POOL_MIN_INTERVAL_MINUTES`、`poolDueAt`、`duePoolRegions`、`PoolScheduleInput` / `PoolScheduleResult` 及其单元测试全部删除。它们自 3.2.0 起已无任何生产调用（构建时已被 tree-shake），却仍被测试覆盖——于是「测试全绿」对「账号会不会回来」这个问题什么也没说明。
-
 ## 3.3.0 (2026-10-01)
 
 ### Features
