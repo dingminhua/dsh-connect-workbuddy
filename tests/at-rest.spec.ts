@@ -471,8 +471,21 @@ describe('workbuddy app executable discovery', () => {
   })
 
   it('returns undefined when nothing exists at any candidate', () => {
-    expect(findWorkbuddyAppExecutable('linux', '/home/x', {})).toBeUndefined()
-    expect(findWorkbuddyAppExecutable('win32', 'C:\\nobody', { LOCALAPPDATA: 'C:\\definitely\\absent' })).toBeUndefined()
+    // Both calls pass the registry seam, even though only the win32 branch can
+    // reach it. `platform` is an EXPLICIT parameter, not `process.platform`, so
+    // asking for 'win32' consults the REAL registry on whatever machine runs the
+    // suite — and the assertion then quietly becomes "this host has no
+    // WorkBuddy registered", which is neither what the test says nor under its
+    // control. It is green on macOS/Linux only because `reg` does not exist
+    // there and the spawn throws into `queryRegistry`'s catch; on a Windows host
+    // WITH the app installed, the lookup succeeds, the term is not undefined,
+    // and the test fails. Same host-dependence the source's `readBundleExecutable`
+    // seam exists to avoid (see the darwin case below, which already passes one).
+    const noRegistry = (): string | undefined => undefined
+    expect(findWorkbuddyAppExecutable('linux', '/home/x', {}, noRegistry)).toBeUndefined()
+    expect(findWorkbuddyAppExecutable(
+      'win32', 'C:\\nobody', { LOCALAPPDATA: 'C:\\definitely\\absent' }, noRegistry,
+    )).toBeUndefined()
   })
 
   it('never mixes separators, so a hardcoded "/" in the builder would be caught', () => {
