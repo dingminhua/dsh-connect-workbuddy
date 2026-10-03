@@ -152,19 +152,33 @@ async function mount(config: Record<string, unknown> = {}): Promise<Context> {
 
 /** Response recorder for a route call. */
 function response(): {
-  res: { writeHead: (s: number, h?: Record<string, string>) => void, end: (b?: string) => void }
+  res: {
+    writeHead: (s: number, h?: Record<string, string>) => void
+    write: (chunk: string) => void
+    end: (b?: string) => void
+  }
   status: () => number
   body: () => Record<string, unknown>
+  /** Every NDJSON chunk the handler streamed, in order. */
+  chunks: () => string[]
 } {
   let statusCode = 0
   let payload = ''
+  const streamed: string[] = []
   return {
     res: {
       writeHead: (s: number) => { statusCode = s },
+      // Streaming is how a long batch reports each row as it finishes, so a
+      // handler under test may write instead of (or before) ending with a body.
+      // Recorded rather than discarded: the pool's test route is only reachable
+      // far enough to stream once every guard passes, which is precisely the
+      // part worth asserting on.
+      write: (chunk: string) => { streamed.push(chunk) },
       end: (b?: string) => { payload = b ?? '' },
     },
     status: () => statusCode,
     body: () => JSON.parse(payload || '{}') as Record<string, unknown>,
+    chunks: () => streamed,
   }
 }
 
@@ -242,6 +256,113 @@ describe('the mounted plugin: defects found by driving the real code (now fixed)
     const body = runner.slice(0, runner.indexOf('\n  }'))
     expect(body).toContain('quotaRefreshAtMs')
     expect(body).toContain('quotaRefreshOf(')
+  })
+
+  it('sends the probe size the user chose, measured on the real outgoing body', async () => {
+    // The setting's whole purpose: a test must ask a question the size of the
+    // user's REAL conversations, because the upstream's 6004 limit fires on
+    // request SIZE. A wiring that dropped the choice would still exercise every
+    // other part of the batch — which a mutant proved: deleting the
+    // `resolveProbeInputTokens(...)` call from `poolRunnerDeps` left all 886
+    // tests green. So this asserts the WIRE, not the arithmetic, and it reads the
+    // request the plugin actually put on the network rather than the setting it
+    // was handed.
+    const authFile = await writeAuthFixture(root)
+    const accountId = await discoverAccountId(authFile)
+    await mount({
+      authFile,
+      regions: {
+        cn: {
+          enabled: true,
+          lastCatalog: [{
+            id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
+          }],
+          // 100K is the largest offered size, so an ignored setting shows up as a
+          // body about a quarter the size rather than a rounding difference.
+          pool: { enabled: true, memberAccountIds: [accountId], probeInputTokens: 100_000 },
+        },
+      },
+    })
+    const bodies: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      if (String(url).includes('chat/completions') && typeof init?.body === 'string') {
+        bodies.push(init.body)
+        return new Response('data: [DONE]\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 })
+    }) as typeof fetch
+    try {
+      const { status } = await call(WORKBUDDY_POOL_PATH, {
+        method: 'POST',
+        url: `${WORKBUDDY_POOL_PATH}?region=cn&action=test`,
+      })
+      expect(status).toBe(200)
+      expect(bodies.length, 'the test batch sent no probe request').toBeGreaterThan(0)
+      // The filler sits in the user turn: at 100K tokens and the measured ~4.5
+      // chars/token that is ~450,000 characters, so the 25K default would land
+      // near a quarter of it. A floor rather than an exact count keeps the
+      // estimate free to move while still failing loudly if the size is ignored.
+      const parsed = JSON.parse(bodies[0] as string) as {
+        messages: { role: string, content: string }[]
+      }
+      const userText = parsed.messages.find(message => message.role === 'user')?.content ?? ''
+      expect(userText.length).toBeGreaterThan(400_000)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('defaults the probe size when the setting is absent, so an old profile is unchanged', async () => {
+    // The companion case: absence must mean the measured 25k — not zero, not an
+    // error. A profile written before this setting existed has no key at all, and
+    // it has to keep testing exactly as it did.
+    const authFile = await writeAuthFixture(root)
+    const accountId = await discoverAccountId(authFile)
+    await mount({
+      authFile,
+      regions: {
+        cn: {
+          enabled: true,
+          lastCatalog: [{
+            id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
+          }],
+          pool: { enabled: true, memberAccountIds: [accountId] },
+        },
+      },
+    })
+    const bodies: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      if (String(url).includes('chat/completions') && typeof init?.body === 'string') {
+        bodies.push(init.body)
+        return new Response('data: [DONE]\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 })
+    }) as typeof fetch
+    try {
+      await call(WORKBUDDY_POOL_PATH, {
+        method: 'POST',
+        url: `${WORKBUDDY_POOL_PATH}?region=cn&action=test`,
+      })
+      expect(bodies.length, 'the test batch sent no probe request').toBeGreaterThan(0)
+      const parsed = JSON.parse(bodies[0] as string) as {
+        messages: { role: string, content: string }[]
+      }
+      const userText = parsed.messages.find(message => message.role === 'user')?.content ?? ''
+      // The measured default is 25k tokens (~112k chars). A zero-length body
+      // would mean the absence was read as "send nothing".
+      expect(userText.length).toBeGreaterThan(100_000)
+      expect(userText.length).toBeLessThan(200_000)
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 
   it('trims the pool catalog instead of shipping the full roster twice', async () => {

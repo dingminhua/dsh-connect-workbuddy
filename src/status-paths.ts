@@ -637,6 +637,14 @@ export interface WorkBuddyWebPool {
   /** The account ids the user has checked into this region's pool. */
   memberAccountIds?: readonly string[]
   /**
+   * Tokens each test probe sends, as the user saved it; `0`/absent = default.
+   *
+   * The SAVED value, not the resolved one: the card needs to tell "the user
+   * never chose a size" apart from "the user chose 25000", because the first
+   * must keep showing the default option rather than a number they never picked.
+   */
+  probeInputTokens?: number
+  /**
    * The subset of {@link memberAccountIds} that resolves to a real local
    * sign-in — i.e. what a batch actually runs on.
    *

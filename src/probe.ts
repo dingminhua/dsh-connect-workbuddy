@@ -22,7 +22,7 @@
  *      没有时才如实返回「上游未给出」—— 绝不编造倒计时。
  *   3. **限流按请求体积触发。** 极小请求永远「可用」，而长会话里的真实请求会越过
  *      阈值被拒 —— 这正是「测试通过、实际被限」的成因。所以探测**故意发真实体积**
- *      的请求，见 {@link PROBE_INPUT_TOKENS} 的实测表。
+ *      的请求，见 {@link DEFAULT_PROBE_INPUT_TOKENS} 的实测表。
  *
  * @module dsh-connect-workbuddy/probe
  */
@@ -43,7 +43,7 @@ export const PROBE_SYSTEM_PROMPT = 'You are a connectivity check. Reply with a s
  * Output cap for a probe. One token is enough to prove the model answers.
  *
  * The probe's cost comes from its INPUT, not its output (see
- * {@link PROBE_INPUT_TOKENS}), so paying for a long completion would add money
+ * {@link DEFAULT_PROBE_INPUT_TOKENS}), so paying for a long completion would add money
  * without adding signal.
  */
 export const PROBE_MAX_TOKENS = 1
@@ -71,8 +71,42 @@ export const PROBE_MAX_TOKENS = 1
  * A probe that sent a handful of tokens answered "usable" while every real
  * request in a long conversation was refused — the probe was asking too small a
  * question. 25k is sized to be a realistic long-conversation payload.
+ *
+ * Renamed from `PROBE_INPUT_TOKENS` to say what it now IS: the DEFAULT, not the
+ * only possible size. The size is a property of the user's own traffic (see
+ * {@link probeRequestBody}), so it became a setting; this constant is what an
+ * unset setting, an older profile, and every existing test mean by "a probe".
  */
-export const PROBE_INPUT_TOKENS = 25_000
+export const DEFAULT_PROBE_INPUT_TOKENS = 25_000
+
+/**
+ * The probe sizes the card offers, in tokens.
+ *
+ * A closed set, each step a meaningful position relative to the measured 20k~30k
+ * threshold: below it (10k/20k) proves an account can serve SHORT requests and
+ * is the cheap choice; at it (30k) is the size that finally covers the whole
+ * measured window; above it (50k/100k) is for conversations that routinely run
+ * long, where a smaller probe would report "usable" for an account that refuses
+ * the very next message.
+ *
+ * Exported so the schema's description, the card's dropdown, and the coercion
+ * below cannot drift apart into three different menus.
+ */
+export const PROBE_INPUT_TOKEN_CHOICES: readonly number[] = [10_000, 20_000, 30_000, 50_000, 100_000]
+
+/**
+ * A requested probe size reduced to a size this build will actually send.
+ *
+ * Anything outside {@link PROBE_INPUT_TOKEN_CHOICES} — `undefined` from an older
+ * profile, `0` from an unset field, a hand-edited odd number — becomes the
+ * measured default. Coercing rather than rejecting keeps a hand-edited profile
+ * working instead of turning one odd value into a failed test batch.
+ */
+export function resolveProbeInputTokens(requested: number | undefined): number {
+  return requested !== undefined && PROBE_INPUT_TOKEN_CHOICES.includes(requested)
+    ? requested
+    : DEFAULT_PROBE_INPUT_TOKENS
+}
 
 /**
  * Characters per token for the filler text, measured.
@@ -94,11 +128,14 @@ const FILLER_LINE = 'The quick brown fox jumps over the lazy dog. '
  * `prepareChatBody` enforces that too, but sending it explicitly keeps this
  * function's output valid on its own.
  *
- * Measured on the built artifact: 112,713 bytes of body, and the upstream
- * counted `prompt_tokens: 25023` at a cost of `credit: 0.72`.
+ * Measured on the built artifact at the DEFAULT size: 112,713 bytes of body, and
+ * the upstream counted `prompt_tokens: 25023` at a cost of `credit: 0.72`. The
+ * body bytes and the credit both scale with the size asked for, which is why the
+ * size is a user setting: a larger probe answers more truthfully for someone
+ * whose conversations are long, and costs proportionally more to ask.
  */
-export function probeRequestBody(modelId: string): string {
-  const targetChars = Math.ceil(PROBE_INPUT_TOKENS * CHARS_PER_TOKEN)
+export function probeRequestBody(modelId: string, inputTokens: number = DEFAULT_PROBE_INPUT_TOKENS): string {
+  const targetChars = Math.ceil(resolveProbeInputTokens(inputTokens) * CHARS_PER_TOKEN)
   const filler = FILLER_LINE.repeat(Math.ceil(targetChars / FILLER_LINE.length))
   return JSON.stringify({
     model: modelId,
@@ -378,6 +415,14 @@ export async function probeModel(input: {
   credential: WorkBuddyCredential
   modelId: string
   nowMs: number
+  /**
+   * How much input this probe sends, in tokens.
+   *
+   * Omitted means {@link DEFAULT_PROBE_INPUT_TOKENS}, so every existing caller
+   * keeps the measured 25k and only the pool's user-facing "test" passes a
+   * chosen size through.
+   */
+  inputTokens?: number
   /** The region's next monthly quota refresh, when known. */
   quotaRefreshAtMs?: number
   signal?: AbortSignal
@@ -387,7 +432,7 @@ export async function probeModel(input: {
   try {
     answer = await input.client.probeChat(
       input.credential,
-      probeRequestBody(input.modelId),
+      probeRequestBody(input.modelId, input.inputTokens),
       input.signal,
     )
   } catch (error: unknown) {

@@ -8,7 +8,9 @@ import {
   probeModel,
   probeRequestBody,
   probeSucceeded,
-  PROBE_INPUT_TOKENS,
+  DEFAULT_PROBE_INPUT_TOKENS,
+  PROBE_INPUT_TOKEN_CHOICES,
+  resolveProbeInputTokens,
   PROBE_MAX_TOKENS,
   PROBE_SYSTEM_PROMPT,
 } from '../src/probe.ts'
@@ -115,7 +117,7 @@ describe('probe input volume', () => {
     expect(parsed.model).toBe('deepseek-v4.1-flash')
     expect(parsed.messages[1]?.content.length).toBeGreaterThan(100_000)
     // Sized for a real long-conversation payload, not a rounding-error request.
-    expect(PROBE_INPUT_TOKENS).toBeGreaterThanOrEqual(25_000)
+    expect(DEFAULT_PROBE_INPUT_TOKENS).toBeGreaterThanOrEqual(25_000)
   })
 
   it('scales the body with the declared target', () => {
@@ -123,7 +125,54 @@ describe('probe input volume', () => {
     // the body must follow it, or the probe would stop measuring what it claims.
     const body = probeRequestBody('hy3')
     const fillerChars = body.length
-    expect(fillerChars).toBeGreaterThan(PROBE_INPUT_TOKENS * 3)
+    expect(fillerChars).toBeGreaterThan(DEFAULT_PROBE_INPUT_TOKENS * 3)
+  })
+})
+
+describe('resolveProbeInputTokens', () => {
+  it('falls back to the measured default for an unset or absent value', () => {
+    // Both spellings mean "the user never chose": `undefined` is what an older
+    // saved profile and a caller that predates the setting produce, and `0` is
+    // what the config schema and the card's default option store. They MUST mean
+    // the same thing, because the card's select is what writes the `0`.
+    expect(resolveProbeInputTokens(undefined)).toBe(DEFAULT_PROBE_INPUT_TOKENS)
+    expect(resolveProbeInputTokens(0)).toBe(DEFAULT_PROBE_INPUT_TOKENS)
+  })
+
+  it('accepts every offered size unchanged', () => {
+    // The menu and this rule read the same list, so every option the user can
+    // pick has to be honoured rather than silently coerced back to the default.
+    expect(PROBE_INPUT_TOKEN_CHOICES.length).toBeGreaterThan(1)
+    for (const tokens of PROBE_INPUT_TOKEN_CHOICES) {
+      expect(resolveProbeInputTokens(tokens)).toBe(tokens)
+    }
+  })
+
+  it('coerces an unoffered size to the default instead of sending it', () => {
+    // A hand-edited profile must not be able to pick an arbitrary size: the
+    // value is coerced, not rejected, so one odd number cannot turn a whole test
+    // batch into a failure. `PROBE_INPUT_TOKEN_CHOICES` is what makes the set
+    // closed, so the probe cannot be asked to send 1 token (which would
+    // reintroduce the false "usable" this setting exists to prevent).
+    expect(resolveProbeInputTokens(12_345)).toBe(DEFAULT_PROBE_INPUT_TOKENS)
+    expect(resolveProbeInputTokens(-1)).toBe(DEFAULT_PROBE_INPUT_TOKENS)
+  })
+
+  it('sends a body that really grows with the size it was given', () => {
+    // The end-to-end claim of the setting: choosing 100K must actually ask a
+    // 100K-sized question. Asserted as a ratio, because the exact bytes come
+    // from an estimated characters-per-token constant.
+    const smallest = PROBE_INPUT_TOKEN_CHOICES[0] as number
+    const largest = PROBE_INPUT_TOKEN_CHOICES[PROBE_INPUT_TOKEN_CHOICES.length - 1] as number
+    const small = probeRequestBody('m', smallest).length
+    const large = probeRequestBody('m', largest).length
+    expect(large).toBeGreaterThan(small * 5)
+  })
+
+  it('defaults the body when no size is passed at all', () => {
+    // Every existing caller (and the single-model probe route) omits the
+    // argument, so omitting it must not produce a zero-length request.
+    expect(probeRequestBody('m')).toBe(probeRequestBody('m', DEFAULT_PROBE_INPUT_TOKENS))
   })
 })
 

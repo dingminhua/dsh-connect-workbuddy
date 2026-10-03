@@ -46,7 +46,7 @@ import {
 } from './adapter.ts'
 import type { WorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
-import { cooldownOf, outcomeOfFailure, probeModel, redactUpstreamText } from './probe.ts'
+import { cooldownOf, outcomeOfFailure, probeModel, redactUpstreamText, resolveProbeInputTokens } from './probe.ts'
 import type { UpstreamErrorKind } from './upstream.ts'
 import {
   checkinAllAccounts,
@@ -180,8 +180,9 @@ export {
   parseRetryAfter,
   probeModel,
   probeRequestBody,
+  PROBE_INPUT_TOKEN_CHOICES,
   probeSucceeded,
-  PROBE_INPUT_TOKENS,
+  DEFAULT_PROBE_INPUT_TOKENS,
   PROBE_MAX_TOKENS,
   PROBE_SYSTEM_PROMPT,
   type WorkBuddyProbeClient,
@@ -322,6 +323,23 @@ export interface WorkBuddyPoolPreferences {
   /** Model id to test; `''` means auto-pick a free model from this region. */
   targetModelId?: string
   /**
+   * How much input a probe sends, in tokens — the pool's biggest single knob.
+   *
+   * The upstream's rate limit (6004) fires on request SIZE, and the threshold
+   * was measured to sit between 20k and 30k tokens. The probe has to be sized
+   * near where the user's REAL conversations land: too small and it reports
+   * "usable" while every long conversation is refused (the exact false positive
+   * that made this knob necessary), too large and it costs real credit on every
+   * batch AND excludes accounts that would have served the shorter requests the
+   * user actually sends.
+   *
+   * A fixed value therefore cannot be right for everyone — the right size is a
+   * property of the user's own traffic, which only they know. `undefined` keeps
+   * the measured default ({@link DEFAULT_PROBE_INPUT_TOKENS}), so an existing
+   * profile is unaffected.
+   */
+  probeInputTokens?: number
+  /**
    * The account ids checked into this region's pool.
    *
    * An EXPLICIT opt-in, and empty by default: the batch actions claim rewards
@@ -388,6 +406,16 @@ const modelConfig = z.object({
 const poolConfig = z.object({
   enabled: z.boolean().default(false).description('Whether this region\'s account pool is active (opt-in). While on, a failed chat request is retried against the other usable pool members before the error is reported.'),
   targetModelId: z.string().default('').description('Model id to test; empty means pick a zero-multiplier model from this region\'s catalog'),
+  /**
+   * Sizing of the test probe, as a token count the user picks from a fixed set.
+   *
+   * A closed set rather than a free number: each step is a meaningful position
+   * relative to the measured 20k~30k threshold, and an arbitrary value would
+   * invite a size that is neither safely under nor clearly over it. `0` (and any
+   * unknown value) falls back to the measured default, so a profile written by
+   * an older build — and one hand-edited to something odd — behaves identically.
+   */
+  probeInputTokens: z.number().step(1).default(0).description('Input tokens each test probe sends: 10000 / 20000 / 30000 / 50000 / 100000. Bigger probes catch a rate limit real conversations would hit, but cost more credit per test and may mark an account unusable for large requests only. 0 uses the measured default (25000)'),
   memberAccountIds: z.array(z.string()).default([]).description('Account ids checked into this pool (opt-in; empty means the pool covers nothing)'),
 })
 
@@ -1309,9 +1337,18 @@ export function apply(ctx: Context, config: Config): void {
   /** One region's pool preferences, with the schema's defaults applied. */
   const poolPreferencesOf = (config: Config, region: WorkBuddyRegion) => {
     const pool = regionStateOf(config, region).pool
+    const probeInputTokens = pool?.probeInputTokens
     return {
       enabled: pool?.enabled === true,
       targetModelId: pool?.targetModelId ?? '',
+      // Passed through RAW (not coerced here): `resolveProbeInputTokens` owns
+      // that decision and is the only place that knows the offered set. Coercing
+      // in two places is how a menu and its validation drift apart.
+      //
+      // Spread rather than assigned, because `exactOptionalPropertyTypes` makes
+      // an explicit `undefined` a different thing from an absent key — and the
+      // consumers of this type rely on absence meaning "never chose".
+      ...probeInputTokens === undefined ? {} : { probeInputTokens },
       memberAccountIds: pool?.memberAccountIds ?? [],
     }
   }
@@ -1378,11 +1415,18 @@ export function apply(ctx: Context, config: Config): void {
         // read is best-effort: a probe without a cooldown is still a useful
         // probe (see `quotaRefreshOf`).
         const quotaRefreshAtMs = await quotaRefreshOf(region, credential)
+        // The user's chosen probe size, coerced against the offered set. Read
+        // HERE rather than captured when these deps were built, so changing the
+        // setting takes effect on the very next test rather than the next reload.
+        const inputTokens = resolveProbeInputTokens(
+          poolPreferencesOf(current(), region).probeInputTokens,
+        )
         return probeModel({
           client,
           credential,
           modelId,
           nowMs: Date.now(),
+          inputTokens,
           ...quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs },
         })
       },

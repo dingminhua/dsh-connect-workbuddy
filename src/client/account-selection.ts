@@ -371,6 +371,14 @@ export async function writePoolPreferences(
   preferences: {
     enabled: boolean
     targetModelId: string
+    /**
+     * Tokens each probe sends, or `undefined` to leave the host's default.
+     *
+     * Optional on purpose: a caller that never learnt about this setting must
+     * not be forced to invent a number, and omitting it has to mean "default"
+     * rather than "0 tokens".
+     */
+    probeInputTokens?: number
     memberAccountIds: readonly string[]
   },
 ): Promise<void> {
@@ -378,7 +386,21 @@ export async function writePoolPreferences(
   // the caller: the pool is one field of a slot that also holds the model list,
   // so a caller that forgot to pass the rest would silently delete it. Reading
   // the snapshot here makes that impossible to get wrong.
-  const merged = nextRegionPool(scope.getSnapshot().value, region, preferences)
+  //
+  // `probeInputTokens` is dropped when undefined rather than stored as such:
+  // the slot is written to JSON, where a key present with `undefined` is not
+  // representable, and `0` is already the host's "use the default" spelling.
+  // Omitting the key therefore keeps the saved shape identical to a profile
+  // written before the setting existed.
+  const slot: Record<string, unknown> = {
+    enabled: preferences.enabled,
+    targetModelId: preferences.targetModelId,
+    memberAccountIds: preferences.memberAccountIds,
+  }
+  if (preferences.probeInputTokens !== undefined) {
+    slot['probeInputTokens'] = preferences.probeInputTokens
+  }
+  const merged = nextRegionPool(scope.getSnapshot().value, region, slot)
   const next = merged[region] as Record<string, unknown>
   await writeField(scope, 'regions', region, next, readBack => {
     const pool = (readBack as { pool?: Record<string, unknown> } | null | undefined)?.pool
@@ -389,6 +411,12 @@ export async function writePoolPreferences(
       || pool['targetModelId'] !== preferences.targetModelId) {
       return false
     }
+    // The host normalises an unset size to `0`, so an undefined request must be
+    // verified against either spelling — requiring exactly `undefined` would
+    // report a landed write as failed and leave the draft on screen.
+    const wantedTokens = preferences.probeInputTokens ?? 0
+    const storedTokens = pool['probeInputTokens'] ?? 0
+    if (storedTokens !== wantedTokens) return false
     // Membership is compared as a SET: the stored order is not meaningful, and
     // an order-sensitive check would report a failed save for a write that
     // landed correctly — which, because success is what discards the draft,

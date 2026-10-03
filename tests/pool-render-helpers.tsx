@@ -59,6 +59,15 @@ export interface Mounted {
   /** The settings toggles: [0] is the account pool switch. */
   toggles: () => HTMLInputElement[]
   click: (element: Element) => Promise<void>
+  /**
+   * Choose an option in a `<select>` and fire the change event, inside `act`.
+   *
+   * A bare `dispatchEvent` from a test bypasses React's batching and logs an
+   * `act(...)` warning while still passing, which hides the fact that the
+   * assertion ran against a half-updated tree. Routing it through the harness
+   * keeps every select-driven assertion honest.
+   */
+  choose: (select: HTMLSelectElement, value: string) => Promise<void>
   settle: () => Promise<void>
 }
 
@@ -95,6 +104,15 @@ export async function mount(Component: any, props: any): Promise<Mounted> {
       Array.from(container.querySelectorAll<HTMLInputElement>('.dsm-workbuddy-pool-settings input[type=checkbox]')),
     async click(element: Element) {
       await act(async () => { (element as HTMLElement).click() })
+    },
+    async choose(select: HTMLSelectElement, value: string) {
+      await act(async () => {
+        select.value = value
+        // React listens for `change` on selects (not `input`), so a bare
+        // `input` event would set the DOM value while the controlled component
+        // never re-rendered — the draft would stay at its old value.
+        select.dispatchEvent(new window.Event('change', { bubbles: true }))
+      })
     },
     /**
      * Drain async work started OUTSIDE an act scope.

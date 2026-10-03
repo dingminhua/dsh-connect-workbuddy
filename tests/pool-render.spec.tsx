@@ -641,6 +641,98 @@ describe('the pool header states nothing twice', () => {
   })
 })
 
+describe('the probe-size picker really controls the request size', () => {
+  /** The pool switched off, with one checked account so a batch would be runnable. */
+  function poolSwitchedOffHere(): Record<string, unknown> {
+    return poolOf({
+      enabled: false,
+      memberAccountIds: [GENUINE_ID],
+      effectiveMemberAccountIds: [GENUINE_ID],
+      accounts: [GENUINE_ACCOUNT],
+    })
+  }
+
+  /**
+   * The probe picker, found by its own option text.
+   *
+   * NOT by class: it deliberately shares `.dsm-workbuddy-pool-select` with the
+   * model picker and the manual-mode account picker, so a class-only selector
+   * matches whichever rendered first and would silently assert on the wrong
+   * control — the trap the model-picker test already documents.
+   */
+  function probeSelect(m: { container: HTMLDivElement }): HTMLSelectElement | null {
+    return Array.from(m.container.querySelectorAll('select')).find(
+      select => select.innerHTML.includes('row.poolProbeSizeDefault'),
+    ) ?? null
+  }
+
+  it('offers exactly the sizes the host honours, in order', async () => {
+    // The menu is driven by the same exported list the host's coercion reads, so
+    // a size the user can pick is always a size that will be sent. Hard-coding a
+    // second menu in the component is how the two drift apart into "I chose 50K
+    // and it tested at 25K".
+    const m = await mount(AccountPool, baseProps({}))
+    const select = probeSelect(m)
+    expect(select, 'no probe-size select rendered').not.toBeNull()
+    // '0' is the default option; the rest are the shared choices.
+    expect(Array.from(select?.options ?? []).map(option => option.value))
+      .toEqual(['0', '10000', '20000', '30000', '50000', '100000'])
+    await m.unmount()
+  })
+
+  it('saves the chosen size as a NUMBER, and dirtiness follows it', async () => {
+    // Two claims at once, both user-visible: picking a size makes the save
+    // pending (so the edit is not silently lost), and the value that reaches the
+    // write is the number rather than the option string or NaN.
+    const onSaved = vi.fn(async () => true)
+    const scope = fakeScope({})
+    const m = await mount(AccountPool, baseProps({ settingsScope: scope, onSaved }))
+    const select = probeSelect(m) as HTMLSelectElement
+    expect(select.value, 'a host with no stored choice must show the default').toBe('0')
+    expect(m.button('row.poolSaved').disabled, 'nothing edited yet — Save starts disabled').toBe(true)
+    await m.choose(select, '50000')
+    expect(m.button('row.poolSaved').disabled, 'the size edit must make the save pending').toBe(false)
+    await m.click(m.button('row.poolSaved'))
+    expect(onSaved).toHaveBeenCalledTimes(1)
+    // The saved document carries the number under the region's pool slot.
+    const regions = (scope.getSnapshot().value as { regions?: Record<string, { pool?: Record<string, unknown> }> }).regions
+    expect(regions?.cn?.pool?.['probeInputTokens']).toBe(50_000)
+    await m.unmount()
+  })
+
+  it('shows the saved size as selected, not the default', async () => {
+    // The controlled-select trap: if a saved value had no matching option (or
+    // the value were bound as a number against string options), the browser would
+    // fall back to displaying the FIRST option — claiming "默认" while the disk
+    // held 100000, and the next save would write the default over the choice.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [GENUINE_ACCOUNT],
+        probeInputTokens: 100_000,
+      }),
+    }))
+    const select = probeSelect(m)
+    expect(select?.value).toBe('100000')
+    // And it must not read as dirty, or a user who changed nothing would see a
+    // pending save the moment the panel rendered.
+    expect(m.button('row.poolSaved').disabled, 'a freshly loaded panel is not dirty').toBe(true)
+    await m.unmount()
+  })
+
+  it('leaves the picker editable while the pool switch is off', async () => {
+    // Same reasoning as the model picker: with the pool off the manual test is
+    // the ONLY way to measure an account, and the size is the question that test
+    // asks — so disabling its control would defeat the feature.
+    const m = await mount(AccountPool, baseProps({ pool: poolSwitchedOffHere() }))
+    const select = probeSelect(m)
+    expect(select, 'no probe-size select rendered with the pool off').not.toBeNull()
+    expect(select?.disabled).toBe(false)
+    await m.unmount()
+  })
+})
+
 describe('the pool toolbar is one row of two clusters', () => {
   it('groups account actions on the left and discovery on the right', async () => {
     // Before: the rescan button sat alone on a row pushed right, and the batch

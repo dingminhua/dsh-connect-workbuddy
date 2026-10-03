@@ -322,6 +322,43 @@ describe('writePoolPreferences', () => {
     await expect(writePoolPreferences(scope, 'cn', { ...PREFERENCES }))
       .rejects.toBeInstanceOf(WorkBuddySettingsWriteError)
   })
+
+  it('persists the probe size when the caller supplies one', async () => {
+    const { scope, document } = scopeWith({ regions: { cn: {} } })
+    await writePoolPreferences(scope, 'cn', { ...PREFERENCES, probeInputTokens: 50_000 })
+    const pool = (document()['regions'] as Record<string, { pool?: Record<string, unknown> }>).cn?.pool
+    expect(pool?.['probeInputTokens']).toBe(50_000)
+  })
+
+  it('leaves the key ABSENT when the probe size is not supplied', async () => {
+    // The case that keeps an old profile's saved shape identical: a caller that
+    // never learnt about the setting must not write `undefined` (which JSON
+    // drops) or `0` (which would read back as "the user chose the default"). The
+    // exact-equality assertion in the first test of this suite would also fail on
+    // an extra key — this states the intent explicitly.
+    const { scope, document } = scopeWith({ regions: { cn: {} } })
+    await writePoolPreferences(scope, 'cn', { ...PREFERENCES })
+    const pool = (document()['regions'] as Record<string, { pool?: Record<string, unknown> }>).cn?.pool
+    expect(pool).not.toHaveProperty('probeInputTokens')
+    expect(Object.keys(pool ?? {}).sort()).toEqual(['enabled', 'memberAccountIds', 'targetModelId'])
+  })
+
+  it('accepts a stored probe size of 0 for a request that omitted it', async () => {
+    // The host normalises an unset size to `0` in its config schema, so a
+    // read-back reporting `0` for an omitted request must still count as landed —
+    // otherwise the card reports a save failure and keeps the draft on screen for
+    // a write that actually succeeded.
+    const { scope } = scopeWith({ regions: { cn: { pool: { ...PREFERENCES, probeInputTokens: 0 } } } })
+    await expect(writePoolPreferences(scope, 'cn', { ...PREFERENCES })).resolves.toBeUndefined()
+  })
+
+  it('reports a probe size that did not persist', async () => {
+    // A size that silently fails to store is the failure this setting cannot
+    // tolerate: the user would keep testing at the wrong size with no indication.
+    const { scope } = scopeWith({ regions: { cn: {} } }, { locked: true })
+    await expect(writePoolPreferences(scope, 'cn', { ...PREFERENCES, probeInputTokens: 100_000 }))
+      .rejects.toBeInstanceOf(WorkBuddySettingsWriteError)
+  })
 })
 
 /**

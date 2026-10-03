@@ -39,6 +39,7 @@ import type { Translate } from './searched-paths.ts'
 import { readNdjson } from './ndjson.ts'
 import { inlineProbeReason } from './probe-reason.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
+import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
 import { remainingText } from './remaining.ts'
 import {
   announcedBatchCount,
@@ -62,6 +63,15 @@ interface PoolLogEntry {
 export interface PoolPreferences {
   enabled: boolean
   targetModelId: string
+  /**
+   * Tokens each test probe sends; `0` means the host's measured default.
+   *
+   * Spelled `0` rather than optional so the controlled `<select>` has a real
+   * value to bind: a dropdown whose current value is `undefined` falls back to
+   * showing its first option, which would claim "10K" for a user who never
+   * chose a size. The host accepts `0` as "default" for exactly this reason.
+   */
+  probeInputTokens: number
   /**
    * The account ids checked into this pool.
    *
@@ -298,6 +308,11 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     // display, the draft and the disk in agreement; the explicit "switch back
     // to automatic" button is what clears it, as a deliberate act.
     targetModelId: pool?.targetModelId || pool?.staleTargetModelId || '',
+    // `0` (unset) is carried as-is rather than resolved to 25000 here: the
+    // dropdown needs to show "默认" for someone who never chose, and writing the
+    // resolved number back on the next save would silently convert "I never
+    // touched this" into "I chose this".
+    probeInputTokens: pool?.probeInputTokens ?? 0,
     memberAccountIds: pool?.memberAccountIds ?? [],
   }
   // The draft only applies to the tab it was made on.
@@ -305,6 +320,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   const dirty = draftRegion === region && draft !== null && (
     draft.enabled !== saved.enabled
     || draft.targetModelId !== saved.targetModelId
+    || draft.probeInputTokens !== saved.probeInputTokens
     // Order-insensitive: the user's clicks decide the set, not its ordering,
     // so re-checking the same accounts in a different order is not a change.
     || !sameIds(draft.memberAccountIds, saved.memberAccountIds)
@@ -1224,6 +1240,47 @@ function renderSettings(input: {
             }, model.creditMultiplier === undefined
               ? model.name
               : `${model.name} (x${model.creditMultiplier.toFixed(2)})`)),
+          ),
+        ),
+      ),
+      // The probe size, as its own row under the model picker.
+      //
+      // Directly beneath the model because the two together define what a test
+      // actually sends, and the choice only makes sense against the measured
+      // 20k~30k rate-limit threshold the hint describes — a user cannot judge
+      // "30K" without being told what it is compared against.
+      h('div', { className: 'dsm-workbuddy-pool-set' },
+        h('span', { className: 'dsm-workbuddy-pool-set-copy' },
+          h('b', null, t('row.poolProbeSizeLabel')),
+          h('span', null, t('row.poolProbeSizeHint')),
+        ),
+        h('span', { className: 'dsm-workbuddy-pool-set-ctl' },
+          h('select', {
+            className: 'dsm-workbuddy-pool-select',
+            // Bound as a STRING because a DOM select's value always is one; the
+            // numeric value is parsed on change. `'0'` is the default option, so
+            // a user who never chose keeps seeing "默认" rather than a number.
+            value: String(active.probeInputTokens),
+            // Not gated on the pool switch, for the same reason the model picker
+            // is not: testing is the only way to measure an account with the
+            // pool off, and this setting exists to serve that measurement.
+            disabled: !canEdit,
+            onChange: (event: { currentTarget: { value: string } }) => {
+              const parsed = Number.parseInt(event.currentTarget.value, 10)
+              // A non-numeric option value falls back to the default rather than
+              // writing NaN, which would serialise as `null` and then read back
+              // as "unset" — the same meaning, but only by accident.
+              const next = Number.isFinite(parsed) ? parsed : 0
+              onEdit(current => ({ ...current, probeInputTokens: next }))
+            },
+          },
+            h('option', { value: '0' }, t('row.poolProbeSizeDefault')),
+            // Driven by the shared list, so the menu and the host's coercion
+            // rule can never disagree about which sizes exist.
+            ...PROBE_INPUT_TOKEN_CHOICES.map(tokens => h('option', {
+              value: String(tokens),
+              key: String(tokens),
+            }, t('row.poolProbeSizeOption', { tokens: String(tokens / 1000) }))),
           ),
         ),
       ),

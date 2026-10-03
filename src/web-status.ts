@@ -160,6 +160,14 @@ export interface WorkBuddyPoolDeps {
   preferences(region: WorkBuddyRegion): {
     enabled: boolean
     targetModelId: string
+    /**
+     * Tokens each test probe sends as saved; `0` when the user never chose.
+     *
+     * Optional so a caller that has not learnt about the setting still
+     * satisfies this interface, and so its absence reads as "default" — the
+     * same meaning the host gives an older profile.
+     */
+    probeInputTokens?: number
     memberAccountIds: readonly string[]
   }
   /** One region's CHECKED accounts, plus their credits and last measurements. */
@@ -648,6 +656,11 @@ async function workBuddyWebPool(
     // chose, and a login can come back (the desktop app re-adds it) in which
     // case the saved id should apply again.
     memberAccountIds: preferences.memberAccountIds,
+    // The probe size the user chose, verbatim (`0` = the host's default). Sent
+    // rather than resolved so the dropdown can show "默认" as a state distinct
+    // from "25000": resolving here would make the card claim the user picked a
+    // size they never touched, and the next save would write that number back.
+    ...preferences.probeInputTokens === undefined ? {} : { probeInputTokens: preferences.probeInputTokens },
     // The ids that actually resolve to a listed account, i.e. what a batch will
     // run on. Sent explicitly so the card never has to re-derive it: deriving
     // it in the browser is what let the UI claim "1 of 1 selected" while the

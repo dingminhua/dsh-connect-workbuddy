@@ -1135,7 +1135,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                     answer is "rejected".
 
                                     It sends a REAL-VOLUME request (see
-                                    PROBE_INPUT_TOKENS in src/probe.ts), because
+                                    DEFAULT_PROBE_INPUT_TOKENS in src/probe.ts), because
                                     the upstream's 6004 throttle fires on request
                                     size: a tiny probe would report "usable" while
                                     every real request in a long conversation is

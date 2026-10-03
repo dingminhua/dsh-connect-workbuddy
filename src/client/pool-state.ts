@@ -19,6 +19,14 @@ import type { Translate } from './searched-paths.ts'
 export interface PoolPreferencesLike {
   enabled: boolean
   targetModelId: string
+  /**
+   * Tokens each test probe sends, or `undefined`/`0` for the host's default.
+   *
+   * Optional so the type does not force every host payload and test fixture to
+   * carry it: an absent field must behave exactly like "use the default", which
+   * is what the host does with an older profile.
+   */
+  probeInputTokens?: number
   memberAccountIds: readonly string[]
 }
 
