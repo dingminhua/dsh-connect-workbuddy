@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.4.3 (2026-10-03)
 
 ### Features
 
@@ -18,24 +18,25 @@
   - **修法**：凡处理 Windows 数据一律改用 `path.win32.join` / `path.win32.basename`——**分隔符由数据决定，不由宿主决定**。
   - **测试同样是错的**：期望值也用 `join()` 构造，生产与测试一起漂移，所以本地绿、CI（ubuntu）绿，而 Windows 上根本不命中。已改为 `win32.*` 并补一条**形状守卫**（断言每个 Windows 候选都不含 `/`、末段为 `WorkBuddy.exe`），变异验证（把 `win32.join` 换回 `join`）必红。
   - 顺带修正一条与环境耦合的断言：原测试断言 `darwin` 返回 `undefined`，但本机装了 WorkBuddy 时 macOS 分支会**合法**命中，于是「开发者机器红、CI 绿」。该用例真正要断言的是注册表 seam 未被调用，已按此重写。
-### Bug Fixes
 
-#### 403「request illegal」（11140）不再伪装成登录故障
+### Fixes
 
-国际网关的真实失败（2026-09-29 抓包）：同一凭据下 `GET /v3/config` 返回 200，聊天 `POST /v2/chat/completions` 却被 403 拒绝，响应体逐字为：
+- **403「request illegal」（11140）不再伪装成登录故障。**
+
+  国际网关的真实失败（2026-09-29 抓包）：同一凭据下 `GET /v3/config` 返回 200，聊天 `POST /v2/chat/completions` 却被 403 拒绝，响应体逐字为：
 
 ```json
 {"code":11140,"msg":"request illegal","requestId":"3498bf50-98a9-4746-962e-c14016b8c578","displayMsg":{"en":"The content did not pass the safety review. Please adjust and retry.","zh":"内容未通过安全审核，请调整后重试。"},"actions":["SUBMIT_FEEDBACK","COPY_ERROR","EDIT_INPUT"]}
 ```
 
-- **根因**：`classifyUpstreamError` 只认积分、会话失效、限流三类标记，11140 落进兜底的 `client`；shim 把 `client` 映射成 400，DSH 侧进一步归为 AUTH。用户看到的是「登录坏了」——实际是服务端内容策略拒绝，重新登录、刷新 token 都不会有效。
-- **改动**：
-  - `upstream.ts` 新增 `policy_reject` 分类（标记 `request illegal` / `"code":11140`，在通用 4xx 之前判定）与 `parseUpstreamErrorDetail()`（从 JSON 失败体提取 `code` / `requestId` / `displayMsg`，非 JSON 返回 `undefined`，不猜）；chat 失败结果附带 `detail`。
-  - `shim.ts` 把 `policy_reject` 映射回 403，错误消息从解析字段合成：官方文案（zh 优先，回落 en、`msg`）+ `code 11140` + `requestId` +「重新登录不会解决；可在桌面端用同一账号验证，或切换区域/账号后重试」；不再把整段原始 JSON 嵌进 message。
-  - **写回宿主的 `code` 是 `policy_reject`，不是上游的数值码 11140**（2026-10-03 适配 3.4.1 的 `hostErrorCode`）。宿主按稳定的机器可读类别路由，`11140` 不是它认识的类别；而 3.4.1 建立的规则是「只有 429/6004 需要翻译成宿主认得的词」。`policy_reject` 在 403 下本就落在重试集合之外，**不需要**翻译；更要紧的是**不能**被翻译进集合——内容策略拒绝是确定性的，原地重试只会把预算烧在一次必然再被拒的请求上，跨供应商故障转移也治不了策略判定。
-  - 探针 `outcomeOfFailure` 在 401/403 一刀切**之前**先判 `policy_reject`，卡片新增「服务端按内容策略拒绝」文案（中英）。探针与真实请求复用同一分类函数，对同一响应的判定不会分歧。
-  - **账号池不再因一次策略拒绝把健康账号永久踢出**（适配 3.4.2 时发现的连带问题）：`policy-rejected` 是新 outcome，在 `exclusionOf` 里落进了 `default` 分支被标成 `unusable`——而 `unusable` 刻意**不带冷却**，于是账号会被**永久**移出池子，且卡片会显示「不可用」。这是错的：策略拒绝针对的是**那一条请求的内容**，不是这个账号，同一个账号换一条消息照样能服务。现按 `ok` 处理（测量照常记录，卡片能解释发生了什么，但不影响它继续被计费），并补守卫 + 变异验证。
-- **守卫（先红后绿）**：`upstream.spec` / `shim.spec` / `probe.spec` 新增 8 例——分类（完整/最小 403 体 → `policy_reject`）、字段解析（zh 优先、缺 `displayMsg` 回落 `msg`、非 JSON 为 `undefined`）、shim 端到端（重放上面那段真实 403 体，断言 403 + `policy_reject` + **`code` 为 `policy_reject`** + 官方文案 + requestId，而不是 400）、探针（11140 → `policy-rejected`）。7 例先在未修复代码上跑红、实现后转绿；1 例良性对照（良性 403 / HTML 403 仍判 `client` / `credential-rejected`）双向保持绿——防止修复把无辜的 403 一起吞掉。
+  - **根因**：`classifyUpstreamError` 只认积分、会话失效、限流三类标记，11140 落进兜底的 `client`；shim 把 `client` 映射成 400，DSH 侧进一步归为 AUTH。用户看到的是「登录坏了」——实际是服务端内容策略拒绝，重新登录、刷新 token 都不会有效。
+  - **改动**：
+    - `upstream.ts` 新增 `policy_reject` 分类（标记 `request illegal` / `"code":11140`，在通用 4xx 之前判定）与 `parseUpstreamErrorDetail()`（从 JSON 失败体提取 `code` / `requestId` / `displayMsg`，非 JSON 返回 `undefined`，不猜）；chat 失败结果附带 `detail`。
+    - `shim.ts` 把 `policy_reject` 映射回 403，错误消息从解析字段合成：官方文案（zh 优先，回落 en、`msg`）+ `code 11140` + `requestId` +「重新登录不会解决；可在桌面端用同一账号验证，或切换区域/账号后重试」；不再把整段原始 JSON 嵌进 message。
+    - **写回宿主的 `code` 是 `policy_reject`，不是上游的数值码 11140**（2026-10-03 适配 3.4.1 的 `hostErrorCode`）。宿主按稳定的机器可读类别路由，`11140` 不是它认识的类别；而 3.4.1 建立的规则是「只有 429/6004 需要翻译成宿主认得的词」。`policy_reject` 在 403 下本就落在重试集合之外，**不需要**翻译；更要紧的是**不能**被翻译进集合——内容策略拒绝是确定性的，原地重试只会把预算烧在一次必然再被拒的请求上，跨供应商故障转移也治不了策略判定。
+    - 探针 `outcomeOfFailure` 在 401/403 一刀切**之前**先判 `policy_reject`，卡片新增「服务端按内容策略拒绝」文案（中英）。探针与真实请求复用同一分类函数，对同一响应的判定不会分歧。
+    - **账号池不再因一次策略拒绝把健康账号永久踢出**（适配 3.4.2 时发现的连带问题）：`policy-rejected` 是新 outcome，在 `exclusionOf` 里落进了 `default` 分支被标成 `unusable`——而 `unusable` 刻意**不带冷却**，于是账号会被**永久**移出池子，且卡片会显示「不可用」。这是错的：策略拒绝针对的是**那一条请求的内容**，不是这个账号，同一个账号换一条消息照样能服务。现按 `ok` 处理（测量照常记录，卡片能解释发生了什么，但不影响它继续被计费），并补守卫 + 变异验证。
+  - **守卫（先红后绿）**：`upstream.spec` / `shim.spec` / `probe.spec` 新增 8 例——分类（完整/最小 403 体 → `policy_reject`）、字段解析（zh 优先、缺 `displayMsg` 回落 `msg`、非 JSON 为 `undefined`）、shim 端到端（重放上面那段真实 403 体，断言 403 + `policy_reject` + **`code` 为 `policy_reject`** + 官方文案 + requestId，而不是 400）、探针（11140 → `policy-rejected`）。7 例先在未修复代码上跑红、实现后转绿；1 例良性对照（良性 403 / HTML 403 仍判 `client` / `credential-rejected`）双向保持绿——防止修复把无辜的 403 一起吞掉。
 
 ## 3.4.2 (2026-10-03)
 
