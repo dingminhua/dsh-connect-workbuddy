@@ -10,10 +10,10 @@
  * than "this one setting is invalid".
  *
  * Measured on 3.4.4 across both gateways (`workbuddy.ai` and `codebuddy.cn`):
- * 23 models accept `off`, the nine listed in {@link REFUSES_OFF_MODEL_IDS}
- * answer 400, and every OTHER effort value (`minimal`/`low`/`medium`/`high`/
- * `xhigh`/`max`) plus omitting the field entirely returns HTTP 200 on all of
- * them. `off` is the only level that fails.
+ * 18 accept `off` and 10 refuse it (9 unique ids, listed in
+ * {@link REFUSES_OFF_MODEL_IDS}), and every OTHER effort value
+ * (`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) plus omitting the field
+ * entirely returns HTTP 200 on all of them. `off` is the only level that fails.
  *
  * This is the same shape of defect, and the same remedy, as
  * `src/native-modality.ts`: a reviewed table keyed by EXACT model id, because

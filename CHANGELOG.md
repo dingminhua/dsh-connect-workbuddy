@@ -4,9 +4,9 @@
 
 ### Features
 
-- **每个模型行新增「关闭思考」勾选框：`off` 档位不再由上游声明单独决定（issue #34）。**
+- **每个模型行新增「可关闭思考」勾选框：`off` 档位不再由上游声明单独决定（issue #34）。**
   - **背景**：本版之前，某个模型是否提供「关闭思考」（`reasoning_effort: "off"`）完全由上游的 `canDisableThinking` 声明决定，而那个声明对部分模型是**错的**——它们声称可关闭思考，实际对 `off` 返回 HTTP 400，且报文里不说是哪个参数被拒。
-  - **做什么**：模型行上多一个勾选框，勾上 = 提供 `off`，取消 = 不提供。**每个模型都有这个勾选框**，最终由用户决定；上游声明与内置名单只决定**默认值**，不再是一道墙。
+  - **做什么**：模型行上多一个「可关闭思考」勾选框，勾上 = 提供 `off`，取消 = 不提供。**每个模型都有这个勾选框**，最终由用户决定；上游声明与内置名单只决定**默认值**，不再是一道墙。
   - **默认怎么来**：内置一份按精确 id 复核的名单（`src/off-thinking.ts` 的 `REFUSES_OFF_MODEL_IDS`，9 个模型），首次读取时用它填勾选状态，所以「不勾」的模型从一开始就不是这 9 个会失败的。这份名单**只是种子**，不是墙：
     - 上游新增一个拒绝 `off` 的模型 → **取消勾选**即可，不必等我们发版；
     - 名单误伤了一个其实可用的模型 → **勾上**即可恢复。
@@ -23,7 +23,7 @@
 
 - **对上游声明为可关闭、实际返回 HTTP 400 的模型，不再提供 `off` 档位（issue #34）。**
   - **现象**：选中 `off` 后**每一次**请求都硬失败，且报文里 `extError.param` 是空的——上游不说是哪个参数被拒。因为 `off` 属于按模型保存的选择，失败会一直持续到用户手动换档，看起来像「这个模型坏了」。
-  - **依据（报告者实测，3.4.4，两个网关）**：23 个模型接受 `off`（HTTP 200），9 个返回 400；**除 `off` 之外**的每一档（`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）以及完全不传该字段，在两个网关上都是 200——`off` 是唯一失败的档位。两个网关用**不同的错误码报同一个原因**：国际版 `11133`（`Invalid request parameters`，附 `extError.code: model_param_invalid`），国内版 `11150`（`the reasoning effort value is not supported by the current model`）。
+  - **依据（报告者实测，3.4.4，两个网关）**：28 次观测中 18 次接受 `off`（HTTP 200）、10 次返回 400（去重后 9 个模型 id）；**除 `off` 之外**的每一档（`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）以及完全不传该字段，在两个网关上都是 200——`off` 是唯一失败的档位。两个网关用**不同的错误码报同一个原因**：国际版 `11133`（`Invalid request parameters`，附 `extError.code: model_param_invalid`），国内版 `11150`（`the reasoning effort value is not supported by the current model`）。
   - **不再信任声明**：`src/off-thinking.ts` 新增一份按**精确模型 id** 复核的名单（`deepseek-v4.1-flash` / `-sg` / `-pro`、`primary-model`、`gpt-6-astra`、`gpt-5.6-sol` / `-terra` / `-luna`、`gemini-3.5-flash`），与 `native-modality.ts` 的图片能力表同一种做法。没有任何**声明字段**能分开这两组：接受侧是 GLM/Kimi/MiniMax 加 `fast-model`/`balanced-model`/`auto`/`hy3`，拒绝侧是 DeepSeek-v4/GPT/Gemini 前沿模型加 `primary-model`，两组公布的是一模一样的能力。
   - **按 id 而非按区域**：`deepseek-v4.1-flash` 在**两个网关上都拒绝**，分组跟着模型家族走而不是网关。代价是不对称的——提供一个必定失败的档位，代价是用户该模型的**每一次**请求；误藏一个本来可用的档位，代价只是一个选项——所以名单**宁可多藏**，并交给上面的勾选框兜底。
   - **为什么是「与 200K 同样的取法」**：`null` 才是撤销档位的唯一正确手段，与档位的**值**是两个不同的位置——pi-ai 的 `getSupportedThinkingLevels` 只在 `map[level] === null` 时把该档位移出选择器，而线上取值走的是 `map[level] ?? level`，所以给个字符串仍会照发。
@@ -31,7 +31,7 @@
 ### Docs
 
 - `docs/reasoning-investigation.md` 的实测表（`hy3-x`、`hy4-preview`、`hy4-preview-x` 声明 `canDisableThinking: false`）是「缺省不能翻成 `true`」这一判断的依据，本版沿用该结论而未改动该文档。
-- 两份 README 的「模型管理」一节补上「关闭思考」勾选框，并修正 3.4.5 起已失效的「窗口最高 200K」表述（issue #33 已改为按原生窗口宣称）。
+- 两份 README 的「模型管理」一节补上「可关闭思考」勾选框，并修正 3.4.5 起已失效的「窗口最高 200K」表述（issue #33 已改为按原生窗口宣称）。
 
 ## 3.4.5 (2026-10-04)
 
