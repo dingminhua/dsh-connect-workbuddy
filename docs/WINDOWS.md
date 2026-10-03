@@ -30,6 +30,12 @@ Windows 在本项目里不是「顺带能跑」的平台，而是**有专属分�
 
 **通用注意**：路径一律经 `path.join` 构造，**不得写死 POSIX 分隔符**。历史上正因此挂过 CI——`2.0.11` 新增的 darwin 候选断言写死了 `/Applications/WorkBuddy.app/...`，生产代码没问题（用 `join`），错的是测试：它断言的是「跑测试的机器是 POSIX」而非「候选列表对不对」，于是 Windows 必挂、macOS 恒绿。现有回归守卫：候选路径不得**混用**分隔符。
 
+**更隐蔽的反向形态**：处理 **Windows 专用**数据（注册表值、`%LOCALAPPDATA%` 等 Windows 环境变量）时，`path.join` / `path.basename` **不是**正确答案——它们跟随**运行平台**。在 Linux/macOS 上跑，`basename('E:\workbuddy\WorkBuddy.exe')` 返回整串（`\` 在 POSIX 下不是分隔符），`join('E:\workbuddy', 'x.exe')` 产出 `E:\workbuddy/x.exe`，两者在 Windows 上都不可能命中。正确写法是 `path.win32.join` / `path.win32.basename`：**分隔符由数据决定，而不是由宿主决定**。
+
+- 生产代码里曾有两处踩到：`workbuddyAppExecutableCandidates()` 的四个 Windows 候选（`DIRTY` 形态的分隔符 → 非 Windows 宿主上构造出的路径永远不存在，且**它的测试用 `join()` 构造期望值，以同样的方式被改坏，于是双双通过**），以及注册表回退的 `normalizeRegistryExecutable()` / `registryInstallLocationFromQuery()`。
+- 因此**测试的期望值也必须用 `win32.*` 构造**：用 `join()` 拼 Windows 期望值时，生产与测试会一起漂移，CI 在 ubuntu 上照样绿——这正是上一条「断言的是宿主而非逻辑」的同一种错，只是方向相反。
+- 判断标准很简单：**这个字符串里出现 `\` 或盘符了吗？**有 → `win32.*`；是 POSIX 绝对路径或拼接本机路径 → 用 `join`。
+
 ## 2. 证据分级（写结论时必须用对档位）
 
 | 档位 | 含义 | 实例 |

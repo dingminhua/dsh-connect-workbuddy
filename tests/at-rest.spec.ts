@@ -12,16 +12,21 @@
 import { createCipheriv, createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { join, sep, win32 } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   deriveAtRestKey,
   deriveAtRestKeyId,
   findWorkbuddyAppExecutable,
+  findWorkbuddyAppExecutableWithSource,
   isEncryptedFieldWrapper,
   isWorkbuddyBundle,
   macosBundleExecutable,
+  normalizeRegistryExecutable,
   openEncryptedField,
+  registryExecutableFromQuery,
+  registryInstallLocationFromQuery,
+  windowsRegistryAppExecutable,
   workbuddyAppExecutableCandidates,
   WORKBUDDY_APP_EXECUTABLE_ENV,
 } from '../src/at-rest.ts'
@@ -397,7 +402,29 @@ describe('workbuddy app executable discovery', () => {
     const candidates = workbuddyAppExecutableCandidates('win32', 'C:\\Users\\x', {
       LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local',
     })
-    expect(candidates).toContain(join('C:\\Users\\x\\AppData\\Local', 'WorkBuddy', 'WorkBuddy.exe'))
+    // `win32.join`: the expectation is a Windows-shaped path, so it must not
+    // depend on the separator of whichever host runs the suite.
+    expect(candidates).toContain(win32.join('C:\\Users\\x\\AppData\\Local', 'WorkBuddy', 'WorkBuddy.exe'))
+  })
+
+  it('builds EVERY Windows candidate with win32 separators, on any host', () => {
+    // Regression guard for the silent class of bug this file hid once already:
+    // the production candidates were assembled with the HOST's `join`, and the
+    // expectation here was built the same way, so on Linux both sides produced
+    // `…\Local/WorkBuddy/WorkBuddy.exe` and matched each other. A Windows
+    // install could never match that string. Assert the SHAPE, which no `join`
+    // on the host can fake: a Windows path has `\` separators and no `/`.
+    const candidates = workbuddyAppExecutableCandidates('win32', 'C:\\Users\\x', {
+      LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+    })
+    expect(candidates.length).toBe(4)
+    for (const candidate of candidates) {
+      expect(candidate.endsWith('WorkBuddy.exe')).toBe(true)
+      expect(candidate).not.toContain('/')
+      expect(candidate.split('\\').at(-1)).toBe('WorkBuddy.exe')
+    }
   })
 
   it('offers the macOS bundle paths on darwin and nothing on linux', () => {
@@ -470,6 +497,196 @@ describe('workbuddy app executable discovery', () => {
       // The separator actually used must be this host's.
       expect(candidate.includes(sep)).toBe(true)
     }
+  })
+})
+
+describe('windows registry app discovery', () => {
+  /**
+   * Scratch directories created by this suite, removed in `afterEach` so a
+   * failure leaves no debris behind.
+   */
+  const temporary: string[] = []
+
+  afterEach(async () => {
+    for (const dir of temporary.splice(0)) await rm(dir, { recursive: true, force: true })
+  })
+
+  /**
+   * Verbatim `reg query` output from the machine that motivated this feature:
+   * WorkBuddy installed on `E:\workbuddy`, a layout none of the four default
+   * directory candidates can see. `DisplayIcon` names the binary; the other
+   * values are present because the real query returns the whole key.
+   */
+  const REAL_QUERY = [
+    '',
+    'HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\BFD312E9-1019-4F57-9F44-F86246833B50',
+    '    DisplayName    REG_SZ    WorkBuddy 5.6.2',
+    '    UninstallString    REG_SZ    "E:\\workbuddy\\Uninstall WorkBuddy.exe" /currentuser',
+    '    DisplayIcon    REG_SZ    E:\\workbuddy\\WorkBuddy.exe,0',
+    '    HelpLink    REG_SZ    https://www.workbuddy.cn',
+    '',
+    'End of search: 12 match(es) found.',
+    '',
+  ].join('\r\n')
+
+  it('reads the executable path out of a real query result', () => {
+    expect(registryExecutableFromQuery(REAL_QUERY)).toBe('E:\\workbuddy\\WorkBuddy.exe')
+  })
+
+  it('accepts the quoted, icon-indexed form the installer also writes', () => {
+    expect(normalizeRegistryExecutable('"E:\\workbuddy\\WorkBuddy.exe",0')).toBe('E:\\workbuddy\\WorkBuddy.exe')
+    expect(normalizeRegistryExecutable('"C:\\Program Files\\WorkBuddy\\WorkBuddy.exe",12')).toBe(
+      'C:\\Program Files\\WorkBuddy\\WorkBuddy.exe',
+    )
+  })
+
+  it('accepts a bare path, because not every installer writes the indexed form', () => {
+    expect(normalizeRegistryExecutable('E:\\workbuddy\\WorkBuddy.exe')).toBe('E:\\workbuddy\\WorkBuddy.exe')
+  })
+
+  it('refuses a value that is not the desktop executable', () => {
+    // The safety property: the path this returns is handed to a child-process
+    // spawn. An uninstaller, an icon, or another product's binary must not be
+    // launched, so anything that is not exactly WorkBuddy.exe is rejected.
+    expect(normalizeRegistryExecutable('E:\\workbuddy\\Uninstall WorkBuddy.exe,0')).toBeUndefined()
+    expect(normalizeRegistryExecutable('E:\\workbuddy\\app.ico')).toBeUndefined()
+    expect(normalizeRegistryExecutable('C:\\Other\\Other.exe')).toBeUndefined()
+    expect(normalizeRegistryExecutable('')).toBeUndefined()
+    expect(normalizeRegistryExecutable('   ')).toBeUndefined()
+  })
+
+  it('does not silently truncate an unterminated quote', () => {
+    // Malformed data is refused rather than guessed at; a half-read path would
+    // be a wrong path, which is worse than falling through to the hint.
+    expect(normalizeRegistryExecutable('"E:\\workbuddy\\WorkBuddy.exe')).toBeUndefined()
+  })
+
+  it('falls back to InstallLocation when the registration omits DisplayIcon', () => {
+    const output = [
+      'HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{GUID}',
+      '    DisplayName    REG_SZ    WorkBuddy 5.6.2',
+      '    InstallLocation    REG_SZ    E:\\workbuddy',
+      '',
+    ].join('\r\n')
+    expect(registryExecutableFromQuery(output)).toBeUndefined()
+    expect(registryInstallLocationFromQuery(output)).toBe(win32.join('E:\\workbuddy', 'WorkBuddy.exe'))
+  })
+
+  it('queries both hives and prefers the user hive that answers first', () => {
+    const asked: string[][] = []
+    const found = windowsRegistryAppExecutable(args => {
+      asked.push([...args])
+      // Only the per-user hive answers, which is the layout WorkBuddy installs.
+      return args[1]?.startsWith('HKCU') === true ? REAL_QUERY : undefined
+    })
+    expect(found).toBe('E:\\workbuddy\\WorkBuddy.exe')
+    expect(asked).toHaveLength(1)
+    expect(asked[0]![1]).toContain('HKCU')
+  })
+
+  it('returns undefined when neither hive has the app registered', () => {
+    // The normal case on a machine without WorkBuddy: every failure path has to
+    // be silent so the caller falls through to its documented hint.
+    expect(windowsRegistryAppExecutable(() => undefined)).toBeUndefined()
+    expect(windowsRegistryAppExecutable(() => 'End of search: 0 match(es) found.')).toBeUndefined()
+  })
+
+  it('consults the registry only on win32, after every cheap candidate has missed', () => {
+    // The registry is a FALLBACK, not a candidate: a machine on darwin/linux
+    // must never run `reg`, and a default Windows install must not pay for the
+    // query at all.
+    const called: string[] = []
+    const probe = (): string | undefined => {
+      called.push('called')
+      return undefined
+    }
+    expect(findWorkbuddyAppExecutable('linux', '/home/x', {}, probe)).toBeUndefined()
+    // NOT `toBeUndefined()` on darwin: the macOS branch is a real filesystem
+    // lookup, so on a developer's Mac with WorkBuddy installed it legitimately
+    // finds the bundle. Asserting undefined would pass in CI and fail here —
+    // exactly the host-dependence the source's `readBundleExecutable` seam
+    // exists to avoid. What this test is actually about is the REGISTRY seam,
+    // so assert on that: the darwin branch must not call it.
+    findWorkbuddyAppExecutable('darwin', '/Users/x', {}, probe)
+    expect(called).toHaveLength(0)
+  })
+
+  it('uses the registry path when a real install lives off the default layout', async () => {
+    // End-to-end for the reported bug: the four candidates all miss (they point
+    // at a temp dir), and the ONLY reason the app is found is the registration.
+    const dir = await mkdtemp(join(tmpdir(), 'wb-registry-'))
+    temporary.push(dir)
+    const executable = join(dir, 'WorkBuddy.exe')
+    await writeFile(executable, '')
+
+    const found = findWorkbuddyAppExecutable(
+      'win32',
+      dir,
+      { LOCALAPPDATA: join(dir, 'absent-local'), ProgramFiles: join(dir, 'absent-pf') },
+      () => executable,
+    )
+    expect(found).toBe(executable)
+  })
+
+  it('ignores a registration pointing at a file that is gone', async () => {
+    // A stale registration after an uninstall must not become the answer.
+    const dir = await mkdtemp(join(tmpdir(), 'wb-registry-stale-'))
+    temporary.push(dir)
+    const found = findWorkbuddyAppExecutable(
+      'win32',
+      dir,
+      { LOCALAPPDATA: join(dir, 'absent-local') },
+      () => join(dir, 'WorkBuddy.exe'),
+    )
+    expect(found).toBeUndefined()
+  })
+
+  it('reports the registry as the source when the registration is what answered', async () => {
+    // `doctor` prints this: the path alone cannot distinguish "found in the
+    // default layout" from "the off-layout fallback saved you", and that
+    // difference is the whole point of the fallback.
+    const dir = await mkdtemp(join(tmpdir(), 'wb-registry-source-'))
+    temporary.push(dir)
+    const executable = join(dir, 'WorkBuddy.exe')
+    await writeFile(executable, '')
+
+    const found = findWorkbuddyAppExecutableWithSource(
+      'win32',
+      dir,
+      { LOCALAPPDATA: join(dir, 'absent-local') },
+      () => executable,
+    )
+    expect(found).toEqual({ executable, source: 'registry' })
+  })
+
+  it('reports an env override as its own source, not as a default-layout hit', async () => {
+    // A hand-set override is the answer to "why is it using THAT binary?", so
+    // it must not be reported as if the default layout had provided it.
+    const dir = await mkdtemp(join(tmpdir(), 'wb-env-source-'))
+    temporary.push(dir)
+    const executable = join(dir, 'Custom.exe')
+    await writeFile(executable, '')
+
+    const found = findWorkbuddyAppExecutableWithSource(
+      'win32',
+      dir,
+      { [WORKBUDDY_APP_EXECUTABLE_ENV]: executable },
+      () => undefined,
+    )
+    expect(found).toEqual({ executable, source: 'env' })
+  })
+
+  it('reports nothing found when neither the layout nor the registration answers', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-none-source-'))
+    temporary.push(dir)
+    expect(
+      findWorkbuddyAppExecutableWithSource(
+        'win32',
+        dir,
+        { LOCALAPPDATA: join(dir, 'absent-local') },
+        () => undefined,
+      ),
+    ).toBeUndefined()
   })
 })
 

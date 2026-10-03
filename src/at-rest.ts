@@ -36,11 +36,11 @@
  * @module dsh-connect-workbuddy/at-rest
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { createDecipheriv, createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 
 /** A `{$wbEncrypted:1,envelope}` field wrapper, the only shape this module opens. */
 export interface WorkBuddyEncryptedField {
@@ -248,6 +248,178 @@ export function macosBundleExecutable(bundle: string): string | undefined {
 }
 
 /**
+ * The executable path WorkBuddy's own uninstall registration points at, or
+ * undefined when the app was never registered.
+ *
+ * Why this exists: the four directory candidates in
+ * {@link workbuddyAppExecutableCandidates} encode the DEFAULT install layout.
+ * An app installed anywhere else — a second drive (the observed case was
+ * `E:\workbuddy\WorkBuddy.exe`) — is installed and signed in, yet every
+ * candidate misses, so the encrypted credential file cannot be opened and a
+ * user who IS signed in is reported as signed out. The README's answer was to
+ * set `WORKBUDDY_APP_EXECUTABLE` by hand; the installer already recorded the
+ * answer, so this reads it instead.
+ *
+ * The registration is the app's own claim about itself, which is what makes it
+ * safe to hand the path to the credential probe: a display name alone would be
+ * a guess, whereas the path here was written by the installer that placed the
+ * binary. The value is still checked against {@link APP_EXECUTABLE_NAME} and for
+ * existence before use, and the callers fall through to the documented hint when
+ * it is absent.
+ *
+ * The read is done through ALL THREE uninstall views, because the hive a
+ * registration lands in depends on how the app was installed: per-user
+ * (`/currentuser`, the layout WorkBuddy uses) registers under `HKCU`, a
+ * machine-wide install under `HKLM`, and a 32-bit machine-wide one under
+ * `HKLM\...\WOW6432Node`. A hive that does not exist or is unreadable is the
+ * normal case on a machine without the app, not an error: every failure path
+ * returns undefined so the caller can try the next candidate.
+ */
+export function windowsRegistryAppExecutable(
+  query: (args: readonly string[]) => string | undefined = queryRegistry,
+): string | undefined {
+  // `DisplayIcon` is tried first because it names the binary directly;
+  // `InstallLocation` is the fallback for a registration that omits the icon
+  // (the icon value is optional, whereas the install directory is what the
+  // uninstaller is anchored to, so it is the more reliable of the two).
+  const keys = [
+    'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ]
+  for (const root of keys) {
+    const listing = query(['query', root, '/s', '/f', 'WorkBuddy', '/t', 'REG_SZ'])
+    if (listing === undefined) continue
+    const executable = registryExecutableFromQuery(listing)
+    if (executable !== undefined) return executable
+    const fromDirectory = registryInstallLocationFromQuery(listing)
+    if (fromDirectory !== undefined) return fromDirectory
+  }
+  return undefined
+}
+
+/**
+ * Parse `reg query` output for the value that names the installed executable.
+ *
+ * `reg query` prints keys as `HKEY_CURRENT_USER\...\Uninstall\<id>` followed by
+ * indented `    ValueName    REG_SZ    Data` lines. Only `DisplayIcon` is
+ * trusted here: it is the one value the installer writes pointing AT the
+ * binary. The value is normalised by {@link normalizeRegistryExecutable}, which
+ * strips the quotes and the icon index and rejects anything that is not the
+ * desktop executable.
+ */
+export function registryExecutableFromQuery(output: string): string | undefined {
+  for (const rawLine of output.split(/\r?\n/u)) {
+    const match = /^\s*DisplayIcon\s+REG_SZ\s+(.*?)\s*$/u.exec(rawLine)
+    if (match === null) continue
+    const executable = normalizeRegistryExecutable(match[1]!)
+    if (executable !== undefined) return executable
+  }
+  return undefined
+}
+
+/**
+ * The `WorkBuddy.exe` under an `InstallLocation`-style registry directory.
+ *
+ * Kept separate from {@link registryExecutableFromQuery} because the two values
+ * mean different things: `DisplayIcon` NAMES a file, whereas the directory has
+ * to have {@link APP_EXECUTABLE_NAME} joined onto it, and the result must still
+ * be checked for existence by the caller's probe.
+ *
+ * `win32.join` rather than the host's `join`: the input is a Windows registry
+ * value on EVERY machine this function can be called on. `path.join` is the
+ * running platform's, so a suite on Linux/macOS would mangle `E:\workbuddy`
+ * into `E:\workbuddy/WorkBuddy.exe` and the caller's `existsSync` could never
+ * match it. The separator here is fixed by the DATA, not by the host.
+ */
+export function registryInstallLocationFromQuery(output: string): string | undefined {
+  for (const rawLine of output.split(/\r?\n/u)) {
+    const match = /^\s*InstallLocation\s+REG_SZ\s+(.*?)\s*$/u.exec(rawLine)
+    if (match === null) continue
+    const directory = stripRegistryQuotes(match[1]!)
+    if (directory === undefined || directory === '') continue
+    return win32.join(directory, APP_EXECUTABLE_NAME)
+  }
+  return undefined
+}
+
+/**
+ * A registry executable value reduced to a usable path, or undefined when it
+ * cannot be one.
+ *
+ * `DisplayIcon` is stored as `"E:\workbuddy\WorkBuddy.exe",0`. The quotes and
+ * the icon index are stripped, and a value that names something other than the
+ * desktop executable — an `.ico`, an uninstaller, another product's binary — is
+ * rejected rather than launched. A bare path without quotes is accepted too,
+ * because not every installer writes the indexed form.
+ *
+ * The basename test uses `win32.basename` for the reason given on
+ * {@link registryInstallLocationFromQuery}: the separator belongs to the
+ * registry value (always Windows), so the host's `basename` — which does not
+ * treat `\` as a separator — would return the whole string and reject every
+ * legitimate path.
+ */
+export function normalizeRegistryExecutable(value: string): string | undefined {
+  const unquoted = stripRegistryQuotes(value)
+  if (unquoted === undefined || unquoted === '') return undefined
+  // Drop a trailing `,<index>` (the icon index) without touching commas that
+  // belong to the path itself.
+  const withoutIndex = unquoted.replace(/,\s*-?\d+\s*$/u, '')
+  if (withoutIndex === '') return undefined
+  if (win32.basename(withoutIndex).toLowerCase() !== APP_EXECUTABLE_NAME.toLowerCase()) return undefined
+  return withoutIndex
+}
+
+/**
+ * The path inside a `DisplayIcon`/`InstallLocation` value, unquoted.
+ *
+ * Registry data may be written either quoted (`"E:\workbuddy\WorkBuddy.exe",0`)
+ * or bare. Only a leading quote is treated as quoting: a bare `C:\dir\a"b.exe`
+ * is a real (if unusual) filename and must not be truncated at the quote.
+ */
+export function stripRegistryQuotes(value: string): string | undefined {
+  const trimmed = value.trim()
+  if (trimmed === '') return undefined
+  if (!trimmed.startsWith('"')) return trimmed
+  const closing = trimmed.indexOf('"', 1)
+  // An unterminated quote is malformed; refuse it rather than guessing where
+  // the path ends.
+  if (closing === -1) return undefined
+  return trimmed.slice(1, closing).trim()
+}
+
+/**
+ * Run `reg query` and return its stdout, or undefined when it cannot be run.
+ *
+ * `windowsHide` is REQUIRED, not cosmetic: the DSH Desktop host is an Electron
+ * GUI process with no console, so spawning a console program without it flashes
+ * a visible black window on every probe. The same reason is recorded for the
+ * heartbeat probe in `host-heartbeat.ts` and in `docs/WINDOWS.md` §1-3.
+ *
+ * `execFileSync` (not `execFile`) keeps this synchronous so the candidates list
+ * stays a pure function of its inputs: it is called during `findWorkbuddyApp`
+ * `Executable`, which `readAtRestKey()` and the `doctor` command both treat as
+ * a plain lookup. The read is bounded by the registry query's own output and
+ * happens at most once per discovery.
+ */
+function queryRegistry(args: readonly string[]): string | undefined {
+  try {
+    return execFileSync('reg', [...args], REGISTRY_PROBE_OPTIONS)
+  } catch {
+    // `reg` exits non-zero when the key or value is absent — the expected case
+    // on a machine without a registered WorkBuddy.
+    return undefined
+  }
+}
+
+/**
+ * Options for the registry probe; `windowsHide` is mandatory (see above), and
+ * the timeout matches `fetchAtRestKeyPayload()`'s: a hung `reg` must not wedge
+ * the synchronous discovery path forever.
+ */
+const REGISTRY_PROBE_OPTIONS = { encoding: 'utf8', windowsHide: true, timeout: 10_000 } as const
+
+/**
  * Candidate paths of the WorkBuddy desktop executable, in probe order.
  *
  * The Windows build is the one that encrypts credentials, so Windows leads;
@@ -275,11 +447,17 @@ export function workbuddyAppExecutableCandidates(
     const local = env['LOCALAPPDATA']?.trim()
     const programFiles = env['ProgramFiles']?.trim()
     const programFilesX86 = env['ProgramFiles(x86)']?.trim()
+    // `win32.join`, not the host's `join`: these are Windows paths by
+    // construction, and `path.join` follows the RUNNING platform. On a
+    // non-Windows host it inserted `/` separators (`C:\Users\x\AppData\Local/…`),
+    // which never exists on Windows — so the per-user layout this branch exists
+    // to find silently missed. The tests did not catch it because they compared
+    // against a `join()`-built expectation that mangled the same way.
     candidates.push(
-      local === undefined || local === '' ? undefined : join(local, 'Programs', 'WorkBuddy', APP_EXECUTABLE_NAME),
-      local === undefined || local === '' ? undefined : join(local, 'WorkBuddy', APP_EXECUTABLE_NAME),
-      programFiles === undefined || programFiles === '' ? undefined : join(programFiles, 'WorkBuddy', APP_EXECUTABLE_NAME),
-      programFilesX86 === undefined || programFilesX86 === '' ? undefined : join(programFilesX86, 'WorkBuddy', APP_EXECUTABLE_NAME),
+      local === undefined || local === '' ? undefined : win32.join(local, 'Programs', 'WorkBuddy', APP_EXECUTABLE_NAME),
+      local === undefined || local === '' ? undefined : win32.join(local, 'WorkBuddy', APP_EXECUTABLE_NAME),
+      programFiles === undefined || programFiles === '' ? undefined : win32.join(programFiles, 'WorkBuddy', APP_EXECUTABLE_NAME),
+      programFilesX86 === undefined || programFilesX86 === '' ? undefined : win32.join(programFilesX86, 'WorkBuddy', APP_EXECUTABLE_NAME),
     )
   } else if (platform === 'darwin') {
     for (const name of MACOS_APP_BUNDLE_NAMES) {
@@ -367,6 +545,61 @@ export function macosNestedAppBundles(parent: string): string[] {
 }
 
 /**
+ * How the desktop executable was located, for `doctor` to report.
+ *
+ * `undefined` means the discovery ran but found nothing. The distinction matters
+ * to a user debugging a missing account: "found via the install registration"
+ * tells them the off-default-layout path worked, while "not found" is the case
+ * that still needs `WORKBUDDY_APP_EXECUTABLE` set by hand. Reporting only the
+ * PATH (as `doctor` did) leaves those two situations looking identical whenever
+ * the registry happened to be the one that answered.
+ */
+export type WorkbuddyAppExecutableSource = 'env' | 'default-layout' | 'registry' | 'nested-bundle'
+
+/**
+ * Locate the desktop executable AND say how it was found.
+ *
+ * Kept beside {@link findWorkbuddyAppExecutable} rather than folded into it
+ * because the two answer different questions: callers on the credential path
+ * only want the path, whereas `doctor` must explain the discovery. Sharing the
+ * candidate list keeps them from drifting.
+ */
+export function findWorkbuddyAppExecutableWithSource(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+  readRegistryAppPath: () => string | undefined = windowsRegistryAppExecutable,
+): { executable: string; source: WorkbuddyAppExecutableSource } | undefined {
+  const fromEnv = env[WORKBUDDY_APP_EXECUTABLE_ENV]?.trim()
+  for (const candidate of workbuddyAppExecutableCandidates(platform, home, env)) {
+    try {
+      if (!existsSync(candidate)) continue
+    } catch {
+      continue
+    }
+    // `env` is reported separately because the user set it deliberately: a
+    // hand-set override is the answer to "why is it using THAT binary?", and
+    // reporting it as a default-layout hit would hide the override.
+    const isEnv = fromEnv !== undefined && fromEnv !== '' && candidate === fromEnv
+    return { executable: candidate, source: isEnv ? 'env' : 'default-layout' }
+  }
+  if (platform === 'win32') {
+    const fromRegistry = readRegistryAppPath()
+    if (fromRegistry !== undefined) {
+      try {
+        if (existsSync(fromRegistry)) return { executable: fromRegistry, source: 'registry' }
+      } catch {
+        // Unreadable: fall through.
+      }
+    }
+  }
+  const executable = findWorkbuddyAppExecutable(platform, home, env, readRegistryAppPath)
+  // Discovery succeeded on a path this function did not itself classify (the
+  // macOS nested-bundle scan), so name it by elimination rather than guessing.
+  return executable === undefined ? undefined : { executable, source: 'nested-bundle' }
+}
+
+/**
  * The first candidate that exists as a file, or undefined when the desktop app
  * is not installed where this platform expects it.
  */
@@ -374,12 +607,34 @@ export function findWorkbuddyAppExecutable(
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
   env: NodeJS.ProcessEnv = process.env,
+  readRegistryAppPath: () => string | undefined = windowsRegistryAppExecutable,
 ): string | undefined {
   for (const candidate of workbuddyAppExecutableCandidates(platform, home, env)) {
     try {
       if (existsSync(candidate)) return candidate
     } catch {
       // Unreadable candidate: try the next one.
+    }
+  }
+  // Windows fallback: an app installed OUTSIDE the four default layout paths,
+  // which the exact-path candidates above cannot see. This runs only after
+  // every cheap candidate missed, so a default install never pays for the
+  // registry query. The installer recorded where it put the binary, so asking
+  // the registration is what lets a signed-in account stop being reported as
+  // signed out, with no `WORKBUDDY_APP_EXECUTABLE` set by hand.
+  //
+  // `readRegistryAppPath` is injectable, in the same spirit as `platform`/
+  // `home`/`env`: the real reader consults the machine's own registration, so
+  // without a seam the "nothing exists" expectation below would depend on
+  // whether the host running the suite happens to have WorkBuddy installed.
+  if (platform === 'win32') {
+    const fromRegistry = readRegistryAppPath()
+    if (fromRegistry !== undefined) {
+      try {
+        if (existsSync(fromRegistry)) return fromRegistry
+      } catch {
+        // Unreadable: fall through to undefined.
+      }
     }
   }
   // macOS fallback: an app filed into a subfolder of an applications

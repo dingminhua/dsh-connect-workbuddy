@@ -26,7 +26,7 @@ import {
   WorkBuddyCredentialStore,
   workbuddyOwnAuthPath,
 } from './auth.ts'
-import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutable } from './at-rest.ts'
+import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutableWithSource } from './at-rest.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
@@ -91,7 +91,11 @@ async function doctor(jsonOutput: boolean): Promise<number> {
   const desktopPresent = await anyStore.desktopFilePresent()
   const heartbeat = await readHostHeartbeat()
   const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
-  const appExecutable = findWorkbuddyAppExecutable()
+  // Both the path AND how it was found: a registry hit and a default-layout hit
+  // produce the same string, and only the source tells a user whether the
+  // off-default-layout fallback is what saved them.
+  const discoveredApp = findWorkbuddyAppExecutableWithSource()
+  const appExecutable = discoveredApp?.executable
   const regionLists = await Promise.all(REGIONS.map(async region => ({
     region,
     accounts: await makeStore(region).accounts(),
@@ -138,6 +142,13 @@ async function doctor(jsonOutput: boolean): Promise<number> {
      */
     atRestDecryption: {
       appExecutable: appExecutable ?? `(not found; set ${WORKBUDDY_APP_EXECUTABLE_ENV})`,
+      /**
+       * Where the path came from. `registry` means the app is installed outside
+       * the default layout and the Windows uninstall registration found it; the
+       * absence of this field (older reports) is why the hint below can now name
+       * the mechanism instead of telling every user to set the env var.
+       */
+      appExecutableSource: discoveredApp?.source,
       available: appExecutable !== undefined,
     },
     ownAuthFiles: {
@@ -167,7 +178,7 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       ...anySignedIn ? [] : ['Sign in once in the WorkBuddy desktop app (either region), then run status again.'],
       ...desktopPresent ? [] : [`No WorkBuddy desktop auth file at the expected path; set ${WORKBUDDY_AUTH_FILE_ENV} if it lives elsewhere.`],
       ...appExecutable === undefined
-        ? [`The WorkBuddy desktop app was not found, so encrypted credential fields cannot be opened; set ${WORKBUDDY_APP_EXECUTABLE_ENV} to its executable if it is installed elsewhere.`]
+        ? [`The WorkBuddy desktop app was not found, so encrypted credential fields cannot be opened. On Windows the install registration was already checked, so the app is either not installed or its uninstall entry is missing; set ${WORKBUDDY_APP_EXECUTABLE_ENV} to its executable if it is installed elsewhere.`]
         : [],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and providers are unavailable until DSH starts the plugin.'],
       ...piAi.generation === 'legacy' && piAi.resolvedLocally
@@ -184,7 +195,7 @@ async function doctor(jsonOutput: boolean): Promise<number> {
         ? [`pi-ai runtime: ${piAi.generation}${piAi.version === undefined ? '' : ` ${piAi.version}`} (${piAi.resolvedFrom}) — ${report.piAiRuntime.adapterBehaviour}`]
         : [`pi-ai runtime: ${piAi.generation}, host-provided (no local copy; DSH 0.2.0+ ships 0.87.1) — passes provider contexts through unchanged`],
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
-      `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable})`,
+      `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable}${report.atRestDecryption.appExecutableSource === undefined ? '' : `, via ${report.atRestDecryption.appExecutableSource}`})`,
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       ...regionLists.flatMap(({ region, accounts }) => [
         `${REGION_LABELS[region]} accounts: ${accounts.length} (own copy ${workbuddyOwnAuthPath(region)})`,
