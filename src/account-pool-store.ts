@@ -24,7 +24,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { WorkBuddyPoolProbe } from './account-pool.ts'
+import type { WorkBuddyPoolProbe, WorkBuddyPoolProbeSource } from './account-pool.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 
 /** On-disk format version; readers reject anything else. */
@@ -48,6 +48,11 @@ function isProbe(value: unknown): value is WorkBuddyPoolProbe {
     && typeof candidate['atMs'] === 'number'
     && (candidate['retryAtMs'] === undefined || typeof candidate['retryAtMs'] === 'number')
     && (candidate['message'] === undefined || typeof candidate['message'] === 'string')
+    // A source this build does not recognise is DROPPED, not rejected: refusing
+    // the whole record would silently discard a real measurement written by a
+    // newer build, whereas dropping only the label leaves the measurement
+    // intact and reads as its documented "unknown".
+    && (candidate['source'] === undefined || typeof candidate['source'] === 'string')
 }
 
 /**
@@ -98,11 +103,24 @@ export async function readPoolProbes(
     probes[accountId] = {
       outcome: probe.outcome,
       atMs: probe.atMs,
+      ...knownProbeSource(probe.source) === undefined ? {} : { source: knownProbeSource(probe.source)! },
       ...probe.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs },
       ...probe.message === undefined ? {} : { message: probe.message },
     }
   }
   return probes
+}
+
+/**
+ * A stored source string reduced to a source this build understands.
+ *
+ * `isProbe` accepts any string so a newer build's label cannot destroy the
+ * measurement it describes; this narrows it at the point of use. An unknown
+ * value becomes `undefined`, which the card renders as "unknown" — the honest
+ * answer, rather than mislabelling it as one of the two kinds we do know.
+ */
+function knownProbeSource(value: unknown): WorkBuddyPoolProbeSource | undefined {
+  return value === 'test-batch' || value === 'live-request' ? value : undefined
 }
 
 /**

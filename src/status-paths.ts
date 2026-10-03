@@ -558,6 +558,14 @@ export interface WorkBuddyWebPoolAccount {
   probe?: {
     outcome: WorkBuddyWebProbeOutcome
     atMs: number
+    /**
+     * What wrote this measurement, so the card can explain a change the user
+     * watched happen: `test-batch` is a deliberate test, `live-request` is a
+     * real request that failed and overwrote it. ABSENT for records written
+     * before the field existed — the card must then say "unknown" rather than
+     * guess which of the two it was.
+     */
+    source?: 'test-batch' | 'live-request'
     /** Only when the upstream named a time; never invented locally. */
     retryAtMs?: number
     /**

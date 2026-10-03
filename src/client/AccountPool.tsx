@@ -38,6 +38,7 @@ import type {
 import type { Translate } from './searched-paths.ts'
 import { readNdjson } from './ndjson.ts'
 import { inlineProbeReason } from './probe-reason.ts'
+import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { remainingText } from './remaining.ts'
 import {
   announcedBatchCount,
@@ -979,7 +980,22 @@ function renderAccountRow(input: {
     ? ''
     : remainingText(t, probe.retryAtMs, Date.now())
   const reason = probe === undefined ? undefined : inlineProbeReason(probe.outcome, probe.message)
-  const probeLine = [outcomeLine, remaining, reason]
+  // HOW OLD and WHO WROTE IT, appended last so the outcome stays the first thing
+  // read. These two are what make an unexpected value explainable: the same
+  // account is written by the "test" batch AND by any failing live request, and
+  // they overwrite each other. Without them the table showed a bare outcome with
+  // no way to tell "a live request really failed just now" from "the record went
+  // back to something older" — the exact confusion this pair exists to remove.
+  //
+  // An unknown source (a record written before the field existed) says so
+  // instead of guessing, because the row the user is asking about is the worst
+  // possible place to print a confident wrong answer.
+  const age = probe === undefined ? undefined : probeAgeText(t, probe.atMs, Date.now())
+  const source = probe === undefined
+    ? undefined
+    : probeSourceText(t, probe.source) ?? t('row.poolProbeSourceUnknown')
+  const provenance = [source, age].filter(part => part !== undefined && part !== '').join(' ')
+  const probeLine = [outcomeLine, remaining, reason, provenance]
     .filter(part => part !== undefined && part !== '')
     .join(' · ')
 

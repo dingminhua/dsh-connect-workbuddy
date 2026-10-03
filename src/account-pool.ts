@@ -28,6 +28,22 @@
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyProbeOutcome } from './probe.ts'
 
+/**
+ * Which of the pool's writers produced a measurement.
+ *
+ * `test-batch` — the user pressed "test" (or the check-in batch), so the
+ *   outcome is a deliberate measurement of the target model.
+ * `live-request` — a real chat request failed and its failure was recorded so
+ *   the NEXT request starts from a measurement instead of rediscovering the
+ *   same wall.
+ *
+ * The distinction is diagnostic, not behavioural: both feed the same routing
+ * and cooling logic. It exists so a user who watched an account measure `ok`
+ * and later saw it limited can tell whether that was a later live failure
+ * (expected) or an older value winning (a bug).
+ */
+export type WorkBuddyPoolProbeSource = 'test-batch' | 'live-request'
+
 /** One account's pool entry: what the picker needs, plus its last measurement. */
 export interface WorkBuddyPoolAccount {
   /** Stable account id (the same one `WorkBuddyAccountChoice` carries). */
@@ -48,6 +64,26 @@ export interface WorkBuddyPoolProbe {
   outcome: WorkBuddyProbeOutcome
   /** When this measurement was taken, in epoch ms. */
   atMs: number
+  /**
+   * WHAT WROTE THIS MEASUREMENT.
+   *
+   * Two sites write probes for the same account, and before this field they
+   * were indistinguishable in the file — which made a real confusion
+   * unanswerable: the user presses "test", sees an account measured `ok`, and
+   * later finds it `rate-limited`. Nothing in the record said whether that was
+   * a NEWER measurement (a live request really did hit the limit) or an OLDER
+   * one somehow winning, and the file keeps no history to tell them apart.
+   *
+   * With the source recorded, that question has an answer on sight: a
+   * `live-request` entry that replaced a `test-batch` result is the pool
+   * working as designed (a live failure steers the next request away from the
+   * account); two entries of the SAME source with the OLDER one winning would
+   * be a genuine bug.
+   *
+   * ABSENT for any measurement written before this field existed, so old probe
+   * files stay readable — an absent source means "unknown", never a guess.
+   */
+  source?: WorkBuddyPoolProbeSource
   /**
    * When this account may be usable again, when the upstream stated a time.
    *

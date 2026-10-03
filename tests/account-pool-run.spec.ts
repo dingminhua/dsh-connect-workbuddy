@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   checkinAllAccounts,
   POOL_BATCH_GAP_MS,
+  probeUpdatesOf,
   testAllAccounts,
 } from '../src/account-pool-run.ts'
-import type { WorkBuddyPoolRunnerDeps, WorkBuddyPoolTarget } from '../src/account-pool-run.ts'
+import type {
+  WorkBuddyPoolRunnerDeps,
+  WorkBuddyPoolTarget,
+  WorkBuddyPoolTestRow,
+} from '../src/account-pool-run.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import type { WorkBuddyProbeResult } from '../src/probe.ts'
 
@@ -227,5 +232,58 @@ describe('testAllAccounts', () => {
     const deps = runner({ probe })
     expect(await testAllAccounts([], 'm', deps)).toEqual([])
     expect(probe).not.toHaveBeenCalled()
+  })
+})
+
+describe('probeUpdatesOf', () => {
+  const row = (accountId: string, result: WorkBuddyProbeResult): WorkBuddyPoolTestRow =>
+    ({ accountId, accountName: accountId, result })
+
+  // This writer is one of the TWO sites that record the same account, and they
+  // overwrite each other. Its label is what makes a later live failure legible:
+  // the record then says the account was deliberately measured, so the change
+  // has an explanation on screen instead of looking like the file rolled back.
+  it('labels every measured row as a test batch', () => {
+    const updates = probeUpdatesOf([
+      row('alpha', { modelId: 'm', outcome: 'ok' }),
+      row('beta', { modelId: 'm', outcome: 'rate-limited', retryAtMs: 123 }),
+    ])
+    expect(updates['alpha']?.source).toBe('test-batch')
+    expect(updates['beta']?.source).toBe('test-batch')
+  })
+
+  it('carries outcome, retry time and message through unchanged', () => {
+    // Pinned beside the label so a future edit cannot fix the label by breaking
+    // the fields the routing actually reads.
+    const updates = probeUpdatesOf([
+      row('alpha', { modelId: 'm', outcome: 'rate-limited', retryAtMs: 456, message: 'code 6004' }),
+    ])
+    expect(updates['alpha']).toMatchObject({
+      outcome: 'rate-limited',
+      retryAtMs: 456,
+      message: 'code 6004',
+      source: 'test-batch',
+    })
+  })
+
+  it('omits a transport failure entirely rather than labelling it', () => {
+    // A row rejected before the model was reached says nothing about the
+    // account, so it must not be recorded at all — with or without a label.
+    const updates = probeUpdatesOf([
+      row('alpha', { modelId: 'm', outcome: 'credential-rejected', message: 'no stored credential for uid-x' }),
+      row('beta', { modelId: 'm', outcome: 'ok' }),
+    ])
+    expect(updates['alpha']).toBeUndefined()
+    expect(updates['beta']?.source).toBe('test-batch')
+  })
+
+  it('stamps one time for the whole batch', () => {
+    // The card reads this as "tested N minutes ago"; a per-row timestamp would
+    // make the rows of one batch disagree with each other.
+    const updates = probeUpdatesOf([
+      row('alpha', { modelId: 'm', outcome: 'ok' }),
+      row('beta', { modelId: 'm', outcome: 'ok' }),
+    ])
+    expect(updates['alpha']?.atMs).toBe(updates['beta']?.atMs)
   })
 })

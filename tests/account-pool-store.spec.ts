@@ -145,6 +145,47 @@ describe('readPoolProbes', () => {
     expect(Object.keys(await readPoolProbes('cn'))).toEqual(['good'])
   })
 
+  it('round-trips the writer, so a record can say what produced it', async () => {
+    // The field this whole change exists for: without it, a user who watched an
+    // account measure `ok` and later found it limited had no way to tell a newer
+    // live failure from an older value somehow winning.
+    await writePoolProbes('cn', { alpha: { outcome: 'ok', atMs: 1, source: 'test-batch' } })
+    expect((await readPoolProbes('cn'))['alpha']).toEqual({ outcome: 'ok', atMs: 1, source: 'test-batch' })
+  })
+
+  it('keeps a record written before the source field existed', async () => {
+    // Backward compatibility is the contract that makes this addition safe: an
+    // old file must stay readable, and the absent field must read as "unknown"
+    // rather than being invented.
+    await writeFile(
+      workbuddyPoolStorePath('cn'),
+      JSON.stringify({ version: 1, probes: { alpha: { outcome: 'ok', atMs: 1, message: 'credit 0.01' } } }),
+      'utf8',
+    )
+    expect(await readPoolProbes('cn')).toEqual({
+      alpha: { outcome: 'ok', atMs: 1, message: 'credit 0.01' },
+    })
+  })
+
+  it('preserves a measurement whose source label is one this build does not know', async () => {
+    // A newer build may write a third source. Dropping the whole record would
+    // silently discard a real measurement — the account would show as untested
+    // and become a billing candidate again on the strength of a lost label. The
+    // measurement survives; only the unrecognised label is dropped.
+    await writeFile(
+      workbuddyPoolStorePath('cn'),
+      JSON.stringify({
+        version: 1,
+        probes: { alpha: { outcome: 'rate-limited', atMs: 5, source: 'some-future-writer' } },
+      }),
+      'utf8',
+    )
+    const probes = await readPoolProbes('cn')
+    expect(probes['alpha']?.outcome).toBe('rate-limited')
+    expect(probes['alpha']?.atMs).toBe(5)
+    expect(probes['alpha']?.source).toBeUndefined()
+  })
+
   it('never throws when the write target is unusable', async () => {
     // A failed write loses only the newest measurements; the batch's results
     // are still valid and must not be turned into an error by persistence.

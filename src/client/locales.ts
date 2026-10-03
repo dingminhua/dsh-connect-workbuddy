@@ -154,6 +154,16 @@ export const en = {
   'row.remainingMinutes': 'in about {count} min',
   'row.remainingHours': 'in about {count} h',
   'row.remainingDays': 'in about {count} d',
+  // How stale a measurement is, and which writer produced it. Two sites write
+  // the same account's record and overwrite each other, so without these the
+  // table cannot explain a change the user just watched happen.
+  'row.poolProbeJustNow': 'just now',
+  'row.poolProbeMinutesAgo': '{count} min ago',
+  'row.poolProbeHoursAgo': '{count} h ago',
+  'row.poolProbeDaysAgo': '{count} d ago',
+  'row.poolProbeSourceTest': 'tested',
+  'row.poolProbeSourceLive': 'hit by a live request',
+  'row.poolProbeSourceUnknown': 'source unknown',
   'row.poolSettingsTitle': 'Account pool settings',
   'row.poolSettingsHint': 'These are preferences: they take effect when you save (same as the model list). Test results are written automatically and are not affected by this button.',
   'row.poolEnabled': 'Enable the account pool',
@@ -342,6 +352,15 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.remainingMinutes': '约 {count} 分钟后',
   'row.remainingHours': '约 {count} 小时后',
   'row.remainingDays': '约 {count} 天后',
+  // 记录有多旧、以及是谁写的。两个写入方会互相覆盖同一个账号的记录，
+  // 没有这两项就无法解释用户亲眼看到的变化（测出 ok，过后变成被限流）。
+  'row.poolProbeJustNow': '刚刚',
+  'row.poolProbeMinutesAgo': '{count} 分钟前',
+  'row.poolProbeHoursAgo': '{count} 小时前',
+  'row.poolProbeDaysAgo': '{count} 天前',
+  'row.poolProbeSourceTest': '测得',
+  'row.poolProbeSourceLive': '聊天撞上',
+  'row.poolProbeSourceUnknown': '来源未知',
   'row.poolSettingsTitle': '账号池设置',
   'row.poolSettingsHint': '下面是偏好设置：点保存才生效（与「模型管理」一致）。测试结果由插件自动写入，不受这个保存按钮影响。',
   'row.poolEnabled': '启用账号池',

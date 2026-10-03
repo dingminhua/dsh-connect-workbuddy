@@ -231,6 +231,11 @@ export function probeUpdatesOf(
     updates[row.accountId] = {
       outcome: row.result.outcome,
       atMs,
+      // 'test-batch' is what makes a later live failure VISIBLE as such: the
+      // record now says this account was deliberately measured `ok`, so a
+      // subsequent `live-request` entry is explainable rather than looking
+      // like the file rolled back to an older value.
+      source: 'test-batch',
       ...row.result.retryAtMs === undefined ? {} : { retryAtMs: row.result.retryAtMs },
       ...row.result.message === undefined ? {} : { message: row.result.message },
     }

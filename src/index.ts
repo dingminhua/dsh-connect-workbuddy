@@ -1185,6 +1185,12 @@ export function apply(ctx: Context, config: Config): void {
       [accountId]: {
         outcome,
         atMs: Date.now(),
+        // Named explicitly, because this site OVERWRITES whatever the last
+        // "test" measured. Without the label, a user who watched this account
+        // measure `ok` and then found it limited had no way to tell "a live
+        // request really hit the limit just now" from "the file went back to
+        // an older value" — and the record kept no history to check.
+        source: 'live-request',
         ...retryAtMs === undefined ? {} : { retryAtMs },
         ...message === '' ? {} : { message },
       },

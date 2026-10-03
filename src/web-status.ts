@@ -622,6 +622,7 @@ async function workBuddyWebPool(
         probe: {
           outcome: measured.probe.outcome as WorkBuddyWebProbeOutcome,
           atMs: measured.probe.atMs,
+          ...measured.probe.source === undefined ? {} : { source: measured.probe.source },
           ...measured.probe.retryAtMs === undefined ? {} : { retryAtMs: measured.probe.retryAtMs },
           ...measured.probe.message === undefined ? {} : { message: measured.probe.message },
         },
