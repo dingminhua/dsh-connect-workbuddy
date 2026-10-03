@@ -113,6 +113,8 @@ interface WorkBuddyDraft {
   models: WorkBuddyWebModel[]
   enabledIds: Set<string>
   imageIds: Set<string>
+  /** Model ids whose `off` thinking level is offered (issue #34). */
+  offIds: Set<string>
   contextBudgets: Record<string, number>
 }
 
@@ -631,6 +633,15 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
           models: fresh,
           enabledIds: new Set(stillEnabled),
           imageIds: new Set(upstreamImages),
+          // The `off` answers are CARRIED FORWARD, not re-synced from upstream:
+          // they exist precisely because the upstream declaration is wrong for
+          // these models (issue #34), so re-deriving them from a refresh would
+          // undo the user's correction. Only the directory is replaced.
+          // The `off` selection is carried forward, not re-synced from upstream:
+          // it exists precisely because the upstream declaration is wrong for
+          // some models (issue #34), so re-deriving it from a refresh would undo
+          // the user's correction. Only the directory is replaced.
+          offIds: new Set(activeOffIds),
           contextBudgets: stillBudgets,
         },
       }))
@@ -660,6 +671,10 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   const activeEnabledIds = draft?.enabledIds ?? savedEnabledIds
   const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
   const activeImageIds = draft?.imageIds ?? savedImageIds
+  // The `off` level (issue #34): `offModelIds` is the saved set of models that
+  // offer it; a row not in the set has it withdrawn.
+  const savedOffIds = status.status === 'signed-in' ? new Set(status.offModelIds) : new Set<string>()
+  const activeOffIds = draft?.offIds ?? savedOffIds
   const configured = settingsScope?.getSnapshot().value
   // Context budgets come from the Host's own answer, NOT from the browser
   // settings mirror. On the affected 0.1.7 deployment that mirror never picks
@@ -691,6 +706,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         models: [...visibleModels],
         enabledIds: new Set(activeEnabledIds),
         imageIds: new Set(activeImageIds),
+        offIds: new Set(activeOffIds),
         contextBudgets: { ...activeContextBudgets },
       }),
     }))
@@ -709,6 +725,22 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       const next = new Set(current.imageIds)
       if (!next.delete(modelId)) next.add(modelId)
       return { ...current, imageIds: next }
+    })
+  }
+
+  /**
+   * Flip one row's `off` answer (issue #34).
+   *
+   * Writes an EXPLICIT answer in both directions, so the built-in rule is only
+   * consulted while the user has no opinion. That is also why there is no
+   * "reset" control: once an answer matches the rule, the two are
+   * indistinguishable in effect, and the tooltip already names the override.
+   */
+  const toggleOff = (modelId: string): void => {
+    editDraft(current => {
+      const next = new Set(current.offIds)
+      if (!next.delete(modelId)) next.add(modelId)
+      return { ...current, offIds: next }
     })
   }
 
@@ -813,6 +845,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
         lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
         enabledModelIds: [...activeEnabledIds],
         imageModelIds: [...activeImageIds],
+        offModelIds: [...activeOffIds],
         contextBudgets: activeContextBudgets,
       })
       discardModels()
@@ -1101,6 +1134,18 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                   onChange={() => { toggleImage(model.id) }}
                                 />
                                 <span>{t('row.modelImage')}</span>
+                              </label>
+                              <label
+                                className="dsm-workbuddy-model-off"
+                                title={t('row.modelOffHint')}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={activeOffIds.has(model.id)}
+                                  disabled={!canWrite || saving}
+                                  onChange={() => { toggleOff(model.id) }}
+                                />
+                                <span>{t('row.modelOff')}</span>
                               </label>
                               <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
                                 {model.nativeContextWindow > 200_000

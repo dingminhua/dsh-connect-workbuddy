@@ -157,23 +157,7 @@ export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyTh
   const map: WorkBuddyThinkingLevelMap = Object.fromEntries(
     THINKING_LEVELS.map(level => [level, supported.includes(level) ? level : null]),
   )
-  // `off` is deliberately offered for EVERY model that advertises effort
-  // levels, with no per-model gate and no reviewed table of exceptions.
-  //
-  // The upstream's `canDisableThinking` used to decide this, and its positive
-  // half is not trustworthy: several models declare the capability and then
-  // answer HTTP 400 to `reasoning_effort: "off"` (issue #34). Neither hiding the
-  // level for those models nor keeping a list of them is worth its upkeep — the
-  // list goes stale as the roster changes, and hiding a level that WOULD have
-  // worked is a silent loss. Being offered a level the upstream refuses is at
-  // least visible and one keystroke to change, so the choice goes to whoever is
-  // actually driving the model.
-  //
-  // Note the two levers: `null` REMOVES a level (pi-ai's
-  // `getSupportedThinkingLevels` drops exactly the entries that are `null`),
-  // while the wire value comes from `map[level] ?? level` — so leaving `off`
-  // unset offers it and sends the literal `"off"`. A model with no effort
-  // levels returns above and exposes no thinking levels at all.
+  if (info.reasoning?.canDisableThinking !== true) map.off = null
   return map
 }
 

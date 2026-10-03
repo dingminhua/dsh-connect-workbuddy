@@ -89,6 +89,7 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     displayModels: () => FALLBACK_WORKBUDDY_MODELS,
     enabledModelIds: () => ['glm-5.3'],
     imageModelIds: () => ['glm-5.3'],
+    offModelIds: () => [],
     contextBudgets: () => ({}),
     regionEnabled: () => true,
     ...overrides,
@@ -222,6 +223,54 @@ describe('workBuddyWebStatus', () => {
     expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]+\./u)
     expect(serialized).not.toMatch(/"(accessToken|refreshToken)"/u)
     expect(serialized).not.toContain('access')
+  })
+
+  it('exposes the off-level selection the card renders as checkboxes (issue #34)', async () => {
+    const status = await workBuddyWebStatus(deps({
+      offModelIds: () => ['glm-5.3', 'kimi-k3'],
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.offModelIds).toEqual(['glm-5.3', 'kimi-k3'])
+  })
+
+  it('carries the off declaration into the card payload so a save cannot strip it (issue #34)', async () => {
+    // `toWebModel` used to drop `canDisableThinking`, so the card wrote rows
+    // back without it. Since an ABSENT declaration never offers `off` (the
+    // conservative default this plugin must keep, because `hy4-preview` and
+    // `hy3-x` declare `false`), one Save silently withdrew a working level from
+    // every model the user had not overridden.
+    const status = await workBuddyWebStatus(deps({
+      displayModels: () => [{
+        id: 'glm-5.3',
+        name: 'GLM-5.3',
+        contextWindow: 1_000_000,
+        maxTokens: 48_000,
+        reasoning: { supportedEfforts: ['low', 'high', 'xhigh'], defaultEffort: 'high', canDisableThinking: true },
+      }],
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.models[0]?.reasoning).toEqual({
+      supportedEfforts: ['low', 'high', 'xhigh'],
+      defaultEffort: 'high',
+      canDisableThinking: true,
+    })
+  })
+
+  it('omits an undeclared canDisableThinking instead of writing one', async () => {
+    // An absent declaration must stay absent: `false` would be read as an
+    // upstream answer rather than as "unknown", and an explicit `undefined`
+    // fails the strict JSON codec on the way back in.
+    const status = await workBuddyWebStatus(deps({
+      displayModels: () => [{
+        id: 'glm-5.3',
+        name: 'GLM-5.3',
+        contextWindow: 1_000_000,
+        maxTokens: 48_000,
+        reasoning: { supportedEfforts: ['low', 'high'] },
+      }],
+    }), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect('canDisableThinking' in (status.models[0]?.reasoning ?? {})).toBe(false)
   })
 
   it('carries accounts, models, selection, and credits', async () => {
@@ -944,6 +993,40 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
     expect(first).toBeDefined()
     const value = (first as { value: Record<string, unknown> }).value as Record<string, unknown>
     expect(value).toMatchObject({ cn: { contextBudgets: { 'glm-5.3': 1_000_000 } } })
+  })
+
+  it('persists the off selection through the strict JSON write path (issue #34)', async () => {
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes({}, {
+      cn: { enabled: true, lastCatalog: [{ id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 }] },
+    })
+    const { res, status } = saveResponse()
+    await handler(saveReq({
+      field: 'regions',
+      value: { cn: { offModelIds: ['deepseek-v4.1-flash', 'glm-5.3'] } },
+    }), res)
+    dispose()
+    expect(status()).toBe(200)
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toMatchObject({
+      cn: { offModelIds: ['deepseek-v4.1-flash', 'glm-5.3'] },
+    })
+  })
+
+  it('keeps saved off overrides when a later save omits them (issue #32 shape)', async () => {
+    // A save that posts only `pool` (the real Windows payload) must not drop
+    // the override map: an OMITTED key is preserved, exactly as for
+    // `lastCatalog` and `contextBudgets`.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes({}, {
+      cn: { enabled: true, offModelIds: ['gemini-3.5-flash'] },
+    })
+    const { res, status } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { pool: { enabled: true } } } }), res)
+    dispose()
+    expect(status()).toBe(200)
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toMatchObject({ cn: { offModelIds: ['gemini-3.5-flash'] } })
   })
 
   it('does NOT delete region fields the caller omitted (the pool-save data loss)', async () => {

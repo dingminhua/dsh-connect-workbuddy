@@ -70,28 +70,11 @@ describe('workBuddyThinkingLevelMap', () => {
     })
   })
 
-  it('offers off for EVERY model that advertises effort levels (issue #34)', () => {
-    // Deliberately ungated. The upstream's `canDisableThinking` is not a
-    // trustworthy answer — several models declare it and then refuse
-    // `reasoning_effort: "off"` with HTTP 400 — and maintaining a list of those
-    // models was judged not worth the upkeep. So the level is offered whether
-    // the declaration says true, false, or nothing at all, and whoever is
-    // driving the model chooses.
-    const declarations = [
-      { supportedEfforts: ['high'], canDisableThinking: true },
-      { supportedEfforts: ['high'], canDisableThinking: false },
-      { supportedEfforts: ['high'] },
-      // The shape issue #34 measured as REFUSING off while declaring it:
-      // `deepseek-v4.1-flash` answers 400, and is still offered here by design.
-      { supportedEfforts: ['low', 'medium', 'high'], canDisableThinking: true },
-    ]
-    for (const reasoning of declarations) {
-      const map = workBuddyThinkingLevelMap({ ...model(reasoning), id: 'deepseek-v4.1-flash' })
-      // Absent, never `null`: `null` is what WITHDRAWS a level from pi-ai's
-      // selector, whereas absent offers it and sends the literal `"off"`.
-      expect(map?.off, JSON.stringify(reasoning)).toBeUndefined()
-      expect(map).toMatchObject({ high: 'high' })
-    }
+  it('does not expose off when WorkBuddy says thinking cannot be disabled', () => {
+    expect(workBuddyThinkingLevelMap(model({
+      supportedEfforts: ['high'],
+      canDisableThinking: false,
+    }))).toMatchObject({ off: null, high: 'high' })
   })
 
   it('does not report reasoning without supported effort levels', () => {

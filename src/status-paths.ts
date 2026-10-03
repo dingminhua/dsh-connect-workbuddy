@@ -305,6 +305,21 @@ export interface WorkBuddyWebModel {
   reasoning?: {
     supportedEfforts?: readonly string[]
     defaultEffort?: string
+    /**
+     * Upstream's own "thinking can be turned off" declaration, carried through
+     * the card so it RIDES ALONG in the saved `lastCatalog` entry.
+     *
+     * It is a persistence detail, not the runtime answer: the adapter's level
+     * map is built from the effective value stamped in `index.ts` (declaration
+     * minus the models known to reject `off`, then the user's override). It has
+     * to travel because the card writes the whole row back on save — omitting
+     * it made one Save silently strip the declaration from every model, which
+     * withdrew `off` from the models that accept it (the default is
+     * conservative: an absent declaration never offers `off`, so `hy4-preview`
+     * and friends keep their intended `false` but the rest lose a working
+     * level). Same shape as `supportsImages` above.
+     */
+    canDisableThinking?: boolean
   }
   description?: string
 }
@@ -429,6 +444,11 @@ export type WorkBuddyWebUsage =
     models: readonly WorkBuddyWebModel[]
     enabledModelIds: readonly string[]
     imageModelIds: readonly string[]
+    /**
+     * Model ids whose `off` thinking level is offered (issue #34): the saved
+     * selection, seeded from the built-in rule the first time it is read.
+     */
+    offModelIds: readonly string[]
     credits?: WorkBuddyWebCredits
     creditsError?: string
     /**

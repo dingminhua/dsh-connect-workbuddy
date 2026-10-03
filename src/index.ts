@@ -97,6 +97,8 @@ export {
   nativeModalityOf,
   type WorkBuddyNativeModality,
 } from './native-modality.ts'
+import { defaultOffModelIds, offDefaultFor, REFUSES_OFF_MODEL_IDS, withEffectiveOff } from './off-thinking.ts'
+export { defaultOffModelIds, offDefaultFor, REFUSES_OFF_MODEL_IDS, withEffectiveOff }
 export {
   authFileName,
   defaultDesktopAuthCandidates,
@@ -291,6 +293,12 @@ export interface WorkBuddyRegionState {
   enabledModelIds?: string[]
   /** Model ids the user explicitly opted into image input. */
   imageModelIds?: string[]
+  /**
+   * Model ids whose `off` thinking level is offered (issue #34). Seeded from
+   * the built-in rule (upstream declaration minus the models known to reject
+   * `off`) when first read; the card's checkbox toggles membership.
+   */
+  offModelIds?: string[]
   /** Local DSH context budget per model in this region. */
   contextBudgets?: Record<string, WorkBuddyContextBudget>
   /** This region's account-pool preferences (opt-in; see {@link WorkBuddyPoolPreferences}). */
@@ -424,6 +432,16 @@ const regionStateConfig = z.object({
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
   imageModelIds: z.array(z.string()).default([]),
+  /**
+   * Per-model override of whether thinking `off` is offered, keyed by model id
+   * (issue #34). An ABSENT key means "use the built-in rule" — the upstream's
+   * `canDisableThinking` declaration minus the ids known to refuse `off` (see
+   * `src/off-thinking.ts`).
+   *
+   * Seeded from {@link defaultOffModelIds} on first read so the checkbox is
+   * ticked correctly without the user having to save.
+   */
+  offModelIds: z.array(z.string()).default([]).description('Model ids whose "off" thinking level is offered; seeded from the built-in rule when first read.'),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
   pool: poolConfig.default({}),
 })
@@ -745,11 +763,32 @@ export function apply(ctx: Context, config: Config): void {
       : liveModels.length
         ? liveModels
         : fallbackModelsFor(region)
-    return withImageSelection(
+    // `canDisableThinking` must be carried into `lastCatalog` by the card's
+    // save or the next load loses it and withdraws `off` from every model
+    // (the same mechanism as `imageModelIds` / `multimodal`); so stamp the
+    // effective value on top of the image stamp, then let the user's selection
+    // decide the final answer.
+    const declared = withImageSelection(
       deriveCatalog(roster, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
       new Set(state.imageModelIds ?? []),
     )
+    return withEffectiveOff(declared, new Set(savedOffModelIds(state, declared)))
   }
+
+  /**
+   * The region's `off` selection as a Set (issue #34).
+   *
+   * `undefined` means "the user has never saved" — seed from the built-in rule
+   * so the checkbox is ticked correctly on first read. An explicit `[]` means
+   * the user UNticked everything and must stay empty: `regionStateOf` reads the
+   * raw stored slot, so `undefined` and `[]` are distinguishable here, and
+   * collapsing them would silently re-enable every model on the next load.
+   */
+  const savedOffModelIds = (
+    state: ReturnType<typeof regionStateOf>,
+    roster: readonly WorkBuddyModelInfo[],
+  ): readonly string[] =>
+    state.offModelIds ?? defaultOffModelIds(roster)
   // What the card displays: this region's last-refreshed directory, so the user
   // re-reads the current catalog rather than a stale saved snapshot. Same
   // three-step roster as `configuredModels` (issue #32): a saved slot that lost
@@ -888,6 +927,7 @@ export function apply(ctx: Context, config: Config): void {
     displayModels: region => displayModels(current(), region),
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
+    offModelIds: region => savedOffModelIds(regionStateOf(current(), region), displayModels(current(), region)),
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
     regionEnabled: region => regionEnabled(current(), region),
@@ -1652,9 +1692,12 @@ export function apply(ctx: Context, config: Config): void {
             const models = await client.fetchModels(credential)
             if (stopped) return
             const state = regionStateOf(current(), region)
-            stacks[region].catalog.set(withImageSelection(
-              deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
-              new Set(state.imageModelIds ?? []),
+            stacks[region].catalog.set(withEffectiveOff(
+              withImageSelection(
+                deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
+                new Set(state.imageModelIds ?? []),
+              ),
+              new Set(savedOffModelIds(state, models)),
             ))
             adapters[region].invalidate()
             // `lastCatalog` is deliberately NOT seeded here: it belongs to the

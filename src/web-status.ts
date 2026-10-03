@@ -85,6 +85,8 @@ export interface WorkBuddyStatusRouteOptions {
   enabledModelIds(region: WorkBuddyRegion): readonly string[]
   /** Model ids the user opted into image input, for the requested region. */
   imageModelIds(region: WorkBuddyRegion): readonly string[]
+  /** Model ids whose `off` thinking level is offered, for the requested region. */
+  offModelIds(region: WorkBuddyRegion): readonly string[]
   /** Saved local DSH context budgets by model id, for the requested region. */
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog of one region from the upstream. */
@@ -345,6 +347,11 @@ function toWebModel(
       reasoning: {
         ...model.reasoning.supportedEfforts === undefined ? {} : { supportedEfforts: [...model.reasoning.supportedEfforts] },
         ...model.reasoning.defaultEffort === undefined ? {} : { defaultEffort: model.reasoning.defaultEffort },
+        // Carried so it survives the card's save back into `lastCatalog`.
+        // Dropping it here meant one Save stripped the declaration from every
+        // model, and since an absent declaration never offers `off` (issue #34's
+        // default), the level silently vanished for the models that accept it.
+        ...model.reasoning.canDisableThinking === undefined ? {} : { canDisableThinking: model.reasoning.canDisableThinking },
       },
     },
   }
@@ -494,6 +501,7 @@ export async function workBuddyWebStatus(
     models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
     enabledModelIds: [...deps.enabledModelIds(region)],
     imageModelIds: [...deps.imageModelIds(region)],
+    offModelIds: [...deps.offModelIds(region)],
   }
   const [creditsResult, checkinResult] = await Promise.allSettled([
     deps.client.fetchCredits(credential),

@@ -21,6 +21,7 @@
     "tests/pool-render.spec.tsx",
     "tests/pool-card-render.spec.tsx",
     "tests/probe-age.spec.tsx",
-    "tests/remaining.spec.tsx"
+    "tests/remaining.spec.tsx",
+    "tests/off-thinking-card.spec.tsx"
   ]
 }
