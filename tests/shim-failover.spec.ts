@@ -596,3 +596,153 @@ describe('failure reporting without a pool to fail over to', () => {
     expect(gap).toBeGreaterThanOrEqual(1_900)
   })
 })
+
+/**
+ * The failover is ANNOUNCED in the answer, not only in the log.
+ *
+ * Why this file owns it: before this, a switch existed only as a `logger.warn`
+ * line the user never reads. A reply that came from a fallback account looked
+ * exactly like one from the account they chose, so the two facts they needed —
+ * "the account I picked did not serve this" and "why" — were both invisible. The
+ * notice is the user-facing half of the same event the retry loop performs.
+ */
+describe('a failover says so in the answer', () => {
+  /** The concatenated `content` deltas of an SSE body, in order. */
+  function contentOf(body: string): string {
+    let text = ''
+    for (const line of body.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const payload = trimmed.slice(5).trim()
+      if (payload === '' || payload === '[DONE]') continue
+      try {
+        const chunk = JSON.parse(payload) as { choices?: { delta?: { content?: string } }[] }
+        text += chunk.choices?.[0]?.delta?.content ?? ''
+      } catch { /* a keep-alive or a non-JSON frame: nothing to collect */ }
+    }
+    return text
+  }
+
+  /** A stream that says something, so there is content to carry the notice. */
+  function answering(text: string): WorkBuddyChatResult {
+    const frame = { choices: [{ index: 0, delta: { content: text }, finish_reason: '' }] }
+    const done = { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+    return {
+      ok: true,
+      response: new Response(`data: ${JSON.stringify(frame)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`, { status: 200 }),
+    }
+  }
+
+  it('names the abandoned account and the reason, before the answer itself', async () => {
+    const other = credentialFor('other')
+    const seen: string[] = []
+    shim = mount({
+      others: [other],
+      chatStream: async credential => {
+        seen.push(credential.uin ?? '')
+        return seen.length === 1 ? RATE_LIMITED : answering('Hello from the fallback.')
+      },
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(response.status).toBe(200)
+    const text = contentOf(response.body)
+    // The notice is there, names the account left behind (by `uin`, which is what
+    // the pool table shows) and gives the reason a person can act on.
+    expect(text).toContain('dsh-connect-workbuddy')
+    expect(text).toContain('selected')
+    expect(text).toContain('rate limited')
+    // And it comes FIRST: an answer that opened with the model's prose and then
+    // mentioned the switch would read as the model talking about itself.
+    expect(text.indexOf('dsh-connect-workbuddy')).toBeLessThan(text.indexOf('Hello from the fallback.'))
+  })
+
+  it('adds NO notice when the selected account serves the request', async () => {
+    // The case that keeps the feature honest: a notice on every reply would be
+    // noise, and would also mean the notice does not actually signal anything.
+    const other = credentialFor('other')
+    shim = mount({
+      others: [other],
+      chatStream: async () => answering('Straight answer.'),
+      failover: async () => other,
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    const text = contentOf(response.body)
+    expect(text).toContain('Straight answer.')
+    expect(text).not.toContain('came from another account')
+    expect(attemptsOf()).toEqual([SELECTED_ID])
+  })
+
+  it('says nothing when the request failed on every account', async () => {
+    // Nothing was delivered, so there is no answer for a notice to preface. The
+    // error response is where this user learns what happened.
+    const other = credentialFor('other')
+    shim = mount({
+      others: [other],
+      chatStream: async () => RATE_LIMITED,
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(response.status).toBe(429)
+    expect(response.body).not.toContain('came from another account')
+  })
+
+  it('reports ONE reason even when several accounts fail before one answers', async () => {
+    // Three accounts walked: the user needs to know the answer came from a
+    // fallback, not a transcript of every candidate that was also limited.
+    const second = credentialFor('second')
+    const third = credentialFor('third')
+    const seen: string[] = []
+    shim = mount({
+      others: [second, third],
+      chatStream: async credential => {
+        seen.push(credential.uin ?? '')
+        return seen.length < 3 ? RATE_LIMITED : answering('Third time lucky.')
+      },
+      failover: async tried => {
+        if (!tried.includes(SELECTED_ID)) return undefined
+        if (!tried.includes(workbuddyAccountId(second))) return second
+        if (!tried.includes(workbuddyAccountId(third))) return third
+        return undefined
+      },
+    })
+    await shim.ready
+
+    const response = await chat(shim)
+    expect(seen).toEqual(['selected', 'second', 'third'])
+    const text = contentOf(response.body)
+    expect(text).toContain('Third time lucky.')
+    // Exactly one notice, naming the account the request STARTED on.
+    expect(text.split('came from another account').length - 1).toBe(1)
+    expect(text).toContain('selected')
+  })
+
+  it('still answers when the switch is due to a dead sign-in, and says that instead', async () => {
+    // A different kind must produce a different phrase, or the notice would be
+    // decoration: "rate limited" and "signed out" send the user to different
+    // remedies (wait / re-authenticate) and must not read alike.
+    const other = credentialFor('other')
+    const seen: string[] = []
+    shim = mount({
+      others: [other],
+      chatStream: async credential => {
+        seen.push(credential.uin ?? '')
+        return seen.length === 1
+          ? { ok: false, status: 401, kind: 'session_dead', message: 'token revoked' }
+          : answering('Recovered.')
+      },
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const text = contentOf((await chat(shim)).body)
+    expect(text).toContain('signed out')
+    expect(text).not.toContain('rate limited')
+  })
+})

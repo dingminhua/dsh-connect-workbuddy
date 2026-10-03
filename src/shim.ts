@@ -343,12 +343,50 @@ class RecoveryStream {
 
   private readonly buffer: DsmlStreamBuffer | undefined
 
+  /**
+   * A notice to place at the head of the answer, once, before any prose.
+   *
+   * Set when the request reached this stream only after the pool failed over, so
+   * the user learns WHY the answer came from a different account. Without it a
+   * failover is invisible: the reply looks like it came from the account they
+   * picked, and the only trace is a `logger.warn` they never see. The notice is
+   * emitted ahead of the model's own text so it cannot be mistaken for part of
+   * the answer, and only once — a retry that never delivers text must not leave
+   * a stray line behind.
+   */
+  private notice: string | undefined
+
   constructor(
     private readonly res: ServerResponse,
     gate: RecoveryGate | undefined,
     private readonly logger: ShimLogger | undefined,
+    notice?: string,
   ) {
     this.buffer = gate === undefined ? undefined : new DsmlStreamBuffer(gate)
+    this.notice = notice
+  }
+
+  /**
+   * Emit the pending failover notice, if any, and forget it.
+   *
+   * Called immediately before the first content reaches the client. Placed
+   * here rather than in the constructor because a stream whose write fails, or
+   * whose attempt is discarded in favour of a retry, must not have already told
+   * the user about a switch it never completed.
+   */
+  private flushNotice(): void {
+    const notice = this.notice
+    if (notice === undefined) return
+    this.notice = undefined
+    if (!this.res.writable) return
+    const chunk: Record<string, unknown> = { choices: [{ index: 0, delta: {}, finish_reason: '' }] }
+    const choiceRecord: Record<string, unknown> = { index: 0, delta: {}, finish_reason: '' }
+    // Written straight to the socket, deliberately bypassing the hold window:
+    // the notice is ours, not the upstream's, so it is not something a retry
+    // could need to replace — and putting it through the window would let a
+    // discarded attempt take it away again after the user had seen it.
+    this.windowOpened = true
+    this.res.write(contentFrame(chunk, choiceRecord, notice))
   }
 
   /** True when a call or real prose has reached the client. */
@@ -471,6 +509,7 @@ class RecoveryStream {
     if (Array.isArray(nativeCalls) && nativeCalls.length > 0) {
       this.nativeCallsSeen = true
       this.windowOpened = true
+      this.flushNotice()
       this.send(frame, false)
       this.wroteContent = true
       this.closeWindow()
@@ -495,6 +534,7 @@ class RecoveryStream {
       // is opened so that a later frame cannot start holding either — with no
       // recovery there is nothing a hold could be waiting for.
       this.windowOpened = true
+      this.flushNotice()
       this.closeWindow()
       this.res.write(frame)
       this.wroteContent = true
@@ -510,6 +550,7 @@ class RecoveryStream {
       // Queued through `send` first so it lands ahead of any `finish_reason`
       // frame already held, then the window closes and everything flushes in
       // arrival order.
+      this.flushNotice()
       this.send(callsFrame(chunk, choiceRecord, outcome.calls), false)
       this.wroteContent = true
       this.closeWindow()
@@ -526,6 +567,7 @@ class RecoveryStream {
       return
     }
     if (outcome.prose) {
+      this.flushNotice()
       this.send(contentFrame(chunk, choiceRecord, outcome.text), false)
       this.wroteContent = true
       this.closeWindow()
@@ -563,6 +605,7 @@ class RecoveryStream {
     this.windowOpened = true
     const frame = contentFrame(chunk, choiceRecord, text)
     if (text.trim() !== '') {
+      this.flushNotice()
       this.send(frame, false)
       this.wroteContent = true
       this.closeWindow()
@@ -639,6 +682,69 @@ function callsFrame(
   }))
   const next = { ...chunk, choices: [{ ...choice, delta: { tool_calls: toolCalls }, finish_reason: 'tool_calls' }] }
   return `data: ${JSON.stringify(next)}\n\n`
+}
+
+/**
+ * How to name a pool account in a sentence the USER reads.
+ *
+ * Prefers the phone number (`uin`) because that is what the pool table shows and
+ * what a person recognises; the nickname and the opaque account id are fallbacks
+ * so this can never render an empty name. Deliberately NOT the hashed account id
+ * on its own: a 24-character hex digest identifies an account to the plugin, but
+ * to the person reading the answer it identifies nothing.
+ */
+function describeAccount(credential: WorkBuddyCredential): string {
+  if (credential.uin !== undefined && credential.uin !== '') return credential.uin
+  if (credential.nickname !== undefined && credential.nickname !== '') return credential.nickname
+  return workbuddyAccountId(credential)
+}
+
+/**
+ * One short phrase for why an account was abandoned, for the in-reply notice.
+ *
+ * Kept to the distinction the user can act on rather than the internal kind
+ * name: "rate limited" says wait or add an account, "rejected" says the sign-in
+ * is the problem. The numeric kind would only send them to the log.
+ */
+function failoverReasonText(failure: WorkBuddyChatResult): string {
+  // The union is discriminated by `ok`; only a failure carries a kind, and this
+  // is only ever called on the failed attempt that triggered a switch.
+  if (failure.ok) return 'unusable'
+  switch (failure.kind) {
+    // Both credit walls read the same to a user: the account cannot serve this
+    // request right now. `soft_rate` is the 6004 rate limit the probe exists to
+    // detect; `hard_credit` is an exhausted balance.
+    case 'soft_rate':
+    case 'hard_credit':
+      return 'rate limited'
+    case 'session_dead':
+      return 'signed out'
+    case 'policy_reject':
+      return 'rejected by policy'
+    case 'not_found':
+      return 'model unavailable'
+    case 'server':
+      return 'erroring upstream'
+    default:
+      return `unusable (http ${failure.status})`
+  }
+}
+
+/**
+ * The line prepended to an answer that came from a failover account.
+ *
+ * Block-quoted and bracketed so it reads as machinery rather than as the model's
+ * own words, and so a user skimming for the answer can skip it. It states the
+ * reason AND the account left behind, because those are the two facts that make
+ * an unexpected reply explicable.
+ *
+ * The wording avoids "switched TO <account>" on purpose: the account that took
+ * over is the one the user is about to keep talking to, and naming it invites
+ * the reading that they must now manage it. What they need is to know the one
+ * they chose did not answer, and why.
+ */
+function failoverNoticeText(from: string, reason: string): string {
+  return `\n\n> [dsh-connect-workbuddy] 「${from}」was ${reason} — this answer came from another account\n\n`
 }
 
 /** One frame carrying replacement text for a frame whose content was consumed. */
@@ -812,6 +918,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // refresh still happens exactly once, before any retry.
     let result = await client.chatStream(credential, prepared, controller.signal)
     const triedAccountIds: string[] = []
+    /**
+     * The account the request STARTED on, and the reason it was abandoned.
+     *
+     * `??=` on the first switch only: if three accounts fail in a row the user
+     * cares that the answer did not come from the one they picked, not with a
+     * blow-by-blow list of every candidate that was also rate limited.
+     */
+    let switchedFrom: string | undefined
+    let switchedBecause: string | undefined
 
     /**
      * Tell the plugin about a failed attempt so it can store the measurement.
@@ -897,6 +1012,12 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       logger?.warn(
         `dsh-connect-workbuddy: retrying chat on another pool account after ${result.kind} (http ${result.status})`,
       )
+      // Remember WHY the switch happened and FROM which account, so the answer
+      // can carry one line saying so. Recorded here rather than only logged: the
+      // log is invisible to the person reading the reply, and a silent failover
+      // is indistinguishable from the account they chose having answered.
+      switchedFrom ??= describeAccount(credential)
+      switchedBecause ??= failoverReasonText(result)
       credential = next
       result = await client.chatStream(credential, prepared, controller.signal)
     }
@@ -969,7 +1090,13 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       ...declared.pinnedToolName === undefined ? {} : { pinnedToolName: declared.pinnedToolName },
     }
 
-    const writer = new RecoveryStream(res, gate, logger)
+    // The notice travels with the STREAM, not with this function: only the
+    // stream knows whether any content actually reaches the client, and a
+    // retry that ended in an error response leaves nothing to prefix.
+    const notice = switchedFrom === undefined || switchedBecause === undefined
+      ? undefined
+      : failoverNoticeText(switchedFrom, switchedBecause)
+    const writer = new RecoveryStream(res, gate, logger, notice)
     await writer.consume(result.response.body)
 
     // The one outcome that can only be recognised AFTER the stream: the turn
