@@ -959,8 +959,15 @@ describe('a streamed test batch reports each account as it lands', () => {
     const prov = m.container.querySelector('.dsm-workbuddy-pool-probe-prov')
     expect(prov, 'an old record still has an age worth showing').not.toBeNull()
     expect(prov!.textContent).toContain('row.poolProbeSourceUnknown')
-    expect(prov!.querySelector('.dsm-workbuddy-pool-prov-tag')!.className)
-      .toContain('dsm-workbuddy-pool-prov-unknown')
+    const tag = prov!.querySelector('.dsm-workbuddy-pool-prov-unknown')!
+    expect(tag.className).toContain('dsm-workbuddy-pool-prov-unknown')
+    // The unknown pill must keep the BASE tag class too, because that is what
+    // carries `font-weight:600` and the pill background. An earlier version gave
+    // this state `background:none; border:1px dashed; font-weight:400` — four
+    // simultaneous weakenings that made 10px text genuinely hard to read, which
+    // is how it shipped to a reader who reported exactly that. "This record
+    // predates the field" is still worth saying loudly enough to be legible.
+    expect(tag.className, 'the unknown pill must keep the base pill styling').toContain('dsm-workbuddy-pool-prov-tag')
     await m.unmount()
   })
 
