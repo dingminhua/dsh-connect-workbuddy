@@ -1160,6 +1160,31 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                                       <span>200K</span>
                                     </label>
                                   : null}
+                                {/* Half-meg tier. Gated on `> 500_000` rather than
+                                    `> 200_000` so it never offers a cap ABOVE a
+                                    model's real window: a 192K model (hy3) and a
+                                    300K one would otherwise get a button that
+                                    silently lowers nothing and misrepresents the
+                                    window. The upstream ladder is 300K/600K/960K
+                                    or 1M, so 500K is a deliberate convenience
+                                    point, not an upstream limit — hence a plain
+                                    literal here, like the 200K label above.
+                                    Unchecked with no stored budget, which is what
+                                    `=== 500_000` gives for `undefined`; the `??
+                                    200_000` default belongs to the 200K tier
+                                    only. */}
+                                {model.nativeContextWindow > 500_000
+                                  ? <label>
+                                      <input
+                                        type="radio"
+                                        name={`context-${model.id}`}
+                                        checked={activeContextBudgets[model.id] === 500_000}
+                                        disabled={!canWrite || saving}
+                                        onChange={() => { setContextBudget(model.id, 500_000) }}
+                                      />
+                                      <span>500K</span>
+                                    </label>
+                                  : null}
                                 <label>
                                   <input
                                     type="radio"

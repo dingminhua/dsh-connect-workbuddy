@@ -651,7 +651,13 @@ export async function legacyAttributionRegion(
  * upstream never leaves a provider empty.
  */
 export function apply(ctx: Context, config: Config): void {
-  const client = new WorkBuddyUpstreamClient()
+  // The CN catalog prefers `/v3/config` and falls back to the legacy document.
+  // A fallback is worth a line in the log: it means the card's roster may no
+  // longer match the app's prices, which is a user-visible difference rather
+  // than a purely internal degradation.
+  const client = new WorkBuddyUpstreamClient(message => {
+    ctx.logger.warn(`dsh-connect-workbuddy: ${message}`)
+  })
 
   /**
    * How long a check-in reading is reused before asking the upstream again.

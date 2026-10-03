@@ -289,7 +289,13 @@ export interface WorkBuddyWebModel {
   name: string
   /** Effective DSH context after applying the saved local budget. */
   contextWindow: number
-  /** Native maximum advertised by WorkBuddy; models above 200K expose 200K/max. */
+  /**
+   * Native maximum advertised by WorkBuddy, never clamped by a default.
+   *
+   * Models above 200K expose the tier selector (200K / 500K / max); whether the
+   * window is actually reduced is the user's stored `contextBudgets` decision
+   * and nothing else — see issue #33.
+   */
   nativeContextWindow: number
   maxTokens: number
   creditMultiplier?: number
