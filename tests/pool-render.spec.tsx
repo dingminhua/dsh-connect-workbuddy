@@ -880,4 +880,104 @@ describe('a streamed test batch reports each account as it lands', () => {
     expect(onRefresh, 'a failed batch must not re-read').not.toHaveBeenCalled()
     await m.unmount()
   })
+
+  it('puts the measurement age and writer on their OWN line, not the outcome line', async () => {
+    // The two facts that make an unexpected value explainable. They answer a
+    // different question from the outcome line, and appending them to it made one
+    // dense run a reader scans past — so they must render as a second element.
+    // A mutant that folds them back into one string fails this.
+    stubFetch(() => ({ body: {} }))
+    const real = accountOf({
+      accountId: GENUINE_ID,
+      accountName: 'Real One',
+      current: true,
+      probe: { outcome: 'ok', atMs: Date.now(), source: 'test-batch' },
+    })
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [real],
+      }),
+    }))
+    const probe = m.container.querySelector('.dsm-workbuddy-pool-probe')
+    expect(probe, 'the probe cell must exist').not.toBeNull()
+    const main = probe!.querySelector('.dsm-workbuddy-pool-probe-main')
+    const prov = probe!.querySelector('.dsm-workbuddy-pool-probe-prov')
+    expect(main, 'the outcome line must be its own element').not.toBeNull()
+    expect(prov, 'provenance must be its own element, not appended to the outcome').not.toBeNull()
+    // The outcome line must NOT carry the provenance text: that is the mutant.
+    expect(main!.textContent).not.toContain('row.poolProbeSourceTest')
+    expect(prov!.textContent).toContain('row.poolProbeSourceTest')
+    expect(prov!.textContent).toContain('row.poolProbeJustNow')
+    await m.unmount()
+  })
+
+  it('marks a live-request write with its own pill class', async () => {
+    // "hit by a live request" is the one readable distinction on that line: it
+    // explains a change the user would otherwise read as a bug. If it renders
+    // with the same class as the neutral "tested", the distinction is invisible
+    // and the whole point of recording the source is lost.
+    stubFetch(() => ({ body: {} }))
+    const real = accountOf({
+      accountId: GENUINE_ID,
+      accountName: 'Real One',
+      current: true,
+      probe: { outcome: 'rate-limited', atMs: Date.now(), source: 'live-request', retryAtMs: Date.now() + 3_600_000 },
+    })
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [real],
+      }),
+    }))
+    const tag = m.container.querySelector('.dsm-workbuddy-pool-probe-prov .dsm-workbuddy-pool-prov-tag')
+    expect(tag, 'the writer must render as a pill').not.toBeNull()
+    expect(tag!.className).toContain('dsm-workbuddy-pool-prov-live')
+    expect(tag!.textContent).toBe('row.poolProbeSourceLive')
+    await m.unmount()
+  })
+
+  it('says "source unknown" for a record written before the field existed', async () => {
+    // The honest answer. Guessing a writer for the one row the user is asking
+    // about would be worse than admitting the record predates the field.
+    stubFetch(() => ({ body: {} }))
+    const real = accountOf({
+      accountId: GENUINE_ID,
+      accountName: 'Real One',
+      current: true,
+      probe: { outcome: 'ok', atMs: Date.now() },
+    })
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [real],
+      }),
+    }))
+    const prov = m.container.querySelector('.dsm-workbuddy-pool-probe-prov')
+    expect(prov, 'an old record still has an age worth showing').not.toBeNull()
+    expect(prov!.textContent).toContain('row.poolProbeSourceUnknown')
+    expect(prov!.querySelector('.dsm-workbuddy-pool-prov-tag')!.className)
+      .toContain('dsm-workbuddy-pool-prov-unknown')
+    await m.unmount()
+  })
+
+  it('renders no provenance line at all for an untested account', async () => {
+    // An empty second line would add height to every row while explaining
+    // nothing; an untested account has no measurement to date.
+    stubFetch(() => ({ body: {} }))
+    const real = accountOf({ accountId: GENUINE_ID, accountName: 'Real One', current: true })
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [real],
+      }),
+    }))
+    expect(m.container.querySelector('.dsm-workbuddy-pool-probe-prov')).toBeNull()
+    expect(m.text()).toContain('row.poolNeverTested')
+    await m.unmount()
+  })
 })

@@ -980,22 +980,36 @@ function renderAccountRow(input: {
     ? ''
     : remainingText(t, probe.retryAtMs, Date.now())
   const reason = probe === undefined ? undefined : inlineProbeReason(probe.outcome, probe.message)
-  // HOW OLD and WHO WROTE IT, appended last so the outcome stays the first thing
-  // read. These two are what make an unexpected value explainable: the same
-  // account is written by the "test" batch AND by any failing live request, and
-  // they overwrite each other. Without them the table showed a bare outcome with
-  // no way to tell "a live request really failed just now" from "the record went
-  // back to something older" — the exact confusion this pair exists to remove.
+  // HOW OLD and WHO WROTE IT, on their OWN line below the outcome.
+  //
+  // A second line rather than more " · " joins on the first: the outcome line
+  // already carries up to three facts, and appending two more made a single
+  // dense run that readers scanned past. These two answer a different question
+  // ("is this current, and what wrote it?") from the outcome line ("what does
+  // the pool think?"), so they get their own row.
+  //
+  // They are what make an unexpected value explainable: the same account is
+  // written by the "test" batch AND by any failing live request, and they
+  // overwrite each other. Without them the table showed a bare outcome with no
+  // way to tell "a live request really failed just now" from "the record went
+  // back to something older" — the exact confusion this line exists to remove.
   //
   // An unknown source (a record written before the field existed) says so
   // instead of guessing, because the row the user is asking about is the worst
   // possible place to print a confident wrong answer.
   const age = probe === undefined ? undefined : probeAgeText(t, probe.atMs, Date.now())
-  const source = probe === undefined
+  // The writer, reduced to ONE pill: its text and the class that carries its
+  // meaning. `undefined` means "nothing to say" (no measurement at all), which
+  // the renderer distinguishes from the dashed "source unknown" pill a
+  // pre-existing record gets.
+  const probeLabel = probe === undefined
     ? undefined
-    : probeSourceText(t, probe.source) ?? t('row.poolProbeSourceUnknown')
-  const provenance = [source, age].filter(part => part !== undefined && part !== '').join(' ')
-  const probeLine = [outcomeLine, remaining, reason, provenance]
+    : probe.source === undefined
+      ? { text: t('row.poolProbeSourceUnknown'), className: 'dsm-workbuddy-pool-prov-tag dsm-workbuddy-pool-prov-unknown' }
+      : probe.source === 'live-request'
+        ? { text: t('row.poolProbeSourceLive'), className: 'dsm-workbuddy-pool-prov-tag dsm-workbuddy-pool-prov-live' }
+        : { text: t('row.poolProbeSourceTest'), className: 'dsm-workbuddy-pool-prov-tag' }
+  const probeLine = [outcomeLine, remaining, reason]
     .filter(part => part !== undefined && part !== '')
     .join(' · ')
 
@@ -1057,7 +1071,28 @@ function renderAccountRow(input: {
     h('span', {
       className: 'dsm-workbuddy-pool-probe',
       ...probe?.message === undefined ? {} : { title: probe.message },
-    }, probeLine),
+    },
+      h('span', { className: 'dsm-workbuddy-pool-probe-main' }, probeLine),
+      // The provenance row renders ONLY when there is something to say: an
+      // untested account has no measurement to date, and an empty second line
+      // would add height to every row while explaining nothing.
+      probeLabel === undefined && age === undefined ? null : h('span', { className: 'dsm-workbuddy-pool-probe-prov' },
+        // The writer is a PILL, not plain text, because it is the one readable
+        // distinction on this line: "hit by a live request" explains a change the
+        // user otherwise reads as a bug. Colouring it by that meaning is what
+        // makes the row scannable — a neutral "tested" and a loud "hit by a live
+        // request" must not look alike.
+        probeLabel === undefined
+          ? null
+          : h('span', { className: probeLabel.className }, probeLabel.text),
+        // The separator lives BETWEEN the two parts, so it can never dangle when
+        // one side is absent.
+        probeLabel === undefined || age === undefined
+          ? null
+          : h('span', { className: 'dsm-workbuddy-pool-prov-sep' }, '·'),
+        age === undefined ? null : h('span', { className: 'dsm-workbuddy-pool-prov-age' }, age),
+      ),
+    ),
     checkinSupported
       ? h('span', { className: 'dsm-workbuddy-pool-checkin' },
           // Three states, not two: an unread account says nothing rather than
