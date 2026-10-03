@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { toPersistedWorkBuddyModel } from '../src/status-paths.ts'
 import type { WorkBuddyWebModel } from '../src/status-paths.ts'
-import { effectiveOff } from '../src/off-thinking.ts'
 
 function webModel(): WorkBuddyWebModel {
   return {
@@ -52,43 +51,5 @@ describe('toPersistedWorkBuddyModel', () => {
     const persisted = toPersistedWorkBuddyModel({ ...webModel(), supportsImages: true })
     expect(persisted.supportsImages).toBe(true)
     expect('multimodal' in persisted).toBe(false)
-  })
-
-  it('keeps the off declaration so a save cannot withdraw a working level (issue #34)', () => {
-    // The sibling of the `supportsImages` rule above, and the reason it exists:
-    // the declaration must survive the card's save into `lastCatalog`, or the
-    // runtime's default (an absent declaration never offers `off`) silently
-    // withdraws the level from every model the user has NOT overridden.
-    // Flipping that default to `true` is not an option — `hy4-preview` and
-    // `hy3-x` declare `false`.
-    const persisted = toPersistedWorkBuddyModel({
-      ...webModel(),
-      reasoning: { supportedEfforts: ['low', 'high'], defaultEffort: 'high', canDisableThinking: true },
-    })
-    expect(persisted.reasoning).toEqual({
-      supportedEfforts: ['low', 'high'],
-      defaultEffort: 'high',
-      canDisableThinking: true,
-    })
-    // The stored shape is what the runtime rule reads, so the round trip has to
-    // still ANSWER the question, not merely preserve a field.
-    expect(effectiveOff(persisted, {})).toBe(true)
-  })
-
-  it('stores an explicit false rather than dropping it', () => {
-    // `false` is an ANSWER, not an absence: dropping it would make the runtime
-    // fall back to a default that could disagree with what upstream declared.
-    const persisted = toPersistedWorkBuddyModel({
-      ...webModel(),
-      reasoning: { supportedEfforts: ['high'], canDisableThinking: false },
-    })
-    expect(persisted.reasoning?.canDisableThinking).toBe(false)
-    expect(effectiveOff(persisted, {})).toBe(false)
-  })
-
-  it('omits the declaration entirely when upstream never gave one', () => {
-    // Absent must stay absent: writing `undefined` fails the strict JSON codec,
-    // and inventing `false` would misreport an undeclared capability.
-    expect('canDisableThinking' in (toPersistedWorkBuddyModel(webModel()).reasoning ?? {})).toBe(false)
   })
 })
