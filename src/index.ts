@@ -97,6 +97,8 @@ export {
   nativeModalityOf,
   type WorkBuddyNativeModality,
 } from './native-modality.ts'
+import { effectiveOff, offDefaultFor, REFUSES_OFF_MODEL_IDS, withEffectiveOff } from './off-thinking.ts'
+export { effectiveOff, offDefaultFor, REFUSES_OFF_MODEL_IDS, withEffectiveOff }
 export {
   authFileName,
   defaultDesktopAuthCandidates,
@@ -291,6 +293,14 @@ export interface WorkBuddyRegionState {
   enabledModelIds?: string[]
   /** Model ids the user explicitly opted into image input. */
   imageModelIds?: string[]
+  /**
+   * Per-model override of whether the `off` thinking level is offered
+   * (issue #34), keyed by model id. An absent key means "use the built-in rule"
+   * — the upstream declaration minus the models known to reject `off`; `true`
+   * forces the level on and `false` forces it off, so the user can correct a
+   * lying upstream in either direction without a plugin release.
+   */
+  offOverrides?: Record<string, boolean>
   /** Local DSH context budget per model in this region. */
   contextBudgets?: Record<string, WorkBuddyContextBudget>
   /** This region's account-pool preferences (opt-in; see {@link WorkBuddyPoolPreferences}). */
@@ -424,6 +434,19 @@ const regionStateConfig = z.object({
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
   imageModelIds: z.array(z.string()).default([]),
+  /**
+   * Per-model override of whether thinking `off` is offered, keyed by model id
+   * (issue #34). An ABSENT key means "use the built-in rule" — the upstream's
+   * `canDisableThinking` declaration minus the ids known to refuse `off` (see
+   * `src/off-thinking.ts`).
+   *
+   * A map rather than a list on purpose: a list cannot distinguish "never
+   * saved an opinion" from "the user turned every model off", and the former
+   * must keep `off` for the 23 models that genuinely accept it. Both directions
+   * are stored, so the user can suppress a model the upstream lies about AND
+   * re-enable one the built-in table wrongly hides.
+   */
+  offOverrides: z.dict(z.boolean()).default({}).description('Per-model override of whether the "off" thinking level is offered, keyed by model id. An absent key uses the built-in rule (upstream declaration minus models known to reject it); true forces the level on, false forces it off.'),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
   pool: poolConfig.default({}),
 })
@@ -745,9 +768,16 @@ export function apply(ctx: Context, config: Config): void {
       : liveModels.length
         ? liveModels
         : fallbackModelsFor(region)
-    return withImageSelection(
-      deriveCatalog(roster, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
-      new Set(state.imageModelIds ?? []),
+    // The `off` stamp is applied on top of the image stamp, and both are
+    // runtime-only: `withEffectiveOff` corrects `canDisableThinking` from the
+    // reviewed table plus the user's override (issue #34), and the adapter's
+    // level map reads that corrected field.
+    return withEffectiveOff(
+      withImageSelection(
+        deriveCatalog(roster, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
+        new Set(state.imageModelIds ?? []),
+      ),
+      state.offOverrides ?? {},
     )
   }
   // What the card displays: this region's last-refreshed directory, so the user
@@ -888,6 +918,10 @@ export function apply(ctx: Context, config: Config): void {
     displayModels: region => displayModels(current(), region),
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
+    offOverrides: region => regionStateOf(current(), region).offOverrides ?? {},
+    offModelIds: region => displayModels(current(), region)
+      .filter(model => effectiveOff(model, regionStateOf(current(), region).offOverrides ?? {}))
+      .map(model => model.id),
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
     regionEnabled: region => regionEnabled(current(), region),
@@ -1652,9 +1686,12 @@ export function apply(ctx: Context, config: Config): void {
             const models = await client.fetchModels(credential)
             if (stopped) return
             const state = regionStateOf(current(), region)
-            stacks[region].catalog.set(withImageSelection(
-              deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
-              new Set(state.imageModelIds ?? []),
+            stacks[region].catalog.set(withEffectiveOff(
+              withImageSelection(
+                deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
+                new Set(state.imageModelIds ?? []),
+              ),
+              state.offOverrides ?? {},
             ))
             adapters[region].invalidate()
             // `lastCatalog` is deliberately NOT seeded here: it belongs to the

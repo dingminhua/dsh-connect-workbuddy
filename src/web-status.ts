@@ -85,6 +85,25 @@ export interface WorkBuddyStatusRouteOptions {
   enabledModelIds(region: WorkBuddyRegion): readonly string[]
   /** Model ids the user opted into image input, for the requested region. */
   imageModelIds(region: WorkBuddyRegion): readonly string[]
+  /**
+   * The requested region's saved per-model "is thinking `off` offered"
+   * overrides, exactly as stored (issue #34). An absent key means "use the
+   * built-in rule".
+   *
+   * Sent to the card so its checkbox state can be reconstructed and written
+   * back on save; deliberately NOT the effective answer, which travels
+   * separately as {@link offModelIds} so the default rule lives in one place.
+   */
+  offOverrides(region: WorkBuddyRegion): Readonly<Record<string, boolean>>
+  /**
+   * Model ids whose `off` level is EFFECTIVELY offered in this region, after
+   * both the built-in rule and the saved overrides (issue #34).
+   *
+   * Derived, never saved: the card renders it as each checkbox's initial
+   * state, and it must agree with the runtime catalog, which is stamped from
+   * the same rule in `index.ts`.
+   */
+  offModelIds(region: WorkBuddyRegion): readonly string[]
   /** Saved local DSH context budgets by model id, for the requested region. */
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog of one region from the upstream. */
@@ -345,6 +364,11 @@ function toWebModel(
       reasoning: {
         ...model.reasoning.supportedEfforts === undefined ? {} : { supportedEfforts: [...model.reasoning.supportedEfforts] },
         ...model.reasoning.defaultEffort === undefined ? {} : { defaultEffort: model.reasoning.defaultEffort },
+        // Carried so it survives the card's save back into `lastCatalog`.
+        // Dropping it here meant one Save stripped the declaration from every
+        // model, and since an absent declaration never offers `off` (issue #34's
+        // default), the level silently vanished for the models that accept it.
+        ...model.reasoning.canDisableThinking === undefined ? {} : { canDisableThinking: model.reasoning.canDisableThinking },
       },
     },
   }
@@ -494,6 +518,8 @@ export async function workBuddyWebStatus(
     models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
     enabledModelIds: [...deps.enabledModelIds(region)],
     imageModelIds: [...deps.imageModelIds(region)],
+    offModelIds: [...deps.offModelIds(region)],
+    offOverrides: { ...deps.offOverrides(region) },
   }
   const [creditsResult, checkinResult] = await Promise.allSettled([
     deps.client.fetchCredits(credential),

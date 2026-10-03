@@ -150,6 +150,8 @@ function deps(pool?: WorkBuddyPoolDeps): WorkBuddyStatusRouteOptions {
     displayModels: () => [],
     enabledModelIds: () => [],
     imageModelIds: () => [],
+    offOverrides: () => ({}),
+    offModelIds: () => [],
     contextBudgets: () => ({}),
     regionEnabled: () => true,
     ...pool === undefined ? {} : { pool },
