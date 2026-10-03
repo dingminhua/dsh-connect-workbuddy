@@ -180,6 +180,7 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   hard_credit: 402,
   soft_rate: 429,
   session_dead: 401,
+  policy_reject: 403,
   not_found: 502,
   server: 502,
   client: 400,
@@ -213,6 +214,16 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
  * Every other kind already lands outside the retry set by its status alone
  * (`hard_credit` 402 → quota, `session_dead` 401 → auth, 502/400 → other), so
  * none of them is listed: a translation nobody needs is a lie waiting to drift.
+ *
+ * `policy_reject` is deliberately NOT listed either, for a sharper reason than
+ * the others: the obvious candidate translation would be the upstream's own
+ * numeric code (11140), but that is not a class the host knows, so it would take
+ * the host's generic path and add nothing over `policy_reject`. It needs no
+ * translation to stay outside the retry set (403), and it must NOT be translated
+ * INTO the set — a content-policy refusal is deterministic, so retrying it in
+ * place would spend the retry budget on a request the server will refuse again,
+ * and cross-provider failover cannot help a policy decision either. The code the
+ * host receives therefore names the class honestly.
  */
 const KIND_HOST_CODE: Partial<Readonly<Record<UpstreamErrorKind, string>>> = {
   soft_rate: 'quota_exceeded',
@@ -908,6 +919,29 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // the attempt count. Adding one here reported a phantom extra account.
       const attempts = triedAccountIds.length
       const note = attempts > 1 ? ` (after trying ${attempts} accounts)` : ''
+      if (result.kind === 'policy_reject') {
+        // A content-policy refusal is the one upstream failure whose own words
+        // the user needs: the server tells them WHAT to change ("内容未通过安全
+        // 审核，请调整后重试"), and the requestId is the handle support asks for.
+        // The generic line below would bury both inside a truncated raw JSON
+        // body, leaving the user to guess — and, because the status reads as a
+        // client error, to try signing in again, which cannot help.
+        //
+        // `code` stays `policy_reject` rather than the upstream's numeric 11140:
+        // the host routes on a stable machine-readable class, and `11140` is not
+        // one it knows. Under 403 it already falls outside the retry set, so the
+        // request is neither retried in place nor reported as an auth failure.
+        const detail = result.detail
+        const lead = detail?.displayMsg ?? result.message.slice(0, 200)
+        const meta = ['服务端策略拒绝']
+        if (detail?.upstreamCode !== undefined) meta.push(`code ${detail.upstreamCode}`)
+        if (detail?.requestId !== undefined) meta.push(`requestId ${detail.requestId}`)
+        const message =
+          `${lead}（${meta.join('，')}）${note}。该请求被 WorkBuddy 服务端策略拒绝，重新登录不会解决；` +
+          '可在 WorkBuddy 桌面端用同一账号验证，或切换区域/账号后重试'
+        writeOpenAIError(res, KIND_STATUS[result.kind], result.kind, message, hostErrorCode(result.kind))
+        return
+      }
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],

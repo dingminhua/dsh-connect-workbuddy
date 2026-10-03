@@ -26,6 +26,17 @@ const CREDENTIAL: WorkBuddyCredential = {
   filePath: '/tmp/a.info',
 }
 
+const POLICY_REJECT_BODY = JSON.stringify({
+  code: 11140,
+  msg: 'request illegal',
+  requestId: '3498bf50-98a9-4746-962e-c14016b8c578',
+  displayMsg: {
+    en: 'The content did not pass the safety review. Please adjust and retry.',
+    zh: '内容未通过安全审核，请调整后重试。',
+  },
+  actions: ['SUBMIT_FEEDBACK', 'COPY_ERROR', 'EDIT_INPUT'],
+})
+
 /** A client double whose single answer each test controls. */
 function clientAnswering(answer: {
   ok: boolean
@@ -298,6 +309,17 @@ describe('outcomeOfFailure', () => {
     // Different advice entirely: re-auth or switch accounts, never "wait".
     expect(outcomeOfFailure(401, '')).toBe('credential-rejected')
     expect(outcomeOfFailure(403, '')).toBe('credential-rejected')
+  })
+
+  it('reports the 11140 policy rejection distinctly from a login problem', () => {
+    // A server-side content-policy refusal reads as "the server refused this
+    // request"; telling the user to re-login sends them chasing the wrong fix.
+    expect(outcomeOfFailure(403, POLICY_REJECT_BODY)).toBe('policy-rejected')
+    expect(outcomeOfFailure(403, '{"code":11140,"msg":"request illegal"}')).toBe('policy-rejected')
+  })
+
+  it('keeps an ordinary 403 body a credential rejection', () => {
+    expect(outcomeOfFailure(403, '<html>blocked</html>')).toBe('credential-rejected')
   })
 
   it('classifies a transport failure (status 0) as unavailable', () => {
