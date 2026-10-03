@@ -231,7 +231,10 @@ describe('workBuddyWebStatus', () => {
     expect(status.accounts).toHaveLength(2)
     expect(status.models.length).toBe(FALLBACK_WORKBUDDY_MODELS.length)
     const glm = status.models.find(model => model.id === 'glm-5.3')
-    expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 200_000 })
+    // Both fields agree because no budget was set: the card reports the model's
+    // real 1M window instead of the former silent 200K clamp (issue #33). The
+    // two fields still differ the moment a budget is saved; see the budget test.
+    expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 1_000_000 })
     expect(status.enabledModelIds).toEqual(['glm-5.3'])
     expect(status.imageModelIds).toEqual(['glm-5.3'])
     expect(status.checkin).toMatchObject({ todayCheckedIn: true, todayCredit: 100, streakDays: 9 })
@@ -965,18 +968,24 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
 
   it('still lets a caller CLEAR a field by sending it explicitly', async () => {
     // The merge must not make a deliberate clear impossible: an explicit value,
-    // including an empty array, still wins over the stored one. Otherwise the
+    // including an empty OBJECT, still wins over the stored one. Otherwise the
     // fix for the deletion above would trap users with a selection they cannot
     // remove.
+    //
+    // `lastCatalog` is deliberately NOT in this payload. An empty directory is
+    // not a clear — see the seeding tests below: `[]` is the incomplete shape
+    // issue #32 is about, and the endpoint repairs it instead of storing it.
     const { handler, mutateReceived, dispose } = await mountSaveRoutes()
     const { res } = saveResponse()
     await handler(saveReq({
       field: 'regions',
-      value: { cn: { enabled: false, contextBudgets: {}, lastCatalog: [] } },
+      value: { cn: { enabled: false, contextBudgets: {}, enabledModelIds: [] } },
     }), res)
     dispose()
     const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
-    expect(ops[0]?.value).toMatchObject({ cn: { enabled: false, contextBudgets: {}, lastCatalog: [] } })
+    expect(ops[0]?.value).toMatchObject({
+      cn: { enabled: false, contextBudgets: {}, enabledModelIds: [] },
+    })
   })
 
   it('preserves omitted fields in the INTERNATIONAL region too', async () => {
@@ -1026,6 +1035,110 @@ describe('registerWorkBuddyStatusRoute __save with a live-reference config', () 
     dispose()
     const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
     expect(ops[0]?.value).toEqual({ cn: 'a' })
+  })
+
+  it('seeds a first save with the LIVE roster, never the static fallback (issue #32)', async () => {
+    // THE second half of #32. On a profile where #31 kept `regions` empty, the
+    // Host's resolved value is `{}`, so the very first save seeds `merged` with
+    // nothing but what the client posted. An unnamed slot then resolves its
+    // roster from the STATIC fallback (12 models), and `applySelection` writes
+    // that into the LIVE catalog — deleting every model only upstream knows
+    // about, including the one the agent was using, with no error anywhere.
+    //
+    // So a save must fill an empty slot from the live directory. `displayModels`
+    // here returns a roster the static fallback does NOT contain, which is what
+    // makes the assertion meaningful.
+    const live = [
+      { id: 'space-bunny', name: 'Space Bunny', contextWindow: 1_000_000, maxTokens: 48_000 },
+      { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 },
+    ]
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes(
+      { displayModels: () => live },
+      {},
+    )
+    const { res, status } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { imageModelIds: [] } } }), res)
+    dispose()
+    expect(status()).toBe(200)
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    // What the caller asked for...
+    expect(value).toMatchObject({ cn: { imageModelIds: [] } })
+    // ...plus the live roster, so the slot is no longer incomplete.
+    expect(value).toMatchObject({ cn: { lastCatalog: live } })
+  })
+
+  it('counts an EMPTY array as "no directory", so an incomplete slot is still filled (#32)', async () => {
+    // `lastCatalog: []` is the shape `regionStateConfig` defaults to, and it is
+    // indistinguishable from "no directory" for every reader. Treating it as a
+    // deliberate clear would leave the exact hole #32 is about.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes(
+      { displayModels: () => [{ id: 'space-bunny', name: 'Space Bunny', contextWindow: 1_000_000, maxTokens: 48_000 }] },
+      { cn: { enabled: true, lastCatalog: [], enabledModelIds: [] } },
+    )
+    const { res } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { enabledModelIds: ['space-bunny'] } } }), res)
+    dispose()
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toMatchObject({
+      cn: { lastCatalog: [{ id: 'space-bunny', name: 'Space Bunny', contextWindow: 1_000_000, maxTokens: 48_000 }] },
+    })
+  })
+
+  it('respects a caller that sends a real directory itself (#32)', async () => {
+    // The seed is a repair for an INCOMPLETE slot, not an override. When the
+    // client posts its own roster (the card does, from the refresh route) that
+    // value must win.
+    const posted = [{ id: 'auto', name: 'Auto', contextWindow: 168_000, maxTokens: 32_000 }]
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes(
+      { displayModels: () => [{ id: 'space-bunny', name: 'Space Bunny', contextWindow: 1_000_000, maxTokens: 48_000 }] },
+      {},
+    )
+    const { res } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { lastCatalog: posted } } }), res)
+    dispose()
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toMatchObject({ cn: { lastCatalog: posted } })
+  })
+
+  it('does not touch a region the payload never mentioned (#32)', async () => {
+    // Only regions present in the payload are repaired: writing a sibling the
+    // caller was not saving would mutate settings this request was not about.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes(
+      { displayModels: region => region === 'global'
+        ? [{ id: 'default-model', name: 'Auto', contextWindow: 176_000, maxTokens: 24_000 }]
+        : [{ id: 'space-bunny', name: 'Space Bunny', contextWindow: 1_000_000, maxTokens: 48_000 }] },
+      { cn: { enabled: true, pool: { enabled: true } }, global: { enabled: true } },
+    )
+    const { res } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { contextBudgets: { 'glm-5.3': 1 } } } }), res)
+    dispose()
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toMatchObject({
+      cn: { lastCatalog: [{ id: 'space-bunny', name: 'Space Bunny', contextWindow: 1_000_000, maxTokens: 48_000 }] },
+    })
+    // `global` kept its stored shape instead of gaining a seeded directory.
+    expect(value).toMatchObject({ global: { enabled: true } })
+    expect((value['global'] as Record<string, unknown>)['lastCatalog']).toBeUndefined()
+  })
+
+  it('leaves the slot incomplete rather than writing an empty directory (#32)', async () => {
+    // If the live directory is itself empty there is nothing truthful to seed
+    // with. Writing `lastCatalog: []` would look like a completed save while
+    // changing nothing — the caller still gets what it asked for, nothing more.
+    const { handler, mutateReceived, dispose } = await mountSaveRoutes(
+      { displayModels: () => [] },
+      {},
+    )
+    const { res } = saveResponse()
+    await handler(saveReq({ field: 'regions', value: { cn: { enabledModelIds: [] } } }), res)
+    dispose()
+    const ops = mutateReceived[0]?.[1] as Array<{ value: Record<string, unknown> }>
+    const value = ops[0]?.value as Record<string, unknown>
+    expect(value).toEqual({ cn: { enabledModelIds: [] } })
   })
 })
 

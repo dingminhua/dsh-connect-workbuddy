@@ -723,22 +723,44 @@ export function apply(ctx: Context, config: Config): void {
   // selection; an empty selection serves the whole directory so a never-
   // configured plugin still exposes models. Image input is the user's explicit
   // opt-in (`imageModelIds`) and never inferred from upstream capability flags.
-  const configuredModels = (value: Config, region: WorkBuddyRegion): readonly WorkBuddyModelInfo[] => {
+  //
+  // The roster to derive FROM is resolved in three steps, and the middle one is
+  // what fixes issue #32. `state.lastCatalog?.length` alone treated "saved slot
+  // with no directory" exactly like "never configured", so it served the STATIC
+  // fallback roster — and `applySelection` then committed that over the live
+  // catalog, deleting every model the live discovery had registered (the
+  // user's in-use model disappeared mid-session, with no error). `liveModels`
+  // is that region's currently-registered roster, passed in by `applySelection`
+  // so a partial saved slot can DEMOTE to the live directory but never past it
+  // to the static list. The static list stays the last resort, for the case it
+  // was written for: an offline upstream with nothing discoverable at all.
+  const configuredModels = (
+    value: Config,
+    region: WorkBuddyRegion,
+    liveModels: readonly WorkBuddyModelInfo[] = [],
+  ): readonly WorkBuddyModelInfo[] => {
     const state = regionStateOf(value, region)
+    const roster = state.lastCatalog?.length
+      ? state.lastCatalog
+      : liveModels.length
+        ? liveModels
+        : fallbackModelsFor(region)
     return withImageSelection(
-      deriveCatalog(
-        state.lastCatalog?.length ? state.lastCatalog : fallbackModelsFor(region),
-        new Set(state.enabledModelIds ?? []),
-        state.contextBudgets ?? {},
-      ),
+      deriveCatalog(roster, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
       new Set(state.imageModelIds ?? []),
     )
   }
   // What the card displays: this region's last-refreshed directory, so the user
-  // re-reads the current catalog rather than a stale saved snapshot.
+  // re-reads the current catalog rather than a stale saved snapshot. Same
+  // three-step roster as `configuredModels` (issue #32): a saved slot that lost
+  // its directory must show the LIVE catalog, not the static fallback, or the
+  // card reports the user's in-use model as withdrawn ("已下架") while the
+  // runtime is still serving it.
   const displayModels = (value: Config, region: WorkBuddyRegion): readonly WorkBuddyModelInfo[] => {
     const state = regionStateOf(value, region)
-    return state.lastCatalog?.length ? state.lastCatalog : fallbackModelsFor(region)
+    if (state.lastCatalog?.length) return state.lastCatalog
+    const live = stacks[region]?.catalog?.current()
+    return live?.length ? live : fallbackModelsFor(region)
   }
 
   let current = () => config
@@ -769,7 +791,11 @@ export function apply(ctx: Context, config: Config): void {
     for (const region of REGION_KEYS) {
       stacks[region].store.setDesktopPath(authFile)
       stacks[region].store.selectAccount(effectiveAccountFor(region, value))
-      stacks[region].catalog.set(configuredModels(value, region))
+      // Hand the region's CURRENT roster in as the fallback for a saved slot
+      // that lost its directory: a partial save must not be able to replace a
+      // live catalog with the static one (issue #32). Read before `set`, which
+      // is what keeps this from observing the write it is about to make.
+      stacks[region].catalog.set(configuredModels(value, region, stacks[region].catalog.current()))
     }
     invalidateCatalog()
     syncRegionRegistration(value)

@@ -92,16 +92,31 @@ export function fallbackModelsFor(region: 'cn' | 'global'): readonly WorkBuddyMo
  */
 export type WorkBuddyContextBudget = number
 
-/** Apply the saved local DSH budget; models above 200K default to 200K. */
+/**
+ * Apply the saved local DSH budget. A budget is an UPPER LIMIT the user sets,
+ * never a default: a model without an explicit budget keeps its own window, and
+ * a budget can only ever LOWER a window (`Math.min`), so a value above the
+ * native one is not an error, just a no-op.
+ *
+ * There used to be a `?? 200_000` default here (issue #33), on the rationale
+ * that a lower advertised window makes DSH compact sooner and so keeps a long
+ * session under the upstream throttle. That rationale does not hold: the
+ * measured throttle fires on a SINGLE request past 20k-30k input tokens (the
+ * CHANGELOG's own wording calls 200K "远超上游 ~20–30k 的节流线"), so clamping to
+ * 200K bought none of the safety it claimed while costing every >200K model its
+ * real window — and contradicting the static roster in this very file, which
+ * declares those models as 1M. A user who wants the conservative behaviour sets
+ * a budget explicitly; the card offers that per model.
+ */
 export function applyContextBudgets(
   catalog: readonly WorkBuddyModelInfo[],
   budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
 ): WorkBuddyModelInfo[] {
   return catalog.map(model => ({
     ...model,
-    contextWindow: model.contextWindow > 200_000
-      ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000)
-      : model.contextWindow,
+    contextWindow: budgets[model.id] === undefined
+      ? model.contextWindow
+      : Math.min(model.contextWindow, budgets[model.id] as number),
   }))
 }
 

@@ -23,6 +23,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
+import { applyContextBudgets } from './catalog.ts'
 import { resolveCredentialRecovery } from './credential-recovery.ts'
 // Live binding only: `Config` is referenced inside request-time function
 // bodies, never at module top level, so the index<->web-status cycle is safe.
@@ -327,10 +328,14 @@ function toWebModel(
   model: WorkBuddyModelInfo,
   budgets: Readonly<Record<string, number | undefined>>,
 ): WorkBuddyWebModelFromInfo {
+  // Route through the shared rule rather than repeating the clamp: this used to
+  // hold its own copy of the `?? 200_000` default, so issue #33's wrong default
+  // lived in two places and the card could disagree with the runtime catalog.
+  const budgeted = applyContextBudgets([model], budgets)[0] ?? model
   return {
     id: model.id,
     name: model.name,
-    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000) : model.contextWindow,
+    contextWindow: budgeted.contextWindow,
     nativeContextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
@@ -1030,6 +1035,32 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             merged[key] = isPlainRecord(prior) && isPlainRecord(slot)
               ? { ...prior, ...slot }
               : slot
+          }
+          // A region slot must never be persisted without a model directory
+          // (issue #32). The merge above preserves an OMITTED `lastCatalog`, but
+          // it cannot invent one: on a profile where no write ever succeeded yet
+          // (`current` has no `cn` key at all), a partial payload such as
+          // `{cn:{imageModelIds:[]}}` created a slot with NO `lastCatalog`, and
+          // the read side then resolved that slot against the STATIC roster and
+          // overwrote the live catalog — silently deleting the user's in-use
+          // model. Seeding the directory from what this region is CURRENTLY
+          // serving keeps the first save complete, and only applies when the
+          // slot genuinely has no directory of its own: an explicit array from
+          // the caller still wins, including an empty one.
+          if (field === 'regions') {
+            // Only regions this payload actually touches: seeding a sibling the
+            // caller never mentioned would write fields the save was not about.
+            for (const key of Object.keys(incoming)) {
+              const slot = merged[key]
+              if (!isPlainRecord(slot) || key !== 'cn' && key !== 'global') continue
+              if (Array.isArray(slot.lastCatalog) && slot.lastCatalog.length > 0) continue
+              // The live roster, not `discoverModels`: a save must not depend on
+              // an upstream round-trip (and must not fail because one is down),
+              // and `displayModels` already prefers the live directory.
+              const live = deps.displayModels(key as WorkBuddyRegion)
+              if (live.length === 0) continue
+              slot.lastCatalog = live
+            }
           }
           await settings.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
           // Hand the AUTHORITATIVE merged field back to the caller. The client

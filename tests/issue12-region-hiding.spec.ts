@@ -110,3 +110,87 @@ describe('issue #12: a region with no account must not advertise models', () => 
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
   })
 })
+
+describe('issue #32: a saved slot without a directory must not overwrite the live catalog', () => {
+  it('keeps serving the LIVE catalog when a partial save creates a directoryless slot', async () => {
+    // THE regression, read half. On a profile that never successfully saved
+    // (issue #31), `regions` is `{}`. A first save that mentions only
+    // `enabledModelIds` used to leave the CN slot with NO `lastCatalog`, so the
+    // next `applySelection` fell all the way back to the STATIC 12-model roster
+    // and `catalog.set()` committed it over the live 17-model directory. The
+    // model the agent was using (upstream-only, absent from the static list)
+    // vanished mid-session with no error.
+    const authFile = await cnOnlyRoot()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    mountWorkBuddy(ctx, { authFile })
+
+    // Let startup finish: the CN catalog carries its own roster.
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    const before = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
+    expect(before.length).toBeGreaterThan(0)
+
+    // A partial save that never mentions `lastCatalog` — exactly the payload the
+    // card's pool/preference writes used to send.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
+      regions: { cn: { enabledModelIds: [before[0] as string] } },
+    })
+
+    // Narrowing the selection is expected; GAINING the static roster or LOSING
+    // every other id is not. Assert the survivor set is a subset of what was
+    // live before, which is what distinguishes "user picked one model" from
+    // "the static list replaced the live one".
+    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).map(model => model.id))
+      .toEqual([before[0]])
+  })
+
+  it('does not report the in-use model as withdrawn after a directoryless save', async () => {
+    // The card reads `displayModels` for the picker. It must show the live
+    // roster rather than falling back to the static one, or the user sees their
+    // working model listed as "已下架" while the runtime is still serving it.
+    //
+    // This drives a REALLY non-static directory by stubbing the upstream model
+    // catalog, because a bare `length > 0` would pass against the static
+    // fallback and prove nothing: without a stub the startup roster IS the
+    // static list, so the two are indistinguishable by content.
+    const authFile = await cnOnlyRoot()
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+
+    // `space-bunny` exists ONLY upstream — the exact shape of the reporter's
+    // in-use default model, which the static list does not carry.
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      code: 0,
+      data: {
+        models: [
+          { id: 'space-bunny', name: 'Space Bunny', maxInputTokens: 1_000_000, maxOutputTokens: 48_000 },
+          { id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 48_000 },
+        ],
+        agents: [{ name: 'cli', models: ['space-bunny', 'glm-5.3'] }],
+      },
+    }), { status: 200 })) as typeof fetch
+    try {
+      mountWorkBuddy(ctx, { authFile })
+      await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).map(model => model.id).sort())
+        .toEqual(['glm-5.3', 'space-bunny'])
+
+      // The save lands a slot with no directory at all.
+      await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
+        regions: { cn: { imageModelIds: [] } },
+      })
+
+      // The offered set must survive the save unchanged. Under the #32 bug the
+      // live catalog was replaced by the static roster, so `space-bunny`
+      // disappeared even though the upstream was still answering with it.
+      await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).map(model => model.id).sort())
+        .toEqual(['glm-5.3', 'space-bunny'])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})

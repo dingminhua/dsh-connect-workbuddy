@@ -18,25 +18,44 @@ describe('deriveCatalog', () => {
     expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])
   })
 
-  it('defaults every model above 200K to 200K and preserves smaller maxima', () => {
+  it('keeps each model\'s own window when no budget is set (issue #33)', () => {
+    // This INVERTS the former default, which clamped every >200K model to 200K.
+    // That default was justified as keeping DSH under the upstream throttle, but
+    // the measured throttle fires on a single request past 20k-30k input tokens
+    // while 200K sits an order of magnitude above it — so the clamp cost every
+    // 1M model its real window and bought nothing. `contextBudgets` is a
+    // user-set upper limit, not a silent downgrade.
     const derived = deriveCatalog([
       ...MODELS,
       { id: 'kimi', name: 'Kimi', contextWindow: 256_000, maxTokens: 32_000 },
       { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
     ], new Set())
-    expect(derived.map(model => model.contextWindow)).toEqual([200_000, 200_000, 200_000, 200_000, 192_000])
+    expect(derived.map(model => model.contextWindow)).toEqual([1_000_000, 1_000_000, 1_000_000, 256_000, 192_000])
   })
 
-  it('keeps only selected models and applies explicit 1M budgets', () => {
+  it('applies an explicit budget, and only as an upper limit', () => {
     const derived = deriveCatalog(
       MODELS,
       new Set(['deepseek-v4-pro', 'glm-5.3']),
       { 'deepseek-v4-pro': 1_000_000 },
     )
     expect(derived.map(model => [model.id, model.contextWindow])).toEqual([
-      ['glm-5.3', 200_000],
+      // No budget for glm-5.3, so it keeps its own 1M rather than being clamped.
+      ['glm-5.3', 1_000_000],
       ['deepseek-v4-pro', 1_000_000],
     ])
+  })
+
+  it('never raises a window above its native size', () => {
+    // A budget larger than the model's own window is a no-op, not an error.
+    const derived = deriveCatalog(MODELS, new Set(['glm-5.3']), { 'glm-5.3': 5_000_000 })
+    expect(derived.map(model => model.contextWindow)).toEqual([1_000_000])
+  })
+
+  it('lowers a window when the user sets a smaller budget', () => {
+    // The conservative behaviour is still reachable — it is now opt-in.
+    const derived = deriveCatalog(MODELS, new Set(['glm-5.3']), { 'glm-5.3': 200_000 })
+    expect(derived.map(model => model.contextWindow)).toEqual([200_000])
   })
 
   it('ignores selections for models no longer in the directory', () => {
