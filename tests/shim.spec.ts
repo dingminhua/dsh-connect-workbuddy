@@ -205,10 +205,43 @@ describe('shim inbound hardening', () => {
     expect(response.status).toBe(403)
     const parsed = JSON.parse(response.body) as { error: { message: string; type: string; code: string } }
     expect(parsed.error.type).toBe('policy_reject')
-    expect(parsed.error.code).toBe('11140')
+    // `code` names the CLASS, not the upstream's numeric 11140: the host routes
+    // on a stable machine-readable class and 11140 is not one it knows, so
+    // passing it through would only push the failure down the host's generic
+    // path. What must hold is the property below — a policy refusal must not be
+    // retried in place — and the class name is how that is expressed.
+    expect(parsed.error.code).toBe('policy_reject')
     expect(parsed.error.message).toContain('内容未通过安全审核，请调整后重试。')
     expect(parsed.error.message).toContain('3498bf50-98a9-4746-962e-c14016b8c578')
     expect(parsed.error.message).toContain('服务端策略拒绝')
+  })
+
+  it('does not hand the host a policy refusal as a retryable or quota code', async () => {
+    // The property the `code` choice above exists to protect. A content-policy
+    // refusal is deterministic: the server will refuse the same input again, so
+    // the host must neither retry it in place nor read it as a quota/auth issue.
+    shim = makeShim({
+      chatStream: async () => ({
+        ok: false,
+        status: 403,
+        kind: 'policy_reject',
+        message: POLICY_REJECT_BODY,
+        detail: parseUpstreamErrorDetail(POLICY_REJECT_BODY),
+      }),
+    })
+    await shim.ready
+    const response = await request(shim, {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: await authed(shim, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ model: 'glm-5.3', messages: [] }),
+    })
+    const parsed = JSON.parse(response.body) as { error: { message: string; type: string; code: string } }
+    // Asserted against the HOST's own classifier rather than a copy of its
+    // rules: a copied regex only proves the two copies agree today.
+    const { isQuotaExceededError } = await import('@deepseek-ai/dsh-llm')
+    expect(isQuotaExceededError(`${parsed.error.type} ${parsed.error.code}`)).toBe(false)
+    expect(isQuotaExceededError(`${parsed.error.type} ${parsed.error.code} ${parsed.error.message}`)).toBe(false)
   })
 
   it('maps a dead session to HTTP 401 and a rate limit to 429', async () => {

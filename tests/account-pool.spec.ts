@@ -212,6 +212,18 @@ describe('exclusionOf', () => {
     const probe = { outcome: 'something-new' as never, atMs: NOW }
     expect(exclusionOf(probe, NOW)).toBe('unusable')
   })
+
+  it('keeps an account in the pool after a content-policy refusal', () => {
+    // The refusal was about ONE REQUEST's content, not this account: the same
+    // account will serve a different message. Benching it would idle a healthy
+    // account over a single tripped filter, and — before this case existed — it
+    // fell into the `default` branch and was labelled `unusable` FOREVER,
+    // because `unusable` deliberately carries no cooldown.
+    expect(exclusionOf({ outcome: 'policy-rejected', atMs: NOW }, NOW)).toBeUndefined()
+    // And it stays a candidate even with no elapsed time, i.e. it is not merely
+    // waiting out a fallback cooldown.
+    expect(exclusionOf({ outcome: 'policy-rejected', atMs: NOW }, NOW + 1)).toBeUndefined()
+  })
 })
 
 describe('rankPool', () => {

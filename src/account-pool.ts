@@ -198,6 +198,18 @@ export function exclusionOf(
       return retryDue(probe, nowMs) ? undefined : 'rate-limited'
     case 'out-of-credit':
       return retryDue(probe, nowMs) ? undefined : 'out-of-credit'
+    case 'policy-rejected':
+      // NOT the `default` branch. A content-policy refusal is a fact about ONE
+      // REQUEST, not about the account: the server refused that message's
+      // content, and the same account will happily serve a different one. It is
+      // therefore a candidate, exactly like `ok` — benching it would idle a
+      // healthy account over a single tripped filter, which is the failure the
+      // transient-outcome note above exists to prevent (and worse here, since
+      // the user's next request may well be perfectly acceptable).
+      //
+      // The measurement is still recorded, so the card can explain what
+      // happened; it just must not remove the account from the pool.
+      return undefined
     default:
       // An outcome this build does not know is treated as unusable rather than
       // as a candidate: billing through a state we cannot interpret is worse
