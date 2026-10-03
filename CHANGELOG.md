@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.4.4 (2026-10-03)
 
 ### Features
 
