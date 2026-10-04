@@ -526,7 +526,13 @@ export const Config: z<Config> = z.object({
 export function regionStateOf(config: Config, region: WorkBuddyRegion): WorkBuddyRegionState {
   const regions = unwrapVolatile(config.regions)
   const stored = regions?.[region]
-  if (stored !== undefined) return stored
+  // `null` counts as "no slot", exactly like `undefined`. schemastery's
+  // `simplify()` serialises an EMPTY region slot as `null` (`{cn:{}}` →
+  // `{cn:null}`), and a `null` reaching the return value makes every caller
+  // throw on the first property read (`regionEnabled` dies on `.enabled`). It is
+  // not reachable today — resolving a stored `null` slot expands it back into a
+  // full default state — so this is defence, not a fix for an observed crash.
+  if (stored !== undefined && stored !== null) return stored
   if (region !== 'cn') return {}
   const lastCatalog = unwrapVolatile(config.lastCatalog)
   const enabledModelIds = unwrapVolatile(config.enabledModelIds)

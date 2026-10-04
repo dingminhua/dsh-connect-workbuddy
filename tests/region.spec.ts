@@ -4,7 +4,7 @@ import {
   nextRegionSlots,
   regionEnabledOf,
 } from '../src/status-paths.ts'
-import { regionEnabled } from '../src/index.ts'
+import { regionEnabled, regionStateOf } from '../src/index.ts'
 import type { Config } from '../src/index.ts'
 
 /**
@@ -98,5 +98,37 @@ describe('regionEnabled (Host pure function)', () => {
     const config = { regions: { cn: cnSlot, global: { ...globalSlot, enabled: false } } } as Config
     expect(regionEnabled(config, 'global')).toBe(false)
     expect(regionEnabled(config, 'cn')).toBe(true)
+  })
+})
+
+describe('regionStateOf: a null slot is "no slot", not a value', () => {
+  // schemastery's `simplify()` serialises an EMPTY region slot as `null`
+  // (`{cn:{}}` → `{cn:null}`). A stored `null` is expanded back into a full
+  // default state before the plugin ever reads it, so this is not reachable in
+  // production today — but if it were, `regionStateOf` used to return `null`
+  // (its guard only rejected `undefined`) and every caller threw on the first
+  // property read. `regionEnabled` is the caller that demonstrates it.
+  const nullSlot = { regions: { cn: null, global: null } } as unknown as Config
+
+  it('returns an object rather than null', () => {
+    expect(regionStateOf(nullSlot, 'cn')).not.toBeNull()
+    expect(typeof regionStateOf(nullSlot, 'cn')).toBe('object')
+  })
+
+  it('falls through to the flat legacy fields for cn, like an absent slot', () => {
+    // The `null` slot must behave exactly as a MISSING one: cn then falls back
+    // to the pre-region-split flat fields, and never inherits them for global.
+    const legacy = {
+      regions: { cn: null },
+      lastCatalog: [{ id: 'hy3', name: 'Hy3', contextWindow: 200_000, maxTokens: 32_000 }],
+      enabledModelIds: ['hy3'],
+    } as unknown as Config
+    expect(regionStateOf(legacy, 'cn').enabledModelIds).toEqual(['hy3'])
+    expect(regionStateOf(legacy, 'global')).toEqual({})
+  })
+
+  it('does not make regionEnabled throw', () => {
+    expect(() => regionEnabled(nullSlot, 'cn')).not.toThrow()
+    expect(regionEnabled(nullSlot, 'cn')).toBe(true)
   })
 })

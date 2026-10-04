@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **`regions.<区域>` 为 `null` 时不再让读取路径崩溃（防御性加固，当前不可达）。**
+  - **背景**：为排查 issue #31 实测时发现，schemastery 的 `simplify()` 会把**空槽**序列化成 `null`（`{ cn: {} }` → `{ cn: null }`）。而 `regionStateOf` 的守卫只拒绝 `undefined`，所以 `null` 槽会被原样返回，`regionEnabled` 随即在 `.enabled` 上抛 `Cannot read properties of null`。
+  - **可达性**：**当前不可达**。宿主解析配置时会把存下来的 `null` 槽重新展开成完整的默认 regionState，实测 `Config({ regions: { cn: null } })` 得到的是一整份默认值而非 `null`。因此这是纯防御，不是某个已知崩溃的修复。
+  - **改动**：守卫补上 `&& stored !== null`，并新增 3 个回归用例（返回对象而非 null、`null` 槽与「缺失」槽行为一致地回落到遗留扁平字段、`regionEnabled` 不抛）。
+  - **顺带**：排查过程中的结论已贴在 issue #31——该 issue 里最后一条指向本插件的线索（`accountId` 是「存在且为 undefined」的自有键）**被实测证伪**：`accountId` 在解析后是**缺失**，且遍历 7 种真实输入的解析结果都没有任何「值为 undefined 的自有键」，`simplify()` 之后与 JSON 往返完全相等。
+
 ## 3.5.0 (2026-10-04)
 
 ### Features
