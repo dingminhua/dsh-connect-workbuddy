@@ -222,16 +222,16 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
   }
 
   it('auto-routes CN and global accounts by credential domain', async () => {
-    // CN reads the shared personal-models path on its chat gateway. The global
-    // gateway serves the account's chat roster as the DESKTOP channel's product
-    // config at /v3/config: its personal-models path returns HTTP 500 there,
-    // and the CLI channel's config omits chat-usable models
-    // (deepseek-v4.1-flash, gpt-6-astra) — so the desktop user agent is what
-    // selects the right document. This pins the international-version fixes.
+    // BOTH regions now read /v3/config, the document the WorkBuddy app itself
+    // consumes, so the card's roster and prices agree with the app's. CN asks as
+    // the CLI channel; global asks as the desktop channel (its personal-models
+    // path returns HTTP 500, and /v3 under the CLI token omits chat-usable
+    // models there). The user agent is therefore part of the contract, not an
+    // incidental header — see the UA assertions in the cases below.
     expect(await fetchModelsUrl('www.codebuddy.cn'))
-      .toBe('https://copilot.tencent.com/v2/enterprises/personal/models')
+      .toBe('https://copilot.tencent.com/v3/config')
     expect(await fetchModelsUrl('www.workbuddy.cn'))
-      .toBe('https://copilot.tencent.com/v2/enterprises/personal/models')
+      .toBe('https://copilot.tencent.com/v3/config')
     expect(await fetchModelsUrl('www.workbuddy.ai'))
       .toBe('https://www.workbuddy.ai/v3/config')
   })
@@ -292,6 +292,121 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     // The CN desktop config carries no `cli` roster at all, so its gateway must
     // keep receiving the CLI agent the plugin actually chats as.
     expect(seen['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
+  })
+
+  it('falls back to the legacy CN catalog when the app config fails', async () => {
+    // The CN branch prefers /v3/config so the card matches the app's roster and
+    // prices. A gateway that cannot serve it must degrade to the previous
+    // document rather than leaving the region with no models.
+    const urls: string[] = []
+    const fallbacks: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      if (url.endsWith('/v3/config')) throw new Error('socket hang up')
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'hy4-preview', name: 'Hy4 preview', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }],
+            agents: [{ name: 'cli', models: ['hy4-preview'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    const models = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+      .fetchModels(credential('www.codebuddy.cn'))
+    expect(urls).toEqual([
+      'https://copilot.tencent.com/v3/config',
+      'https://copilot.tencent.com/v2/enterprises/personal/models',
+    ])
+    expect(models.map(model => model.id)).toEqual(['hy4-preview'])
+    // Silently serving a different roster than the app is the bug being fixed,
+    // so the degradation has to be reportable.
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]).toContain('/v3/config')
+    expect(fallbacks[0]).toContain('socket hang up')
+  })
+
+  it('does not touch the legacy CN catalog when the app config answers', async () => {
+    const urls: string[] = []
+    const fallbacks: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'hy4-preview-f', name: 'Hy4 preview', maxInputTokens: 960_000, maxOutputTokens: 64_000, credits: 'x0.00 credits' }],
+            agents: [{ name: 'cli', models: ['hy4-preview-f'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    const models = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+      .fetchModels(credential('www.codebuddy.cn'))
+    expect(urls).toEqual(['https://copilot.tencent.com/v3/config'])
+    // The free app-parity model is what the app lists in slot 2, so the plugin
+    // must report x0.00 for it — this is the user-visible half of the fix.
+    expect(models.map(model => [model.id, model.creditMultiplier])).toEqual([['hy4-preview-f', 0]])
+    expect(fallbacks).toEqual([])
+  })
+
+  it('falls back when the app config resolves to an empty roster', async () => {
+    // `selectCliModels` throws on an empty roster, so a `/v3` that answers 200
+    // with no models must degrade to the legacy document rather than leaving
+    // the region with nothing to show.
+    const urls: string[] = []
+    const fallbacks: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      const empty = url.endsWith('/v3/config')
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: empty
+            ? { models: [], agents: [{ name: 'cli', models: ['glm-5.3'] }] }
+            : {
+                models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 48_000 }],
+                agents: [{ name: 'cli', models: ['glm-5.3'] }],
+              },
+        }),
+      } as unknown as Response
+    })
+    const models = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+      .fetchModels(credential('www.codebuddy.cn'))
+    expect(urls).toEqual([
+      'https://copilot.tencent.com/v3/config',
+      'https://copilot.tencent.com/v2/enterprises/personal/models',
+    ])
+    expect(models.map(model => model.id)).toEqual(['glm-5.3'])
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]).toContain('empty list')
+  })
+
+  it('reports the fallback error even when the legacy catalog also fails', async () => {
+    // Both documents are down: the surfaced error must be the legacy one (the
+    // request that finally decided the outcome), and the fallback must still be
+    // reported so the log shows the two-step attempt.
+    const fallbacks: string[] = []
+    vi.stubGlobal('fetch', async () => ({
+      ok: false,
+      status: 502,
+      text: async () => '<html><body>Bad Gateway</body></html>',
+    }) as unknown as Response)
+    const error = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+      .fetchModels(credential('www.codebuddy.cn'))
+      .then(() => undefined, (reason: unknown) => reason as Error)
+    expect(error?.message).toContain('non-JSON')
+    expect(fallbacks).toHaveLength(1)
   })
 
   it('explains a gateway HTML 401 instead of echoing the raw page', async () => {

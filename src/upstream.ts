@@ -173,17 +173,35 @@ const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
 
 /**
- * Model-catalog path used by the CN region (and the global fallback). The CN
- * gateway answers it with the same bytes as its legacy
- * `/console/enterprises/personal/models` alias. See {@link GLOBAL_CONFIG_PATH}
- * for why the international region reads a different document.
+ * Legacy model-catalog path, kept only as the CN region's FALLBACK.
+ *
+ * This is the document the WorkBuddy *plugin* used to read, and it is NOT the
+ * document the WorkBuddy *app* reads. The gateway answers it with the CLI
+ * channel's roster, whose second slot is the paid `hy4-preview`
+ * (`credits: 'x0.29 credits'`), while the app's own config lists the free
+ * `hy4-preview-f` (`credits: 'x0.00 credits'`) in that slot under the SAME
+ * display name "Hy4 preview". Reading this path is therefore what makes the
+ * plugin's card disagree with the app about a model's price — both are
+ * correctly displaying a real record, just different ones.
  */
 const MODELS_CATALOG_PATH = '/v2/enterprises/personal/models'
 
 /**
- * Remote product-config path on the global gateway. This is the document the
- * desktop channel receives; it is the only source that lists the account's
- * full international chat roster (see {@link DESKTOP_UA}).
+ * Remote product-config path; the CN region's PRIMARY catalog source and the
+ * global region's only one.
+ *
+ * It is field-compatible with {@link MODELS_CATALOG_PATH} for every key
+ * {@link parseUpstreamModel} reads, so one parser still serves both. On CN this
+ * path is what the app itself consumes, so the plugin's roster and the app's
+ * agree — that parity is the whole point of preferring it.
+ *
+ * The CLI user agent deliberately stays {@link CLIENT_UA} here. `/v3/config`
+ * serves a DIFFERENT roster per client channel: the desktop token yields a
+ * roster without the free `hy4-preview-f`, and the CLI token yields one with
+ * it. Measured 2026-10-04 — CN + `/v3/config`: CLI token = 17 models incl.
+ * `hy4-preview-f`(x0.00); desktop token = 29 models, no `hy4-preview-f` and no
+ * cheap free tier. That is why the global branch below pairs this path with
+ * {@link DESKTOP_UA} and the CN branch must NOT.
  */
 const GLOBAL_CONFIG_PATH = '/v3/config'
 
@@ -846,6 +864,17 @@ export function selectCliModels(rawModels: unknown, agents: unknown): WorkBuddyU
  * the credential explicitly so token refreshes apply on the next call.
  */
 export class WorkBuddyUpstreamClient {
+  /**
+   * Reports a fallback the catalog reader had to take.
+   *
+   * Injected rather than logged here because this module holds no logger on
+   * purpose — it is pure transport + parsing, so it stays importable from
+   * tests and the CLI without a cordis context. The host wires its
+   * `ctx.logger.warn` in; without a host the event is dropped, which is the
+   * same silence the previous single-source reader had.
+   */
+  constructor(private readonly onFallback?: (message: string) => void) {}
+
   /** POST the chat endpoint; a successful answer is the raw SSE response. */
   async chatStream(
     credential: WorkBuddyCredential,
@@ -967,17 +996,28 @@ export class WorkBuddyUpstreamClient {
   /**
    * Read the model directory for the credential's region.
    *
-   * The two regions expose their chat roster through different documents:
-   * CN answers `/v2/enterprises/personal/models`, while the global gateway's
-   * personal-models path returns HTTP 500 and the CLI channel's `/v3/config`
-   * omits chat-usable models — so global reads `/v3/config` as the desktop
-   * channel (see {@link DESKTOP_UA}). Both documents share the entry shape, so
-   * one parser serves them. No user-side toggle is involved: the region comes
-   * from the credential's `domain`.
+   * Both regions prefer `/v3/config`, the document the WorkBuddy app itself
+   * consumes, so the plugin's roster and the app's agree. They differ in the
+   * user agent that requests it, and that difference is load-bearing: `/v3`
+   * serves a different roster per client channel. Global asks as the desktop
+   * channel (see {@link DESKTOP_UA}); CN asks as the CLI channel
+   * ({@link CLIENT_UA}), which is the only CN channel whose `/v3` answer
+   * contains the free `hy4-preview-f` (see {@link GLOBAL_CONFIG_PATH}).
+   *
+   * CN falls back to the legacy {@link MODELS_CATALOG_PATH} when `/v3` fails,
+   * returns a non-zero envelope, or resolves to no usable model, so a gateway
+   * that stops serving the modern document degrades to the previous roster
+   * instead of leaving the region empty. The fallback is silent when unused and
+   * reported when it fires, because a roster that silently differs from the
+   * app's is exactly the bug this ordering exists to fix.
+   *
+   * No user-side toggle is involved: the region comes from the credential's
+   * `domain`.
    */
   async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
     const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
-    if (regionOf(credential.domain) === 'global') {
+    const global = regionOf(credential.domain) === 'global'
+    if (global) {
       const response = await fetch(`${globalBase(credential.domain)}${GLOBAL_CONFIG_PATH}`, {
         headers: {
           'Authorization': `Bearer ${credential.accessToken}`,
@@ -998,22 +1038,37 @@ export class WorkBuddyUpstreamClient {
         : {}
       return selectCliModels(data['models'], data['agents'])
     }
-    const response = await fetch(`${chatBase(credential)}${MODELS_CATALOG_PATH}`, {
-      headers: {
-        'Authorization': `Bearer ${credential.accessToken}`,
-        'Accept': 'application/json',
-        'Origin': originReferer(credential),
-        'Referer': `${originReferer(credential)}/`,
-        'User-Agent': CLIENT_UA,
-      },
-      signal: timeout,
-    })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
-    const data = typeof envelope.data === 'object' && envelope.data !== null
-      ? envelope.data as Record<string, unknown>
-      : {}
-    return selectCliModels(data['models'], data['agents'])
+    const readCatalog = async (path: string): Promise<readonly WorkBuddyUpstreamModel[]> => {
+      const response = await fetch(`${chatBase(credential)}${path}`, {
+        headers: {
+          'Authorization': `Bearer ${credential.accessToken}`,
+          'Accept': 'application/json',
+          'Origin': originReferer(credential),
+          'Referer': `${originReferer(credential)}/`,
+          'User-Agent': CLIENT_UA,
+        },
+        signal: timeout,
+      })
+      const envelope = await readEnvelope(response)
+      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+      const data = typeof envelope.data === 'object' && envelope.data !== null
+        ? envelope.data as Record<string, unknown>
+        : {}
+      return selectCliModels(data['models'], data['agents'])
+    }
+    try {
+      return await readCatalog(GLOBAL_CONFIG_PATH)
+    } catch (error: unknown) {
+      // Three failures land here, and all three want the fallback: a transport
+      // error, a non-zero envelope, and an EMPTY roster — `selectCliModels`
+      // throws on the last one, so a `/v3` that stops listing models degrades
+      // rather than emptying the region.
+      this.onFallback?.(
+        `CN model catalog ${GLOBAL_CONFIG_PATH} failed; falling back to ${MODELS_CATALOG_PATH}: `
+        + (error instanceof Error ? error.message : String(error)),
+      )
+      return await readCatalog(MODELS_CATALOG_PATH)
+    }
   }
 
   /** Query today's check-in status without changing account state. */

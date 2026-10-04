@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+### Features
+
+- **「DSH 上下文预算」增加 500K 挡位。**
+  - 该选择器原本只有「200K」与「模型原生窗口」两档。上游官方的挡位阶梯是 300K／600K／960K（或 1M），没有 500K，所以 500K 是一个**便利挡位**而非上游限制，按需求直接加。
+  - **门槛取 `原生窗口 > 500_000`**，而不是复用 200K 那档的 `> 200_000`：否则 192K 的 `hy3`、300K 的模型都会得到一个写着 500K、实际却高于自身原生窗口的按钮——`catalog.ts` 用 `Math.min(原生, 预算)` 兜底，点它等于什么都没发生，却看起来像用户主动做了降级。
+  - 未存过预算时该挡位**不选中**（`activeContextBudgets[id] === 500_000` 对 `undefined` 为假），默认仍是 200K 那档；`?? 200_000` 只属于 200K 挡位。
+
 ### Fixes
+
+- **国内版模型目录改读 App 自己那份 `/v3/config`，卡片显示的模型与价格不再和 App 对不上。**
+  - **现象**：同一个模型槽，App 里显示 `Hy4 preview (x0.00)`，插件卡片里显示 `Hy4 preview (x0.29)`。两边都没错，只是**读的不是同一份文档**——插件读 `/v2/enterprises/personal/models`（CLI 渠道名册，该槽位是付费的 `hy4-preview`），App 读 `/v3/config`（该槽位是免费的 `hy4-preview-f`）。两者显示名同为 "Hy4 preview"，价格却不同，于是看起来像插件显示错了。
+  - **根因**：`fetchModels` 的国内分支固定读 `/v2`，国际分支读 `/v3`。国内版从来没有读过 App 的那份文档，因此名册与价格天然可能与 App 不一致；而 `/v2` 里还有一个上游目录里不存在的 `auto` 槽，`/v3` 里则有 `auto` 没有的 `hy4-preview-f` 与 `minimax-m2.7`。
+  - **修法**：国内分支改为读 `/v3/config`，**沿用 CLI 的 User-Agent**——这一步是关键：`/v3` 按客户端渠道返回不同名册，桌面端渠道的国内名册（29 条）里**没有** `hy4-preview-f`，只有 CLI 渠道的 17 条名册有。实测确认 `/v3` 接受国内分支原有的整套请求头（`X-Domain` / `X-Product` / `X-Requested-With` 一个都不需要加），所以这是一处常量改动，没有协议风险。另加回退：`/v3` 请求失败或返回非 0 时退回旧的 `/v2` 并记一条 `ctx.logger.warn`，避免网关不再提供新文档时整个区域拿不到模型。回退覆盖三种失败：传输错误、信封 code 非 0、以及**解析出的名册为空**（`selectCliModels` 对空名册抛错）——三者都会退回旧源，不会让区域变空。
+  - **升级后需要手动做的两件事**（名册换源，不是可选项）：
+    1. 旧源独有的 `auto` 与 `hy4-preview` 不再出现在名册里；新源独有的是 `hy4-preview-f` 与 `minimax-m2.7`（两者并集 19 条，交集 17 条，实测）。
+    2. 若你此前勾选的正是 `hy4-preview`，刷新后这个勾会消失（`refreshModels` 用 `freshIds.has(id)` 过滤），而 `hy4-preview-f` **不会**被自动勾上——这是既有设计：插件从不替你勾选你没选过的模型（`stillEnabled` 的注释即此意）。勾一下新出现的 `Hy4 preview` 即可，它是免费的那只；其余已勾选的模型不受影响，模型列表也不会变空。
 
 - **`regions.<区域>` 为 `null` 时不再让读取路径崩溃（防御性加固，当前不可达）。**
   - **背景**：为排查 issue #31 实测时发现，schemastery 的 `simplify()` 会把**空槽**序列化成 `null`（`{ cn: {} }` → `{ cn: null }`）。而 `regionStateOf` 的守卫只拒绝 `undefined`，所以 `null` 槽会被原样返回，`regionEnabled` 随即在 `.enabled` 上抛 `Cannot read properties of null`。
