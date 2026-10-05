@@ -58,6 +58,7 @@ import type {
   WorkBuddyPoolTarget,
 } from './account-pool-run.ts'
 import type { WorkBuddyPoolCredits, WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
+import { resolveTargetModel } from './account-pool.ts'
 import { oauthPoll, oauthStart } from './oauth.ts'
 import {
   effectiveMembersOf,
@@ -1128,6 +1129,50 @@ export function apply(ctx: Context, config: Config): void {
         return rows
       },
       catalog: region => displayModels(current(), region),
+      /**
+       * Test ONE account against the region's target model.
+       *
+       * The per-row button's Host half. Reuses the batch's probe dependency
+       * (same client, same probe size, same quota-refresh input) so a row
+       * result and a batch result are the SAME measurement — only the
+       * persistence is scoped to one id instead of every member.
+       *
+       * Returns undefined when the region cannot name a target model (the
+       * same refusal the batch route reports as 409) — the card says so
+       * rather than pretending a test ran.
+       */
+      testOne: async (region, accountId) => {
+        const target = regionTargetModel(region)
+        if (target === undefined) return undefined
+        const store = stacks[region].store
+        const credential = await store.credentialFor(accountId).catch(() => undefined)
+        if (credential === undefined) {
+          return {
+            accountId,
+            accountName: '',
+            result: {
+              modelId: target,
+              outcome: 'credential-rejected' as const,
+              status: 0,
+              message: 'no stored credential for this account',
+            },
+          }
+        }
+        const accounts = await store.accounts().catch(() => [])
+        const accountName = accounts.find(account => account.id === accountId)?.accountName ?? ''
+        const deps = poolRunnerDeps(region)
+        const result = await deps.probe(credential, target)
+        // Persist exactly like the batch does, scoped to the one id: the next
+        // ranking, failover decision, and table render all read the same file.
+        await writePoolProbes(region, probeUpdatesOf([{ accountId, accountName, result }]))
+        return { accountId, accountName, result }
+      },
+      /**
+       * Forget ONE account's plugin-stored credential (the vault entry; the
+       * desktop app's files are never touched). The card rescans afterwards,
+       * so the row disappears the moment the write lands.
+       */
+      removeOne: async (region, accountId) => stacks[region].store.removeAccount(accountId),
     },
     /**
      * OAuth QR sign-in for this card. The session lives in `src/oauth.ts`
@@ -1452,6 +1497,20 @@ export function apply(ctx: Context, config: Config): void {
     )
     creditsSnapshotAt[region] = Date.now()
     return rows
+  }
+
+  /**
+   * The model a per-row test would use right now: the SAME resolution the
+   * batch route performs (`resolveTargetModel` over the region's displayed
+   * catalog and the saved preference), so a row test and a batch test never
+   * measure different models. Undefined mirrors the route's 409 states.
+   */
+  const regionTargetModel = (region: WorkBuddyRegion): string | undefined => {
+    const target = resolveTargetModel(
+      displayModels(current(), region),
+      poolPreferencesOf(current(), region).targetModelId,
+    )
+    return target.modelId
   }
 
   /** One region's pool preferences, with the schema's defaults applied. */

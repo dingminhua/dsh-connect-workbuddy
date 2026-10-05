@@ -41,6 +41,7 @@ import { regionOfStatusUrl } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
   oauthActionOf,
+  poolAccountIdOf,
   poolActionOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
@@ -224,6 +225,22 @@ export interface WorkBuddyPoolDeps {
    * checked) instead of passing the guard and running a batch over nothing.
    */
   effectiveMemberAccountIds?(region: WorkBuddyRegion): Promise<readonly string[]>
+  /**
+   * Test ONE account against the region's target model.
+   *
+   * The per-row button's Host half. Optional: a Host built without it simply
+   * omits the row button (an older bundle keeps rendering, minus the control).
+   * Returns undefined when the region cannot name a target model — the same
+   * refusal the batch route reports as 409.
+   */
+  testOne?(region: WorkBuddyRegion, accountId: string): Promise<WorkBuddyPoolTestRow | undefined>
+  /**
+   * Forget ONE account's plugin-stored credential. Only the vault entry is
+   * removed; the desktop app's files are never touched. Returns whether an
+   * entry existed — false means the account exists only as a desktop sign-in
+   * (or was already gone), which the card reports instead of a silent no-op.
+   */
+  removeOne?(region: WorkBuddyRegion, accountId: string): Promise<boolean>
   /**
    * Today's check-in state per account id.
    *
@@ -884,11 +901,45 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         if (region === undefined) return
         const action = poolActionOf(req.url ?? '/')
         if (action === undefined) {
-          return json(res, 400, { error: 'action must be checkin or test' })
+          return json(res, 400, { error: 'action must be checkin, test, or remove' })
         }
         const pool = deps.pool
         if (pool === undefined) {
           return json(res, 503, { reason: 'pool-unavailable', error: 'account pool unavailable' })
+        }
+        // ---- Per-row actions: address ONE account, never the batch. ----
+        const rowAccountId = poolAccountIdOf(req.url ?? '/')
+        if (action === 'remove') {
+          if (pool.removeOne === undefined) {
+            return json(res, 503, { reason: 'pool-unavailable', error: 'per-account removal unavailable' })
+          }
+          if (rowAccountId === undefined) {
+            return json(res, 400, { error: 'accountId must name the account to remove' })
+          }
+          try {
+            const removed = await pool.removeOne(region, rowAccountId)
+            json(res, 200, { action: 'remove', accountId: rowAccountId, removed })
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'pool-failed', error: safeMessage(error) })
+          }
+          return
+        }
+        if (action === 'test' && rowAccountId !== undefined) {
+          if (pool.testOne === undefined) {
+            return json(res, 503, { reason: 'pool-unavailable', error: 'per-account test unavailable' })
+          }
+          try {
+            const row = await pool.testOne(region, rowAccountId)
+            // Undefined = the region cannot name a target model, the SAME
+            // refusal the batch reports as 409 (reason makes it localizable).
+            if (row === undefined) {
+              return json(res, 409, { action: 'test', modelId: undefined, rows: [], reason: 'no-free-model', error: 'no zero-multiplier model in this region; refresh the catalog or set a target model' })
+            }
+            json(res, 200, { action: 'test', rows: [row] })
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'pool-failed', error: safeMessage(error) })
+          }
+          return
         }
         try {
           // The pool's switch is deliberately NOT enforced here.

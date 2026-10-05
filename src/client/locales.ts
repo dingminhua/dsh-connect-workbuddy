@@ -233,6 +233,13 @@ export const en = {
   'row.poolCurrentHeader': 'In use: {account}',
   'row.poolNotMember': 'Not in pool',
   'row.poolUnsavedMembers': 'Selection changed — save to apply',
+  // Per-row actions: test ONE account, remove ONE account.
+  'row.poolRowTest': 'Test',
+  'row.poolRowRemove': 'Remove',
+  'row.poolRowRemoveHint': 'Forget this account\'s plugin-stored credential. A desktop-app sign-in reappears on the next scan — only the plugin\'s own copy is deleted.',
+  'row.poolRowRemoveAria': 'Remove the stored credential of {accountName}',
+  'row.poolRowRemoved': '{accountName}: removed from the plugin\'s storage.',
+  'row.poolRowRemoveDesktopOnly': '{accountName}: nothing plugin-stored to remove — this account comes from the desktop app\'s own sign-in.',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -453,4 +460,11 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolCurrentHeader': '当前使用：{account}',
   'row.poolNotMember': '未入池',
   'row.poolUnsavedMembers': '勾选已改动 —— 保存后生效',
+  // 行级操作：测试单个账号 / 删除单个账号。
+  'row.poolRowTest': '测试',
+  'row.poolRowRemove': '删除',
+  'row.poolRowRemoveHint': '删除插件保存的这个账号凭据。桌面 App 的登录不会被删除——下次扫描它还会出现；只有插件自己的副本会被移除。',
+  'row.poolRowRemoveAria': '删除 {accountName} 的已存凭据',
+  'row.poolRowRemoved': '{accountName}：已从插件存储中移除。',
+  'row.poolRowRemoveDesktopOnly': '{accountName}：没有插件存储的凭据可删——这个账号来自桌面 App 自己的登录。',
 }

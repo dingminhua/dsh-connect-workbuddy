@@ -24,6 +24,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createElement as h } from 'react'
 import {
   WORKBUDDY_GITHUB_URL,
+  WORKBUDDY_POOL_ACCOUNT_PARAM,
   WORKBUDDY_POOL_PATH,
   withWorkBuddyRegionAndAction,
 } from '../status-paths.ts'
@@ -679,6 +680,105 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     }
   }, [appendLog, onRefresh, pool, region, t])
 
+  /** The account whose per-row action is in flight; gates every row's buttons. */
+  const [rowBusyAccountId, setRowBusyAccountId] = useState<string | undefined>(undefined)
+
+  /**
+   * Test ONE account from its row.
+   *
+   * Same Host rule as the batch (testOne reuses the batch's probe), the same
+   * log vocabulary, and the same refresh-after — a row result must read exactly
+   * like the batch result it replaces.
+   */
+  const runRowTest = useCallback(async (accountId: string): Promise<void> => {
+    setRowBusyAccountId(accountId)
+    setActionError(undefined)
+    const url = withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, 'test')
+      + '&' + WORKBUDDY_POOL_ACCOUNT_PARAM + '=' + encodeURIComponent(accountId)
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+        credentials: 'same-origin',
+      })
+      const body = await response.json().catch(() => undefined) as
+        | { rows?: WorkBuddyWebPoolTestRow[], reason?: string, error?: string }
+        | undefined
+      if (!response.ok) {
+        throw new Error(poolFailureText(t, { status: response.status, reason: body?.reason, error: body?.error }))
+      }
+      if (!mounted.current) return
+      const row = body?.rows?.[0]
+      if (row === undefined) {
+        setActionError(t('row.poolLogTestRowMalformed', { accountName: t('row.accountUnnamed') }))
+        return
+      }
+      const outcome = row.result?.outcome
+      if (outcome === undefined) {
+        appendLog(t('row.poolLogTestRowMalformed', {
+          accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
+        }), 'warn')
+      } else {
+        appendLog(t('row.poolLogTestRow', {
+          accountName: row.accountName === '' ? t('row.accountUnnamed') : row.accountName,
+          outcome: outcomeText(t, outcome),
+        }), outcomeOk(outcome) ? 'ok' : 'warn')
+      }
+      onRefresh?.()
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : t('row.requestFailed')
+      if (mounted.current) {
+        setActionError(message)
+        appendLog(t('row.poolLogBatchFailed', { message }), 'error')
+      }
+    } finally {
+      if (mounted.current) setRowBusyAccountId(undefined)
+    }
+  }, [appendLog, onRefresh, region, t])
+
+  /**
+   * Remove ONE account's plugin-stored credential from its row. The Host only
+   * ever deletes the vault entry; a desktop sign-in reappears on the next
+   * rescan, and the message below says which of the two happened.
+   */
+  const runRowRemove = useCallback(async (accountId: string, accountName: string): Promise<void> => {
+    setRowBusyAccountId(accountId)
+    setActionError(undefined)
+    const url = withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, 'remove')
+      + '&' + WORKBUDDY_POOL_ACCOUNT_PARAM + '=' + encodeURIComponent(accountId)
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+        credentials: 'same-origin',
+      })
+      const body = await response.json().catch(() => undefined) as
+        | { removed?: boolean, error?: string, reason?: string }
+        | undefined
+      if (!response.ok) {
+        throw new Error(poolFailureText(t, { status: response.status, reason: body?.reason, error: body?.error }))
+      }
+      if (!mounted.current) return
+      appendLog(
+        body?.removed === true
+          ? t('row.poolRowRemoved', { accountName: accountName === '' ? t('row.accountUnnamed') : accountName })
+          : t('row.poolRowRemoveDesktopOnly', {
+              accountName: accountName === '' ? t('row.accountUnnamed') : accountName,
+            }),
+        body?.removed === true ? 'ok' : 'info',
+      )
+      onRefresh?.()
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : t('row.requestFailed')
+      if (mounted.current) {
+        setActionError(message)
+        appendLog(t('row.poolLogBatchFailed', { message }), 'error')
+      }
+    } finally {
+      if (mounted.current) setRowBusyAccountId(undefined)
+    }
+  }, [appendLog, onRefresh, region, t])
+
   if (pool === undefined) return null
 
   /**
@@ -880,12 +980,14 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           }, t('row.poolSelectNone')),
         ),
       ),
-      h('div', { className: 'dsm-workbuddy-pool-table' },
+      h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
         h('div', { className: 'dsm-workbuddy-pool-row dsm-workbuddy-pool-row-head' },
           h('span', null, t('row.poolColumnAccount')),
           h('span', null, t('row.poolColumnCredits')),
           h('span', null, t('row.poolColumnProbe')),
           pool.checkinSupported ? h('span', null, t('row.poolColumnCheckin')) : null,
+          // The per-row actions column: no header text, the buttons speak.
+          h('span', null),
         ),
         ...pool.accounts.map(account => renderAccountRow({
           t,
@@ -894,6 +996,15 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           canEdit: canEditPool,
           checkinSupported: pool.checkinSupported,
           onToggle: next => toggleMember(account.accountId, next),
+          // Per-row actions, right side of the row. One busy flag gates both,
+          // so a row's test and another row's removal never interleave.
+          busy: rowBusyAccountId !== undefined,
+          testDisabled: pool.targetModelSource === 'none' || pool.targetModelSource === 'stale',
+          targetHint: pool.targetModelSource === 'none'
+            ? t('row.poolTargetNone')
+            : pool.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined,
+          onTest: () => { void runRowTest(account.accountId) },
+          onRemove: () => { void runRowRemove(account.accountId, account.accountName) },
         })),
       ),
       effectiveMembers.length === 0
@@ -965,8 +1076,17 @@ function renderAccountRow(input: {
   /** Whether this region has a check-in at all; the column is omitted when not. */
   checkinSupported: boolean
   onToggle: (next: boolean) => void
+  /** A per-row action is in flight (any row): both buttons gate on it. */
+  busy: boolean
+  /** The region cannot name a target model; the test button says why. */
+  testDisabled: boolean
+  targetHint: string | undefined
+  /** Run a single-account test against the region's target model. */
+  onTest: () => void
+  /** Forget this account's plugin-stored credential. */
+  onRemove: () => void
 }): ReturnType<typeof h> {
-  const { t, account, checked, canEdit, checkinSupported, onToggle } = input
+  const { t, account, checked, canEdit, checkinSupported, onToggle, busy, testDisabled, targetHint, onTest, onRemove } = input
   const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
   const excluded = exclusionText(t, account)
   const probe = account.probe
@@ -1124,6 +1244,28 @@ function renderAccountRow(input: {
       // Absent entirely where the region has no check-in: an empty column would
       // still imply the state exists and is merely unknown.
       : null,
+    // Per-row actions, RIGHT side of the row: test this one account, and forget
+    // this account's plugin-stored credential. The test reuses the batch's
+    // probe (one measurement, one vocabulary); the removal deletes ONLY the
+    // vault entry — a desktop sign-in reappears on the next rescan, which the
+    // log message states instead of a silent no-op.
+    h('span', { className: 'dsm-workbuddy-pool-row-actions' },
+      h('button', {
+        type: 'button',
+        className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
+        disabled: busy || testDisabled,
+        title: testDisabled ? targetHint : undefined,
+        onClick: onTest,
+      }, t('row.poolRowTest')),
+      h('button', {
+        type: 'button',
+        className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
+        disabled: busy,
+        title: t('row.poolRowRemoveHint'),
+        'aria-label': t('row.poolRowRemoveAria', { accountName: name }),
+        onClick: onRemove,
+      }, t('row.poolRowRemove')),
+    ),
   )
 }
 

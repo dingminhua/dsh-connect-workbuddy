@@ -711,7 +711,10 @@ describe('the pool section and the card share one refresh path (M-4 / L-5)', () 
     const callRe = /onRefresh\s*\??\.\s*(?:\(|call\b|apply\b)/gu
     const calls = [...pool.matchAll(callRe)]
     expect(calls.length, 'onRefresh is never called').toBeGreaterThan(0)
-    expect(calls.length, 'onRefresh is not called exactly once').toBe(1)
+    // The batch success path calls it once — and so does each PER-ROW action
+    // (row test / row remove): the same rule, one success-path call per action
+    // handler. A fourth call anywhere would need the same scrutiny.
+    expect(calls.length, 'onRefresh is called once per action handler').toBe(3)
     const callIndex = calls[0]?.index ?? -1
     // It must run AFTER the completion log inside the same try, i.e. only on a
     // successful batch — not in `finally`/`catch`, where a failed batch would

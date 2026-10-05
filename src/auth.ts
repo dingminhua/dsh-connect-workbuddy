@@ -1394,6 +1394,39 @@ export class WorkBuddyCredentialStore {
   }
 
   /**
+   * Remove ONE account's plugin-stored credential by id.
+   *
+   * Only the VAULT entry is deleted — the desktop app's auth files are read-only
+   * to this plugin and are never touched, so an account that still exists as a
+   * desktop sign-in reappears on the next scan. That is the honest behaviour:
+   * the button means "forget what the plugin stored", not "sign the app out".
+   *
+   * Returns whether a stored entry was actually removed, so the caller can
+   * distinguish "removed" from "this account only ever existed as a desktop
+   * sign-in" without a second scan.
+   */
+  async removeAccount(accountId: string): Promise<boolean> {
+    const path = join(this.vaultDir(), `${accountId}.json`)
+    try {
+      await rm(path, { force: false })
+    } catch (error: unknown) {
+      if (isENOENT(error)) return false
+      throw error
+    }
+    await rm(`${path}.lock`, { force: true })
+    // A rotated override pointing at the removed account would fall through to
+    // the normal selection anyway (a vanished account cannot be billed), but
+    // clearing it here keeps the runtime state immediately truthful.
+    if (this.rotatedAccountId === accountId) this.rotatedAccountId = undefined
+    if (this.accountId === accountId) {
+      // The user's saved choice is gone with its credential: drop the dead
+      // selection rather than reporting it as lost until the next restart.
+      this.accountId = undefined
+    }
+    return true
+  }
+
+  /**
    * Remove every plugin-owned copy this store could read (per-region file,
    * legacy single file, and their lock siblings); the desktop files are
    * untouched. A region store's logout therefore also clears the legacy

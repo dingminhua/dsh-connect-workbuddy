@@ -82,15 +82,26 @@ export function oauthActionOf(url: string): WorkBuddyOAuthAction | undefined {
   return value === 'start' || value === 'poll' ? value : undefined
 }
 
-/** The pool batch actions. */
-export type WorkBuddyPoolAction = 'checkin' | 'test'
+/** The pool batch actions. `remove` is per-account and never batch-wide. */
+export type WorkBuddyPoolAction = 'checkin' | 'test' | 'remove'
 
 /** Read the pool action off a request URL; unknown/absent means undefined. */
 export function poolActionOf(url: string): WorkBuddyPoolAction | undefined {
   const at = url.indexOf('?')
   if (at === -1) return undefined
   const value = new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_POOL_ACTION_PARAM)
-  return value === 'checkin' || value === 'test' ? value : undefined
+  return value === 'checkin' || value === 'test' || value === 'remove' ? value : undefined
+}
+
+/** Query parameter naming ONE pool account a per-row request addresses. */
+export const WORKBUDDY_POOL_ACCOUNT_PARAM = 'accountId'
+
+/** Read the per-row account id off a request URL, when the action takes one. */
+export function poolAccountIdOf(url: string): string | undefined {
+  const at = url.indexOf('?')
+  if (at === -1) return undefined
+  const value = new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_POOL_ACCOUNT_PARAM)
+  return value !== null && value !== '' ? value : undefined
 }
 
 /** Address one region's pool endpoint with an action. */
