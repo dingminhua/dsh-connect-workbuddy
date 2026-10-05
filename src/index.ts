@@ -58,6 +58,7 @@ import type {
   WorkBuddyPoolTarget,
 } from './account-pool-run.ts'
 import type { WorkBuddyPoolCredits, WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
+import { oauthPoll, oauthStart } from './oauth.ts'
 import {
   effectiveMembersOf,
   rankPool,
@@ -1127,6 +1128,47 @@ export function apply(ctx: Context, config: Config): void {
         return rows
       },
       catalog: region => displayModels(current(), region),
+    },
+    /**
+     * OAuth QR sign-in for this card. The session lives in `src/oauth.ts`
+     * (in-process, keyed by loginId); the Host's only extra duty is
+     * persisting the finished credential into the region's vault — the same
+     * store the request path reads, so the account is selectable the moment
+     * the poll answers.
+     */
+    oauth: {
+      async start(region) {
+        return oauthStart(region)
+      },
+      async poll(region, loginId) {
+        const answer = await oauthPoll(loginId, region)
+        if (!answer.done) return answer
+        if ('error' in answer) return answer
+        const store = stacks[region].store
+        const accountId = await store.addOAuthAccount({
+          accessToken: answer.account.accessToken,
+          refreshToken: answer.account.refreshToken,
+          expiresAtMs: answer.account.expiresAtMs,
+          ...answer.account.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs: answer.account.refreshExpiresAtMs },
+          domain: answer.account.domain,
+          uid: answer.account.uid,
+          ...answer.account.nickname === undefined ? {} : { nickname: answer.account.nickname },
+          ...answer.account.uin === undefined ? {} : { uin: answer.account.uin },
+          ...answer.account.enterpriseId === undefined ? {} : { enterpriseId: answer.account.enterpriseId },
+        }).catch((error: unknown) => {
+          throw new Error(
+            'the account was signed in but could not be saved: '
+            + (error instanceof Error ? error.message : String(error)),
+          )
+        })
+        const accounts = await store.accounts().catch(() => [])
+        const saved = accounts.find(account => account.id === accountId)
+        return {
+          done: true,
+          accountId,
+          accountName: saved?.accountName ?? answer.account.nickname ?? '',
+        }
+      },
     },
   }))
 

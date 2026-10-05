@@ -40,10 +40,12 @@ import type {
 import { regionOfStatusUrl } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
+  oauthActionOf,
   poolActionOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_USAGE_PATH,
@@ -63,6 +65,7 @@ export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_USAGE_PATH,
@@ -150,7 +153,43 @@ export interface WorkBuddyStatusRouteOptions {
    * that needs a working probe dependency.
    */
   pool?: WorkBuddyPoolDeps
+  /**
+   * OAuth QR sign-in: start a login and poll it to completion.
+   *
+   * Optional as a whole: a Host built without it simply omits the card's
+   * sign-in affordance (an older bundle keeps rendering, minus the button).
+   */
+  oauth?: WorkBuddyOAuthDeps
 }
+
+/**
+ * What the OAuth route needs from the Host: the two session actions, plus the
+ * persistence step the route cannot do itself (only the Host may touch the
+ * credential vault).
+ */
+export interface WorkBuddyOAuthDeps {
+  /**
+   * Start one login for the region. Resolves the URL the user opens to scan
+   * and confirm, or an actionable error.
+   */
+  start(region: WorkBuddyRegion): Promise<WorkBuddyOAuthStartResult>
+  /**
+   * Poll once. The card repeats until `done` — then either the account was
+   * persisted (the Host saved it to the vault) or an error is reported.
+   */
+  poll(region: WorkBuddyRegion, loginId: string): Promise<WorkBuddyOAuthPollView>
+}
+
+/** The start answer, token-free (the state never leaves the Host). */
+export type WorkBuddyOAuthStartResult =
+  | { loginId: string, verificationUri: string, expiresIn: number }
+  | { error: string }
+
+/** The poll answer the card sees. `account` carries display fields only. */
+export type WorkBuddyOAuthPollView =
+  | { done: false }
+  | { done: true, accountName: string, accountId: string }
+  | { done: true, error: string }
 
 /**
  * What the pool route needs from the Host.
@@ -1084,6 +1123,39 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposeOAuth = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_OAUTH_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        // Both steps mutate session state (start) or the vault (poll), so the
+        // same write guards as the pool route apply.
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        const action = oauthActionOf(req.url ?? '/')
+        if (action === undefined) {
+          return json(res, 400, { error: 'action must be start or poll' })
+        }
+        const oauth = deps.oauth
+        if (oauth === undefined) {
+          return json(res, 503, { reason: 'oauth-unavailable', error: 'OAuth sign-in is not available in this build' })
+        }
+        try {
+          if (action === 'start') {
+            json(res, 200, await oauth.start(region))
+            return
+          }
+          const body = await readJsonBody(req) as { loginId?: unknown }
+          if (typeof body.loginId !== 'string' || body.loginId === '') {
+            return json(res, 400, { error: 'loginId must be a non-empty string' })
+          }
+          json(res, 200, await oauth.poll(region, body.loginId))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
     return () => {
       disposeRefresh()
       disposeCheckin()
@@ -1091,6 +1163,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       disposeUsage()
       disposeProbe()
       disposePool()
+      disposeOAuth()
       disposeDiagWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')

@@ -51,6 +51,7 @@ const isolatedEnv = {
  */
 export default defineConfig({
   test: {
+    setupFiles: ['./tests/setup-per-file-home.ts'],
     // `.tsx` entries are component tests that mount the real AccountPool card
     // under jsdom (see tests/pool-render.spec.tsx). They opt into the DOM via a
     // `@vitest-environment jsdom` docblock so every other file stays on the

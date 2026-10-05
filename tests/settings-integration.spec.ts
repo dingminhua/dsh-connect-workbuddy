@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
@@ -136,6 +139,16 @@ function emitVolatileUpdate(): void {
 }
 
 let context: Context | undefined
+let testHome: string | undefined
+beforeEach(async () => {
+  // The mounted plugin's stores resolve the vault under $DSH_HOME, and the
+  // per-FILE setup makes that one directory for the whole file. A test that
+  // signs an account in (a scan persists it) would therefore leak into every
+  // later test here — including the region-hiding cases that require a
+  // region with NO sign-in to stay empty. Per-test home instead.
+  testHome = await mkdtemp(join(tmpdir(), 'wb-settings-'))
+  process.env.DSH_HOME = testHome
+})
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined

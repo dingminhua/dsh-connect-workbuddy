@@ -49,6 +49,7 @@ import type {
 } from '../status-paths.ts'
 import { isFileContentionWriteError, writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
 import { AccountPool } from './AccountPool.tsx'
+import { OAuthSignIn } from './OAuthSignIn.tsx'
 // `createLatestWins` is the same tested latest-wins factory the Host uses for
 // rotation, imported rather than re-implemented: the rule has one definition
 // and one set of tests.
@@ -1016,6 +1017,10 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     {status.refreshError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error" role="alert">{t('row.requestFailedHint', { message: status.refreshError })}</p>}
+                    {/* Add-another-account entry, signed-in flavour: the same
+                        QR flow, rendered before the pool so account
+                        management reads top-down (pick → add → pool). */}
+                    <OAuthSignIn t={t} region={activeRegion} />
                     {/* The account pool. Rendered only when the Host reports
                         pool state, so an older Host shows an unmodified card.
                         It owns the rotation-vs-manual conflict: while rotation
@@ -1308,6 +1313,11 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         {busy ? t('row.accountsScanning') : t('row.accountsRescan')}
                       </button>
                     </div>
+                    {/* QR sign-in: the one way to add an account WITHOUT the
+                        desktop app. Same placement on both sign-in states —
+                        a signed-out machine needs its first account; a
+                        signed-in one adds another the same way. */}
+                    <OAuthSignIn t={t} region={activeRegion} />
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>
                 : null}

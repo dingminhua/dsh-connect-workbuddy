@@ -14,7 +14,14 @@ import {
 import type { WorkBuddyCredential, WorkBuddyEncryptedCredentialError } from '../src/auth.ts'
 
 let root: string
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'wb-auth-')) })
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'wb-auth-'))
+  // This file exercises stores that do NOT inject vaultDir, so their vault
+  // resolves under $DSH_HOME — which the per-FILE setup makes one directory
+  // for the whole file. Re-point it at the per-test root so one test's
+  // accounts cannot leak into the next through the vault.
+  process.env.DSH_HOME = root
+})
 afterEach(async () => { await rm(root, { force: true, recursive: true }) })
 
 const AUTH_DIR = 'auth'
@@ -601,22 +608,41 @@ describe('WorkBuddyCredentialStore refresh', () => {
     expect(credential.accessToken).toBe('token-live')
   })
 
-  it('persists a refresh to the plugin-owned copy and never writes the desktop file', async () => {
+  it('persists a refresh to the unified vault and never writes the desktop file', async () => {
     const desktopPath = await writeAuth(LIVE, accountDoc({
       auth: { accessToken: 'token-old', refreshToken: 'r', expiresAt: Date.now() + 60_000 },
     }))
-    const ownPath = join(root, 'own-auth.json')
+    const vaultDir = join(root, 'vault')
     const store = new WorkBuddyCredentialStore({
       desktopPath,
       authDirs: [dirname(desktopPath)],
-      ownPath,
+      vaultDir,
       refresh: async () => ({ accessToken: 'token-refreshed', expiresInSec: 3600 }),
     })
     const credential = await store.resolve()
     expect(credential.accessToken).toBe('token-refreshed')
     expect(credential.source).toBe('dsh')
-    const saved = JSON.parse(await readFile(ownPath, 'utf8')) as { credential: { accessToken: string } }
-    expect(saved.credential.accessToken).toBe('token-refreshed')
+    // The refreshed token lands in the vault, named by the account id, in the
+    // DESKTOP document's field shape (expiresAt in seconds) so the vault
+    // round-trips through parseWorkBuddyAuth without losing the expiry.
+    const { readdir: listFiles } = await import('node:fs/promises')
+    const names = await listFiles(vaultDir)
+    expect(names).toHaveLength(1)
+    const saved = JSON.parse(await readFile(join(vaultDir, names[0]!), 'utf8')) as {
+      auth: { accessToken: string, expiresAt: number }
+    }
+    expect(saved.auth.accessToken).toBe('token-refreshed')
+    expect(saved.auth.expiresAt).toBeGreaterThan(Date.now() / 1000)
+    // The live desktop sign-in still outranks the vault's refreshed copy
+    // (documented contract: the app keeps it current and the upstream always
+    // accepts it). The vault copy matters when the desktop file is gone —
+    // the OAuth case — where a store scanning ONLY the vault resolves it.
+    const reread = await new WorkBuddyCredentialStore({
+      authDirs: [join(root, 'missing')],
+      vaultDir,
+      refresh: async () => ({ accessToken: 'never' }),
+    }).current()
+    expect(reread?.accessToken).toBe('token-refreshed')
     // The desktop app's file is untouched.
     const desktop = JSON.parse(await readFile(desktopPath, 'utf8')) as { auth: { accessToken: string } }
     expect(desktop.auth.accessToken).toBe('token-old')
@@ -727,9 +753,9 @@ describe('WorkBuddyCredentialStore region scoping', () => {
     expect(await global.current()).toBeUndefined()
   })
 
-  it('a region refresh persists into the region own file, leaving the legacy copy alone', async () => {
+  it('a region refresh persists into the region vault, leaving the legacy copy alone', async () => {
     const legacyPath = join(root, 'legacy.json')
-    const regionPath = join(root, 'own-global.json')
+    const vaultDir = join(root, 'vault-global')
     await writeAuth(LIVE, {
       account: { uid: 'uid-global', uin: '100000000009', nickname: 'Gamma-Global' },
       auth: { accessToken: 'token-global-old', refreshToken: 'r', expiresAt: Date.now() + 60_000, domain: 'www.workbuddy.ai' },
@@ -747,15 +773,18 @@ describe('WorkBuddyCredentialStore region scoping', () => {
     const store = new WorkBuddyCredentialStore({
       region: 'global',
       authDirs: [join(root, AUTH_DIR)],
-      ownPath: regionPath,
+      vaultDir,
       legacyOwnPath: legacyPath,
       refresh: async () => ({ accessToken: 'token-global-new', expiresInSec: 3600 }),
     })
     const credential = await store.resolve()
     expect(credential.accessToken).toBe('token-global-new')
-    // The refreshed token lands in the per-region file...
-    const saved = JSON.parse(await readFile(regionPath, 'utf8')) as { credential: { accessToken: string } }
-    expect(saved.credential.accessToken).toBe('token-global-new')
+    // The refreshed token lands in the region's vault directory...
+    const { readdir: listFiles } = await import('node:fs/promises')
+    const names = await listFiles(vaultDir)
+    expect(names).toHaveLength(1)
+    const saved = JSON.parse(await readFile(join(vaultDir, names[0]!), 'utf8')) as { auth: { accessToken: string } }
+    expect(saved.auth.accessToken).toBe('token-global-new')
     // ...and the legacy copy is untouched (it carried the other region).
     const legacy = JSON.parse(await readFile(legacyPath, 'utf8')) as { credential: { accessToken: string } }
     expect(legacy.credential.accessToken).toBe('legacy-stale')

@@ -53,8 +53,34 @@ export const WORKBUDDY_PROBE_PATH = '/plugins/dsh-connect-workbuddy/probe'
  */
 export const WORKBUDDY_POOL_PATH = '/plugins/dsh-connect-workbuddy/pool'
 
+/**
+ * Plugin-owned OAuth sign-in endpoint: one session step per call.
+ *
+ * `?action=start` asks the upstream for a login state and returns the URL to
+ * open; `?action=poll` (+ `loginId` in the body) reports whether the user
+ * finished, and on success persists the account into the vault. POST +
+ * loopback-only like the card's other mutations: the poll carries the login
+ * binding, and the Host-side session state must not be settable by another
+ * origin.
+ */
+export const WORKBUDDY_OAUTH_PATH = '/plugins/dsh-connect-workbuddy/oauth'
+
 /** Query parameter selecting which pool batch action a request means. */
 export const WORKBUDDY_POOL_ACTION_PARAM = 'action'
+
+/** The OAuth session steps. */
+export type WorkBuddyOAuthAction = 'start' | 'poll'
+
+/** How long the card waits between polls while the user is scanning. */
+export const OAUTH_POLL_INTERVAL_MS = 2_000
+
+/** Read the OAuth action off a request URL; unknown/absent means undefined. */
+export function oauthActionOf(url: string): WorkBuddyOAuthAction | undefined {
+  const at = url.indexOf('?')
+  if (at === -1) return undefined
+  const value = new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_POOL_ACTION_PARAM)
+  return value === 'start' || value === 'poll' ? value : undefined
+}
 
 /** The pool batch actions. */
 export type WorkBuddyPoolAction = 'checkin' | 'test'

@@ -110,6 +110,24 @@ export const en = {
   'row.probeError': 'Could not run the test: {message}',
   'row.cheer': 'Star on GitHub',
 
+  // ---- OAuth QR sign-in ----
+  'row.oauthTitle': 'Add an account by QR sign-in',
+  'row.oauthStart': 'Sign in with QR code',
+  'row.oauthStarting': 'Opening…',
+  // The link IS the authorization page: opening it shows the QR to scan with
+  // the phone that has the WorkBuddy app, or a login form on desktop browsers.
+  'row.oauthOpenHint': 'Open the sign-in page and confirm — the account is added here automatically when you finish:',
+  'row.oauthOpen': 'Open sign-in page',
+  'row.oauthOpened': 'Opened. Waiting for you to finish…',
+  'row.oauthWaiting': 'Waiting for the sign-in to finish… ({seconds}s)',
+  'row.oauthExpires': 'The sign-in window expires in about {minutes} min.',
+  'row.oauthCancel': 'Cancel',
+  'row.oauthCancelled': 'Sign-in cancelled.',
+  'row.oauthTimedOut': 'The sign-in timed out — start again when ready.',
+  'row.oauthDone': 'Added “{accountName}”. Pick it above to use it.',
+  'row.oauthError': 'Sign-in failed: {message}',
+  'row.oauthUnavailable': 'QR sign-in is not offered by this build of the plugin.',
+
   // ---- Account pool ----
   'row.poolTitle': 'Account pool',
   'row.poolNoCandidate': 'No account in this pool can be used right now.',
@@ -314,6 +332,23 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.probeFailedStatus': '✗ 测试失败（HTTP {status}）',
   'row.probeError': '无法执行测试：{message}',
   'row.cheer': '鼓励一下',
+
+  // ---- OAuth 扫码登录 ----
+  'row.oauthTitle': '扫码添加账号',
+  'row.oauthStart': '扫码登录',
+  'row.oauthStarting': '正在打开…',
+  // 链接本身就是授权页：手机上用 WorkBuddy App 扫码，桌面浏览器则直接登录。
+  'row.oauthOpenHint': '打开登录页并完成确认——完成后账号会自动出现在这里：',
+  'row.oauthOpen': '打开登录页',
+  'row.oauthOpened': '已打开，等待你完成登录…',
+  'row.oauthWaiting': '正在等待登录完成…（{seconds} 秒）',
+  'row.oauthExpires': '登录窗口约 {minutes} 分钟后过期。',
+  'row.oauthCancel': '取消',
+  'row.oauthCancelled': '已取消登录。',
+  'row.oauthTimedOut': '登录超时——请重新开始。',
+  'row.oauthDone': '已添加「{accountName}」。在上方选中它即可使用。',
+  'row.oauthError': '登录失败：{message}',
+  'row.oauthUnavailable': '当前版本的插件不支持扫码登录。',
 
   // ---- 账号池 ----
   'row.poolTitle': '账号池',

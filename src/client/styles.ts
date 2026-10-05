@@ -236,4 +236,13 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool .sw input:checked+.sw-track::after{transform:translateX(16px)}
 .dsm-workbuddy-pool .sw input:disabled+.sw-track{opacity:.4}
 .dsm-workbuddy-pool .sw input:disabled{cursor:default}
+/* OAuth QR sign-in section. */
+.dsm-workbuddy-oauth{margin:12px 0;padding:12px 14px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px}
+.dsm-workbuddy-oauth-title{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-workbuddy-oauth p{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed)}
+.dsm-workbuddy-oauth a{color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
+.dsm-workbuddy-oauth a:hover{text-decoration:underline}
+.dsm-workbuddy-oauth-hint{color:var(--dsw-alias-label-tertiary,#999)!important}
+.dsm-workbuddy-oauth-ok{color:var(--dsw-alias-state-success-primary,#22a06b)!important}
+.dsm-workbuddy-oauth-error{color:var(--dsw-alias-state-error-primary,#ef4444)!important}
 `

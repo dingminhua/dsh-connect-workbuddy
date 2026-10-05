@@ -25,7 +25,7 @@
  * @module dsh-connect-workbuddy/auth
  */
 
-import { readFile, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -167,6 +167,12 @@ export interface WorkBuddyStoreOptions {
    */
   legacyOwnPath?: string
   /**
+   * The unified credential vault directory for this store. Defaults to the
+   * per-region directory under the Harness home; injectable so the vault's
+   * merge/scan behaviour is testable without touching a real machine.
+   */
+  vaultDir?: string
+  /**
    * Auth directories to scan, overriding the platform defaults. Injectable so
    * the multi-account scan is testable without touching a real machine.
    */
@@ -212,17 +218,18 @@ export const WORKBUDDY_AUTH_FILE_ENV = 'WORKBUDDY_AUTH_FILE'
 /** Basename of the live WorkBuddy desktop auth file. */
 const WORKBUDDY_LIVE_FILENAME = 'workbuddy-desktop.info'
 
-/** Prefix of the plugin-owned per-region credential copies. */
+/** Prefix of the plugin-owned per-region credential copies (legacy, read-only). */
 const WORKBUDDY_OWN_PREFIX = '.workbuddy-auth'
+
+/**
+ * Directory name (inside the Harness home) of the plugin's unified credential
+ * vault: every account the plugin knows — scanned from the desktop app AND
+ * added through OAuth sign-in — is persisted there, one file per account.
+ */
+export const WORKBUDDY_VAULT_DIRNAME = 'workbuddy-vault'
 
 /** Current on-disk format of the plugin-owned copy; readers reject others. */
 const OWN_FORMAT_VERSION = 1
-
-interface OwnDocument {
-  version: typeof OWN_FORMAT_VERSION
-  accountId?: string
-  credential: WorkBuddyCredential
-}
 
 /**
  * Plugin-owned copy path for one region inside the Harness home. Each
@@ -240,6 +247,128 @@ export function workbuddyOwnAuthPath(region: WorkBuddyRegion): string {
  */
 export function legacyWorkbuddyOwnAuthPath(): string {
   return join(resolveDshHome(), WORKBUDDY_AUTH_FILENAME)
+}
+
+/**
+ * The vault's directory for one region inside the Harness home.
+ *
+ * The vault is the plugin's UNIFIED credential store: every account the
+ * plugin knows lives here, whether it was scanned from the desktop app's
+ * auth directory or added through OAuth sign-in. One file per account,
+ * named by the account's stable id — so two sources yielding the same
+ * account converge on the same file instead of duplicating it.
+ */
+export function workbuddyVaultDir(region: WorkBuddyRegion): string {
+  return join(resolveDshHome(), WORKBUDDY_VAULT_DIRNAME, region)
+}
+
+/**
+ * Serialize a credential to the vault's on-disk document.
+ *
+ * The on-disk field names are the DESKTOP document's snake-free shapes
+ * (`expiresAt`, `lastRefreshTime`), which is what `parseWorkBuddyAuth`
+ * reads back. Serializing the runtime camelCase fields verbatim parsed as
+ * `expiresAtMs: 0` on the next read — every restart re-refreshed every
+ * account, and a refresh outage could then take down sign-ins that were
+ * perfectly healthy on disk.
+ */
+function vaultDocument(credential: WorkBuddyCredential, accountId: string): VaultDocument {
+  return {
+    version: VAULT_FORMAT_VERSION,
+    accountId,
+    refreshedAtMs: Date.now(),
+    auth: {
+      accessToken: credential.accessToken,
+      refreshToken: credential.refreshToken,
+      // 0 means "unknown": a zero expiry must not overwrite a known future
+      // one, and `expiryToMs` maps 0 back to 0 on the read side.
+      expiresAt: credential.expiresAtMs > 0 ? Math.floor(credential.expiresAtMs / 1000) : 0,
+      ...credential.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAt: Math.floor(credential.refreshExpiresAtMs / 1000) },
+      ...credential.lastRefreshAtMs === undefined ? {} : { lastRefreshTime: Math.floor(credential.lastRefreshAtMs / 1000) },
+      domain: credential.domain,
+    },
+    account: {
+      uid: credential.uid,
+      ...credential.enterpriseId === undefined ? {} : { enterpriseId: credential.enterpriseId },
+      ...credential.nickname === undefined ? {} : { nickname: credential.nickname },
+      ...credential.uin === undefined ? {} : { uin: credential.uin },
+    },
+  }
+}
+
+/** Parse the vault document; other versions and shapes are rejected. */
+function parseVaultDocument(text: string, filePath: string): WorkBuddyCredential | undefined {
+  const parsed = parseVaultDocumentWithWriteTime(text, filePath)
+  return parsed === undefined ? undefined : parsed.credential
+}
+
+/**
+ * Parse a vault document into its credential plus the LOCAL write time.
+ *
+ * Internal merge plumbing: `refreshedAtMs` is the freshness signal
+ * {@link isFresherVaultEntry} needs, but it is not part of
+ * {@link WorkBuddyCredential} (the runtime type is shared with OAuth and
+ * desktop reads, none of which carry it).
+ */
+function parseVaultDocumentWithWriteTime(
+  text: string,
+  filePath: string,
+): { credential: WorkBuddyCredential, refreshedAtMs?: number } | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const document = parsed as Record<string, unknown>
+  if (document['version'] !== VAULT_FORMAT_VERSION) return undefined
+  if (typeof document['auth'] !== 'object' || document['auth'] === null) return undefined
+  const credential = parseWorkBuddyAuth(JSON.stringify({ auth: document['auth'], account: document['account'] }), filePath)
+  if (credential === undefined) return undefined
+  const refreshedAtMs = typeof document['refreshedAtMs'] === 'number' && document['refreshedAtMs'] > 0
+    ? document['refreshedAtMs']
+    : undefined
+  return { credential: { ...credential, source: 'dsh' }, ...(refreshedAtMs === undefined ? {} : { refreshedAtMs }) }
+}
+
+/** Current on-disk format of the vault; readers reject others. */
+const VAULT_FORMAT_VERSION = 1
+
+/** The vault document, as persisted. */
+interface VaultDocument {
+  version: typeof VAULT_FORMAT_VERSION
+  accountId: string
+  /**
+   * Local epoch ms of the write that last produced this entry — the FRESHNESS
+   * signal the merge rule compares against a desktop document's
+   * `lastRefreshTime`. Not part of the credential: the upstream never stated
+   * it, and stuffing it there would make `parseWorkBuddyAuth` read the field
+   * as one of its own.
+   */
+  refreshedAtMs?: number
+  /**
+   * The credential in the nested desktop document's TWO-key shape: tokens and
+   * session fields under `auth`, identity fields under `account`.
+   * `parseWorkBuddyAuth` reads identity from the `account` key only, so a
+   * document that folds everything into one key parses back with EMPTY
+   * identity — the account id then stops matching the file name and the
+   * entry is rejected on read.
+   */
+  auth: {
+    accessToken: string
+    refreshToken: string
+    expiresAt: number
+    refreshExpiresAt?: number
+    lastRefreshTime?: number
+    domain: string
+  }
+  account: {
+    uid: string
+    enterpriseId?: string
+    nickname?: string
+    uin?: string
+  }
 }
 
 /**
@@ -517,16 +646,15 @@ export function workbuddyAccountId(
   return createHash('sha256').update(`workbuddy\0${stable}`).digest('hex').slice(0, 24)
 }
 
-/** Serialize the plugin-owned copy. */
-function ownDocument(credential: WorkBuddyCredential, accountId: string | undefined): OwnDocument {
-  return {
-    version: OWN_FORMAT_VERSION,
-    ...accountId === undefined ? {} : { accountId },
-    credential,
-  }
-}
-
-/** Parse the plugin-owned copy; other versions and shapes are rejected. */
+/**
+ * Parse the plugin-owned copy; other versions and shapes are rejected.
+ *
+ * Pre-vault copies serialized the RUNTIME credential verbatim, whose expiry
+ * field is `expiresAtMs` (ms) rather than the desktop document's
+ * `expiresAt` (s) that `parseWorkBuddyAuth` reads — the round trip used to
+ * lose the expiry and force a refresh after every restart. The runtime field
+ * is read back here as the fallback.
+ */
 function parseOwnDocument(text: string, filePath: string): WorkBuddyCredential | undefined {
   let parsed: unknown
   try {
@@ -540,12 +668,101 @@ function parseOwnDocument(text: string, filePath: string): WorkBuddyCredential |
   if (typeof document['credential'] !== 'object' || document['credential'] === null) return undefined
   const credential = parseWorkBuddyAuth(JSON.stringify({ auth: document['credential'] }), filePath)
   if (credential === undefined) return undefined
-  return { ...credential, source: 'dsh' }
+  const runtime = document['credential'] as Record<string, unknown>
+  const legacyExpiry = typeof runtime['expiresAtMs'] === 'number' ? expiryToMs(runtime['expiresAtMs']) : 0
+  return {
+    ...credential,
+    ...credential.expiresAtMs === 0 && legacyExpiry > 0 ? { expiresAtMs: legacyExpiry } : {},
+    source: 'dsh',
+  }
 }
 
 /** Whether a filesystem error reports an absent path. */
 function isENOENT(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
+}
+
+/**
+ * Whether a freshly scanned credential should REPLACE a vault entry of the
+ * same account.
+ *
+ * The vault is a CACHE of credentials the machine already holds, not a
+ * competing source. Two clocks decide, compared like against like:
+ *
+ * - The scan's clock is the DESKTOP document's `lastRefreshTime` (the
+ *   upstream's own issuance time) — and the live file ranks above every
+ *   backup regardless of time, per {@link fileRank}.
+ * - The vault entry's clock is `refreshedAtMs`, the local write time of the
+ *   plugin refresh (or OAuth login) that produced it. A wall clock is not
+ *   comparable to an issuance time, so the two are NOT mixed: the entry is
+ *   replaced only when the scan's read is the live sign-in AND either the
+ *   entry predates the scan read's issuance, or the entry was written before
+ *   the plugin refreshed into it — approximated by requiring the live file's
+ *   issuance to be NEWER than the entry's write time.
+ *
+ * The rule's purpose is breaking the refresh loop: without it, a scan keeps
+ * reinstating the (older, soon-to-expire) desktop token over the refreshed
+ * vault copy, so every restart re-refreshes every account. With it, the
+ * desktop token wins only while it is genuinely newer than what the plugin
+ * last wrote — after that the refreshed copy is the operative credential,
+ * exactly like the pre-vault per-region copies behaved.
+ */
+function shouldReplaceVaultEntry(
+  candidate: WorkBuddyCredential,
+  incumbent: { credential: WorkBuddyCredential, refreshedAtMs?: number },
+): boolean {
+  if (fileRank(candidate.filePath) !== 0) return false
+  const writeMs = incumbent.refreshedAtMs
+  if (writeMs === undefined) return true
+  const issuanceMs = candidate.lastRefreshAtMs
+  if (issuanceMs === undefined) return candidate.expiresAtMs > incumbent.credential.expiresAtMs
+  return issuanceMs > writeMs
+}
+
+/**
+ * Read every vault entry for one region directory.
+ *
+ * The map is keyed by account id, which the FILE NAME already carries: the
+ * id inside the document is checked against it and a mismatched file is
+ * skipped — a file copied between accounts (or a half-written rename) must
+ * not silently answer for the wrong account.
+ */
+async function readVaultEntries(dir: string): Promise<Map<string, { credential: WorkBuddyCredential, refreshedAtMs?: number }>> {
+  const entries = new Map<string, { credential: WorkBuddyCredential, refreshedAtMs?: number }>()
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch (error: unknown) {
+    // Absent vault = empty vault, not an error; anything else propagates so
+    // the caller can skip its write pass too.
+    if (isENOENT(error)) return entries
+    throw error
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const path = join(dir, name)
+    try {
+      const parsed = parseVaultDocumentWithWriteTime(await readFile(path, 'utf8'), path)
+      if (parsed === undefined) continue
+      const id = name.slice(0, -'.json'.length)
+      if (workbuddyAccountId(parsed.credential) !== id) continue
+      entries.set(id, parsed)
+    } catch {
+      // absent or unreadable between readdir and open — skip, don't fail
+    }
+  }
+  return entries
+}
+
+/** Write one vault entry atomically under the file lock. */
+async function writeVaultEntry(dir: string, accountId: string, credential: WorkBuddyCredential): Promise<void> {
+  const path = join(dir, `${accountId}.json`)
+  await withFileLock(path, async () => {
+    await writeFileAtomic(path, `${JSON.stringify(vaultDocument(credential, accountId), null, 2)}\n`, {
+      mode: 0o600,
+      dirMode: 0o700,
+    })
+  })
 }
 
 /**
@@ -670,6 +887,9 @@ export class WorkBuddyCredentialStore {
   private readonly ownPathExplicit: string | undefined
   private readonly legacyOwnPath: string
   private readonly legacyOwnPathExplicit: string | undefined
+  private readonly vaultDirExplicit: string | undefined
+  /** The vault directory, resolved ONCE at construction. */
+  private readonly vaultDirResolved: string
   private readonly authDirs: readonly string[] | undefined
   private readonly resolveAtRestKey: () => Promise<Buffer | undefined>
   private desktopPathOverride: string | undefined
@@ -693,6 +913,12 @@ export class WorkBuddyCredentialStore {
     this.ownPathExplicit = options.ownPath
     this.legacyOwnPath = options.legacyOwnPath ?? legacyWorkbuddyOwnAuthPath()
     this.legacyOwnPathExplicit = options.legacyOwnPath
+    this.vaultDirExplicit = options.vaultDir
+    // Resolved once, at construction: the vault must not follow a later
+    // $DSH_HOME change (tests swap it per test; a backgrounded scan that
+    // resumes after the swap must keep writing to the store's OWN directory,
+    // not the next user's).
+    this.vaultDirResolved = options.vaultDir ?? (options.region !== undefined ? workbuddyVaultDir(options.region) : join(resolveDshHome(), WORKBUDDY_VAULT_DIRNAME))
     this.authDirs = options.authDirs
     this.desktopPathOverride = options.desktopPath
     this.resolveAtRestKey = options.resolveAtRestKey ?? readAtRestKey
@@ -733,6 +959,11 @@ export class WorkBuddyCredentialStore {
       return [workbuddyOwnAuthPath(this.region), this.legacyOwnPath]
     }
     return [this.legacyOwnPath, workbuddyOwnAuthPath('cn'), workbuddyOwnAuthPath('global')]
+  }
+
+  /** The vault directory this store reads and writes (fixed at construction). */
+  private vaultDir(): string {
+    return this.vaultDirResolved
   }
 
   /** Repoint the desktop file or directory; applies on the next read. */
@@ -877,7 +1108,67 @@ export class WorkBuddyCredentialStore {
         byId.set(id, own)
       }
     }
+    // The unified vault: scanned sign-ins are merged INTO it (incremental,
+    // deduplicated, write-only-on-change), and its entries join the readable
+    // set — that is how an OAuth-added account (which no desktop scan will
+    // ever re-find) stays selectable across restarts.
+    await this.syncVault(byId)
     return [...byId.values()]
+  }
+
+  /**
+   * Merge the scan's credentials into the vault and read the vault back.
+   *
+   * Incremental by contract: a scan that finds nothing new writes nothing.
+   * Per account, the vault entry is written only when the scan's read is
+   * fresher by {@link isFresherVaultEntry} — so a steady-state scan is
+   * mtime-stable and every sync is O(accounts) reads with at most one write
+   * per CHANGED account.
+   */
+  private async syncVault(scan: Map<string, WorkBuddyCredential>): Promise<void> {
+    const dir = this.vaultDir()
+    let entries: Map<string, { credential: WorkBuddyCredential, refreshedAtMs?: number }>
+    try {
+      entries = await readVaultEntries(dir)
+    } catch {
+      // An unreadable vault must not take account discovery down: the scan's
+      // own results are still valid. Writing is skipped this round, so a
+      // broken directory cannot be made worse by this call.
+      return
+    }
+    let dirReady = false
+    for (const [id, credential] of scan) {
+      const incumbent = entries.get(id)
+      if (incumbent !== undefined && !shouldReplaceVaultEntry(credential, incumbent)) continue
+      if (!dirReady) {
+        try {
+          await mkdir(dir, { recursive: true })
+          dirReady = true
+        } catch {
+          // No writable vault: discovery still returns the scan's accounts.
+          return
+        }
+      }
+      await writeVaultEntry(dir, id, credential)
+      entries.set(id, { credential: { ...credential, source: 'dsh' }, refreshedAtMs: Date.now() })
+    }
+    for (const [id, entry] of entries) {
+      if (!this.matchesRegion(entry.credential.domain)) continue
+      const existing = scan.get(id)
+      // A vault entry the scan did not re-find is exactly the OAuth case (no
+      // desktop file backs it). When the scan DID re-find the account, the
+      // entry joins only by the SAME rule the legacy own copies used: it
+      // supersedes a non-live desktop read that it outlives, and never
+      // displaces the live sign-in, which the app keeps current and which the
+      // upstream always accepts. An expired live token therefore yields to the
+      // vault's refreshed copy — which is what breaks the restart refresh
+      // loop — while a healthy live one keeps serving.
+      if (existing === undefined) {
+        scan.set(id, entry.credential)
+      } else if (fileRank(existing.filePath) !== 0 && entry.credential.expiresAtMs > existing.expiresAtMs) {
+        scan.set(id, entry.credential)
+      }
+    }
   }
 
   /**
@@ -1079,6 +1370,30 @@ export class WorkBuddyCredentialStore {
   }
 
   /**
+   * Persist one OAuth sign-in into the unified vault.
+   *
+   * The credential is written with `source: 'dsh'` (it never came from a
+   * desktop file) and joins the readable set on the next scan — the vault is
+   * read by `readAll()` like any other source, so no separate discovery path
+   * exists. The write is idempotent per account id: re-adding an account
+   * replaces its entry, which is exactly what re-issuing a login means.
+   *
+   * Returns the account id so the card can offer to select it right away.
+   */
+  async addOAuthAccount(credential: Omit<WorkBuddyCredential, 'source' | 'filePath'>): Promise<string> {
+    const id = workbuddyAccountId(credential)
+    const dir = this.vaultDir()
+    await mkdir(dir, { recursive: true })
+    await writeVaultEntry(dir, id, {
+      ...credential,
+      source: 'dsh',
+      filePath: join(dir, `${id}.json`),
+    })
+    this.inflight = undefined
+    return id
+  }
+
+  /**
    * Remove every plugin-owned copy this store could read (per-region file,
    * legacy single file, and their lock siblings); the desktop files are
    * untouched. A region store's logout therefore also clears the legacy
@@ -1090,6 +1405,10 @@ export class WorkBuddyCredentialStore {
       await rm(path, { force: true })
       await rm(`${path}.lock`, { force: true })
     }
+    // The vault's directory for this store's region goes too: logout is the
+    // user's "forget what the plugin stored" action, and the vault is plugin
+    // storage. The sibling region's directory is untouched.
+    await rm(this.vaultDir(), { recursive: true, force: true })
   }
 
   private needsRefresh(credential: WorkBuddyCredential): boolean {
@@ -1114,7 +1433,14 @@ export class WorkBuddyCredentialStore {
         ...outcome.domain === undefined || outcome.domain === '' ? {} : { domain: outcome.domain },
         source: 'dsh',
       }
-      await this.saveOwn(refreshed)
+      // The refreshed token lands in the unified vault (one file per
+      // account). The legacy per-region copy files stay READ-ONLY now: they
+      // remain migration sources for pre-vault installs.
+      await writeVaultEntry(this.vaultDir(), workbuddyAccountId(credential), refreshed).catch(() => {
+        // A vault write failure must not fail the request that just got its
+        // fresh token: the in-memory credential still serves this call, and
+        // the next successful scan or refresh retries the write.
+      })
       return refreshed
     } catch (error: unknown) {
       if (credential.expiresAtMs > Date.now() + 30_000) return credential
@@ -1123,17 +1449,6 @@ export class WorkBuddyCredentialStore {
         + ' open the WorkBuddy desktop app once to sign in again',
       )
     }
-  }
-
-  private async saveOwn(credential: WorkBuddyCredential): Promise<void> {
-    const accountId = workbuddyAccountId(credential)
-    const path = this.ownAuthPath()
-    await withFileLock(path, async () => {
-      await writeFileAtomic(path, `${JSON.stringify(ownDocument(credential, accountId), null, 2)}\n`, {
-        mode: 0o600,
-        dirMode: 0o700,
-      })
-    })
   }
 
   /**
@@ -1228,6 +1543,39 @@ export class WorkBuddyCredentialStore {
       // region mismatch or an unreadable sibling, not a credential problem.
       continue
     }
-    return { tried: [...await this.candidateFiles(), ...this.ownCandidates()], failures: candidates }
+    // Vault entries count as tried paths too: an OAuth-added account lives
+    // only here, so a signed-out card must be able to say whether the file
+    // was present but unparsable rather than silently absent.
+    const tried = [...await this.candidateFiles(), ...this.ownCandidates()]
+    try {
+      const names = await readdir(this.vaultDir())
+      for (const name of names.filter(entry => entry.endsWith('.json'))) {
+        const path = join(this.vaultDir(), name)
+        tried.push(path)
+        let text: string
+        try {
+          text = await readFile(path, 'utf8')
+        } catch (error: unknown) {
+          if (!isENOENT(error)) {
+            candidates.push({
+              path,
+              source: 'dsh',
+              reason: 'unreadable',
+              message: error instanceof Error ? error.message : String(error),
+            })
+          }
+          continue
+        }
+        const parsed = parseVaultDocument(text, path)
+        if (parsed === undefined) {
+          candidates.push({ path, source: 'dsh', reason: 'invalid', message: 'not a readable vault credential' })
+        }
+      }
+    } catch {
+      // Absent/unreadable vault directory: absence is normal (nothing added
+      // yet), and a read error is already reported through the own copies'
+      // diagnostics pass above.
+    }
+    return { tried, failures: candidates }
   }
 }
