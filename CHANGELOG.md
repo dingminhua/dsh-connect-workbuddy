@@ -24,6 +24,10 @@
   - **样式类名与组件一一对应**（本版修掉一个真实缺陷）：组件从 `Points` 重命名为 `Credits` 时，只有两条 **trigger** 规则没跟着改，于是读数按钮匹配不到任何规则、回退成**浏览器默认按钮**（带边框的大方块）。新增用例断言「组件渲染的每个 `dsm-workbuddy-composer-*` 类名都在 CSS 里有定义」，并把触发器的「无边框／透明底／12px」写成显式契约。其余类名恰好一致，所以当时只有这两条出错、别的测试都没发现。
   - **`react-dom` 必须在 `CLIENT_EXTERNALS` 里**：面板用 `createPortal` 挂到 `document.body`，而打包 react-dom 会把它的 CJS 开发构建内联进来（开头即 `process.env.NODE_ENV`），在浏览器**模块求值期**抛 `ReferenceError: process is not defined`，导致**整个客户端半边 import 失败**——这正是同族项目 2.12.0/2.13.0 的线上事故。本版除在 `tsdown.config.ts` 外置外，另加 `tests/client-runtime-imports.spec.ts` 静态守卫（未外置的裸导入、外置了但宿主未注册的模块，都会让它变红）。
 
+  <img src="docs/assets/dsh-connect-workbuddy-composer-credits.png" width="360" alt="对话输入框积分面板：国内版账号余额表格、刷新积分按钮与最近刷新时间" />
+
+  面板实机截图（国内版）：标题按区域为「WB CN 积分」，表格两列为账号与积分，当前生效账号用实心圆点标出，底部显示最近刷新时间。
+
 ## 3.6.0 (2026-10-04)
 
 ### Features
