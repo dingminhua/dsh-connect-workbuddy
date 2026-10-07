@@ -36,6 +36,7 @@ import type {
   WorkBuddyWebProbeOutcome,
   WorkBuddyWebRegion,
 } from '../status-paths.ts'
+import { exclusionText } from './exclusion-text.ts'
 import type { Translate } from './searched-paths.ts'
 import { readNdjson } from './ndjson.ts'
 import { inlineProbeReason } from './probe-reason.ts'
@@ -247,25 +248,6 @@ function stateColor(account: WorkBuddyWebPoolAccount): string {
   return outcomeOk(account.probe.outcome)
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
     : 'var(--dsw-alias-state-warn-primary, #f59e0b)'
-}
-
-/** The exclusion label for one account, or undefined when it is usable. */
-function exclusionText(t: Translate, account: WorkBuddyWebPoolAccount): string | undefined {
-  switch (account.excludedBy) {
-    case 'rate-limited': return t('row.poolExcludedRateLimited')
-    case 'out-of-credit': return t('row.poolExcludedOutOfCredit')
-    case 'credential-rejected': return t('row.poolExcludedRejected')
-    // These four used to be folded into 'credential-rejected', which made the
-    // name column contradict the probe column right beside it: "被拒绝，请重新
-    // 登录" next to "连不上上游——这是网络问题" (that probe label is now
-    // cause-neutral; see `locales.ts`). They now reuse the probe labels,
-    // so one measurement yields one consistent story.
-    case 'not-found': return t('row.probeNotFound')
-    case 'unavailable': return t('row.probeUnavailable')
-    case 'failed': return t('row.probeFailed')
-    case 'unusable': return t('row.poolExcludedUnusable')
-    default: return undefined
-  }
 }
 
 /**
@@ -1088,7 +1070,7 @@ function renderAccountRow(input: {
 }): ReturnType<typeof h> {
   const { t, account, checked, canEdit, checkinSupported, onToggle, busy, testDisabled, targetHint, onTest, onRemove } = input
   const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
-  const excluded = exclusionText(t, account)
+  const excluded = exclusionText(t, account.excludedBy)
   const probe = account.probe
   const outcomeLine = probe === undefined
     ? t('row.poolNeverTested')

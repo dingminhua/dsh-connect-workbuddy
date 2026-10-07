@@ -35,6 +35,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { WorkBuddyCard } from './WorkBuddyCard.tsx'
 import type { WorkBuddyCardInjected } from './WorkBuddyCard.tsx'
+import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -144,6 +145,49 @@ export function apply(ctx: WorkBuddyClientContext): void {
 
     registerCard('plugins.bundle.config', 'dsh-connect-workbuddy')
     registerCard('plugins.row.config', 'dsh-connect-workbuddy#dsh-connect-workbuddy')
+
+    /**
+     * Credit readout in the composer tool row (`conversation.input.left`, a
+     * session-scope list slot).
+     *
+     * 参考：dingminhua/dsh-connect-trae（MIT，Copyright (c) 2026 LaoDing）
+     *   — 该项目的 `registerComposerPoints`：无条件注册插槽、由 gate 读
+     *     `modelSelection` 投影自行决定是否渲染。本项目原先放在侧边栏底部
+     *     （`sidebar.footer.action`），那里是**单个 root 级共享行**，两个连接器
+     *     插件各占一行会互相挤压；输入框这行是 per-session 且按 provider 归属，
+     *     天然只有一个插件的积分相关。
+     *
+     * Provider-scoped on purpose: it renders only while the session's selected
+     * model belongs to this plugin, which is what keeps two connector plugins
+     * from competing for one shared row. Registration is unconditional; the
+     * gate reads the Host's `modelSelection` projection and returns null for
+     * every other provider, so nothing is drawn and no fetch loop starts while
+     * another provider is selected.
+     */
+    const registerComposerCredits = (): void => {
+      try {
+        ctx.slots.inject('conversation.input.left' as never, () => (ctx.slots as unknown as {
+          register(
+            options: { name: string; id: string; order: number; locale: string; inject: () => WorkBuddyCardInjected },
+            component: unknown,
+          ): () => void
+        }).register({
+          name: 'conversation.input.left',
+          id: 'dsh-connect-workbuddy-composer-credits',
+          order: 4,
+          locale: namespace,
+          // `settingsScope` rides along so the gate can honor the card's
+          // per-region switch without a second writer.
+          inject: () => settingsScope === undefined
+            ? { t }
+            : { t, settingsScope },
+        }, ComposerCreditsGate))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] composer credits slot failed to register (host provider unaffected):', error)
+      }
+    }
+
+    registerComposerCredits()
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.

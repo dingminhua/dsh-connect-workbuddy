@@ -48,6 +48,12 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-tab-switch{display:inline-flex;align-items:center;flex:none;padding:0 8px 0 2px;cursor:pointer}
 .dsm-workbuddy-tab-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-tab-switch input:disabled{opacity:.4;cursor:default}
+/* One sidebar-credit switch, belonging to the ACTIVE tab's region. It sits on
+   its own line so it reads as a property of this tab rather than as a shared
+   pair of settings — the tab bar already says which region is in scope. */
+.dsm-workbuddy-credits-switch{display:flex;align-items:center;gap:6px;margin:8px 0 2px;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-workbuddy-credits-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-workbuddy-credits-switch input:disabled{opacity:.4;cursor:default}
 .dsm-workbuddy-tab-off{opacity:.55}
 /* Re-detection keeps a copy in the signed-out branch (that branch is where
    "I just signed in over there" applies), so it needs its own placement: the
@@ -264,4 +270,137 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-transfer-list label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer;padding:2px 0}
 .dsm-workbuddy-transfer-list input[type="checkbox"]{flex:none}
 .dsm-workbuddy-transfer input[type="file"]{font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);margin-bottom:8px}
+`
+/**
+ * Composer credit readout styles, injected by the readout component itself.
+ *
+ * 参考：dingminhua/dsh-connect-trae（MIT，Copyright (c) 2026 LaoDing）
+ *   — 该项目的 `COMPOSER_POINTS_CSS`，类名改为 `dsm-workbuddy-*`，
+ *     其余（尺寸、节奏、主题变量与回退值、表格对齐）逐条沿用。
+ *
+ * Separate from the card bundle because the readout lives in the session's
+ * composer, not inside the plugin card; a card that is closed still shows this,
+ * and on some hosts the card is never mounted at all.
+ */
+export const WORKBUDDY_COMPOSER_CSS = `
+/* The readout is plain composer text — no border, no fill at rest. The padding
+   is only the click target, invisible until the pointer arrives. */
+.dsm-workbuddy-composer-credits{display:inline-flex;align-items:center;min-width:0}
+.dsm-workbuddy-composer-credits-trigger{
+  appearance:none;display:inline-flex;align-items:center;align-self:stretch;
+  padding:2px 6px;border:0;border-radius:6px;background:transparent;
+  /* EXPLICIT, not inherit. The composer row's own font and body colour are
+     noticeably larger and darker than the neighbouring controls — a credit
+     readout is secondary information and must not shout. 12px matches this
+     plugin's original line; label-tertiary matches the shell's own composer-row
+     control (ContextMeter), which is the sibling this reads alongside. */
+  font-size:12px;line-height:18px;
+  color:var(--dsw-alias-label-tertiary,#999);
+  white-space:nowrap;cursor:pointer;
+  font-variant-numeric:tabular-nums;
+}
+.dsm-workbuddy-composer-credits-trigger:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}
+.dsm-workbuddy-composer-credits-trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+/* The panel is portaled to document.body and positioned from the trigger, so it
+   MUST be fixed — otherwise the left/top it measures are ignored and it lands in
+   document flow. All material comes from shell tokens so it follows the theme. */
+.dsm-workbuddy-composer-panel{
+  position:fixed;z-index:1100;box-sizing:border-box;
+  width:min(248px,calc(100vw - 24px));padding:12px;
+  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.28));
+  border-radius:var(--dsw-radius-lg,14px);
+  background:var(--dsw-specific-menu,Canvas);
+  box-shadow:var(--dsw-elevation-prominent,0 8px 32px rgba(0,0,0,.22));
+  backdrop-filter:var(--dsw-menu-backdrop-filter,none);
+  font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#444);
+}
+.dsm-workbuddy-composer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.dsm-workbuddy-composer-panel-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
+/* Self-contained: the dsm-btn primitive lives in TRAE_CARD_CSS, which the
+   composer never loads, so the refresh button must style itself. */
+.dsm-workbuddy-composer-panel-refresh{
+  appearance:none;flex:none;margin-left:auto;padding:3px 10px;
+  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.34));
+  border-radius:7px;background:transparent;
+  color:var(--dsw-alias-label-secondary,#444);
+  font:inherit;font-size:11px;line-height:16px;cursor:pointer;
+}
+.dsm-workbuddy-composer-panel-refresh:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsm-workbuddy-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+.dsm-workbuddy-composer-panel-refresh:disabled{opacity:.5;cursor:default}
+/* The panel is a TABLE: one row per account in the region, one figure (the
+   general balance) per row, and a row click switches accounts.
+
+   Rhythm is deliberate: the header sits on a hairline, the switch button owns
+   ALL horizontal padding (and pulls back by the same amount so its label lines
+   up with the header), and every row is the same height. A misaligned first
+   column is what makes a two-column popover read as broken. */
+.dsm-workbuddy-composer-panel-table{
+  width:100%;border-collapse:collapse;
+  font-size:12px;line-height:18px;
+}
+.dsm-workbuddy-composer-panel-table thead th{
+  padding:0 0 7px;font-weight:500;text-align:left;font-size:11px;
+  color:var(--dsw-alias-label-tertiary,GrayText);
+  border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
+}
+.dsm-workbuddy-composer-panel-num{
+  text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.dsm-workbuddy-composer-panel-table thead th.dsm-workbuddy-composer-panel-num{padding-right:0}
+.dsm-workbuddy-composer-panel-table tbody th{
+  padding:0;font-weight:400;text-align:left;vertical-align:middle;
+}
+.dsm-workbuddy-composer-panel-table tbody td{
+  padding:4px 0;vertical-align:middle;
+  color:var(--dsw-alias-label-primary,CanvasText);
+}
+/* The current account reads as current without shouting: a filled dot and a
+   slightly heavier weight. Disabled — pressing it would write a selection that
+   has not changed. */
+.dsm-workbuddy-composer-panel-table tbody tr.dsm-workbuddy-composer-panel-row-current td{font-weight:600}
+.dsm-workbuddy-composer-panel-switch{
+  appearance:none;display:flex;align-items:center;gap:7px;
+  width:100%;padding:4px 6px;margin-left:-6px;
+  border:0;border-radius:6px;background:transparent;
+  color:inherit;font:inherit;font-size:12px;text-align:left;cursor:pointer;
+  white-space:nowrap;overflow:hidden;
+}
+.dsm-workbuddy-composer-panel-switch>span:last-child{overflow:hidden;text-overflow:ellipsis}
+/* The name + optional reason mark. A COLUMN so the mark drops onto its own line
+   under the name: side by side they would stretch the name column and squeeze
+   the numeric one, and the switch's own overflow rule would ellipsise the mark
+   instead of the name. */
+.dsm-workbuddy-composer-panel-who{display:flex;flex-direction:column;min-width:0;gap:1px}
+.dsm-workbuddy-composer-panel-name{overflow:hidden;text-overflow:ellipsis}
+/* Why the account cannot serve right now ("被限流"), in the warn colour the pool
+   table uses for the same fact — so one measurement reads the same on both. */
+.dsm-workbuddy-composer-panel-mark{
+  font-size:11px;line-height:15px;
+  color:var(--dsw-alias-state-warn-primary,#f59e0b);
+}
+/* Hover belongs to the switch, not the row: the number cell is not clickable,
+   so lighting it up would promise an action it cannot perform. */
+.dsm-workbuddy-composer-panel-switch:hover:not(:disabled){
+  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));
+}
+.dsm-workbuddy-composer-panel-switch:focus-visible{
+  outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:-1px;
+}
+.dsm-workbuddy-composer-panel-switch:disabled{cursor:default}
+.dsm-workbuddy-composer-panel-dot{
+  flex:none;width:7px;height:7px;border-radius:50%;
+  background:var(--dsw-alias-label-dimmed,rgba(127,127,127,.5));
+}
+.dsm-workbuddy-composer-panel-table tr.dsm-workbuddy-composer-panel-row-current .dsm-workbuddy-composer-panel-dot{
+  background:var(--dsw-state-success,#22a06b);
+}
+.dsm-workbuddy-composer-panel-foot{
+  display:flex;justify-content:space-between;gap:8px;
+  margin-top:9px;padding-top:7px;
+  border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));
+  font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,GrayText);
+}
+.dsm-workbuddy-composer-panel-empty{margin:0;color:var(--dsw-alias-label-tertiary,GrayText)}
+.dsm-workbuddy-composer-panel-error{margin:8px 0 0;color:var(--dsw-alias-state-error-primary,#d92d20);font-size:11px;line-height:16px}
 `

@@ -342,6 +342,39 @@ export async function writeRegionEnabled(
 }
 
 /**
+ * Show or hide one region's sidebar credit line, with the same landed-check as
+ * every other settings write.
+ *
+ * Routed through {@link writeField} for exactly the reason
+ * {@link writeRegionEnabled} is: on the affected 0.1.7 deployments a direct
+ * `scope.set()` settles without storing anything, so the switch would appear to
+ * work and then silently revert — which for this control means the line
+ * reappears on the next render with no explanation.
+ *
+ * The caller passes the region's COMPLETE next slot (the same whole-slot merge
+ * rule as the other region writes), so hiding a line cannot drop the model
+ * directory, selection, image opt-ins, budgets or pool preferences that live
+ * alongside this flag in the same slot.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param region - the region whose line is being shown or hidden.
+ * @param shown - the desired state.
+ * @param slot - the region's COMPLETE next slot (caller owns the merge).
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writeRegionCreditsShown(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  shown: boolean,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['showCreditsInMainUi'] === shown
+  })
+}
+
+/**
  * Write one region's account-pool PREFERENCES, verifying they landed.
  *
  * Routed through {@link writeField} like every other settings write, so it gets

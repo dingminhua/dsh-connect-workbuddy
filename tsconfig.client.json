@@ -23,6 +23,10 @@
     "tests/probe-age.spec.tsx",
     "tests/remaining.spec.tsx",
     "tests/off-thinking-card.spec.tsx",
-    "tests/context-tiers.spec.tsx"
+    "tests/context-tiers.spec.tsx",
+    "tests/card-credits-switch.spec.tsx",
+    "tests/composer-credits-gate.spec.ts",
+    "tests/composer-credits-render.spec.tsx",
+    "tests/client-runtime-imports.spec.ts"
   ]
 }

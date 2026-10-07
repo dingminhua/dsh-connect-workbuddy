@@ -57,6 +57,7 @@ import type {
   WorkBuddyPoolRunnerDeps,
   WorkBuddyPoolTarget,
 } from './account-pool-run.ts'
+import { exclusionOf } from './account-pool.ts'
 import type { WorkBuddyPoolCredits, WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
 import { resolveTargetModel } from './account-pool.ts'
 import { oauthPoll, oauthStart } from './oauth.ts'
@@ -222,6 +223,7 @@ import {
   type WorkBuddyWebCredits,
   type WorkBuddyWebModel,
   type WorkBuddyWebPackage,
+  type WorkBuddyWebPoolExclusion,
   type WorkBuddyWebRegion,
   type WorkBuddyWebSearchPath,
   type WorkBuddyWebUsage,
@@ -294,6 +296,15 @@ export interface WorkBuddyRegionState {
    * row (see `syncRegionRegistration`).
    */
   enabled?: boolean
+  /**
+   * Whether this region's credit balance shows at the DSH sidebar foot.
+   *
+   * Per-region, independently switched: WB CN and WB AI are separate accounts
+   * on separate gateways, so a user holding only one of them must be able to
+   * show exactly that one. Opt-out — an absent value reads as ON, so a config
+   * written before this switch existed keeps whatever the default was.
+   */
+  showCreditsInMainUi?: boolean
   /** The last-refreshed directory for this region; what the card displays. */
   lastCatalog?: WorkBuddyModelInfo[]
   /** The user's selection in this region, as model ids. */
@@ -436,6 +447,22 @@ const poolConfig = z.object({
 
 const regionStateConfig = z.object({
   enabled: z.boolean().default(true).description('Whether this region\'s provider is offered to DSH (opt-out; false withdraws it entirely)'),
+  /**
+   * Whether this region's credit line shows at the DSH sidebar foot.
+   *
+   * Per-REGION rather than one global switch, because the two sides are
+   * independent providers the user may hold only one account on: a CN-only user
+   * has nothing to read from the international line and vice versa, and a
+   * single shared switch would force them to either show a permanently empty
+   * row or lose the one that works.
+   *
+   * ON by default (opt-out). The plugin card is not reachable in every host —
+   * a market plugin can own the Plugins tab and never render
+   * `plugins.bundle.config` — so a feature that is off until discovered would be
+   * off forever for those users. The line carries its own `×` in the sidebar,
+   * which is reachable exactly where the feature renders.
+   */
+  showCreditsInMainUi: z.boolean().default(true).description('Show this region\'s remaining credits at the DSH sidebar foot (opt-out; the line carries its own hide button)'),
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
   imageModelIds: z.array(z.string()).default([]),
@@ -943,6 +970,25 @@ export function apply(ctx: Context, config: Config): void {
     // re-login instruction that would change nothing. Cached per account and
     // issuance time; only ever consulted after a rejection.
     accountUsable: accountUsabilityProbe,
+    /**
+     * Why each of the region's accounts cannot serve right now, for the composer
+     * panel's table.
+     *
+     * Runs the SAME `exclusionOf` the pool ranks by, against every account the
+     * region knows — not only pool members. Deriving it any other way (a second
+     * expiry comparison, or `probe.outcome` read raw) would let the panel call an
+     * account rate-limited while the pool has already moved past its cooldown.
+     */
+    accountExclusions: async (region: WorkBuddyRegion) => {
+      const probes = await readPoolProbes(region)
+      const nowMs = Date.now()
+      const out: Record<string, WorkBuddyWebPoolExclusion> = {}
+      for (const [accountId, probe] of Object.entries(probes)) {
+        const excludedBy = exclusionOf(probe, nowMs)
+        if (excludedBy !== undefined) out[accountId] = excludedBy
+      }
+      return out
+    },
     displayModels: region => displayModels(current(), region),
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
@@ -950,6 +996,13 @@ export function apply(ctx: Context, config: Config): void {
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
     regionEnabled: region => regionEnabled(current(), region),
+    /**
+     * The region's committed sidebar-credit flag, read from the same config the
+     * card writes. Exposed on the Host's answer because the browser settings
+     * mirror goes stale for this namespace on the affected 0.1.7 deployments,
+     * which made the switch look unable to turn the line off ("关闭不了").
+     */
+    showCreditsInMainUi: region => regionStateOf(current(), region).showCreditsInMainUi !== false,
     /**
      * One minimal request per named model, through the region's own credential.
      *

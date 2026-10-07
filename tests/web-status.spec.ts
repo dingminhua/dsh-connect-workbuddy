@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { workBuddyWebStatus } from '../src/web-status.ts'
+import { workBuddyAccountCredits, workBuddyWebStatus } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
 import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
@@ -95,6 +95,50 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
     ...overrides,
   }
 }
+
+describe('workBuddyAccountCredits', () => {
+  /** A store exposing the given accounts, each resolving to a credential. */
+  const storeOf = (accounts: typeof ACCOUNTS) => ({
+    accounts: async () => accounts,
+    credentialFor: async (id: string) => (accounts.some(a => a.id === id) ? CREDENTIAL : undefined),
+  }) as never
+
+  it('lists a RATE-LIMITED account rather than dropping it', async () => {
+    // The question this answers: "does a rate-limited account disappear from the
+    // panel?" It must NOT. The table exists to let the user pick an account, and
+    // hiding one hides the very fact they need (why it is unusable) while also
+    // making the list silently shorter than the card's. The exclusion is carried
+    // ON the row as a label, not as a filter.
+    const rows = await workBuddyAccountCredits(deps({
+      store: () => storeOf(ACCOUNTS),
+      accountExclusions: async () => ({ [ACCOUNTS[1]!.id]: 'rate-limited' }),
+    }), 'cn')
+    expect(rows.map(row => row.id)).toEqual(ACCOUNTS.map(account => account.id))
+    expect(rows.find(row => row.id === ACCOUNTS[1]!.id)?.excludedBy).toBe('rate-limited')
+    // The healthy one carries no marker.
+    expect(rows.find(row => row.id === ACCOUNTS[0]!.id)?.excludedBy).toBeUndefined()
+  })
+
+  it('still lists an account whose balance cannot be read, with no credits figure', async () => {
+    // Omitting the number (rather than writing 0) is what lets the panel render
+    // "—" instead of claiming the account is out of credits.
+    const rows = await workBuddyAccountCredits(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        credentialFor: async (id: string) => (id === ACCOUNTS[0]!.id ? CREDENTIAL : undefined),
+      }) as never,
+      client: { ...deps().client, fetchCredits: async () => { throw new Error('upstream down') } },
+    }), 'cn')
+    expect(rows).toHaveLength(ACCOUNTS.length)
+    expect(rows.every(row => row.credits === undefined)).toBe(true)
+  })
+
+  it('lists every account when nothing has been measured', async () => {
+    const rows = await workBuddyAccountCredits(deps({ store: () => storeOf(ACCOUNTS) }), 'cn')
+    expect(rows).toHaveLength(ACCOUNTS.length)
+    expect(rows.every(row => row.excludedBy === undefined)).toBe(true)
+  })
+})
 
 describe('workBuddyWebStatus', () => {
   it('reports signed-out with accounts when no credential resolves', async () => {
@@ -491,6 +535,9 @@ describe('registerWorkBuddyStatusRoute', () => {
     const captured = await mountRoutes()
     expect(captured.map(entry => entry.path)).toEqual([
       '/plugins/dsh-connect-workbuddy/usage',
+      // Per-account balances for the composer panel; registered beside the usage
+      // route because it is the same read surface, fetched only on demand.
+      '/plugins/dsh-connect-workbuddy/account-credits',
       '/plugins/dsh-connect-workbuddy/accounts/refresh',
       '/plugins/dsh-connect-workbuddy/checkin',
       '/plugins/dsh-connect-workbuddy/models/refresh',
