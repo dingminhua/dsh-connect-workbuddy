@@ -60,13 +60,14 @@ import type {
 import type { WorkBuddyPoolCredits, WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
 import { resolveTargetModel } from './account-pool.ts'
 import { oauthPoll, oauthStart } from './oauth.ts'
+import { mergeTransferRecords, parseTransferFile, previewTransferFile, transferRecordOf } from './transfer.ts'
 import {
   effectiveMembersOf,
   rankPool,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
-import { WorkBuddyUpstreamClient } from './upstream.ts'
+import { WorkBuddyUpstreamClient, regionOf } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
@@ -224,6 +225,10 @@ import {
   type WorkBuddyWebRegion,
   type WorkBuddyWebSearchPath,
   type WorkBuddyWebUsage,
+  type WorkBuddyTransferExportAnswer,
+  type WorkBuddyTransferImportAnswer,
+  type WorkBuddyTransferPreview,
+  type WorkBuddyTransferRecord,
 } from './status-paths.ts'
 export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
@@ -1213,6 +1218,66 @@ export function apply(ctx: Context, config: Config): void {
           accountId,
           accountName: saved?.accountName ?? answer.account.nickname ?? '',
         }
+      },
+    },
+    /**
+     * Batch credential export / import, in the transfer file format the
+     * sibling credential managers share. The Host owns every byte of the
+     * vault; the route only ferries parsed answers.
+     */
+    transfer: {
+      async exportAccounts(region, accountIds): Promise<WorkBuddyTransferExportAnswer> {
+        const store = stacks[region].store
+        const accounts = await store.accounts().catch(() => [])
+        const wanted = new Set(accountIds)
+        const records: WorkBuddyTransferRecord[] = []
+        for (const account of accounts) {
+          if (!wanted.has(account.id)) continue
+          const credential = await store.credentialFor(account.id).catch(() => undefined)
+          if (credential === undefined) continue
+          records.push(transferRecordOf(credential, {
+            auth: {
+              accessToken: credential.accessToken,
+              refreshToken: credential.refreshToken,
+              expiresAt: credential.expiresAtMs > 0 ? Math.floor(credential.expiresAtMs / 1000) : 0,
+              ...credential.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAt: Math.floor(credential.refreshExpiresAtMs / 1000) },
+              ...credential.lastRefreshAtMs === undefined ? {} : { lastRefreshTime: Math.floor(credential.lastRefreshAtMs / 1000) },
+              domain: credential.domain,
+            },
+            account: {
+              uid: credential.uid,
+              ...credential.enterpriseId === undefined ? {} : { enterpriseId: credential.enterpriseId },
+              ...credential.nickname === undefined ? {} : { nickname: credential.nickname },
+              ...credential.uin === undefined ? {} : { uin: credential.uin },
+            },
+          }))
+        }
+        return { accounts: records }
+      },
+      async previewImport(region, text): Promise<WorkBuddyTransferPreview> {
+        void region
+        return previewTransferFile(text)
+      },
+      async importAccounts(region, text, indexes): Promise<WorkBuddyTransferImportAnswer> {
+        // Parse FIRST so a malformed file fails the request before any vault
+        // write, with the parse error as the message.
+        const records = parseTransferFile(text)
+        const { changes, imported, skipped } = mergeTransferRecords(
+          records,
+          indexes,
+          region,
+          domain => regionOf(domain),
+        )
+        const store = stacks[region].store
+        for (const [id, credential] of changes) {
+          await store.addOAuthAccount(credential).catch(error => {
+            throw new Error(
+              'imported account ' + id + ' could not be stored: '
+              + (error instanceof Error ? error.message : String(error)),
+            )
+          })
+        }
+        return { imported, skipped }
       },
     },
   }))

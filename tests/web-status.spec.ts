@@ -487,7 +487,7 @@ describe('registerWorkBuddyStatusRoute', () => {
     return captured
   }
 
-  it('mounts the usage, account, check-in, model, probe, pool, save, and oauth routes', async () => {
+  it('mounts the usage, account, check-in, model, probe, pool, save, oauth, and transfer routes', async () => {
     const captured = await mountRoutes()
     expect(captured.map(entry => entry.path)).toEqual([
       '/plugins/dsh-connect-workbuddy/usage',
@@ -498,6 +498,7 @@ describe('registerWorkBuddyStatusRoute', () => {
       '/plugins/dsh-connect-workbuddy/pool',
       '/plugins/dsh-connect-workbuddy/__save',
       '/plugins/dsh-connect-workbuddy/oauth',
+      '/plugins/dsh-connect-workbuddy/transfer',
     ])
   })
 
@@ -510,6 +511,89 @@ describe('registerWorkBuddyStatusRoute', () => {
     if (refresh === undefined) throw new Error('model refresh route was not registered')
     return refresh.handler
   }
+
+  /** Mount the status routes; return the transfer handler. */
+  async function mountTransferHandler(
+    options: Partial<WorkBuddyStatusRouteOptions> = {},
+  ): Promise<CapturedEntry['handler']> {
+    const captured = await mountRoutes(options)
+    const transfer = captured.find(entry => entry.path === '/plugins/dsh-connect-workbuddy/transfer')
+    if (transfer === undefined) throw new Error('transfer route was not registered')
+    return transfer.handler
+  }
+
+  /** A request double carrying a JSON body (the transfer route reads one). */
+  function transferReq(payload: unknown, url: string) {
+    const chunks = [Buffer.from(JSON.stringify(payload))]
+    return {
+      method: 'POST',
+      url,
+      headers: { origin: 'http://127.0.0.1' },
+      on: (ev: string, cb: (c: Buffer) => void) => {
+        if (ev === 'data') for (const c of chunks) cb(c)
+        if (ev === 'end') (cb as unknown as { (): void }).call(undefined)
+      },
+    }
+  }
+
+  it('refuses a GET on the transfer route with 405 before reading anything', async () => {
+    const handler = await mountTransferHandler()
+    const { res, status } = response()
+    await handler(request('GET', undefined, '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=export'), res)
+    expect(status()).toBe(405)
+  })
+
+  it('routes export to the region\'s deps and refuses an empty selection with 400', async () => {
+    const asked: { region: string, ids: readonly string[] }[] = []
+    const handler = await mountTransferHandler({
+      transfer: {
+        exportAccounts: async (region, ids) => {
+          asked.push({ region, ids })
+          return { accounts: [{ access_token: 'at-' + ids[0] }] }
+        },
+        previewImport: async () => ({ accounts: [], total: 0 }),
+        importAccounts: async () => ({ imported: 0, skipped: 0 }),
+      },
+    })
+    const ok = response()
+    await handler(transferReq({ accountIds: ['a', 'b'] }, '/plugins/dsh-connect-workbuddy/transfer?region=global&action=export'), ok.res)
+    expect(ok.status()).toBe(200)
+    expect(ok.body()).toMatchObject({ accounts: [{ access_token: 'at-a' }] })
+    expect(asked).toEqual([{ region: 'global', ids: ['a', 'b'] }])
+    const empty = response()
+    await handler(transferReq({}, '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=export'), empty.res)
+    expect(empty.status()).toBe(400)
+  })
+
+  it('answers preview with the desensitized listing and import with the counters', async () => {
+    const seenIndexes: number[][] = []
+    const handler = await mountTransferHandler({
+      transfer: {
+        exportAccounts: async () => ({ accounts: [] }),
+        previewImport: async () => ({ accounts: [{ index: 0, uid: 'u-1', nickname: 'n', email: '', hasToken: true }], total: 1 }),
+        importAccounts: async (_region, _text, indexes) => {
+          seenIndexes.push([...indexes])
+          return { imported: 1, skipped: 2 }
+        },
+      },
+    })
+    const preview = response()
+    await handler(transferReq({ text: '[{"access_token":"t"}]' }, '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=preview'), preview.res)
+    expect(preview.status()).toBe(200)
+    expect(preview.body()).toMatchObject({ total: 1, accounts: [{ index: 0, hasToken: true }] })
+    const imported = response()
+    await handler(transferReq({ text: '[{"access_token":"t"}]', indexes: [0, 3] }, '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=import'), imported.res)
+    expect(imported.status()).toBe(200)
+    expect(imported.body()).toMatchObject({ imported: 1, skipped: 2 })
+    expect(seenIndexes).toEqual([[0, 3]])
+  })
+
+  it('answers 503 when the build carries no transfer deps', async () => {
+    const handler = await mountTransferHandler()
+    const { res, status } = response()
+    await handler(request('POST', undefined, '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=preview'), res)
+    expect(status()).toBe(503)
+  })
 
   it('hands the refreshed rows upstream\'s own image default', async () => {
     // The card overwrites its image checkboxes from this, so the refreshed

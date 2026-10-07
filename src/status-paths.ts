@@ -96,6 +96,87 @@ export function poolActionOf(url: string): WorkBuddyPoolAction | undefined {
 /** Query parameter naming ONE pool account a per-row request addresses. */
 export const WORKBUDDY_POOL_ACCOUNT_PARAM = 'accountId'
 
+/**
+ * Plugin-owned account transfer endpoint: the batch export / import of
+ * credentials between machines and between tools of the SAME format family.
+ *
+ * `?action=export` POSTs account ids, answers a JSON ARRAY of credential
+ * records; `?action=preview` POSTs file text, answers a token-free listing;
+ * `?action=import` POSTs file text plus selected indexes, merges into the
+ * vault. POST + loopback-only like every other mutation: the file content is
+ * arbitrary user data and export carries token material.
+ */
+export const WORKBUDDY_TRANSFER_PATH = '/plugins/dsh-connect-workbuddy/transfer'
+
+/** The transfer endpoint's steps. */
+export type WorkBuddyTransferAction = 'export' | 'preview' | 'import'
+
+/** Read the transfer action off a request URL; unknown/absent means undefined. */
+export function transferActionOf(url: string): WorkBuddyTransferAction | undefined {
+  const at = url.indexOf('?')
+  if (at === -1) return undefined
+  const value = new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_POOL_ACTION_PARAM)
+  return value === 'export' || value === 'preview' || value === 'import' ? value : undefined
+}
+
+/**
+ * One entry of the transfer PREVIEW: display fields only, never token
+ * material. `hasToken` is the import decision input — the import step skips
+ * records without one — and the indexes are the FILE's positions, so the user
+ * picks by the same numbers the import call sends back.
+ */
+export interface WorkBuddyTransferPreviewEntry {
+  index: number
+  uid: string
+  nickname: string
+  email: string
+  hasToken: boolean
+}
+
+/** The preview answer: the desensitized listing plus the file's total count. */
+export interface WorkBuddyTransferPreview {
+  accounts: readonly WorkBuddyTransferPreviewEntry[]
+  total: number
+}
+
+/**
+ * The import answer. `imported` counts records merged into the vault (new OR
+ * overwritten — both change the stored entry); `skipped` counts what was
+ * left out: missing token, a bad index, or a record whose login domain does
+ * not belong to the addressed region.
+ */
+export interface WorkBuddyTransferImportAnswer {
+  imported: number
+  skipped: number
+}
+
+/**
+ * The shared file format's record shape, subset the importer consumes.
+ *
+ * Contract with sibling tools exporting the same format: a JSON array of
+ * objects keyed in snake_case — `access_token` (required), `refresh_token`,
+ * `uid`, `nickname`, `email`, `domain`, `expiresAt` (epoch ms),
+ * `refreshExpiresAt`, `auth_raw`. Extra fields ride along untouched.
+ */
+export interface WorkBuddyTransferRecord {
+  access_token: string
+  refresh_token?: string
+  uid?: string
+  nickname?: string
+  email?: string
+  domain?: string
+  /** Access-token expiry in epoch MILLISECONDS, the sibling format's unit. */
+  expiresAt?: number
+  refreshExpiresAt?: number
+  /** The sibling tool's original credential document, preserved verbatim. */
+  auth_raw?: unknown
+}
+
+/** The export answer: the records themselves, tokens included. */
+export interface WorkBuddyTransferExportAnswer {
+  accounts: WorkBuddyTransferRecord[]
+}
+
 /** Read the per-row account id off a request URL, when the action takes one. */
 export function poolAccountIdOf(url: string): string | undefined {
   const at = url.indexOf('?')

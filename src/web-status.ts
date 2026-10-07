@@ -37,7 +37,7 @@ import type {
   WorkBuddyPoolCheckinRow,
   WorkBuddyPoolTestRow,
 } from './account-pool-run.ts'
-import { regionOfStatusUrl } from './status-paths.ts'
+import { regionOfStatusUrl, transferActionOf } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
   oauthActionOf,
@@ -49,9 +49,13 @@ import {
   WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
+  WORKBUDDY_TRANSFER_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
 import type {
+  WorkBuddyTransferExportAnswer,
+  WorkBuddyTransferImportAnswer,
+  WorkBuddyTransferPreview,
   WorkBuddyWebAccount,
   WorkBuddyWebCredits,
   WorkBuddyWebPool,
@@ -69,6 +73,7 @@ export {
   WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
+  WORKBUDDY_TRANSFER_PATH,
   WORKBUDDY_USAGE_PATH,
 }
 export type { WorkBuddyWebUsage }
@@ -161,6 +166,36 @@ export interface WorkBuddyStatusRouteOptions {
    * sign-in affordance (an older bundle keeps rendering, minus the button).
    */
   oauth?: WorkBuddyOAuthDeps
+  /**
+   * Batch credential export / import between machines.
+   *
+   * Optional as a whole: a Host built without it simply omits the card's
+   * transfer section (an older bundle keeps rendering, minus the buttons).
+   */
+  transfer?: WorkBuddyTransferDeps
+}
+
+/**
+ * What the transfer route needs from the Host. Everything is region-scoped:
+ * the two regions' vaults are parallel stacks, and an export of one tab must
+ * never leak the other tab's accounts.
+ */
+export interface WorkBuddyTransferDeps {
+  /**
+   * Export the named accounts' credentials in the shared transfer format.
+   * Unknown ids are simply absent from the answer; an answer with zero
+   * records means nothing named was exportable (the caller decides whether
+   * that is an error).
+   */
+  exportAccounts(region: WorkBuddyRegion, accountIds: readonly string[]): Promise<WorkBuddyTransferExportAnswer>
+  /** Parse transfer-file text into the desensitized preview. */
+  previewImport(region: WorkBuddyRegion, text: string): Promise<WorkBuddyTransferPreview>
+  /**
+   * Merge the selected file entries into the region's vault. Returns the
+   * counters the card reports; `skipped` covers missing tokens, bad indexes,
+   * and records belonging to the other region.
+   */
+  importAccounts(region: WorkBuddyRegion, text: string, indexes: readonly number[]): Promise<WorkBuddyTransferImportAnswer>
 }
 
 /**
@@ -1207,6 +1242,62 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    const disposeTransfer = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_TRANSFER_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        // Export answers carry TOKEN material, and import/preview ingest
+        // arbitrary file text: POST + loopback like every other mutation, so
+        // another origin can neither pull credentials nor plant them.
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        const action = transferActionOf(req.url ?? '/')
+        if (action === undefined) {
+          return json(res, 400, { error: 'action must be export, preview, or import' })
+        }
+        const transfer = deps.transfer
+        if (transfer === undefined) {
+          return json(res, 503, { reason: 'transfer-unavailable', error: 'account transfer is not available in this build' })
+        }
+        try {
+          if (action === 'export') {
+            const body = await readJsonBody(req) as { accountIds?: unknown }
+            const accountIds = Array.isArray(body.accountIds)
+              ? body.accountIds.filter((id): id is string => typeof id === 'string' && id !== '')
+              : []
+            // An empty selection is a client bug, not "nothing to export":
+            // answering an empty success would write an empty (and useless)
+            // credentials file the user believes holds their accounts.
+            if (accountIds.length === 0) {
+              return json(res, 400, { error: 'accountIds must be a non-empty array of strings' })
+            }
+            const answer = await transfer.exportAccounts(region, accountIds)
+            if (answer.accounts.length === 0) {
+              return json(res, 409, { error: 'none of the named accounts was found in this region' })
+            }
+            return json(res, 200, answer)
+          }
+          const body = await readJsonBody(req) as { text?: unknown, indexes?: unknown }
+          if (typeof body.text !== 'string' || body.text.trim() === '') {
+            return json(res, 400, { error: 'text must be the transfer file\'s JSON content' })
+          }
+          if (action === 'preview') {
+            return json(res, 200, await transfer.previewImport(region, body.text))
+          }
+          const indexes = Array.isArray(body.indexes)
+            ? body.indexes.filter((value): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0)
+            : []
+          if (indexes.length === 0) {
+            return json(res, 400, { error: 'indexes must name at least one file entry to import' })
+          }
+          return json(res, 200, await transfer.importAccounts(region, body.text, indexes))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
     return () => {
       disposeRefresh()
       disposeCheckin()
@@ -1215,6 +1306,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       disposeProbe()
       disposePool()
       disposeOAuth()
+      disposeTransfer()
       disposeDiagWrite()
     }
   }, 'dsh-connect-workbuddy: Web status route')

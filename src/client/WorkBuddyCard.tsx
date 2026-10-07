@@ -50,6 +50,7 @@ import type {
 import { isFileContentionWriteError, writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { OAuthSignIn } from './OAuthSignIn.tsx'
+import { AccountTransfer } from './AccountTransfer.tsx'
 // `createLatestWins` is the same tested latest-wins factory the Host uses for
 // rotation, imported rather than re-implemented: the rule has one definition
 // and one set of tests.
@@ -1021,6 +1022,16 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         QR flow, rendered before the pool so account
                         management reads top-down (pick → add → pool). */}
                     <OAuthSignIn t={t} region={activeRegion} />
+                    {/* Batch export / import of the region's stored
+                        credentials, in the file format sibling credential
+                        managers share. Signed-in placement: account
+                        management reads top-down (pick → add → transfer →
+                        pool). */}
+                    <AccountTransfer
+                      t={t}
+                      region={activeRegion}
+                      accounts={status.accounts.map(account => ({ id: account.id, accountName: account.accountName }))}
+                    />
                     {/* The account pool. Rendered only when the Host reports
                         pool state, so an older Host shows an unmodified card.
                         It owns the rotation-vs-manual conflict: while rotation
@@ -1318,6 +1329,14 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         a signed-out machine needs its first account; a
                         signed-in one adds another the same way. */}
                     <OAuthSignIn t={t} region={activeRegion} />
+                    {/* Import matters MOST on a signed-out machine: a file
+                        exported from another computer is how this one gains
+                        its accounts without the desktop app. */}
+                    <AccountTransfer
+                      t={t}
+                      region={activeRegion}
+                      accounts={status.accounts.map(account => ({ id: account.id, accountName: account.accountName }))}
+                    />
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>
                 : null}
