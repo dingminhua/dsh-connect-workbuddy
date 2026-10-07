@@ -28,7 +28,9 @@ import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
+  nextRegionCreditsShown,
   nextRegionEnabled,
+  regionCreditsShownOf,
   regionEnabledOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
@@ -47,7 +49,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { isFileContentionWriteError, writeAccountSlot, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
+import { isFileContentionWriteError, writeAccountSlot, writeRegionCreditsShown, writeRegionEnabled, writeRegionModels } from './account-selection.ts'
 import { AccountPool } from './AccountPool.tsx'
 // `createLatestWins` is the same tested latest-wins factory the Host uses for
 // rotation, imported rather than re-implemented: the rule has one definition
@@ -350,6 +352,14 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   /** Region whose on/off checkbox write is in flight, so its box can't race. */
   const [togglingRegion, setTogglingRegion] = useState<WorkBuddyWebRegion | undefined>(undefined)
   /**
+   * Region whose SIDEBAR-credit checkbox write is in flight.
+   *
+   * Tracked separately from {@link togglingRegion} because they are different
+   * fields of the same region slot: one in-flight write must not disable the
+   * other control, and both must stay serialized against the SAVE writers.
+   */
+  const [togglingCredits, setTogglingCredits] = useState<WorkBuddyWebRegion | undefined>(undefined)
+  /**
    * Probe results, keyed by region then model id.
    *
    * Kept per region for the same reason drafts are: the two tabs are separate
@@ -556,6 +566,23 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
   const activeRegionOn = regionOn(activeRegion)
 
   /**
+   * Whether one region's sidebar credit line is shown — for the ACTIVE tab.
+   *
+   * Prefers the Host's answer, exactly like {@link regionOn} and for the same
+   * measured reason: on the affected 0.1.7 deployment the browser's settings
+   * mirror never picks up this plugin's writes, so a checkbox reading the mirror
+   * rendered its previous value after a successful save and looked impossible to
+   * turn off ("关闭不了"). The Host is the authority; the mirror is only a
+   * fallback for a Host line that predates the field.
+   */
+  const creditsShownOn = (item: WorkBuddyWebRegion): boolean => {
+    const usage = statusByRegion[item] as { showCreditsInMainUi?: unknown } | undefined
+    const fromHost = usage?.showCreditsInMainUi
+    if (typeof fromHost === 'boolean') return fromHost
+    return regionCreditsShownOf(settingsScope?.getSnapshot().value, item)
+  }
+
+  /**
    * Switch one region's provider off or on. The write carries the region's
    * whole slot through untouched — only `enabled` changes — so the user's
    * directory, model picks, image opt-ins and budgets survive a round trip.
@@ -595,6 +622,45 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setTogglingRegion(undefined)
+    }
+  }
+
+  /**
+   * Show or hide one region's sidebar credit line.
+   *
+   * This is the SECOND control for that line: the sidebar row also carries an
+   * `×` that writes the same `regions.<region>.showCreditsInMainUi` flag, and
+   * both go through the same landed-checked writer, so they can never disagree.
+   * The checkbox stays because the sidebar is not always rendered (collapsed
+   * rail, or a host that never mounts the footer slot).
+   *
+   * Writes the region's WHOLE slot — unchanged except for this one flag — so a
+   * hide never drops the directory, model picks, budgets or pool preferences
+   * that live alongside it.
+   */
+  const toggleCredits = async (item: WorkBuddyWebRegion, shown: boolean): Promise<void> => {
+    if (settingsScope === undefined) return
+    setTogglingCredits(item)
+    try {
+      const regions = nextRegionCreditsShown(settingsScope.getSnapshot().value, item, shown) as Record<string, unknown>
+      const slot = regions[item]
+      await writeRegionCreditsShown(
+        settingsScope,
+        item,
+        shown,
+        typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
+      )
+      // Re-read the Host so the checkbox renders the value that was just
+      // committed. This is load-bearing, not a refresh for its own sake: the
+      // checkbox reads `showCreditsInMainUi` off the Host's usage answer (the
+      // browser mirror is stale for this namespace), so without this re-read the
+      // box keeps showing its previous state and the toggle looks dead even
+      // though it landed — the "关闭不了" report.
+      await refreshUsage(item)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setTogglingCredits(undefined)
     }
   }
 
@@ -960,6 +1026,51 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
               {!activeRegionOn
                 ? <p className="dsm-workbuddy-tab-off-notice">{t('row.tabOffNotice')}</p>
                 : null}
+              {/* Sidebar credit line switch — ONE control, for the ACTIVE tab's
+                  region only.
+
+                  The two regions are independent providers with independent
+                  accounts, so each tab owns its own switch and they are never
+                  shown as a pair: this tab writes
+                  `regions.<activeRegion>.showCreditsInMainUi`, which decides
+                  only whether THAT region's line appears in the sidebar. That
+                  matches how every other control in this card is already scoped
+                  to the selected tab (account, pool, model list), and it means
+                  a CN-only user is never shown a switch for an account they do
+                  not have.
+
+                  An earlier revision rendered both boxes side by side under the
+                  tab bar regardless of the active tab; that read as one shared
+                  setting and was replaced. */}
+              <label
+                className="dsm-workbuddy-credits-switch"
+                title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}
+              >
+                <input
+                  type="checkbox"
+                  /* A region that is NOT switched on has no credits to show, so
+                     the control renders OFF rather than reporting a stored flag
+                     the user cannot act on: the value is forced to `false`
+                     instead of read, and the box is disabled below.
+
+                     This is not cosmetic. The line fetches that region's usage,
+                     and a withdrawn provider makes every one of those requests
+                     fail — leaving the sidebar with a permanently failing row
+                     beside a checkbox claiming the line is on. Reading the
+                     stored flag would also lie in the other direction:
+                     `showCreditsInMainUi` defaults to true, so a region the user
+                     never configured would read as ON while its provider is off. */
+                  checked={activeRegionOn ? creditsShownOn(activeRegion) : false}
+                  /* Serialized against the SAVE writers for the same reason the
+                     provider on/off box is: all of them write the SAME region
+                     slot, and a toggle carrying a stale snapshot could roll back
+                     a concurrent save. Disabled outright while the region is
+                     off — there is nothing to show until it is switched on. */
+                  disabled={!activeRegionOn || togglingCredits === activeRegion || !canWrite || saving || poolBusy}
+                  onChange={(event) => { void toggleCredits(activeRegion, event.target.checked) }}
+                />
+                <span>{activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}</span>
+              </label>
               {/* The signed-in status card is GONE: the account name and the
                   token expiry were both information the rest of the card already
                   carries, and this line was actively the wrong place for it.

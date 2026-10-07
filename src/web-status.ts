@@ -46,13 +46,16 @@ import {
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
+  WORKBUDDY_ACCOUNT_CREDITS_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
 import type {
   WorkBuddyWebAccount,
+  WorkBuddyWebAccountCredit,
   WorkBuddyWebCredits,
   WorkBuddyWebPool,
   WorkBuddyWebPoolAccount,
+  WorkBuddyWebPoolExclusion,
   WorkBuddyWebProbeOutcome,
   WorkBuddyWebProbeResult,
   WorkBuddyWebSearchPath,
@@ -98,6 +101,19 @@ export interface WorkBuddyStatusRouteOptions {
    */
   regionEnabled(region: WorkBuddyRegion): boolean
   /**
+   * Whether the region's sidebar credit line is shown.
+   *
+   * Read from the COMMITTED settings value here rather than in the browser, for
+   * the same reason as `regionEnabled` — and additionally because the browser's
+   * settings mirror is documented as stale for this namespace on the affected
+   * 0.1.7 deployments, which made the checkbox appear unable to turn the line
+   * off ("关闭不了"). The card reads this field off the Host's answer.
+   *
+   * Optional so a Host that predates the setting still satisfies the interface;
+   * absent reads as ON, matching the schema's `default(true)`.
+   */
+  showCreditsInMainUi?(region: WorkBuddyRegion): boolean
+  /**
    * Send one real-volume request to each named model of a region and report what
    * came back.
    *
@@ -141,6 +157,18 @@ export interface WorkBuddyStatusRouteOptions {
    * probe.
    */
   accountUsable?(region: WorkBuddyRegion, account: WorkBuddyRecoveryCandidate): Promise<boolean>
+  /**
+   * Why each of the region's accounts cannot serve right now, keyed by account
+   * id. Absent key (or an absent dep) means "no reason known" — the composer
+   * panel then marks nothing, which is the honest answer for an account that has
+   * never been measured.
+   *
+   * The rule is the SAME one the pool ranks by (`exclusionOf`), including its
+   * cooldown-expiry handling, so an account the pool calls usable and one the
+   * panel calls rate-limited can never be the same account at the same moment.
+   * Reimplementing the expiry check here would let the two drift.
+   */
+  accountExclusions?(region: WorkBuddyRegion): Promise<Readonly<Record<string, WorkBuddyWebPoolExclusion>>>
   /**
    * The region's account pool, assembled on the Host.
    *
@@ -426,6 +454,47 @@ function volatileFlagOf(field: string): boolean {
 
 
 /**
+ * Per-account credit balances for one region, for the composer panel's table.
+ *
+ * ONE upstream read per account, which is exactly why this is its own route:
+ * the panel calls it only while it is open, so the 5-minute readout never
+ * multiplies its cost by the account count.
+ *
+ * Every account is listed even when its balance cannot be read — a credential
+ * that no longer resolves, or an upstream that refused — because the panel's
+ * job is to show which accounts exist and let the user switch. Such a row
+ * carries NO `credits` field rather than `0`, so the panel renders "—" instead
+ * of telling the user they are out of credits.
+ *
+ * Failures are contained per account: one dead credential must not blank the
+ * table for the accounts that are fine.
+ */
+export async function workBuddyAccountCredits(
+  deps: WorkBuddyStatusRouteOptions,
+  region: WorkBuddyRegion,
+): Promise<WorkBuddyWebAccountCredit[]> {
+  const store = deps.store(region)
+  const accounts = await store.accounts()
+  // Read once, not per account: it is a single local file, and the rule that
+  // turns a measurement into an exclusion must stay the pool's (`exclusionOf`).
+  const exclusions = await deps.accountExclusions?.(region).catch(() => undefined) ?? {}
+  return Promise.all(accounts.map(async account => {
+    const credential = await store.credentialFor(account.id).catch(() => undefined)
+    const credits = credential === undefined
+      ? undefined
+      : await deps.client.fetchCredits(credential).then(answer => answer.total).catch(() => undefined)
+    const excludedBy = exclusions[account.id]
+    return {
+      id: account.id,
+      accountName: account.accountName,
+      selected: account.selected,
+      ...credits === undefined ? {} : { credits },
+      ...excludedBy === undefined ? {} : { excludedBy },
+    }
+  }))
+}
+
+/**
  * Assemble one region's card document. `region` is the tab the card is on;
  * the region-scoped store already answers with only that region's accounts,
  * so the document's model slots and account list are that region's by
@@ -445,6 +514,12 @@ export async function workBuddyWebStatus(
   // switched off renders its switch as off even when fully signed in, and the
   // card reads this committed value rather than a local guess.
   const enabled = deps.regionEnabled(region)
+  // Same reasoning as `enabled`, plus one more: the browser's settings mirror
+  // is documented as stale for this namespace on the affected 0.1.7
+  // deployments, so a control that read the mirror kept rendering the old value
+  // after a successful write — the switch looked impossible to turn off
+  // ("关闭不了"). Absent means ON, matching the schema's `default(true)`.
+  const showCreditsInMainUi = deps.showCreditsInMainUi?.(region) ?? true
   const authStatus = await store.status()
   // Whether a saved per-region choice is in effect, on every branch: the card
   // needs it to show that clearing really did return the region to the app's
@@ -455,7 +530,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi }
   }
   let credential
   try {
@@ -475,6 +550,7 @@ export async function workBuddyWebStatus(
       message: safeMessage(error),
       selectionExplicit,
       enabled,
+      showCreditsInMainUi,
       ...await store.selectionLost() ? { selectionLost: true } : {},
       // Only the genuinely empty machine gets the probe list. When local
       // sign-ins DO exist (the orphaned-saved-id case), the card already has
@@ -497,6 +573,7 @@ export async function workBuddyWebStatus(
     tokenExpiresAtMs: credential.expiresAtMs,
     selectionExplicit,
     enabled,
+    showCreditsInMainUi,
     accounts: accounts.map(toWebAccount),
     models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
     enabledModelIds: [...deps.enabledModelIds(region)],
@@ -732,6 +809,21 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         if (region === undefined) return
         try {
           json(res, 200, await workBuddyWebStatus(deps, region))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    const disposeAccountCredits = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_ACCOUNT_CREDITS_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        try {
+          json(res, 200, { accounts: await workBuddyAccountCredits(deps, region) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })
         }
@@ -1089,6 +1181,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       disposeCheckin()
       disposeAccounts()
       disposeUsage()
+      disposeAccountCredits()
       disposeProbe()
       disposePool()
       disposeDiagWrite()

@@ -18,6 +18,28 @@ const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSI
 const CLIENT_EXTERNALS = [
   'react',
   'react/jsx-runtime',
+  /**
+   * `react-dom` MUST stay external. It is registered by the shell's module
+   * loader (`staticModules`), so externalizing turns the import into a
+   * `require` the page resolves. BUNDLING it inlines both the development and
+   * production CJS builds, and every one of them opens with
+   *   if (process.env.NODE_ENV !== "production") …
+   * which throws `ReferenceError: process is not defined` in the browser — at
+   * module-evaluation time, so the ENTIRE client half fails to import:
+   * web boot: 1 entry did not activate
+   * dsh-connect-workbuddy: import failed
+   * That is exactly what shipped in the referring project (dsh-connect-trae
+   * 2.12.0 / 2.13.0) once its credit panel needed `createPortal`. This plugin
+   * now uses `createPortal` too, so the rule applies here verbatim;
+   * `tests/client-runtime-imports.spec.ts` pins it.
+   */
+  'react-dom',
+  /**
+   * The subpath is externalized alongside the root for the same reason, and
+   * because a future `createRoot`/portal helper would otherwise silently pull
+   * the whole DOM renderer back into the bundle. The shell registers it.
+   */
+  'react-dom/client',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-locale/client',

@@ -15,6 +15,18 @@
 /** Plugin-owned usage endpoint consumed by its browser half. */
 export const WORKBUDDY_USAGE_PATH = '/plugins/dsh-connect-workbuddy/usage'
 /**
+ * Per-account credit balances for one region, read ONLY while the composer
+ * panel is open.
+ *
+ * Separate from {@link WORKBUDDY_USAGE_PATH} because its cost is different in
+ * kind: the usage document is one upstream read for the selected account, while
+ * this is one read PER account in the region. Folding it into the usage route
+ * would make every 5-minute refresh pay for a table nobody is looking at, so it
+ * is fetched on demand instead — the same principle the pool applies to its
+ * per-account figures.
+ */
+export const WORKBUDDY_ACCOUNT_CREDITS_PATH = '/plugins/dsh-connect-workbuddy/account-credits'
+/**
  * The project's public repository.
  *
  * Lives here rather than beside one component because TWO sections link to it
@@ -224,6 +236,38 @@ export function nextRegionEnabled(
   return nextRegionSlots(regionsMapOf(value), region, { ...regionSlotOf(value, region), enabled })
 }
 
+/**
+ * Whether one region's sidebar credit line is shown. Opt-out: only an explicit
+ * `false` hides it, so a config written before this switch existed keeps the
+ * line visible exactly as a fresh install does.
+ *
+ * Per-REGION by construction (it reads one region's slot), which is the point:
+ * WB CN and WB AI are separate accounts on separate gateways, so "show credits"
+ * is not one decision. `value` may be the whole settings section or the
+ * `regions` map itself.
+ */
+export function regionCreditsShownOf(value: unknown, region: WorkBuddyWebRegion): boolean {
+  return regionSlotOf(value, region)['showCreditsInMainUi'] !== false
+}
+
+/**
+ * Build the next `regions` settings value for the sidebar-credit on/off toggle.
+ *
+ * Same merge rule as {@link nextRegionEnabled}: ONLY the target region's flag
+ * changes, so every other field of that slot (directory, selection, pool
+ * preferences) and every other region's slot survive the write.
+ */
+export function nextRegionCreditsShown(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  shown: boolean,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    showCreditsInMainUi: shown,
+  })
+}
+
 /** One credit package as the upstream returns it, node-free. */
 export interface WorkBuddyWebCreditPackage {
   packageName: string
@@ -360,6 +404,30 @@ export interface WorkBuddyWebAccount {
   selected: boolean
 }
 
+/**
+ * One account's credit balance, for the composer panel's table.
+ *
+ * `credits` is ABSENT when that account's balance could not be read — a
+ * credential that no longer resolves, or an upstream that refused. Deliberately
+ * not `0`: a zero is a claim about the account, and the panel renders an absent
+ * figure as "—" instead of telling the user they are out of credits.
+ */
+export interface WorkBuddyWebAccountCredit {
+  id: string
+  accountName: string
+  selected: boolean
+  credits?: number
+  /**
+   * Why this account cannot serve right now, or absent when nothing is wrong
+   * (or nothing has been measured yet).
+   *
+   * The composer panel marks the row with this so the user can see, before
+   * switching, that an account is rate-limited — otherwise the table would
+   * present an exhausted account as an equally good choice.
+   */
+  excludedBy?: WorkBuddyWebPoolExclusion
+}
+
 export type WorkBuddyWebPackage = WorkBuddyWebCreditPackage
 
 /**
@@ -413,6 +481,17 @@ export type WorkBuddyWebUsage =
     accounts: readonly WorkBuddyWebAccount[]
     /** Whether this region's provider is currently offered to DSH. */
     enabled?: boolean
+    /**
+     * Whether this region's sidebar credit line is shown.
+     *
+     * Carried on the Host's answer rather than read from the browser settings
+     * mirror, for the same measured reason as `contextBudgets`: on the affected
+     * 0.1.7 deployment the mirror never picks up this plugin's writes (a save
+     * through the Host endpoint leaves it stale), so a control reading it kept
+     * showing the old value and looked like it could not be turned off — the
+     * "关闭不了" report.
+     */
+    showCreditsInMainUi?: boolean
     message?: string
     /** The persisted account id matches no local account. */
     selectionLost?: boolean
@@ -442,6 +521,12 @@ export type WorkBuddyWebUsage =
     region: WorkBuddyWebRegion
     /** Whether this region's provider is currently offered to DSH. */
     enabled?: boolean
+    /**
+     * Whether this region's sidebar credit line is shown. See the signed-out
+     * variant for why this travels on the Host's answer instead of the browser
+     * settings mirror.
+     */
+    showCreditsInMainUi?: boolean
     source?: 'desktop' | 'dsh'
     tokenExpiresAtMs: number
     /** A saved per-region choice is in effect (false = following the app). */
