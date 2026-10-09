@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **导入不再拒掉插件自己导出的账号：CN 聊天网关 `copilot.tencent.com` 现在被识别为国内站。**
+  - **现象**：卡片导出 8 个账号，再把同一个文件导入回来，结果是「导入 5 / 跳过 3」——**导出的文件自己导不回去**。用户反馈这 3 个账号在另一台电脑上完全正常。
+  - **根因**：`copilot.tencent.com` 不是第三个上游，它**就是本插件自己的国内聊天网关**（`CN_CHAT_BASE = 'https://copilot.tencent.com'`，见 `src/upstream.ts`），而真实凭据的 `domain` 字段就写着它。4.1.2 的导入闸门（`knownRegionOf`，为防伪冒域名而做的「正向识别」）只认 `workbuddy.cn` / `codebuddy.cn` / `workbuddy.ai` / `codebuddy.ai`，`copilot.tencent.com` 匹配不上任何一个 → 返回 `undefined` → 计入 `skipped`。于是插件导出得出、导入不认，自相矛盾。
+  - **修法**：`knownRegionOf` 的 CN 表加入 `copilot.tencent.com` 及其子域。仍按可注册域匹配，仿冒主机（`copilot.tencent.com.evil.com`、`evilcopilot.tencent.com`）依旧被拒，闸门没有放宽成默认归 CN。
+  - 回归测试两条：一条钉住网关域名与仿冒主机的判定，一条复刻「5 个登录域名 + 3 个网关域名混在一个导出文件」的完整往返。
+
 ## 4.1.2 (2026-10-10)
 
 ### Features

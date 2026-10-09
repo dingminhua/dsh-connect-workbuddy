@@ -196,4 +196,34 @@ describe('mergeTransferRecords', () => {
     const global = mergeTransferRecords([siblingRecord({ domain: 'www.workbuddy.ai' })] as never[], [0], 'global', regionOfDomain)
     expect(global.imported).toBe(1)
   })
+
+  it('admits the CN chat gateway, which real credentials name as their domain', () => {
+    // `copilot.tencent.com` is this plugin's OWN CN gateway (CN_CHAT_BASE), not a
+    // third product. Refusing it made the card's export un-importable: a real
+    // 8-account export was re-imported and the three gateway-domain records were
+    // silently counted as `skipped`, so the user lost accounts the plugin had
+    // itself just handed them.
+    for (const domain of ['copilot.tencent.com', 'www.copilot.tencent.com']) {
+      expect(knownRegionOf(domain), `${domain} is the CN gateway`).toBe('cn')
+      const merged = mergeTransferRecords([siblingRecord({ domain })] as never[], [0], 'cn', regionOfDomain)
+      expect(merged.imported).toBe(1)
+      expect(merged.skipped).toBe(0)
+    }
+    // Still a registrable-domain match: a lookalike host is refused.
+    expect(knownRegionOf('copilot.tencent.com.evil.com')).toBeUndefined()
+    expect(knownRegionOf('evilcopilot.tencent.com')).toBeUndefined()
+  })
+
+  it('re-imports a whole export that mixes login domains with the gateway domain', () => {
+    // The regression as the user hit it: one export file, 8 records, five
+    // carrying the CN login domain and three the CN gateway. All eight are CN.
+    const records = [
+      ...Array.from({ length: 5 }, (_, i) => siblingRecord({ uid: `cn-${i}`, domain: 'www.workbuddy.cn' })),
+      ...Array.from({ length: 3 }, (_, i) => siblingRecord({ uid: `gw-${i}`, domain: 'copilot.tencent.com' })),
+    ] as never[]
+    const merged = mergeTransferRecords(records, records.map((_, i) => i), 'cn', regionOfDomain)
+    expect(merged.imported).toBe(8)
+    expect(merged.skipped).toBe(0)
+    expect(merged.changes.size).toBe(8)
+  })
 })

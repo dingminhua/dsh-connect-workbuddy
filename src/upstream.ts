@@ -355,6 +355,14 @@ export function regionOf(domain: string): WorkBuddyRegion {
  *
  * Both sides are matched on their registrable domain, so a bare host and any
  * subdomain qualify while a lookalike such as `codebuddy.cn.evil.com` cannot.
+ *
+ * `copilot.tencent.com` is NOT a third product — it is this plugin's OWN CN
+ * chat gateway (`CN_CHAT_BASE`), and the credential's `domain` field carries it
+ * verbatim on real records. Refusing it here made the plugin reject its own
+ * export: the card exported 8 accounts, and re-importing that file skipped the
+ * three whose `domain` was the gateway. It cannot be spoofed into the wrong
+ * region by being recognised here — it names the CN gateway, so admitting it is
+ * the same decision as admitting `workbuddy.cn`.
  */
 export function knownRegionOf(domain: string): WorkBuddyRegion | undefined {
   const lowered = domain.trim().toLowerCase()
@@ -369,6 +377,8 @@ export function knownRegionOf(domain: string): WorkBuddyRegion | undefined {
   // `codebuddy.cn.evil.com` still cannot pass.
   if (lowered === 'workbuddy.cn' || lowered.endsWith('.workbuddy.cn')) return 'cn'
   if (lowered === 'codebuddy.cn' || lowered.endsWith('.codebuddy.cn')) return 'cn'
+  // The CN chat gateway itself, which real credentials name as their domain.
+  if (lowered === 'copilot.tencent.com' || lowered.endsWith('.copilot.tencent.com')) return 'cn'
   return undefined
 }
 
