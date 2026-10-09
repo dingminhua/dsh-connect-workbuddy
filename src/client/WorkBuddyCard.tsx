@@ -967,6 +967,30 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
    */
   const selectionExplicit = status.status === 'error' ? undefined : status.selectionExplicit
 
+  /**
+   * Account-adding and account-migration controls, defined ONCE and rendered
+   * in both sign-in states: inside the pool settings block when an account
+   * exists, and in the signed-out branch when it does not (the pool section is
+   * not rendered there at all). Two JSX copies would be free to drift, and the
+   * two states are the same feature — a user who learns these controls in one
+   * must find them in the same order in the other.
+   */
+  const accountTools = (
+    <>
+      <OAuthSignIn t={t} region={activeRegion} />
+      <AccountTransfer
+        t={t}
+        region={activeRegion}
+        // The error branch reports no accounts, and the transfer section is
+        // not rendered there — passing an empty list keeps the type honest
+        // without inventing a fallback that could only ever be wrong.
+        accounts={status.status === 'error'
+          ? []
+          : status.accounts.map(account => ({ id: account.id, accountName: account.accountName }))}
+      />
+    </>
+  )
+
   return (
     <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
       <button
@@ -1129,20 +1153,6 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     {status.refreshError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error" role="alert">{t('row.requestFailedHint', { message: status.refreshError })}</p>}
-                    {/* Add-another-account entry, signed-in flavour: the same
-                        QR flow, rendered before the pool so account
-                        management reads top-down (pick → add → pool). */}
-                    <OAuthSignIn t={t} region={activeRegion} />
-                    {/* Batch export / import of the region's stored
-                        credentials, in the file format sibling credential
-                        managers share. Signed-in placement: account
-                        management reads top-down (pick → add → transfer →
-                        pool). */}
-                    <AccountTransfer
-                      t={t}
-                      region={activeRegion}
-                      accounts={status.accounts.map(account => ({ id: account.id, accountName: account.accountName }))}
-                    />
                     {/* The account pool. Rendered only when the Host reports
                         pool state, so an older Host shows an unmodified card.
                         It owns the rotation-vs-manual conflict: while rotation
@@ -1174,6 +1184,7 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                       // control that changes nothing.
                       onSelectAccount={(accountId) => { void switchAccount(accountId) }}
                       selectingAccount={switchingAccount}
+                      accountTools={accountTools}
                       siblingBusy={saving || togglingRegion !== undefined}
                       onBusyChange={setPoolBusy}
                       // Returns the promise so the pool section can AWAIT the
@@ -1435,19 +1446,15 @@ export function WorkBuddyCard({ t, settingsScope, view }: WorkBuddyCardProps & {
                         {busy ? t('row.accountsScanning') : t('row.accountsRescan')}
                       </button>
                     </div>
-                    {/* QR sign-in: the one way to add an account WITHOUT the
-                        desktop app. Same placement on both sign-in states —
-                        a signed-out machine needs its first account; a
-                        signed-in one adds another the same way. */}
-                    <OAuthSignIn t={t} region={activeRegion} />
-                    {/* Import matters MOST on a signed-out machine: a file
-                        exported from another computer is how this one gains
-                        its accounts without the desktop app. */}
-                    <AccountTransfer
-                      t={t}
-                      region={activeRegion}
-                      accounts={status.accounts.map(account => ({ id: account.id, accountName: account.accountName }))}
-                    />
+                    {/* Account tools, signed-OUT flavour. The pool section
+                        that normally hosts these does not render without an
+                        account, and a signed-out machine is exactly where both
+                        matter most: QR is the only way to add an account
+                        without the desktop app, and a file exported from
+                        another computer is how this one gains its accounts.
+                        Same container and same order as the signed-in copy, so
+                        the two states do not read as two different features. */}
+                    <div className="dsm-workbuddy-pool-tools">{accountTools}</div>
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>
                 : null}

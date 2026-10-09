@@ -205,6 +205,12 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-settings-wrap{display:flex;flex-direction:column;gap:10px}
 .dsm-workbuddy-pool-dirty{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-workbuddy-pool-settings{display:flex;flex-direction:column;gap:1px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
+/* QR sign-in + export/import, hosted inside the pool settings block.
+   The block's own bordered rows belong to the SAVED preferences, so these
+   get their own container: same rhythm (12px 14px) so the two read as one
+   group, but a dashed edge marking them as immediate actions rather than
+   drafts the Save button below would commit. */
+.dsm-workbuddy-pool-tools{display:flex;flex-direction:column;gap:2px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;padding:4px 10px}
 .dsm-workbuddy-pool-set{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31)}
 .dsm-workbuddy-pool-set:first-child{border-top:0}
 .dsm-workbuddy-pool-set-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}

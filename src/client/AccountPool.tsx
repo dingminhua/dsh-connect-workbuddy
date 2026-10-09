@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
+import type { ReactNode } from 'react'
 import {
   WORKBUDDY_GITHUB_URL,
   WORKBUDDY_POOL_ACCOUNT_PARAM,
@@ -155,6 +156,21 @@ export interface AccountPoolProps {
    * own that fetch, so it asks the card for it, exactly as a save does.
    */
   onRefresh?: () => void
+  /**
+   * Account-ADDING and account-MIGRATION controls, rendered inside the pool
+   * settings block, ABOVE the preference rows.
+   *
+   * They live here rather than in the card header because both are account
+   * management, and the pool's member table is where accounts are managed.
+   * They sit above the "preferences, saved on save" note on purpose: QR
+   * sign-in and import/export take effect IMMEDIATELY and have no draft, so
+   * under that note they would imply a Save button that does nothing for them.
+   *
+   * Passed as ready-made nodes so this section does not own their state: each
+   * component already keeps its own phase, and the card renders the same pair
+   * in its signed-out branch, where this section does not exist at all.
+   */
+  accountTools?: ReactNode
 }
 
 /** How many activity lines are kept; the oldest are dropped. */
@@ -258,7 +274,7 @@ function stateColor(account: WorkBuddyWebPoolAccount): string {
  * section implying the feature exists.
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
-  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount } = props
+  const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -1035,6 +1051,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       saveError, settingsScope,
       onEdit: editDraft, onSave: () => { void save() }, onDiscard: discard,
       appendLog, targetProvenance,
+      ...accountTools === undefined ? {} : { accountTools },
     }),
 
     h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolRegionNote')),
@@ -1276,11 +1293,12 @@ function renderSettings(input: {
    * source lives on the pool snapshot this renderer does not own.
    */
   targetProvenance: string | null
+  accountTools?: ReactNode
 }): ReturnType<typeof h> {
   const {
     t, pool, active, dirty, saving, siblingBusy,
     saveError, settingsScope,
-    onEdit, onSave, onDiscard, targetProvenance,
+    onEdit, onSave, onDiscard, targetProvenance, accountTools,
   } = input
   const canEdit = settingsScope !== undefined
 
@@ -1313,6 +1331,10 @@ function renderSettings(input: {
       h('h3', { className: 'dsm-workbuddy-pool-title' }, t('row.poolSettingsTitle')),
       dirty ? h('span', { className: 'dsm-workbuddy-pool-dirty' }, t('row.poolDirty')) : null,
     ),
+    // Account tools FIRST, and still under the heading so the block reads as
+    // one "account pool settings" area — but ABOVE the note, because what
+    // follows takes effect at once while the rows under the note are drafts.
+    accountTools === undefined ? null : h('div', { className: 'dsm-workbuddy-pool-tools' }, accountTools),
     h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolSettingsHint')),
 
     h('div', { className: 'dsm-workbuddy-pool-settings' },

@@ -182,20 +182,33 @@ describe('card class names are styled', () => {
    * component that only renders inside a dialog is hard to reach, while a
    * missing rule is exactly the failure this guards.
    */
-  const components = ['OAuthSignIn.tsx', 'AccountTransfer.tsx'] as const
+  const components = ['OAuthSignIn.tsx', 'AccountTransfer.tsx', 'WorkBuddyCard.tsx', 'AccountPool.tsx'] as const
 
   it('defines every class those components render', () => {
     const css = cardCss()
     const missing: string[] = []
     for (const file of components) {
       const source = readFileSync(fileURLToPath(new URL(`src/client/${file}`, repoRoot)), 'utf8')
-      for (const match of source.matchAll(/className="([^"]+)"/g)) {
-        for (const token of (match[1] ?? '').split(/\s+/)) {
+      // Two authoring styles reach a class attribute in this client half:
+      // JSX (`className="a b"`) and the `h()` calls the pool module uses
+      // (`h('div', { className: 'a b' })`). Matching only the first let a
+      // renamed pool class pass unstyled — the exact failure this guards.
+      for (const match of source.matchAll(/className\s*[:=]\s*("[^"]*"|'[^']*')/g)) {
+        // Template-literal classes (`className={`a ${cond ? 'b' : 'c'}`}`) are
+        // deliberately out of scope: their pieces are single tokens spliced at
+        // runtime, and matching the raw source would report `?` and `${` as
+        // missing class names. The static forms below are the ones a rename
+        // can silently orphan.
+        for (const token of (match[1] ?? '').replace(/^["']|["']$/g, '').split(/\s+/)) {
           if (token === '' || token.startsWith('dsm-btn')) continue
           // A compound like `dsm-workbuddy-bar-status dsm-workbuddy-bar-ok`
           // is checked token by token, which is what makes the two-class
           // error/ok colouring survive a rename of either half.
-          if (!css.includes(`.${token}`)) missing.push(`${file}: ${token}`)
+          // Substring matching is not enough: `.dsm-x-RENAMED` still contains
+          // `.dsm-x`, so a renamed class would read as present. Require the
+          // token to be the WHOLE selector — the class must be followed by a
+          // delimiter, never by more of its own name.
+          if (!new RegExp(`\\.${token}(?![\\w-])`).test(css)) missing.push(`${file}: ${token}`)
         }
       }
     }
