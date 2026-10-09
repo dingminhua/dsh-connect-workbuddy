@@ -247,24 +247,29 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool .sw input:checked+.sw-track::after{transform:translateX(16px)}
 .dsm-workbuddy-pool .sw input:disabled+.sw-track{opacity:.4}
 .dsm-workbuddy-pool .sw input:disabled{cursor:default}
-/* OAuth QR sign-in section. */
-.dsm-workbuddy-oauth{margin:12px 0;padding:12px 14px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px}
-.dsm-workbuddy-oauth-title{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-.dsm-workbuddy-oauth p{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed)}
-.dsm-workbuddy-oauth a{color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
-.dsm-workbuddy-oauth a:hover{text-decoration:underline}
-.dsm-workbuddy-oauth-hint{color:var(--dsw-alias-label-tertiary,#999)!important}
-.dsm-workbuddy-oauth-ok{color:var(--dsw-alias-state-success-primary,#22a06b)!important}
-.dsm-workbuddy-oauth-error{color:var(--dsw-alias-state-error-primary,#ef4444)!important}
-/* Account transfer (batch export / import) section. */
-.dsm-workbuddy-transfer{margin:12px 0;padding:12px 14px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px}
-.dsm-workbuddy-transfer-title{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-.dsm-workbuddy-transfer p{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed)}
-.dsm-workbuddy-transfer-hint{color:var(--dsw-alias-label-tertiary,#999)!important}
-.dsm-workbuddy-transfer-ok{color:var(--dsw-alias-state-success-primary,#22a06b)!important}
-.dsm-workbuddy-transfer-error{color:var(--dsw-alias-state-error-primary,#ef4444)!important}
-.dsm-workbuddy-transfer-actions{display:flex;gap:8px;flex-wrap:wrap}
-.dsm-workbuddy-transfer-dialog{margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-secondary,transparent)}
+/* Account action bars: QR sign-in and export/import.
+   One row each — label, live status, actions — instead of a padded block
+   per feature. The bar is the resting height; only an open dialog (below)
+   grows vertically, so the card does not scroll past a wall of chrome to
+   reach the buttons. Status text shares the row rather than claiming its own,
+   and is what truncates first when the card is narrow. */
+.dsm-workbuddy-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:0}
+.dsm-workbuddy-bar-label{flex:none;margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-workbuddy-bar-status{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsm-workbuddy-bar-hint{color:var(--dsw-alias-label-tertiary,#999)}
+.dsm-workbuddy-bar-actions{display:flex;gap:8px;flex:none;margin-left:auto}
+.dsm-workbuddy-bar a{color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
+.dsm-workbuddy-bar a:hover{text-decoration:underline}
+.dsm-workbuddy-bar-ok{color:var(--dsw-alias-state-success-primary,#22a06b)}
+.dsm-workbuddy-bar-error{color:var(--dsw-alias-state-error-primary,#ef4444)}
+/* Secondary text inside the transfer DIALOG (not a bar): the privacy note
+   shown when credentials leave the machine. Kept independent of the bar
+   classes so the dialog does not depend on the bar's layout to be readable. */
+.dsm-workbuddy-hint{color:var(--dsw-alias-label-tertiary,#999)}
+/* The transfer dialog is deliberately a block: it holds a scrollable account
+   list and per-entry checkboxes, which cannot live in a one-row bar. */
+.dsm-workbuddy-transfer-dialog{margin-top:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-secondary,transparent)}
+.dsm-workbuddy-transfer-dialog p{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed)}
 .dsm-workbuddy-transfer-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 .dsm-workbuddy-transfer-list{list-style:none;margin:0 0 8px;padding:0;max-height:180px;overflow-y:auto}
 .dsm-workbuddy-transfer-list label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer;padding:2px 0}

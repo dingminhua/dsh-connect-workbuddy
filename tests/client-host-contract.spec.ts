@@ -169,3 +169,47 @@ describe('card theme tokens', () => {
     expect(rule?.[1]).not.toContain('#e0a13a')
   })
 })
+
+describe('card class names are styled', () => {
+  /**
+   * A class the stylesheet does not define does not merely look wrong — it
+   * renders with BROWSER DEFAULTS. The card already shipped that defect once
+   * (`Points` → `Credits` renamed the component but left two `trigger` rules
+   * behind, so the credits readout fell back to a default button), and the
+   * bar classes here replaced two per-feature blocks in one edit.
+   *
+   * The check is deliberately source-level rather than a render assertion: a
+   * component that only renders inside a dialog is hard to reach, while a
+   * missing rule is exactly the failure this guards.
+   */
+  const components = ['OAuthSignIn.tsx', 'AccountTransfer.tsx'] as const
+
+  it('defines every class those components render', () => {
+    const css = cardCss()
+    const missing: string[] = []
+    for (const file of components) {
+      const source = readFileSync(fileURLToPath(new URL(`src/client/${file}`, repoRoot)), 'utf8')
+      for (const match of source.matchAll(/className="([^"]+)"/g)) {
+        for (const token of (match[1] ?? '').split(/\s+/)) {
+          if (token === '' || token.startsWith('dsm-btn')) continue
+          // A compound like `dsm-workbuddy-bar-status dsm-workbuddy-bar-ok`
+          // is checked token by token, which is what makes the two-class
+          // error/ok colouring survive a rename of either half.
+          if (!css.includes(`.${token}`)) missing.push(`${file}: ${token}`)
+        }
+      }
+    }
+    expect(missing).toEqual([])
+  })
+
+  it('keeps the bar classes the resting layout depends on', () => {
+    // Named explicitly because the one-line layout is carried by these
+    // specific properties, not by the class merely existing: without
+    // `nowrap`+`ellipsis` a long status would wrap the bar back to two rows.
+    const css = cardCss()
+    expect(css).toMatch(/\.dsm-workbuddy-bar\{[^}]*display:flex/)
+    expect(css).toMatch(/\.dsm-workbuddy-bar\{[^}]*flex-wrap:wrap/)
+    expect(css).toMatch(/\.dsm-workbuddy-bar-status\{[^}]*text-overflow:ellipsis/)
+    expect(css).toMatch(/\.dsm-workbuddy-bar-actions\{[^}]*margin-left:auto/)
+  })
+})

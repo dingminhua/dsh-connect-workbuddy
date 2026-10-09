@@ -163,8 +163,8 @@ export function OAuthSignIn({ t, region }: OAuthSignInProps): ReactElement {
         ? t('row.oauthCancelled')
         : t('row.oauthError', { message: phase.error ?? '' })
     return (
-      <section className="dsm-workbuddy-oauth" aria-label={t('row.oauthTitle')}>
-        <p className={phase.message === 'added' ? 'dsm-workbuddy-oauth-ok' : 'dsm-workbuddy-oauth-error'}>{text}</p>
+      <section className="dsm-workbuddy-bar" aria-label={t('row.oauthTitle')}>
+        <p className={`dsm-workbuddy-bar-status ${phase.message === 'added' ? 'dsm-workbuddy-bar-ok' : 'dsm-workbuddy-bar-error'}`}>{text}</p>
         <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { setPhase({ kind: 'idle' }) }}>
           {t('row.oauthStart')}
         </button>
@@ -173,15 +173,15 @@ export function OAuthSignIn({ t, region }: OAuthSignInProps): ReactElement {
   }
 
   return (
-    <section className="dsm-workbuddy-oauth" aria-label={t('row.oauthTitle')}>
-      <p className="dsm-workbuddy-oauth-title">{t('row.oauthTitle')}</p>
+    <section className="dsm-workbuddy-bar" aria-label={t('row.oauthTitle')}>
+      <p className="dsm-workbuddy-bar-label">{t('row.oauthTitle')}</p>
       {phase.kind === 'waiting'
         ? <>
-            <p>
+            <p className="dsm-workbuddy-bar-status">
               <a href={phase.verificationUri} target="_blank" rel="noopener noreferrer">{t('row.oauthOpen')}</a>
               {' — '}{t('row.oauthOpened')}
             </p>
-            <p className="dsm-workbuddy-oauth-hint">
+            <p className="dsm-workbuddy-bar-hint">
               {t('row.oauthWaiting', { seconds: elapsedSeconds(phase.startedAtMs, nowMs) })}
               {' '}
               {t('row.oauthExpires', { minutes: Math.max(1, Math.round((phase.expiresAtMs - nowMs) / 60_000)) })}

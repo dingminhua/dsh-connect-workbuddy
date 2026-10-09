@@ -160,14 +160,14 @@ export function AccountTransfer({ t, region, accounts }: AccountTransferProps): 
   const busy = phase.kind === 'exporting' || phase.kind === 'importing'
 
   return (
-    <section className="dsm-workbuddy-transfer" aria-label={t('row.transferTitle')}>
-      <p className="dsm-workbuddy-transfer-title">{t('row.transferTitle')}</p>
+    <section className="dsm-workbuddy-bar" aria-label={t('row.transferTitle')}>
+      <p className="dsm-workbuddy-bar-label">{t('row.transferTitle')}</p>
       {phase.kind === 'done'
-        ? <p className="dsm-workbuddy-transfer-ok">{phase.message}</p>
+        ? <p className="dsm-workbuddy-bar-status dsm-workbuddy-bar-ok">{phase.message}</p>
         : phase.kind === 'error'
-          ? <p className="dsm-workbuddy-transfer-error">{t('row.transferError', { message: phase.message })}</p>
-          : <p className="dsm-workbuddy-transfer-hint">{t('row.transferHint')}</p>}
-      <div className="dsm-workbuddy-transfer-actions">
+          ? <p className="dsm-workbuddy-bar-status dsm-workbuddy-bar-error">{t('row.transferError', { message: phase.message })}</p>
+          : null}
+      <div className="dsm-workbuddy-bar-actions">
         <button
           type="button"
           className="dsm-btn dsm-btn-outline"
@@ -188,6 +188,10 @@ export function AccountTransfer({ t, region, accounts }: AccountTransferProps): 
       {dialog === 'export'
         ? <div className="dsm-workbuddy-transfer-dialog" role="dialog" aria-label={t('row.transferExport')}>
             <p>{t('row.transferExportPick', { total: accounts.length })}</p>
+            {/* The privacy note lives here rather than on the resting bar: it
+                matters at the moment credentials leave the machine, and on the
+                bar it would cost a third of a line to repeat forever. */}
+            <p className="dsm-workbuddy-hint">{t('row.transferHint')}</p>
             <ul className="dsm-workbuddy-transfer-list">
               {accounts.map(account => (
                 <li key={account.id}>
