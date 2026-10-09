@@ -17,7 +17,7 @@
 
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import { WORKBUDDY_TRANSFER_PATH, withWorkBuddyRegion } from '../status-paths.ts'
+import { WORKBUDDY_TRANSFER_PATH, withWorkBuddyRouteAction } from '../status-paths.ts'
 import type { WorkBuddyWebRegion, WorkBuddyTransferPreview } from '../status-paths.ts'
 import type { Translate } from './searched-paths.ts'
 
@@ -83,7 +83,7 @@ export function AccountTransfer({ t, region, accounts }: AccountTransferProps): 
     if (selected.size === 0) return
     setPhase({ kind: 'exporting' })
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_TRANSFER_PATH, region), {
+      const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_TRANSFER_PATH, region, 'export'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         credentials: 'same-origin',
@@ -109,7 +109,7 @@ export function AccountTransfer({ t, region, accounts }: AccountTransferProps): 
     setPhase({ kind: 'importing' })
     try {
       const text = await file.text()
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_TRANSFER_PATH, region), {
+      const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_TRANSFER_PATH, region, 'preview'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         credentials: 'same-origin',
@@ -136,7 +136,7 @@ export function AccountTransfer({ t, region, accounts }: AccountTransferProps): 
     setPhase({ kind: 'importing' })
     try {
       const text = await fileInput.current.files[0].text()
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_TRANSFER_PATH, region), {
+      const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_TRANSFER_PATH, region, 'import'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         credentials: 'same-origin',

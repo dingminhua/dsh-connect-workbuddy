@@ -342,6 +342,37 @@ export function regionOf(domain: string): WorkBuddyRegion {
 }
 
 /**
+ * The STRICT counterpart of {@link regionOf}: a region's domain only when it is
+ * positively recognised, `undefined` for anything else.
+ *
+ * `regionOf`'s catch-all is deliberate — the CN product is single-homed, so an
+ * unrecognised spelling is treated as CN and a real (if oddly written) CN
+ * credential still resolves. That reasoning holds only for a domain the
+ * UPSTREAM issued. It does not hold for a value read out of a file someone
+ * handed the plugin: there "unrecognised" means "cannot be classified", and
+ * calling it CN would file a foreign or spoofed credential in the CN vault.
+ * Import gates must use this, not {@link regionOf}.
+ *
+ * Both sides are matched on their registrable domain, so a bare host and any
+ * subdomain qualify while a lookalike such as `codebuddy.cn.evil.com` cannot.
+ */
+export function knownRegionOf(domain: string): WorkBuddyRegion | undefined {
+  const lowered = domain.trim().toLowerCase()
+  if (lowered === '') return undefined
+  if (lowered === 'workbuddy.ai' || lowered.endsWith('.workbuddy.ai')) return 'global'
+  if (lowered === 'codebuddy.ai' || lowered.endsWith('.codebuddy.ai')) return 'global'
+  // The CN product signs in under BOTH brand spellings — `workbuddy.cn` and
+  // `codebuddy.cn` (and their www/subdomain forms) all appear in real
+  // credentials and in sibling tools' export files, so both must classify as
+  // CN or valid exports would be refused. Matching the registrable domain
+  // admits a bare host and any subdomain while a lookalike such as
+  // `codebuddy.cn.evil.com` still cannot pass.
+  if (lowered === 'workbuddy.cn' || lowered.endsWith('.workbuddy.cn')) return 'cn'
+  if (lowered === 'codebuddy.cn' || lowered.endsWith('.codebuddy.cn')) return 'cn'
+  return undefined
+}
+
+/**
  * Gateway for a global credential.
  *
  * International accounts are NOT interchangeable across brand domains: a token

@@ -206,6 +206,25 @@ export function withWorkBuddyRegionAndAction(
   return `${withWorkBuddyRegion(path, region)}&${WORKBUDDY_POOL_ACTION_PARAM}=${action}`
 }
 
+/** Every action the shared `action` query parameter can carry. */
+export type WorkBuddyRouteAction = WorkBuddyPoolAction | WorkBuddyTransferAction | WorkBuddyOAuthAction
+
+/**
+ * Address one region's endpoint for ANY route that dispatches on `action`.
+ *
+ * The OAuth and transfer routes reject a request with no action (400), so
+ * their callers must build the URL here rather than with
+ * {@link withWorkBuddyRegion} — a request missing the parameter fails the same
+ * way whether the omission was a mistake or not.
+ */
+export function withWorkBuddyRouteAction(
+  path: string,
+  region: WorkBuddyWebRegion,
+  action: WorkBuddyRouteAction,
+): string {
+  return `${withWorkBuddyRegion(path, region)}&${WORKBUDDY_POOL_ACTION_PARAM}=${action}`
+}
+
 /** Query parameter naming the region a card request addresses. */
 export const WORKBUDDY_REGION_PARAM = 'region'
 

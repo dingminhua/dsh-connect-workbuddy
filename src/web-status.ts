@@ -22,6 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
+import { isVaultAccountId } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { applyContextBudgets } from './catalog.ts'
 import { resolveCredentialRecovery } from './credential-recovery.ts'
@@ -373,6 +374,24 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
+  res.end(payload)
+}
+
+/**
+ * A JSON response that must never be cached.
+ *
+ * Used for every answer that carries live credentials — the transfer export
+ * hands the browser real access and refresh tokens. Without `no-store` such a
+ * response is eligible for the browser's HTTP cache, where a token can outlive
+ * the session on disk.
+ */
+function jsonPrivate(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body)
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(payload),
+    'Cache-Control': 'no-store',
+  })
   res.end(payload)
 }
 
@@ -1043,6 +1062,14 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           if (rowAccountId === undefined) {
             return json(res, 400, { error: 'accountId must name the account to remove' })
           }
+          // The id is about to become a file path segment on the store side;
+          // reject anything that is not a well-formed id HERE so a malformed
+          // request is a 400 rather than a thrown error the client sees as a
+          // 500. `removeAccount` re-checks it — defence in depth, not the only
+          // guard.
+          if (!isVaultAccountId(rowAccountId)) {
+            return json(res, 400, { error: 'accountId is not a well-formed account id' })
+          }
           try {
             const removed = await pool.removeOne(region, rowAccountId)
             json(res, 200, { action: 'remove', accountId: rowAccountId, removed })
@@ -1369,7 +1396,9 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             if (answer.accounts.length === 0) {
               return json(res, 409, { error: 'none of the named accounts was found in this region' })
             }
-            return json(res, 200, answer)
+            // The one response that carries live access/refresh tokens: never
+            // let it reach a cache.
+            return jsonPrivate(res, 200, answer)
           }
           const body = await readJsonBody(req) as { text?: unknown, indexes?: unknown }
           if (typeof body.text !== 'string' || body.text.trim() === '') {

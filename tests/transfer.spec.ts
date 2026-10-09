@@ -7,6 +7,7 @@ import {
   transferRecordOf,
 } from '../src/transfer.ts'
 import { workbuddyAccountId } from '../src/auth.ts'
+import { knownRegionOf } from '../src/upstream.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 
 /**
@@ -148,8 +149,10 @@ describe('export → import round-trip', () => {
 })
 
 describe('mergeTransferRecords', () => {
-  const regionOfDomain = (domain: string): 'cn' | 'global' =>
-    domain === 'workbuddy.ai' || domain === 'codebuddy.ai' ? 'global' : 'cn'
+  // The REAL classifier, not a stand-in: the gate's whole job is to decide
+  // positively, and a fake one would not exercise the catch-all that made the
+  // gate fail open.
+  const regionOfDomain = knownRegionOf
 
   it('overwrites the same account id and counts it as imported', () => {
     const records = [
@@ -166,19 +169,31 @@ describe('mergeTransferRecords', () => {
     const records = [
       siblingRecord({ access_token: '' }),
       siblingRecord({ uid: 'u-2', domain: 'workbuddy.ai' }),
-      siblingRecord({ uid: 'u-3' }),
+      siblingRecord({ uid: 'u-3', domain: 'www.codebuddy.cn' }),
     ] as never[]
     const merged = mergeTransferRecords(records, [0, 1, 2, 9], 'cn', regionOfDomain)
     expect(merged.imported).toBe(1)
     expect(merged.skipped).toBe(3)
     // The global record is NOT in the cn changeset.
-    expect([...merged.changes.keys()]).toEqual([workbuddyAccountId({ uid: 'u-3', accessToken: 'at-1', refreshToken: 'rt-1', expiresAtMs: 1893456000000, domain: 'workbuddy.cn' } as never)])
+    expect([...merged.changes.keys()]).toEqual([workbuddyAccountId({ uid: 'u-3', accessToken: 'at-1', refreshToken: 'rt-1', expiresAtMs: 1893456000000, domain: 'www.codebuddy.cn' } as never)])
   })
 
-  it('admits a domain-less record (the gate cannot classify it)', () => {
-    const records = [siblingRecord({ domain: '' })] as never[]
-    const merged = mergeTransferRecords(records, [0], 'global', regionOfDomain)
-    expect(merged.imported).toBe(1)
-    expect(merged.skipped).toBe(0)
+  it('skips a record whose domain cannot be positively classified', () => {
+    // The gate must not fall back to a default region. `domain` comes from a
+    // file someone handed the plugin, so "unrecognised" means "cannot be
+    // classified" — admitting it as CN would file a foreign or spoofed
+    // credential in the CN vault.
+    for (const domain of ['', 'workbuddy.ai.evil.com', 'notworkbuddy.ai', 'example.com']) {
+      const merged = mergeTransferRecords([siblingRecord({ domain })] as never[], [0], 'cn', regionOfDomain)
+      expect(merged.imported, `domain ${JSON.stringify(domain)} must not be admitted to cn`)
+      expect(merged.skipped).toBe(1)
+    }
+  })
+
+  it('admits a positively classified record in its own region', () => {
+    const cn = mergeTransferRecords([siblingRecord({ domain: 'www.codebuddy.cn' })] as never[], [0], 'cn', regionOfDomain)
+    expect(cn.imported).toBe(1)
+    const global = mergeTransferRecords([siblingRecord({ domain: 'www.workbuddy.ai' })] as never[], [0], 'global', regionOfDomain)
+    expect(global.imported).toBe(1)
   })
 })

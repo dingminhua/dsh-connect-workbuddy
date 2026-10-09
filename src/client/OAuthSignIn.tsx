@@ -18,7 +18,7 @@
 
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import { OAUTH_POLL_INTERVAL_MS, WORKBUDDY_OAUTH_PATH, withWorkBuddyRegion } from '../status-paths.ts'
+import { OAUTH_POLL_INTERVAL_MS, WORKBUDDY_OAUTH_PATH, withWorkBuddyRouteAction } from '../status-paths.ts'
 import type { WorkBuddyWebRegion } from '../status-paths.ts'
 import type { Translate } from './searched-paths.ts'
 
@@ -86,7 +86,7 @@ export function OAuthSignIn({ t, region }: OAuthSignInProps): ReactElement {
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const response = await fetch(withWorkBuddyRegion(WORKBUDDY_OAUTH_PATH, region), {
+          const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, region, 'poll'), {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
             credentials: 'same-origin',
@@ -127,7 +127,7 @@ export function OAuthSignIn({ t, region }: OAuthSignInProps): ReactElement {
   const start = async (): Promise<void> => {
     setPhase({ kind: 'opening' })
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_OAUTH_PATH, region), {
+      const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, region, 'start'), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',

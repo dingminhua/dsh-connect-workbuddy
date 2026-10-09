@@ -272,11 +272,12 @@ export function workbuddyVaultDir(region: WorkBuddyRegion): string {
  * account, and a refresh outage could then take down sign-ins that were
  * perfectly healthy on disk.
  */
-function vaultDocument(credential: WorkBuddyCredential, accountId: string): VaultDocument {
+function vaultDocument(credential: WorkBuddyCredential, accountId: string, refreshedFrom?: string): VaultDocument {
   return {
     version: VAULT_FORMAT_VERSION,
     accountId,
     refreshedAtMs: Date.now(),
+    ...refreshedFrom === undefined ? {} : { refreshedFrom: authFileName(refreshedFrom) },
     auth: {
       accessToken: credential.accessToken,
       refreshToken: credential.refreshToken,
@@ -313,7 +314,7 @@ function parseVaultDocument(text: string, filePath: string): WorkBuddyCredential
 function parseVaultDocumentWithWriteTime(
   text: string,
   filePath: string,
-): { credential: WorkBuddyCredential, refreshedAtMs?: number } | undefined {
+): { credential: WorkBuddyCredential, refreshedAtMs?: number, refreshedFrom?: string } | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -329,7 +330,14 @@ function parseVaultDocumentWithWriteTime(
   const refreshedAtMs = typeof document['refreshedAtMs'] === 'number' && document['refreshedAtMs'] > 0
     ? document['refreshedAtMs']
     : undefined
-  return { credential: { ...credential, source: 'dsh' }, ...(refreshedAtMs === undefined ? {} : { refreshedAtMs }) }
+  const refreshedFrom = typeof document['refreshedFrom'] === 'string' && document['refreshedFrom'] !== ''
+    ? document['refreshedFrom']
+    : undefined
+  return {
+    credential: { ...credential, source: 'dsh' },
+    ...(refreshedAtMs === undefined ? {} : { refreshedAtMs }),
+    ...(refreshedFrom === undefined ? {} : { refreshedFrom }),
+  }
 }
 
 /** Current on-disk format of the vault; readers reject others. */
@@ -347,6 +355,25 @@ interface VaultDocument {
    * as one of its own.
    */
   refreshedAtMs?: number
+  /**
+   * The file NAME of the desktop candidate this entry was refreshed FROM, when
+   * the entry was produced by {@link WorkBuddyCredentialStore.refreshNow} on
+   * that very file.
+   *
+   * This is the third state the two-clock comparison could not express. The
+   * serve rule gives the live desktop file absolute priority (see
+   * {@link fileRank}), which is correct while the app keeps writing a healthy
+   * token — but a token the plugin itself refreshed is strictly newer than the
+   * one the app last wrote, and re-reading the live file on every restart
+   * resurrects the stale copy, so each restart refreshes again (a loop the
+   * merged vault was meant to break). Name equality is exact and cheap: it
+   * says "this entry IS a refresh of that file", which no timestamp can.
+   *
+   * Absent for entries written by a scan (the plugin did not refresh them) and
+   * for entries written by OAuth sign-in or an import (nothing was refreshed),
+   * so those keep the old precedence untouched.
+   */
+  refreshedFrom?: string
   /**
    * The credential in the nested desktop document's TWO-key shape: tokens and
    * session fields under `auth`, identity fields under `account`.
@@ -636,6 +663,23 @@ export function authFileName(path: string): string {
 }
 
 /**
+ * The exact shape of an account id — sha256 hex sliced to 24 characters, which
+ * is what {@link workbuddyAccountId} emits and therefore the only string a
+ * vault file name can legitimately have.
+ *
+ * An id becomes a path segment, so this is also the traversal guard: an
+ * attacker-supplied `../..` is rejected before it can address anything outside
+ * the vault directory. Exported so the HTTP route can reject a bad id with a
+ * 400 instead of a thrown error.
+ */
+export const VAULT_ACCOUNT_ID_RE = /^[0-9a-f]{24}$/
+
+/** Whether a string is a well-formed account id. */
+export function isVaultAccountId(value: unknown): value is string {
+  return typeof value === 'string' && VAULT_ACCOUNT_ID_RE.test(value)
+}
+
+/**
  * Stable account id. `uin` is the billing identity the upstream keys on and
  * survives across re-login; `uid` is the fallback for documents without one.
  */
@@ -709,7 +753,7 @@ function isENOENT(error: unknown): boolean {
  */
 function shouldReplaceVaultEntry(
   candidate: WorkBuddyCredential,
-  incumbent: { credential: WorkBuddyCredential, refreshedAtMs?: number },
+  incumbent: VaultEntry,
 ): boolean {
   if (fileRank(candidate.filePath) !== 0) return false
   const writeMs = incumbent.refreshedAtMs
@@ -727,8 +771,8 @@ function shouldReplaceVaultEntry(
  * skipped — a file copied between accounts (or a half-written rename) must
  * not silently answer for the wrong account.
  */
-async function readVaultEntries(dir: string): Promise<Map<string, { credential: WorkBuddyCredential, refreshedAtMs?: number }>> {
-  const entries = new Map<string, { credential: WorkBuddyCredential, refreshedAtMs?: number }>()
+async function readVaultEntries(dir: string): Promise<Map<string, VaultEntry>> {
+  const entries = new Map<string, VaultEntry>()
   let names: string[]
   try {
     names = await readdir(dir)
@@ -754,11 +798,28 @@ async function readVaultEntries(dir: string): Promise<Map<string, { credential: 
   return entries
 }
 
+/**
+ * One vault entry as read from disk: the credential plus the two bookkeeping
+ * fields the merge rules read alongside it.
+ */
+interface VaultEntry {
+  credential: WorkBuddyCredential
+  /** Local write time of the file; compared against a desktop issuance time. */
+  refreshedAtMs?: number
+  /** Desktop file this entry was refreshed FROM; see {@link VaultDocument}. */
+  refreshedFrom?: string
+}
+
 /** Write one vault entry atomically under the file lock. */
-async function writeVaultEntry(dir: string, accountId: string, credential: WorkBuddyCredential): Promise<void> {
+async function writeVaultEntry(
+  dir: string,
+  accountId: string,
+  credential: WorkBuddyCredential,
+  refreshedFrom?: string,
+): Promise<void> {
   const path = join(dir, `${accountId}.json`)
   await withFileLock(path, async () => {
-    await writeFileAtomic(path, `${JSON.stringify(vaultDocument(credential, accountId), null, 2)}\n`, {
+    await writeFileAtomic(path, `${JSON.stringify(vaultDocument(credential, accountId, refreshedFrom), null, 2)}\n`, {
       mode: 0o600,
       dirMode: 0o700,
     })
@@ -1127,7 +1188,7 @@ export class WorkBuddyCredentialStore {
    */
   private async syncVault(scan: Map<string, WorkBuddyCredential>): Promise<void> {
     const dir = this.vaultDir()
-    let entries: Map<string, { credential: WorkBuddyCredential, refreshedAtMs?: number }>
+    let entries: Map<string, VaultEntry>
     try {
       entries = await readVaultEntries(dir)
     } catch {
@@ -1156,14 +1217,20 @@ export class WorkBuddyCredentialStore {
       if (!this.matchesRegion(entry.credential.domain)) continue
       const existing = scan.get(id)
       // A vault entry the scan did not re-find is exactly the OAuth case (no
-      // desktop file backs it). When the scan DID re-find the account, the
-      // entry joins only by the SAME rule the legacy own copies used: it
-      // supersedes a non-live desktop read that it outlives, and never
-      // displaces the live sign-in, which the app keeps current and which the
-      // upstream always accepts. An expired live token therefore yields to the
-      // vault's refreshed copy — which is what breaks the restart refresh
-      // loop — while a healthy live one keeps serving.
+      // desktop file backs it), so it joins unconditionally.
+      //
+      // When the scan DID re-find the account the live sign-in keeps priority,
+      // per {@link fileRank}: the app holds a current token and the upstream
+      // rejects the ones in its timestamped backups. There is exactly one
+      // exception — the entry records, in `refreshedFrom`, that the plugin
+      // itself refreshed THAT file. The plugin's token was issued in answer to
+      // it and is strictly newer than the copy the app last wrote, so serving
+      // the app's older token here would resurrect it on every restart and
+      // refresh again each time. This is the case that closes that loop; a
+      // merely "longer-lived" vault copy still does not displace a live read.
       if (existing === undefined) {
+        scan.set(id, entry.credential)
+      } else if (entry.refreshedFrom !== undefined && entry.refreshedFrom === authFileName(existing.filePath)) {
         scan.set(id, entry.credential)
       } else if (fileRank(existing.filePath) !== 0 && entry.credential.expiresAtMs > existing.expiresAtMs) {
         scan.set(id, entry.credential)
@@ -1406,14 +1473,32 @@ export class WorkBuddyCredentialStore {
    * sign-in" without a second scan.
    */
   async removeAccount(accountId: string): Promise<boolean> {
-    const path = join(this.vaultDir(), `${accountId}.json`)
-    try {
-      await rm(path, { force: false })
-    } catch (error: unknown) {
-      if (isENOENT(error)) return false
-      throw error
+    // The id arrives straight from a query parameter and is about to become a
+    // path segment; `join` normalizes `..`, so an unchecked value can address
+    // a file OUTSIDE the vault. Only the shape this store actually writes is
+    // accepted — `workbuddyAccountId` is sha256 hex sliced to 24.
+    if (!VAULT_ACCOUNT_ID_RE.test(accountId)) {
+      throw new Error(`workbuddy: refusing to remove '${accountId}': not a vault account id`)
     }
-    await rm(`${path}.lock`, { force: true })
+    const path = join(this.vaultDir(), `${accountId}.json`)
+    // The delete runs UNDER the lock every write takes. Removing a lock file
+    // that a concurrent `writeVaultEntry` is holding would let two writers
+    // into the critical section at once, so the lock is taken, not deleted.
+    const removed = await withFileLock(path, async () => {
+      let existed = true
+      try {
+        await rm(path, { force: false })
+      } catch (error: unknown) {
+        if (!isENOENT(error)) throw error
+        existed = false
+      }
+      // `force: true` would be wrong here: while THIS holds the lock, a
+      // concurrent writer's own lock file is the same path, and removing it
+      // is what the bug was. A leftover from a crashed writer may go, and a
+      // failure to remove one must not fail the delete.
+      await rm(`${path}.lock`, { force: false }).catch(() => {})
+      return existed
+    })
     // A rotated override pointing at the removed account would fall through to
     // the normal selection anyway (a vanished account cannot be billed), but
     // clearing it here keeps the runtime state immediately truthful.
@@ -1423,7 +1508,7 @@ export class WorkBuddyCredentialStore {
       // selection rather than reporting it as lost until the next restart.
       this.accountId = undefined
     }
-    return true
+    return removed
   }
 
   /**
@@ -1469,7 +1554,17 @@ export class WorkBuddyCredentialStore {
       // The refreshed token lands in the unified vault (one file per
       // account). The legacy per-region copy files stay READ-ONLY now: they
       // remain migration sources for pre-vault installs.
-      await writeVaultEntry(this.vaultDir(), workbuddyAccountId(credential), refreshed).catch(() => {
+      // `refreshedFrom` records WHICH desktop file this refresh replaced: a
+      // token the plugin issued for that very file is newer than whatever the
+      // app last wrote, and the serve rule uses this to keep it (see
+      // {@link VaultDocument.refreshedFrom}). OAuth/import writes omit it —
+      // nothing was refreshed there, so their precedence is unchanged.
+      await writeVaultEntry(
+        this.vaultDir(),
+        workbuddyAccountId(credential),
+        refreshed,
+        credential.filePath,
+      ).catch(() => {
         // A vault write failure must not fail the request that just got its
         // fresh token: the in-memory credential still serves this call, and
         // the next successful scan or refresh retries the write.

@@ -184,7 +184,7 @@ export function mergeTransferRecords(
   records: readonly WorkBuddyTransferRecord[],
   indexes: readonly number[],
   region: 'cn' | 'global',
-  regionOfDomain: (domain: string) => 'cn' | 'global',
+  knownRegionOfDomain: (domain: string) => 'cn' | 'global' | undefined,
 ): { changes: Map<string, Omit<WorkBuddyCredential, 'source' | 'filePath'>>, imported: number, skipped: number } {
   const changes = new Map<string, Omit<WorkBuddyCredential, 'source' | 'filePath'>>()
   let imported = 0
@@ -200,12 +200,16 @@ export function mergeTransferRecords(
       skipped += 1
       continue
     }
-    // Region gate: the credential's OWN domain decides. An empty domain is
-    // admitted (the region gate cannot classify it, and refusing every
-    // domain-less record would make sibling exports unusable); a KNOWN other
-    // region's domain is skipped — it would never pass this region's store
-    // filter anyway, so storing it would only fake a successful import.
-    if (credential.domain !== '' && regionOfDomain(credential.domain) !== region) {
+    // Region gate: the credential's OWN domain decides, and the decision must
+    // be a POSITIVE match. `regionOf` classifies anything unrecognised as CN,
+    // which is right when the domain came from the upstream but wrong for an
+    // IMPORTED file, where `domain` is whatever the file's author wrote: a
+    // spoofed or misspelled value would otherwise be admitted into the CN
+    // vault. A record is kept only when its domain is positively known to
+    // belong to the target region; an empty, unrecognised, or provably other
+    // region's domain is skipped, so a rejected import reports `skipped`
+    // instead of pretending to have stored a foreign credential.
+    if (knownRegionOfDomain(credential.domain) !== region) {
       skipped += 1
       continue
     }

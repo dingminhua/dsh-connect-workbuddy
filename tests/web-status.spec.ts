@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { workBuddyAccountCredits, workBuddyWebStatus } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
-import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
+import { readFileSync } from 'node:fs'
+import {
+  WORKBUDDY_CHECKIN_PATH,
+  WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_OAUTH_PATH,
+  WORKBUDDY_TRANSFER_PATH,
+  WORKBUDDY_USAGE_PATH,
+  oauthActionOf,
+  transferActionOf,
+  withWorkBuddyRouteAction,
+} from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { WorkBuddyCredentialRejectedError } from '../src/upstream.ts'
@@ -1539,5 +1549,52 @@ describe('registerWorkBuddyStatusRoute probe route', () => {
     await handler(probeReq({ modelIds: ['glm-5.3'] }), res)
     expect(status()).toBe(500)
     expect(JSON.stringify(body())).not.toContain('supersecretvalue')
+  })
+})
+
+/**
+ * The client↔host URL contract.
+ *
+ * Every route that dispatches on `action` answers 400 when the parameter is
+ * absent, so the client must build the URL with an action. This was the gap
+ * that let the OAuth and transfer features ship dead: both components built
+ * their URLs with `withWorkBuddyRegion` (region only, no action), so every
+ * request 400'd. The existing route tests could not see it because they
+ * hand-build URLs that already carry `action=` — nothing asserted that the
+ * URL the CLIENT constructs is one the HOST accepts.
+ *
+ * These tests close that gap by driving the real client-side helper and the
+ * real host-side parser against each other. The source guard below additionally
+ * fails if a caller regresses to the region-only builder.
+ */
+describe('client → host action contract', () => {
+  const builders: ReadonlyArray<readonly [name: string, url: string, expected: string]> = [
+    ['transfer export', withWorkBuddyRouteAction(WORKBUDDY_TRANSFER_PATH, 'cn', 'export'), 'export'],
+    ['transfer preview', withWorkBuddyRouteAction(WORKBUDDY_TRANSFER_PATH, 'cn', 'preview'), 'preview'],
+    ['transfer import', withWorkBuddyRouteAction(WORKBUDDY_TRANSFER_PATH, 'cn', 'import'), 'import'],
+    ['oauth start', withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, 'global', 'start'), 'start'],
+    ['oauth poll', withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, 'global', 'poll'), 'poll'],
+  ]
+
+  it('every URL the client builds is one the host accepts', () => {
+    for (const [name, url, expected] of builders) {
+      const parsed = url.includes('oauth')
+        ? oauthActionOf(url)
+        : transferActionOf(url)
+      expect(parsed, `${name}: ${url} must carry a parsable action`).toBe(expected)
+      // The region must survive alongside the action, or the request would
+      // address the wrong provider stack.
+      expect(url).toContain('region=')
+    }
+  })
+
+  it('the region-only builder is never used for an action-dispatching route', () => {
+    // Source guard: catches a caller reintroducing the omission, which the
+    // behavioural test above cannot see if that caller is never exercised.
+    for (const file of ['AccountTransfer.tsx', 'OAuthSignIn.tsx']) {
+      const source = readFileSync(new URL(`../src/client/${file}`, import.meta.url), 'utf8')
+      expect(source, `${file} must not call withWorkBuddyRegion on an action route`)
+        .not.toMatch(/withWorkBuddyRegion\(\s*WORKBUDDY_(TRANSFER|OAUTH)_PATH/)
+    }
   })
 })

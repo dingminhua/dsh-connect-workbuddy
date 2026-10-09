@@ -68,7 +68,7 @@ import {
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
-import { WorkBuddyUpstreamClient, regionOf } from './upstream.ts'
+import { WorkBuddyUpstreamClient, knownRegionOf, regionOf } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
@@ -149,6 +149,7 @@ export {
   parseReasoning,
   parseUpstreamModel,
   prepareChatBody,
+  knownRegionOf,
   regionOf,
   WorkBuddyCredentialRejectedError,
   WorkBuddyUpstreamClient,
@@ -1319,7 +1320,7 @@ export function apply(ctx: Context, config: Config): void {
           records,
           indexes,
           region,
-          domain => regionOf(domain),
+          domain => knownRegionOf(domain),
         )
         const store = stacks[region].store
         for (const [id, credential] of changes) {

@@ -648,6 +648,63 @@ describe('WorkBuddyCredentialStore refresh', () => {
     expect(desktop.auth.accessToken).toBe('token-old')
   })
 
+  it('serves the refreshed token after a restart instead of re-refreshing every time', async () => {
+    // The regression this guards: a token the plugin refreshed is strictly
+    // newer than the copy the app last wrote, but the live file still wins on
+    // the two-clock comparison. Without the `refreshedFrom` marker the store
+    // resurrected the desktop copy on every restart and refreshed again each
+    // time — the loop the merged vault exists to break.
+    const desktopPath = await writeAuth(LIVE, accountDoc({
+      auth: {
+        accessToken: 'token-desktop',
+        refreshToken: 'refresh-alpha',
+        domain: 'www.codebuddy.cn',
+        // Two minutes out: inside the 5-minute refresh margin, so the first
+        // resolve() refreshes — the common state, NOT an expired token.
+        expiresAt: Date.now() + 120_000,
+        lastRefreshTime: Date.now(),
+      },
+    }))
+    const authDirs = [dirname(desktopPath)]
+    let refreshCalls = 0
+    const refresh = async (): Promise<{ accessToken: string, expiresInSec: number }> => {
+      refreshCalls += 1
+      return { accessToken: `token-refreshed-${refreshCalls}`, expiresInSec: 7_200 }
+    }
+    const first = await new WorkBuddyCredentialStore({ authDirs, region: 'cn', refresh }).resolve()
+    expect(first.accessToken).toBe('token-refreshed-1')
+    expect(refreshCalls).toBe(1)
+
+    // Four more "restarts": each builds a fresh store over the SAME files.
+    for (let restart = 0; restart < 4; restart++) {
+      const served = await new WorkBuddyCredentialStore({ authDirs, region: 'cn', refresh }).current()
+      expect(served?.accessToken).toBe('token-refreshed-1')
+    }
+    // The whole point: the refresh happened once, not once per restart.
+    expect(refreshCalls).toBe(1)
+  })
+
+  it('refuses to remove anything that is not a vault account id', async () => {
+    // `accountId` arrives from a query parameter and becomes a path segment;
+    // `join` normalizes `..`, so an unchecked value could delete a file
+    // OUTSIDE the vault.
+    const vaultDir = join(root, 'vault')
+    await mkdir(vaultDir, { recursive: true })
+    const victim = join(root, 'victim.json')
+    await writeFile(victim, '{"secret":true}', 'utf8')
+    const store = new WorkBuddyCredentialStore({
+      vaultDir,
+      region: 'cn',
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    await expect(store.removeAccount('../victim')).rejects.toThrow(/not a vault account id/)
+    // Still there: the refusal happened before any filesystem call.
+    expect(JSON.parse(await readFile(victim, 'utf8'))).toEqual({ secret: true })
+    // A well-formed id that simply does not exist reports "not removed"
+    // rather than throwing.
+    expect(await store.removeAccount('0123456789abcdef01234567')).toBe(false)
+  })
+
   it('throws when the token is expired and refresh fails', async () => {
     await writeAuth(LIVE, accountDoc({
       auth: { accessToken: 'token-dead', refreshToken: 'r', expiresAt: Date.now() - 1000 },
