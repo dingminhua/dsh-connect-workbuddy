@@ -267,9 +267,20 @@ describe('host-peer fallback behaves like the host copy', () => {
   })
 
   it('resolves the harness home with the documented precedence', () => {
-    // Explicit path wins outright.
-    expect(resolveDshHome('/explicit/home')).toBe('/explicit/home')
-    // `$DSH_HOME` is what the suite's own per-file setup injects.
+    // Explicit path wins outright — asserted through the PLATFORM'S OWN
+    // resolver, not against a hardcoded POSIX string. `resolveDshHome` runs
+    // `path.resolve` on its argument, so on Windows `/explicit/home` becomes
+    // `\explicit\home`; comparing to the literal made this test fail on
+    // `windows-latest` and nowhere else. That is precisely the mistake
+    // `docs/WINDOWS.md` §4 warns about ("assert the behaviour, not which
+    // machine is running the suite"), and it is why the expected value is
+    // computed here rather than written out.
+    expect(resolveDshHome('/explicit/home')).toBe(resolve('/explicit/home'))
+    // A second, separator-free spelling proves the argument is what wins, not
+    // an accident of how one string was typed.
+    expect(resolveDshHome('relative-ish')).toBe(resolve('relative-ish'))
+    // `$DSH_HOME` is what the suite's own per-file setup injects, and it must
+    // be used when no explicit path is given.
     expect(resolveDshHome()).toBe(resolve(process.env.DSH_HOME as string))
   })
 })
