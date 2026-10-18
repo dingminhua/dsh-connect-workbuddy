@@ -616,10 +616,17 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   const { shim, store, catalog, resolveAttachments } = options
   const providerId = options.provider ?? WORKBUDDY_PROVIDER
   const providerName = options.displayName ?? 'WorkBuddy'
-  // The model identity is shared by both regions on purpose — that is the whole
-  // of issue #59's fix. The route id below is NOT shared: it keys the registry,
-  // and each region's route resolves to that region's own shim.
-  const modelIdentity = options.modelIdentity ?? WORKBUDDY_MODEL_IDENTITY
+  // The model identity defaults to the ROUTE id, not to the shared
+  // `WORKBUDDY_MODEL_IDENTITY` constant. issue #59's fix wants the two regions
+  // to share one identity so a cross-region replay keeps its thinking blocks —
+  // but that identity is also the key pi-ai dispatches on (`requireProvider` in
+  // `models.js`), so a `workbuddy-global` model stamped `workbuddy` resolves
+  // against the CN registry entry and throws `Unknown provider: workbuddy`.
+  //
+  // Defaulting to `providerId` keeps every model resolvable (its `provider`
+  // always names the route that serves it). Callers that need the shared
+  // identity for a different reason can still pass `modelIdentity` explicitly.
+  const modelIdentity = options.modelIdentity ?? providerId
   // The generation gate: what THIS plugin resolves, not what the host runs —
   // a nested 0.85 on disk shadows the host's 0.87 and vice versa, and only
   // the resolved copy decides which context shape the api below can consume.

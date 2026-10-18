@@ -135,27 +135,37 @@ describe('issue #59: the shared identity is not a shared destination', () => {
     baseUrl: string,
     provider: string,
     catalog: unknown,
+    /** Opt INTO the shared identity. Omitted, the route id is stamped instead
+     *  (issue #75) — see the "default stamps the route id" case below. */
+    modelIdentity?: string,
   ) {
     const { adapter } = createWorkBuddyAdapter({
       shim: { baseUrl: () => baseUrl, token: async () => 'shared-secret' } as never,
       store: {} as never,
       catalog: catalog as never,
       provider,
+      ...(modelIdentity === undefined ? {} : { modelIdentity }),
     })
     return adapter as unknown as {
       config: { profiles: () => ReadonlyMap<string, { piProvider: { id: string, getModels: () => { id: string, provider: string, baseUrl: string }[] } }> }
     }
   }
 
-  it('gives both regions the same stamped identity but each its own baseUrl', async () => {
+  it('gives both regions the same stamped identity when it is passed explicitly', async () => {
     const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER, WORKBUDDY_GLOBAL_PROVIDER, WORKBUDDY_MODEL_IDENTITY } =
       await import('../src/adapter.ts')
 
+    // Since issue #75 the shared identity is an OPT-IN: the default stamps the
+    // route id, because that is the key pi-ai dispatches on. Passing it
+    // explicitly keeps issue #59's fix available for a host that can resolve a
+    // model by an identity other than its route id.
     const cn = adapterFor(
       createWorkBuddyAdapter, 'http://127.0.0.1:41000', WORKBUDDY_PROVIDER, await catalogWithOneModel('cn'),
+      WORKBUDDY_MODEL_IDENTITY,
     )
     const global = adapterFor(
       createWorkBuddyAdapter, 'http://127.0.0.1:42000', WORKBUDDY_GLOBAL_PROVIDER, await catalogWithOneModel('global'),
+      WORKBUDDY_MODEL_IDENTITY,
     )
 
     const cnModels = cn.config.profiles().get(WORKBUDDY_PROVIDER)?.piProvider.getModels() ?? []
@@ -190,5 +200,44 @@ describe('issue #59: the shared identity is not a shared destination', () => {
 
     expect([...cn.config.profiles().keys()]).toEqual([WORKBUDDY_PROVIDER])
     expect([...global.config.profiles().keys()]).toEqual([WORKBUDDY_GLOBAL_PROVIDER])
+  })
+
+  /**
+   * Issue #75: with no `modelIdentity` supplied, each region's models carry
+   * that region's ROUTE id.
+   *
+   * This is the counterpart to #59, and the two pull in opposite directions.
+   * #59 wants one identity so a cross-region replay keeps thinking blocks;
+   * #75 needs the stamp to equal the registry key, because pi-ai's
+   * `requireProvider` resolves `model.provider` against `providers`. When the
+   * stamp is the shared string, a `workbuddy-global` model resolves against
+   * the CN registry entry — `Unknown provider: workbuddy` — and the global
+   * region cannot send a single request.
+   *
+   * So the default is the resolvable one, and #59's identity is opt-in.
+   */
+  it('defaults each region to its own route id (issue #75)', async () => {
+    const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER, WORKBUDDY_GLOBAL_PROVIDER } =
+      await import('../src/adapter.ts')
+
+    const cn = adapterFor(
+      createWorkBuddyAdapter, 'http://127.0.0.1:41000', WORKBUDDY_PROVIDER, await catalogWithOneModel('cn'),
+    )
+    const global = adapterFor(
+      createWorkBuddyAdapter, 'http://127.0.0.1:42000', WORKBUDDY_GLOBAL_PROVIDER, await catalogWithOneModel('global'),
+    )
+
+    const cnModel = cn.config.profiles().get(WORKBUDDY_PROVIDER)?.piProvider.getModels()[0]
+    const globalModel = global.config.profiles().get(WORKBUDDY_GLOBAL_PROVIDER)?.piProvider.getModels()[0]
+    if (cnModel === undefined || globalModel === undefined) throw new Error('expected one model per region')
+
+    // The stamp equals the key each model is registered under, so
+    // `providers.get(model.provider)` always hits.
+    expect(cnModel.provider).toBe(WORKBUDDY_PROVIDER)
+    expect(globalModel.provider).toBe(WORKBUDDY_GLOBAL_PROVIDER)
+
+    // Still one destination per region — the route split is untouched.
+    expect(cnModel.baseUrl).toBe('http://127.0.0.1:41000/v1')
+    expect(globalModel.baseUrl).toBe('http://127.0.0.1:42000/v1')
   })
 })

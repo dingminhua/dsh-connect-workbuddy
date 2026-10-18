@@ -147,6 +147,81 @@ describe('createWorkBuddyAdapter provider profile', () => {
     expect(profile?.provider).toBe(WORKBUDDY_PROVIDER)
     expect(profile?.displayName).toBe('WorkBuddy')
   })
+
+  /**
+   * Issue #75: a `workbuddy-global` model must carry `provider:
+   * 'workbuddy-global'`, not the shared `WORKBUDDY_MODEL_IDENTITY`.
+   *
+   * pi-ai's `requireProvider` looks the model's `provider` up in the registry
+   * the adapter registered (`models.setProvider(profile.piProvider)`, keyed by
+   * `provider.id`). 4.9.0 defaulted the identity to the shared string, so both
+   * regions' models were stamped `workbuddy` while only the CN route owned
+   * that key — the global route's models then resolved against the CN entry,
+   * or threw `Unknown provider: workbuddy` outright.
+   *
+   * What must NOT regress: passing `modelIdentity` explicitly still wins, so
+   * callers can opt back into the shared identity (the shape issue #59's fix
+   * wants) once pi-ai can express provider-equivalence itself.
+   */
+  it('stamps each region\'s models with that region\'s route id', async () => {
+    const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER, WORKBUDDY_GLOBAL_PROVIDER } = await import('../src/adapter.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+
+    // The constructor seeds the region's static fallback roster, so there is
+    // a model to stamp without reaching upstream.
+    const catalog = new WorkBuddyCatalog()
+
+    const global = createWorkBuddyAdapter({
+      shim: shimStub() as never,
+      store: {} as never,
+      catalog,
+      provider: WORKBUDDY_GLOBAL_PROVIDER,
+      displayName: 'WorkBuddy AI',
+    })
+    const cn = createWorkBuddyAdapter({
+      shim: shimStub() as never,
+      store: {} as never,
+      catalog,
+      provider: WORKBUDDY_PROVIDER,
+      displayName: 'WorkBuddy',
+    })
+
+    // The model's `provider` lives on `profile.piProvider.getModels()`, which is
+    // what pi-ai dispatches through — the same object `requireProvider` reads.
+    const modelsOf = (a: unknown, routeId: string) => {
+      const profiles = (a as unknown as {
+        config: { profiles: () => ReadonlyMap<string, { piProvider: { getModels: () => { provider: string }[] } }> }
+      }).config.profiles()
+      const profile = profiles.get(routeId)
+      expect(profile).toBeDefined()
+      return profile!.piProvider.getModels()
+    }
+
+    expect(modelsOf(global.adapter, WORKBUDDY_GLOBAL_PROVIDER)[0]?.provider).toBe(WORKBUDDY_GLOBAL_PROVIDER)
+    expect(modelsOf(cn.adapter, WORKBUDDY_PROVIDER)[0]?.provider).toBe(WORKBUDDY_PROVIDER)
+  })
+
+  it('lets an explicit modelIdentity override the route id', async () => {
+    const { createWorkBuddyAdapter, WORKBUDDY_GLOBAL_PROVIDER, WORKBUDDY_MODEL_IDENTITY } = await import('../src/adapter.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+
+    const catalog = new WorkBuddyCatalog()
+
+    const { adapter } = createWorkBuddyAdapter({
+      shim: shimStub() as never,
+      store: {} as never,
+      catalog,
+      provider: WORKBUDDY_GLOBAL_PROVIDER,
+      modelIdentity: WORKBUDDY_MODEL_IDENTITY,
+    })
+
+    const profiles = (adapter as unknown as {
+      config: { profiles: () => ReadonlyMap<string, { piProvider: { getModels: () => { provider: string }[] } }> }
+    }).config.profiles()
+    const profile = profiles.get(WORKBUDDY_GLOBAL_PROVIDER)
+    expect(profile).toBeDefined()
+    expect(profile!.piProvider.getModels()[0]?.provider).toBe(WORKBUDDY_MODEL_IDENTITY)
+  })
 })
 
 /**
