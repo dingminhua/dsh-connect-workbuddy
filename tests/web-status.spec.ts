@@ -1754,3 +1754,85 @@ describe('the CodeBuddy-CLI switch rides on the status answer', () => {
     expect((intl as { cliBridgeEnabled?: boolean }).cliBridgeEnabled).toBe(true)
   })
 })
+
+describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
+  /**
+   * A webServer double with the host's real failure mode: registering an exact
+   * path twice throws. The host keeps a route until its disposer runs, so a
+   * cleanup list that skips one route leaves it behind, and the next mount of
+   * the same effect throws on that path and abandons every route after it.
+   */
+  function leakDetectingWebServer(): {
+    name: string
+    inject: readonly string[]
+    apply: (ctx: Context) => void
+    paths: () => string[]
+  } {
+    const table = new Map<string, unknown>()
+    return {
+      name: 'webServer',
+      inject: [] as const,
+      apply(ctx: Context) {
+        ctx.provide('webServer', {
+          register: (entry: { path: string }) => {
+            if (table.has(entry.path)) throw new Error(`webserver: duplicate exact route "${entry.path}"`)
+            table.set(entry.path, entry)
+            return () => { table.delete(entry.path) }
+          },
+        })
+      },
+      paths: () => [...table.keys()],
+    }
+  }
+
+  /** Mount the routes on a fresh context; return the fake plus a disposer. */
+  async function mount(): Promise<{ paths: string[]; dispose: () => Promise<void> }> {
+    const fake = leakDetectingWebServer()
+    const ctx = new Context()
+    await ctx.plugin(fake)
+    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
+    registerWorkBuddyStatusRoute(ctx, deps())
+    return { paths: fake.paths(), dispose: () => ctx.fiber.dispose() }
+  }
+
+  it('registers every route on the first mount', async () => {
+    const mounted = await mount()
+    expect(mounted.paths).toHaveLength(13)
+    await mounted.dispose()
+  })
+
+  it('leaves no route behind when the fiber is disposed', async () => {
+    // The leak is what makes the NEXT mount throw, so it is checked on its own.
+    const fake = leakDetectingWebServer()
+    const ctx = new Context()
+    await ctx.plugin(fake)
+    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
+    registerWorkBuddyStatusRoute(ctx, deps())
+    expect(fake.paths()).toHaveLength(13)
+    await ctx.fiber.dispose()
+    expect(fake.paths()).toEqual([])
+  })
+
+  it('registers every route again after a reload', async () => {
+    // Two mount/dispose cycles on ONE webServer is what a hot reload does: the
+    // host keeps the routes of the previous mount until their disposers run.
+    // Before the fix the benefit route leaked on the first cycle, so the second
+    // cycle threw on it and registered only the five routes that came before it.
+    const fake = leakDetectingWebServer()
+    const ctx = new Context()
+    await ctx.plugin(fake)
+    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
+    registerWorkBuddyStatusRoute(ctx, deps())
+    const first = fake.paths()
+    await ctx.fiber.dispose()
+
+    const reloaded = new Context()
+    await reloaded.plugin(fake)
+    registerWorkBuddyStatusRoute(reloaded, deps())
+    const second = fake.paths()
+    await reloaded.fiber.dispose()
+
+    expect(second).toEqual(first)
+    expect(second).toHaveLength(13)
+  })
+})

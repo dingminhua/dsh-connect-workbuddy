@@ -2058,6 +2058,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       },
     })
     return () => {
+      disposeBenefitClaim()
       disposeRefresh()
       disposeCheckin()
       disposeAccounts()
