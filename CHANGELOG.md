@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- **核验表补登 `space-bunny` 与 `minimax-m3.1-flash`：两条被目录自述为原生多模态的模型不再被判成纯文本**
+  - **现场**：这两个 id 在 2026-09-25 那份核验快照之后才进名册，于是每次刷新都仅因「不在表里」被判成
+    `unknown` → `text`，宿主以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒绝粘贴的图片——与 #168 同一形状，
+    只是根因从「`imageModelIds` 没提到它」换成了「核验表没收录它」。
+  - **证据**：本机 CN 目录缓存（`~/.workbuddy/cache/acc-product-config-v3.json`，WorkBuddy 5.8.3，
+    文档日期 2026-10-14）里，`space-bunny` 的描述是「推理速度极快，编码能力强劲，并**支持原生多模态
+    输入**的匿名大模型」，`minimax-m3.1-flash` 是「**原生多模态**，擅长 office、agentic、编程任务…」，
+    两条 `supportsImages` 均为 true。
+  - **为什么这对 `supportsImages` 不构成矛盾**：那条判据是「`supportsImages` 对几乎整份名册都报 true」，
+    而这里的判据是**描述里的措辞**——目录对 `hy3`、`glm-5.3` 这类纯文本模型从不写「原生多模态」。
+    也就是说描述是有区分度的信号，那个布尔字段没有。表因此分成**两档证据**：A 档厂商文档 13 条，
+    B 档上游目录自述 2 条，`docs/DESIGN.md` 的「核验表」一节把两档并列写清。
+  - **没有打开的口子**：B 档目前**恰好两条**，由 `tests/native-modality.spec.ts` 钉住；新增 id 仍按
+    A 档要求附厂商来源。若「目录说了」变成立即可用的规则，就等于绕回这张表本来要取代的「报 true 就勾」。
+    前缀/族匹配照旧禁止——`minimax-m3.1` 仍是 `unknown`。
+  - **实测影响面**（本机 CN `cli` 名册 21 个重算）：预勾选从 5 个变成 **7 个**，新增的正是这两条；
+    其余 8 个无来源 id 仍旧默认不勾。
+  - **测试**：`tests/native-modality.spec.ts` 的条数断言 13 → 15，并新增一条钉住「B 档恰好是这两条、
+    且不向族内扩散」。把本提交的 `src/native-modality.ts` 撤回后这两条都会红。
+  - **来源**：改动来自社区 PR [#175](https://github.com/dingminhua/dsh-connect-workbuddy/pull/175)
+    （by @beibing173）的核验表部分。该 PR 附带的「输入框积分胶囊独立开关」未随本版合入，理由见下条。
+
+### Notes
+
+- **未合入：PR #175 的「胶囊独立开关」**。它假设「输入框胶囊」与「卡片积分概览」共用一个开关，但
+  5.14.0 的代码里 `showCreditsInMainUi` **只隐藏胶囊本身**（消费点只有 `ComposerCredits`、
+  `ComposerCreditsGate` 与卡片上那一个勾选框；同一张卡开关 on/off 的渲染差异只有勾选框的 `checked`），
+  卡片并没有被它门控的积分概览。照原样合入会得到两个作用相同的勾选框，且文案承诺了一个不存在的区别。
+  真有「把胶囊从模型选择器那一行挪开」的诉求时，现成的 `creditPosition` 已经提供第二个座位
+  （`composer` / `stats`，即输入框下方那一行），不需要再加一个开关。
+
 ## 5.14.0 (2026-10-29)
 
 > 一个「新模型发不了图」的**行为变更**，加三条独立缺陷：#167 补上 5.13.1 漏掉的第二句被禁指纹、

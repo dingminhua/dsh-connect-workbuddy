@@ -177,30 +177,44 @@ Config:
 >
 > 即它对几乎整份名册都报 true。拿它当能力答案就会把纯文本模型也标成能看图——**这个错误本项目犯过一次，姊妹项目 `workbuddy-manager` 也犯过并已修正**（其 CHANGELOG 1.0.70：「此前直接把腾讯的『平台支持图片』开关当成模型的原生能力，于是 GLM-5.3 这类纯文本模型也被标成多模态」）。
 >
-> **核验表**（`src/native-modality.ts` 的 `NATIVE_MODALITY_BY_MODEL_ID`，13 条，全部核验于 2026-09-25，数据取自 `workbuddy-manager` 的 `server/services/native_modalities.json`）：
+> **核验表**（`src/native-modality.ts` 的 `NATIVE_MODALITY_BY_MODEL_ID`，15 条）：
 >
-> | id | kind | 来源 |
-> |---|---|---|
-> | `glm-5.3` / `glm-5.2` / `glm-5.1` | `text` | <https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3.md> 等（「仅支持文本」） |
-> | `glm-5.3-flash` | `multimodal` | <https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash.md>（原生多模态，图片/视频/文本） |
-> | `glm-5v-turbo` | `multimodal` | <https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo.md> |
-> | `deepseek-v4-pro` | `text` | <https://api-docs.deepseek.com/quick_start/pricing>（V4-Pro 的 Vision：Not supported） |
-> | `deepseek-v4.1-flash` | `multimodal` | 同上（V4.1-Flash 支持 Vision） |
-> | `minimax-m3` | `multimodal` | <https://platform.minimax.io/docs/guides/text-generation.md> |
-> | `kimi-k2.6` / `kimi-k2.7` | `multimodal` | <https://platform.moonshot.cn/docs/overview> |
-> | `kimi-k3-1` | `multimodal` | <https://github.com/MoonshotAI/Kimi-K3> |
-> | `hy3` / `hy4-preview` | `text` | <https://huggingface.co/tencent/Hy3>、`.../Hy4-preview`（模型卡 `pipeline_tag: text-generation`） |
+> 表里有**两档证据**，界线必须记住——它不是「厂商页面」与「随便什么」的区别，而是「型号文档」与「上游目录自述」的区别：
 >
-> **刷新时的判定（`imageDefaultFor`）**：只有核验为 `multimodal` 的才预勾选。`text` 不勾（文档说它读不了图）；`unknown` 也**不勾**——「不猜」正是这张表存在的理由，上游声明在这里不参与判定（否则又回到"报 true 就勾"的老路）。平台显式 `false` 保留一票否决，因此核验为多模态的模型也不会违逆平台的明确拒绝。
+> | 证据档位 | 条数 | 来源 | 为什么可信 |
+> |---|---|---|---|
+> | **A 档：厂商文档**（13 条，核验于 2026-09-25） | 13 | `workbuddy-manager` 的 `server/services/native_modalities.json`（逐条附厂商页面） | 厂商为自家的输入模态背书，可复核 |
+> | **B 档：上游目录自述**（2 条，核验于 2026-10-30） | 2 | 桌面端缓存的 CN 目录 `acc-product-config-v3.json`（WorkBuddy 5.8.3，文档日期 2026-10-14）的 `descriptionZh` | 上游自己写明「原生多模态输入」，且 `supportsImages: true` |
 >
-> **不做前缀/族匹配**：`glm-5.3` 是 `text` 而 `glm-5.3-flash` 是 `multimodal`，前缀规则必然错一个；`hy3` 是 `text` 而 `hy3-x` 无来源，不能用族关系把结论传下去。表按**精确 id** 匹配，未列出的新模型一律 `unknown`。
+> | id | kind | 档位 | 来源 |
+> |---|---|---|---|
+> | `glm-5.3` / `glm-5.2` / `glm-5.1` | `text` | A | <https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3.md> 等（「仅支持文本」） |
+> | `glm-5.3-flash` | `multimodal` | A | <https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash.md>（原生多模态，图片/视频/文本） |
+> | `glm-5v-turbo` | `multimodal` | A | <https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo.md> |
+> | `deepseek-v4-pro` | `text` | A | <https://api-docs.deepseek.com/quick_start/pricing>（V4-Pro 的 Vision：Not supported） |
+> | `deepseek-v4.1-flash` | `multimodal` | A | 同上（V4.1-Flash 支持 Vision） |
+> | `minimax-m3` | `multimodal` | A | <https://platform.minimax.io/docs/guides/text-generation.md> |
+> | `kimi-k2.6` / `kimi-k2.7` | `multimodal` | A | <https://platform.moonshot.cn/docs/overview> |
+> | `kimi-k3-1` | `multimodal` | A | <https://github.com/MoonshotAI/Kimi-K3> |
+> | `hy3` / `hy4-preview` | `text` | A | <https://huggingface.co/tencent/Hy3>、`.../Hy4-preview`（模型卡 `pipeline_tag: text-generation`） |
+> | `space-bunny` | `multimodal` | **B** | 目录 `descriptionZh`：「推理速度极快，编码能力强劲，并支持**原生多模态输入**的匿名大模型」 |
+> | `minimax-m3.1-flash` | `multimodal` | **B** | 目录 `descriptionZh`：「**原生多模态**，擅长 office、agentic、编程任务…」 |
 >
-> **本机实测影响面**（用真实名册跑判定）：
+> **既然 `supportsImages` 对几乎整份名册都报 true，为什么 B 档还要参考目录？** 因为判据不是那个布尔字段，而是**描述里的措辞**——目录对 `hy3`、`glm-5.3` 这类纯文本模型只写「混元思考模型…」「旗舰模型…」，从不写「原生多模态」。也就是说，描述是一个**有区分度的**信号，而 `supportsImages` 没有。B 档把这条区分度用起来，但仍**不把它开放成通用许可**：新增 id 若只有目录描述、没有厂商文档，需要单独评估后再进表（写进表里的注释与 `tests/native-modality.spec.ts` 各自钉住「B 档恰好是这两条」），因为「目录说了」一旦变成立即可用的规则，就等于绕回被这张表取代的「报 true 就勾」。
 >
-> - CN 16 个里 **7 个**会预勾选（`glm-5.3-flash`、`glm-5v-turbo`、`deepseek-v4.1-flash`、`kimi-k2.6/2.7/k3-1`、`minimax-m3`）；被排除的纯文本有 `glm-5.3`、`glm-5.2`、`hy3`、`hy4-preview`、`deepseek-v4-pro`（上游对前五个全报 true）。
-> - 国际 23 个里只有 **3 个**有厂商来源（`glm-5.3-flash`、`deepseek-v4.1-flash`、`kimi-k2.6`），其余 17 个（`gpt-5.x`、`gemini-3.5-flash`、`grok-4.7`、自建别名 `fast-model`/`balanced-model` 等）都是 `unknown`，默认不勾。这是「不猜」的代价，也是它的意义。（`default-model` 已不在名册里：它是国际区的 `auto` 路由，见下条。）
+> **B 档要解决的具体故障**：这两条 id 在 A 档快照之后才进名册，于是每次刷新都仅因「不在表里」被判成 `text`，宿主以 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒绝粘贴的图片——与 issue #168 同一形状，只是根因从「数组没提到」换成了「表没收录」。
 >
-> **维护负担**：这张表是**快照而非实时同步**，且与 `workbuddy-manager` 仓库各存一份。新增 id 必须附厂商来源与核验日期；两边更新时需手动同步。表在卡片上体现为勾选框 tooltip（`row.modelImageText` / `row.modelImageUnverified`），否则一排勾选中间夹着两个空框会显得像 bug。
+> **刷新时的判定（`imageDefaultFor`）**：只有核验为 `multimodal` 的才预勾选。`text` 不勾（文档说它读不了图）；`unknown` 也**不勾**——「不猜」正是这张表存在的理由，上游那枚布尔字段在这里不参与判定（否则又回到"报 true 就勾"的老路）。平台显式 `false` 保留一票否决，因此核验为多模态的模型也不会违逆平台的明确拒绝。
+>
+> **不做前缀/族匹配**：`glm-5.3` 是 `text` 而 `glm-5.3-flash` 是 `multimodal`，前缀规则必然错一个；`hy3` 是 `text` 而 `hy3-x` 无来源，不能用族关系把结论传下去；B 档的 `minimax-m3.1-flash` 同样不会把 `minimax-m3.1` 带上。表按**精确 id** 匹配，未列出的新模型一律 `unknown`。
+>
+> **本机实测影响面**（2026-10-30 用本机 CN 的 `cli` 名册 21 个重算，此前那节的 16 个是 2026-09-29 的名册）：
+>
+> - CN 21 个里 **7 个**会预勾选（A 档 5 个：`glm-5.3-flash`、`glm-5v-turbo`、`deepseek-v4.1-flash`、`kimi-k3-1`、`minimax-m3`；B 档 2 个：`space-bunny`、`minimax-m3.1-flash`）。被排除的纯文本有 `glm-5.3`、`glm-5.2`、`glm-5.1`、`hy3`、`hy4-preview`、`deepseek-v4-pro`（上游对它们全报 true）。
+> - 其余 8 个（`hy3-x`、`step-5-preview`、`kimi-k3.1-pro`、`kimi-k2.8-preview`、`mimo-v2.6-pro`、别名 `fast-model`/`balanced-model`/`deep-model`）无来源，一律 `unknown`、默认不勾。这是「不猜」的代价，也是它的意义。
+> - 国际区的结论仍是 2026-09-29 那次（23 个里只有 3 个有厂商来源），本轮**未重测**国际名册；`default-model` 已不在名册里：它是国际区的 `auto` 路由，见下条。
+>
+> **维护负担**：这张表是**快照而非实时同步**，且与 `workbuddy-manager` 仓库各存一份。新增 A 档 id 必须附**厂商来源**与核验日期；B 档（上游目录自述）目前**恰好只有两条**，由 `tests/native-modality.spec.ts` 钉住——再要加一条需要先想清楚为什么描述是唯一可得的证据，而不是顺手把目录里写着「原生多模态」的都抄进来。两边更新时需手动同步。表在卡片上体现为勾选框 tooltip（`row.modelImageText` / `row.modelImageUnverified`），否则一排勾选中间夹着两个空框会显得像 bug。
 >
 > 名单在卡片上带 tooltip（`row.modelImageUntrusted`）说明原因，否则它夹在一排已勾选的模型中间会显得像 bug。
 >

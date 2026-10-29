@@ -9,9 +9,11 @@
  * the same defect and fixed it the same way — a reviewed table keyed by exact
  * model id, with a source and a review date per entry.
  *
- * This snapshot is copied from that project's
- * `server/services/native_modalities.json` (all entries reviewed 2026-09-25).
- * The provenance — per-id source URL and evidence — is kept in
+ * This snapshot BEGAN as a copy of that project's
+ * `server/services/native_modalities.json` (all entries reviewed 2026-09-25) and
+ * has since grown by two ids whose evidence is a second, weaker class: the
+ * upstream catalog's own description for that id (see the table's second
+ * section). Provenance — per-id source URL and evidence — is kept in
  * `docs/DESIGN.md` rather than here, because the build ships this module's
  * comments verbatim into the browser bundle. Keep the two in sync when either
  * side is updated; this is a maintained snapshot, NOT a live read.
@@ -47,6 +49,25 @@ export const NATIVE_MODALITY_BY_MODEL_ID: Readonly<Record<string, 'text' | 'mult
   'kimi-k2.7': 'multimodal',
   'kimi-k3-1': 'multimodal',
   'minimax-m3': 'multimodal',
+  // ── Upstream-catalog self-description (a WEAKER evidence class, see below) ──
+  // These two are the only entries whose evidence is the upstream catalog's own
+  // `descriptionZh` rather than vendor documentation. Both say it verbatim on
+  // the CN gateway: `space-bunny` — 「推理速度极快，编码能力强劲，并支持原生多模态
+  // 输入的匿名大模型」; `minimax-m3.1-flash` — 「原生多模态，擅长 office、agentic、
+  // 编程任务…」. Measured 2026-10-30 against the desktop's cached CN catalog
+  // (`acc-product-config-v3.json`, WorkBuddy 5.8.3, doc date 2026-10-14), where
+  // both also carry `supportsImages: true`.
+  //
+  // WHY THEY ARE STILL HERE despite the weaker source: without them a refresh
+  // stamps both text-only purely because the reviewed snapshot predates them,
+  // and the host then refuses a pasted image with MODEL_DOES_NOT_SUPPORT_IMAGES —
+  // the exact shape of issue #168. A self-description is weaker than a vendor
+  // page, not weaker than silence: the rule this table protects is 「没有资料就不
+  // 猜」, and these have material. Any FUTURE id still needs vendor documentation
+  // to get in; do not treat "the catalog described it" as a reusable licence,
+  // because the catalog calls 15/16 CN models image-capable.
+  'minimax-m3.1-flash': 'multimodal',
+  'space-bunny': 'multimodal',
 }
 
 /**

@@ -101,12 +101,34 @@ describe('imageDefaultFor', () => {
 
 describe('NATIVE_MODALITY_BY_MODEL_ID', () => {
   it('vendors exactly the reviewed snapshot, with no partial or empty entries', () => {
-    // A snapshot, not a live read: 13 ids reviewed 2026-09-25 in the sibling
-    // workbuddy-manager project. Growing it must be a deliberate act with a
-    // vendor source, so this asserts the size rather than letting ids drift in.
-    expect(Object.keys(NATIVE_MODALITY_BY_MODEL_ID)).toHaveLength(13)
+    // A snapshot, not a live read: 15 ids. Growing it must be a deliberate act
+    // with a stated source, so this asserts the size rather than letting ids
+    // drift in — an id added here silently pre-checks an image box on every
+    // refresh and lets a model the docs call text-only receive images.
+    //
+    // The count moved 13 → 15 with the two upstream-described ids pinned by the
+    // next test. Keep this number and `docs/DESIGN.md` 「核验表」 in step: the
+    // design doc is this table's provenance record, and a size here without a
+    // row there is exactly the drift this assertion exists to catch.
+    expect(Object.keys(NATIVE_MODALITY_BY_MODEL_ID)).toHaveLength(15)
     for (const [id, kind] of Object.entries(NATIVE_MODALITY_BY_MODEL_ID)) {
       expect(kind === 'text' || kind === 'multimodal', id).toBe(true)
     }
+  })
+
+  it('records the two upstream-described ids without opening a third evidence class', () => {
+    // Two evidence classes live in one record, and the newer one is WEAKER:
+    // vendor documentation for the original 13, the upstream catalog's own
+    // description for these two. Pinning WHICH two stops a future addition from
+    // quietly joining the weaker class by imitation — the catalog calls 15/16
+    // CN models image-capable, so "the catalog said so" is not a licence.
+    for (const id of ['space-bunny', 'minimax-m3.1-flash']) {
+      expect(NATIVE_MODALITY_BY_MODEL_ID[id], id).toBe('multimodal')
+      expect(imageDefaultFor({ id, supportsImages: true }), id).toBe(true)
+    }
+    // …and they must not drag their families along, exactly like every other
+    // entry (the table matches on the exact id).
+    expect(nativeModalityOf('minimax-m3.1')).toBe('unknown')
+    expect(nativeModalityOf('space-bunny-2')).toBe('unknown')
   })
 })
