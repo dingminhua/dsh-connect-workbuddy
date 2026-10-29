@@ -68,7 +68,44 @@
   - **测试**：新增 `tests/issue167-second-gui-span.spec.ts`（两句都消失、截断窗口也消失、改写后
     仍是可读指令、幂等、经 `prepareChatBody` 对 system 与 assistant 生效而对 user 不动、无关文本不变）。
 
+- **心跳存活性不再把「进程启动时刻」和「心跳写入时刻」相比；auth 文件名接受 `-ai.info`（#174）**
+  - **① 误判为本机实测**：`isHeartbeatProcessAlive` 拿 `ps` 的进程启动时间与 `heartbeat.registeredAt`
+    （插件写入心跳那一刻）比，窗口 60s。两者的差是「宿主起来之后过了多久才挂载插件」，真实场景普遍
+    远超 60s——报告者实测进程 19:47:20、心跳 19:58:45，差 684,817 ms，于是 `doctor` / `status`
+    对一个刚写完心跳的活进程报 `hostBundle: "stale"`。既有测试没挡住，因为它把 `registeredAt`
+    **设成**进程启动时刻，等于断言了这个 bug 的前提。
+    修法：心跳新增 `hostStartedAt`（写心跳时取本进程启动时刻），比较改与**它**比；v1 心跳仍可读，
+    降级用 `registeredAt` 并按更宽的窗口判定（宁可漏判 PID 复用，也不把活宿主叫成死的）。
+  - **② 文件名**：`WORKBUDDY_LIVE_FILENAME` 只有 `workbuddy-desktop.info`，而 5.7.x 桌面端写的是
+    `workbuddy-desktop-ai.info`。后果是双重的：`fileRank` 的「live 永远优先」从不命中（排序退化为
+    按 `lastRefreshAtMs`，结果对只是运气），而 `doctor` 报 `desktopAuthFile.present: false` 并给出
+    「设置 WORKBUDDY_AUTH_FILE」的无效建议——同时账号列表是满的。修法：已知 live 名变成列表，
+    `fileRank` / 候选扫描 / `doctor` 统一走 `isLiveDesktopAuthFileName`。
+  - **顺带查出的第三处**：`resolveDesktopCandidates()`（`desktopAuthPath()`、`desktopFilePresent()`
+    的来源）原本**忽略 `authDirs`**，于是诊断路径与读取器实际扫描的路径不是同一组——与 ② 是同一种
+    「诊断与读取各说一套」的缺陷。现在两者同源。
+  - `diagnose()` 的 `missing` 改为**按目录**报一次、且只在目录里没有任何可读凭据时才报：否则在
+    用 `-ai.info` 的机器上会多出一行「另一个名字缺失」，而那条用户无法处理，也与已读到的账号相矛盾。
+
+- **生成类临时文件不再只写不删（#174 ③）**
+  - 生图（`%TEMP%/workbuddy-image-gen`）与视频（`workbuddy-video-gen`）原来只 `mkdir` + `writeFile`，
+    仓库内无任何清理路径。新增 `src/temp-files.ts` 的 `pruneTempDir()`，**挂在写入之后**按 mtime
+    保留最新 20 个（不是启动时扫一遍：插件可能活在久不重启的宿主里，那时恰恰不生成）。
+    能力被吞掉——清理失败绝不能把一次成功的生成变成失败。
+
+- **请求体超限回 413 而不是 500（#174 ④）**
+  - `readBody` 原来 reject 一个裸 `Error`，被外层 catch 写成 `500 internal`。改为具名
+    `RequestBodyTooLargeError` → 413 + `types: client`。
+  - 同时修掉一个连带缺陷：原来超限时 `req.destroy()` **销毁 socket**，那样 413 根本送不到客户端，
+    客户端只会看到连接被重置——比 500 更糟。现在改为停止读取（摘掉监听 + `pause()`），响应得以送达。
+
 ### Tests
+
+- **#174 四条各自钉住可失败点**：心跳（长运行宿主必须判活、`hostStartedAt` 与 `registeredAt`
+  冲突时以精确者为先、v1 心跳仍可读、容差常量本身）、临时文件（按 mtime 而非文件名、只清本类型、
+  目录不存在返 0、`keep` 是有限值）、413（真发一个超限流，断言状态码）、diagnose
+  （文件名命中时**不**报 missing、tried 与 failures 按目录对齐）。
+- 对修复前代码跑：心跳 4 条红、413 1 条红、#174 临时文件与 diagnose 的新用例分别红。
 
 - **#170 的退避是「有界」的，不只是「有重试」**：`tests/issue170-status-retry.spec.tsx` 断言第二次
   尝试**不在** 3s 时发生（恒为 3s 的定频实现会让这条红），并且读到成功后才回到安静的 60s 轮询。

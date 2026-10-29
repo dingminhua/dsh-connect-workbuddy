@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkBuddyCredential } from './auth.ts'
 import { isRouterModelId } from './native-modality.ts'
+import { pruneTempDir, TEMP_MEDIA_KEEP } from './temp-files.ts'
 import { parseQueueAnswer } from './queue.ts'
 import {
   IMAGE_EDITS_PATH,
@@ -4296,6 +4297,9 @@ export class WorkBuddyUpstreamClient {
     const safeUrl = url.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-32)
     const path = join(dir, `video-${stamp}-${safeUrl}.mp4`)
     await writeFile(path, buffer)
+    // 机会式清理（issue #174）：视频比图片大得多，只写不删的代价也更大。不 await：
+    // 调用方要的是路径，而清理失败不该让一次成功下载变成失败。
+    void pruneTempDir(dir, TEMP_MEDIA_KEEP, ['.mp4'])
     return path
   }
 

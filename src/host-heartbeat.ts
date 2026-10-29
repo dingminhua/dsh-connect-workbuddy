@@ -21,18 +21,43 @@ import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 /** Basename of the host heartbeat file inside the Harness home. */
 export const WORKBUDDY_HOST_HEARTBEAT_FILENAME = '.workbuddy-host-heartbeat.json'
 
-/** Current on-disk heartbeat format; readers reject others. */
-const HEARTBEAT_FORMAT_VERSION = 1
+/**
+ * On-disk heartbeat formats this build WRITES and READS.
+ *
+ * 1 → 2 added `hostStartedAt` (issue #174). Version 1 is still READ, on purpose:
+ * rejecting it would turn the first `doctor` after an upgrade into a spurious
+ * "no heartbeat at all", which is a worse diagnosis than the imprecise
+ * comparison version 1 supports. Anything newer than {@link HEARTBEAT_FORMAT_VERSION}
+ * is rejected, because a future field could change the meaning of the ones read
+ * here.
+ */
+const HEARTBEAT_FORMAT_VERSION = 2
+const READABLE_HEARTBEAT_VERSIONS: readonly number[] = [1, 2]
 
 /** On-disk shape of the heartbeat. */
 export interface WorkBuddyHostHeartbeat {
-  version: typeof HEARTBEAT_FORMAT_VERSION
+  /** The format actually on disk; this build writes {@link HEARTBEAT_FORMAT_VERSION}. */
+  version: (typeof READABLE_HEARTBEAT_VERSIONS)[number]
   package: 'dsh-connect-workbuddy'
   pluginVersion: string
   /** Epoch milliseconds when the host registered the provider. */
   registeredAt: number
   /** Host process PID, to distinguish a stale heartbeat after a crash. */
   pid: number
+  /**
+   * Epoch milliseconds when THIS process started (issue #174).
+   *
+   * The staleness check needs to recognise a REUSED PID: `process.kill(pid, 0)`
+   * only says "some process has this number", so after a crash the heartbeat
+   * can describe a process that died while the number now belongs to something
+   * else. The way to tell is to compare the live process's start time against
+   * the one recorded HERE.
+   *
+   * Absent on heartbeats written by older builds (`version: 1`): the reader
+   * then falls back to {@link WorkBuddyHostHeartbeat.registeredAt}, which is
+   * what those builds wrote, and is only a last-resort approximation.
+   */
+  hostStartedAt?: number
 }
 
 /** Absolute path of the host heartbeat file. */
@@ -115,10 +140,41 @@ export function processStartTimeMs(pid: number): number | undefined {
 }
 
 /**
+ * How close a recorded start time must be to the live process's start time for
+ * the two to be considered the SAME process.
+ *
+ * Two tolerances, for two different comparisons:
+ *
+ *   - {@link HOST_START_REFERENCE_TOLERANCE_MS} when the heartbeat records
+ *     `hostStartedAt` — both sides are then the SAME quantity (a process start
+ *     time), so the window only has to absorb the coarse resolution of
+ *     `ps -o lstart=` (whole seconds) and PowerShell's string round-trip.
+ *   - {@link LEGACY_REFERENCE_TOLERANCE_MS} when it does not, and the only
+ *     available reference is `registeredAt`. That is a different quantity
+ *     (when the plugin mounted, not when the process started), so it is a
+ *     lower bound rather than an answer: a host that started more than this
+ *     before the plugin mounted would have looked dead. Kept wide on purpose —
+ *     a missed reuse is far less harmful than calling a live host stale.
+ */
+export const HOST_START_REFERENCE_TOLERANCE_MS = 120_000
+export const LEGACY_REFERENCE_TOLERANCE_MS = 12 * 60 * 60 * 1_000
+
+/**
  * Whether the recorded host process still matches the heartbeat's PID.
  *
  * A PID can be reused after a crash, so the recorded start time is compared
  * against the live process: a different start time means a different process.
+ *
+ * ISSUE #174 — the reference used to be `registeredAt`, the moment the plugin
+ * WROTE the heartbeat, and the comparison was `|startedAt − registeredAt| < 60s`.
+ * Those are two different quantities: `registeredAt` is when the host finished
+ * booting and mounted this plugin, which on a real machine is minutes after the
+ * process started. Measured by the reporter on Windows 11: process start
+ * 19:47:20, heartbeat written 19:58:45 — 684,817 ms apart — so `doctor` and
+ * `status` reported `hostBundle: "stale"` for a host that was alive and had
+ * just written the file. The `hostStartedAt` field exists so the comparison has
+ * the right reference; `registeredAt` is only read for heartbeats written by an
+ * older build, where it is the sole (and merely near) signal available.
  */
 export function isHeartbeatProcessAlive(heartbeat: WorkBuddyHostHeartbeat): boolean {
   if (!Number.isInteger(heartbeat.pid) || heartbeat.pid <= 0) return false
@@ -130,8 +186,11 @@ export function isHeartbeatProcessAlive(heartbeat: WorkBuddyHostHeartbeat): bool
   }
   const startedAt = processStartTimeMs(heartbeat.pid)
   if (startedAt === undefined) return true
-  // Allow one second of clock skew between the ps timestamp and Date.now().
-  return Math.abs(startedAt - heartbeat.registeredAt) < 60_000
+  const recorded = heartbeat.hostStartedAt
+  if (recorded !== undefined && Number.isFinite(recorded)) {
+    return Math.abs(startedAt - recorded) < HOST_START_REFERENCE_TOLERANCE_MS
+  }
+  return Math.abs(startedAt - heartbeat.registeredAt) < LEGACY_REFERENCE_TOLERANCE_MS
 }
 
 /** Read the heartbeat; absent or unparsable files report undefined. */
@@ -140,31 +199,47 @@ export async function readHostHeartbeat(): Promise<WorkBuddyHostHeartbeat | unde
     const parsed: unknown = JSON.parse(await readFile(workbuddyHostHeartbeatPath(), 'utf8'))
     if (typeof parsed !== 'object' || parsed === null) return undefined
     const document = parsed as Record<string, unknown>
-    if (document['version'] !== HEARTBEAT_FORMAT_VERSION) return undefined
+    if (!READABLE_HEARTBEAT_VERSIONS.includes(document['version'] as number)) return undefined
     if (document['package'] !== 'dsh-connect-workbuddy') return undefined
     const pid = document['pid']
     const registeredAt = document['registeredAt']
     if (typeof pid !== 'number' || typeof registeredAt !== 'number') return undefined
+    // `hostStartedAt` is OPTIONAL: a heartbeat written by a build before issue
+    // #174 has no such field, and refusing to read it would turn every upgrade
+    // into a spurious "no heartbeat" report.
+    const hostStartedAt = document['hostStartedAt']
     return {
-      version: HEARTBEAT_FORMAT_VERSION,
+      // The version READ, not the one this build writes: `doctor` reports it, and
+      // claiming 2 for a v1 file would hide that the precise reference is absent.
+      version: document['version'] as (typeof READABLE_HEARTBEAT_VERSIONS)[number],
       package: 'dsh-connect-workbuddy',
       pluginVersion: typeof document['pluginVersion'] === 'string' ? document['pluginVersion'] : WORKBUDDY_CONNECT_VERSION,
       registeredAt,
       pid,
+      ...typeof hostStartedAt === 'number' && Number.isFinite(hostStartedAt) ? { hostStartedAt } : {},
     }
   } catch {
     return undefined
   }
 }
 
-/** Write the heartbeat for the current process. */
+/**
+ * Write the heartbeat for the current process.
+ *
+ * `hostStartedAt` is captured HERE, from this process, so the later staleness
+ * check compares like with like (issue #174). Sampled on every write rather
+ * than cached: the value is cheap, and a module-level cache would be wrong the
+ * moment this function is exercised from a child process.
+ */
 export async function writeHostHeartbeat(): Promise<void> {
+  const hostStartedAt = processStartTimeMs(process.pid)
   const heartbeat: WorkBuddyHostHeartbeat = {
     version: HEARTBEAT_FORMAT_VERSION,
     package: 'dsh-connect-workbuddy',
     pluginVersion: WORKBUDDY_CONNECT_VERSION,
     registeredAt: Date.now(),
     pid: process.pid,
+    ...hostStartedAt === undefined ? {} : { hostStartedAt },
   }
   await writeFile(workbuddyHostHeartbeatPath(), `${JSON.stringify(heartbeat, null, 2)}\n`, { mode: 0o600 })
 }

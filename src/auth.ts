@@ -297,8 +297,44 @@ export const WORKBUDDY_AUTH_FILENAME = '.workbuddy-auth.json'
 /** Env variable that overrides the desktop auth-file location. */
 export const WORKBUDDY_AUTH_FILE_ENV = 'WORKBUDDY_AUTH_FILE'
 
-/** Basename of the live WorkBuddy desktop auth file. */
-const WORKBUDDY_LIVE_FILENAME = 'workbuddy-desktop.info'
+/**
+ * Basenames the live WorkBuddy desktop auth file is known to use.
+ *
+ * ISSUE #174: the constant used to be ONE name, `workbuddy-desktop.info`, and
+ * the 5.7.x Windows app writes `workbuddy-desktop-ai.info` instead — the same
+ * directory, the same payload, a different filename (measured by the reporter:
+ * `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\` held
+ * `workbuddy-desktop-ai.info` plus timestamped backups of that same name, and no
+ * file carrying the constant's name at all). The consequences were both silent:
+ * the "live file always wins" rule in {@link fileRank} never matched, so
+ * ordering fell back to `lastRefreshAtMs` (correct by luck, not by rule), and
+ * `doctor` reported `desktopAuthFile.present: false` with a hint to set
+ * `WORKBUDDY_AUTH_FILE` — on a machine whose credential had just been read
+ * successfully from the default directory.
+ *
+ * Ordered, not a set: {@link WORKBUDDY_LIVE_FILENAME} stays the one this build
+ * treats as canonical for writing, and the alternatives are probed after it. The
+ * FIRST entry is what {@link defaultDesktopAuthCandidates} reports as the
+ * expected path, so keep it there.
+ */
+const WORKBUDDY_LIVE_FILENAMES: readonly string[] = [
+  'workbuddy-desktop.info',
+  'workbuddy-desktop-ai.info',
+]
+
+/** Basename of the live WorkBuddy desktop auth file (the canonical one). */
+const WORKBUDDY_LIVE_FILENAME = WORKBUDDY_LIVE_FILENAMES[0] as string
+
+/**
+ * Whether one basename is a LIVE desktop auth file (any of the known names).
+ *
+ * Every place that asked "is this the live file?" now asks this, so a new
+ * spelling is added in one list instead of being chased through the reader, the
+ * ranker and `doctor` separately — which is exactly how the three drifted apart.
+ */
+export function isLiveDesktopAuthFileName(name: string): boolean {
+  return WORKBUDDY_LIVE_FILENAMES.includes(name)
+}
 
 /** Prefix of the plugin-owned per-region credential copies (legacy, read-only). */
 const WORKBUDDY_OWN_PREFIX = '.workbuddy-auth'
@@ -651,9 +687,19 @@ function nonEmptyEnv(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 }
 
-/** The live auth file's platform candidates, in probe order. */
+/**
+ * The live auth file's platform candidates, in probe order.
+ *
+ * Every known basename for every platform directory: a machine can hold the old
+ * and the new spelling side by side during an app upgrade, and probing only the
+ * canonical one is the defect issue #174 reports.
+ */
 export function defaultDesktopAuthCandidates(): string[] {
-  return defaultDesktopAuthDirs().map(dir => join(dir, WORKBUDDY_LIVE_FILENAME))
+  const candidates: string[] = []
+  for (const dir of defaultDesktopAuthDirs()) {
+    for (const name of WORKBUDDY_LIVE_FILENAMES) candidates.push(join(dir, name))
+  }
+  return candidates
 }
 
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
@@ -831,7 +877,7 @@ export function hasEncryptedCredentialFields(text: string): boolean {
  * backups, never the primary ordering.
  */
 function fileRank(path: string): number {
-  return authFileName(path) === WORKBUDDY_LIVE_FILENAME ? 0 : 1
+  return isLiveDesktopAuthFileName(authFileName(path)) ? 0 : 1
 }
 
 /**
@@ -1328,7 +1374,17 @@ export class WorkBuddyCredentialStore {
     const explicit = this.desktopPathOverride
       ?? (fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : undefined)
     if (explicit !== undefined) return [explicit]
-    return defaultDesktopAuthCandidates()
+    // THE CONFIGURED DIRECTORIES, not the platform defaults (issue #174). This
+    // used to answer `defaultDesktopAuthCandidates()` unconditionally while
+    // {@link candidateFiles} honoured `this.authDirs`, so the two disagreed
+    // whenever the directories were overridden: the READER found the credential
+    // in the configured directory while `desktopAuthPath()` / `desktopFilePresent()`
+    // — what `doctor` reports as `present` and what the "set WORKBUDDY_AUTH_FILE"
+    // hint is gated on — described a path the reader never touched. That is the
+    // same shape the reporter saw from the filename side: a healthy credential on
+    // the default path, and `present: false` beside it.
+    return (this.authDirs ?? defaultDesktopAuthDirs())
+      .flatMap(dir => WORKBUDDY_LIVE_FILENAMES.map(name => join(dir, name)))
   }
 
   /** The resolved desktop auth-file path, for diagnostics. */
@@ -1362,10 +1418,29 @@ export class WorkBuddyCredentialStore {
     }
 
     const dirs = this.authDirs ?? defaultDesktopAuthDirs()
+    const seen = new Set<string>()
     for (const dir of dirs) {
-      const live = join(dir, WORKBUDDY_LIVE_FILENAME)
-      files.push(live)
-      for (const backup of await this.backupsBeside(live)) files.push(backup)
+      // EVERY known live basename, not just the canonical one (issue #174): the
+      // 5.7.x app writes `workbuddy-desktop-ai.info`, so probing only
+      // `workbuddy-desktop.info` found the backups but never the live file.
+      //
+      // `backupsBeside` answers "the other .info files in this directory", so
+      // running it once per live name would return the OTHER live file as a
+      // backup — each file would then be scanned twice, and the second read
+      // would overwrite the first's rank. The set collapses that, and the live
+      // names are pushed first so their rank is decided by `fileRank`, not by
+      // which branch happened to reach them.
+      for (const name of WORKBUDDY_LIVE_FILENAMES) {
+        const live = join(dir, name)
+        if (!seen.has(live)) { seen.add(live); files.push(live) }
+      }
+      for (const name of WORKBUDDY_LIVE_FILENAMES) {
+        for (const backup of await this.backupsBeside(join(dir, name))) {
+          if (seen.has(backup)) continue
+          seen.add(backup)
+          files.push(backup)
+        }
+      }
     }
     return files
   }
@@ -2088,8 +2163,43 @@ export class WorkBuddyCredentialStore {
     failures: WorkBuddyCandidateFailure[]
   }> {
     const candidates: WorkBuddyCandidateFailure[] = []
+    // `tried` is the DESKTOP paths this store actually consults — the resolved
+    // live candidates plus the timestamped backups found beside them. Report it
+    // from the same `candidateFiles()` the loop below walks (issue #174): the
+    // list used to be derived separately, so it could name paths the loop never
+    // opened, and add the SECOND known live basename this build now probes.
+    // Timestamped backups are excluded on purpose: `doctor` calls them by their
+    // directory, and enumerating them here would make the card's two-path line
+    // grow a line per app upgrade.
+    const desktopTried = this.resolveDesktopCandidates()
+    // Read every candidate ONCE, then decide what to report (issue #174): the
+    // rules below are about the SET (was anything readable in this directory?),
+    // which a single streaming pass cannot answer.
+    const probed: { path: string, probe: Awaited<ReturnType<typeof probeAuthFile>> }[] = []
     for (const path of await this.candidateFiles()) {
-      const probe = await probeAuthFile(path, this.resolveAtRestKey)
+      probed.push({ path, probe: await probeAuthFile(path, this.resolveAtRestKey) })
+    }
+    /**
+     * Directories that need no `missing` complaint (issue #174).
+     *
+     * A directory is "accounted for" when it either yielded a readable
+     * credential OR produced some other, more specific complaint. The first case
+     * is the healthy machine whose app writes only one of the two known
+     * spellings; the second is a machine holding a broken file — and telling
+     * that user "no auth file at the expected path" would be both false and
+     * less useful than the `invalid` line they already have.
+     */
+    const accountedDirs = new Set<string>()
+    for (const entry of probed) {
+      if ('credential' in entry.probe) {
+        accountedDirs.add(dirname(entry.path))
+        continue
+      }
+      if (entry.probe.failure.reason !== 'missing') accountedDirs.add(dirname(entry.path))
+    }
+    /** Directories whose `missing` complaint has already been made. */
+    const missingReported = new Set<string>()
+    for (const { path, probe } of probed) {
       if ('credential' in probe) {
         // Reads fine, but belongs to the other region's tab: this store's
         // `readAll()` filters it out, so the account list will not show it.
@@ -2107,6 +2217,21 @@ export class WorkBuddyCredentialStore {
           })
         }
         continue
+      }
+      // `missing` is reported ONCE PER DIRECTORY, and only when NOTHING in that
+      // directory could be read (issue #174). Two rules, one reason each:
+      //
+      //   - a directory holding a readable credential must not also be
+      //     complained about: a machine whose app writes only
+      //     `workbuddy-desktop-ai.info` misses the `workbuddy-desktop.info`
+      //     probe by design, and reporting it would put "missing" on the card
+      //     for a machine whose account list is already populated.
+      //   - two `missing` lines for two known spellings in the same directory say
+      //     the same thing twice, and the user cannot act on the difference.
+      if (probe.failure.reason === 'missing') {
+        const dir = dirname(path)
+        if (accountedDirs.has(dir) || missingReported.has(dir)) continue
+        missingReported.add(dir)
       }
       candidates.push({ path, source: 'desktop', ...probe.failure })
     }
@@ -2173,6 +2298,6 @@ export class WorkBuddyCredentialStore {
       // yet), and a read error is already reported through the own copies'
       // diagnostics pass above.
     }
-    return { tried, failures: candidates }
+    return { tried: [...desktopTried, ...this.ownCandidates()], failures: candidates }
   }
 }

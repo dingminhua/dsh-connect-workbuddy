@@ -453,7 +453,35 @@ const NO_RETRY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'retry-after': '0',
 })
 
-/** Read a request body with a size cap; over-limit bodies fail the request. */
+/**
+ * An over-limit request body (issue #174).
+ *
+ * A named class rather than an `Error` with a magic message, because the two
+ * callers must answer it with a DIFFERENT status: the protocol answer is 413,
+ * and classifying it as an ordinary internal failure made it a 500. A class
+ * survives renaming the message, which is the only reason this is not a
+ * string comparison.
+ */
+export class RequestBodyTooLargeError extends Error {
+  constructor(readonly limitBytes: number) {
+    super(`request body too large (limit ${limitBytes} bytes)`)
+    this.name = 'RequestBodyTooLargeError'
+  }
+}
+
+/**
+ * Read a request body with a size cap; over-limit bodies fail the request.
+ *
+ * AN OVER-LIMIT BODY IS STOPPED, NOT DESTROYED (issue #174). Calling
+ * `req.destroy()` here tears down the SOCKET, so the 413 the caller is about to
+ * write can never reach the client — it saw a reset connection instead of an
+ * answer, which is strictly worse than the 500 this replaced. So the stream is
+ * paused and its listeners are dropped: the request is no longer read, the
+ * response still goes out, and Node closes the connection once the response
+ * ends. Bytes already arriving are discarded with the socket, which is the
+ * whole point of a cap (`content-length` is not trusted, so the cap has to be
+ * enforced on arrival).
+ */
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -461,8 +489,13 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > REQUEST_BODY_LIMIT) {
-        reject(new Error('request body too large'))
-        req.destroy()
+        // Drop what was buffered before answering: holding a partial 64 MB body
+        // while writing a one-line error is pure waste.
+        chunks.length = 0
+        req.removeAllListeners('data')
+        req.removeAllListeners('end')
+        req.pause()
+        reject(new RequestBodyTooLargeError(REQUEST_BODY_LIMIT))
         return
       }
       chunks.push(chunk)
@@ -1553,7 +1586,16 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       writeOpenAIError(res, 404, 'not_found', `no such route: ${req.method} ${url}`)
     } catch (error: unknown) {
       if (!res.headersSent) {
-        writeOpenAIError(res, 500, 'internal', String(error))
+        // An over-limit body is the CLIENT's error, not ours (issue #174): 413 is
+        // what the protocol says, and a 500 sends the reader looking for a
+        // server-side fault that does not exist. `client` is the same kind every
+        // other "this request is malformed" answer uses, so nothing upstream of
+        // this reads a new class.
+        if (error instanceof RequestBodyTooLargeError) {
+          writeOpenAIError(res, 413, 'client', error.message, 'request_too_large')
+        } else {
+          writeOpenAIError(res, 500, 'internal', String(error))
+        }
       } else {
         res.end()
       }

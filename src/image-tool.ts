@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { WorkBuddyCredential } from './auth.ts'
+import { pruneTempDir, TEMP_MEDIA_KEEP } from './temp-files.ts'
 import {
   DEFAULT_IMAGE_SIZE,
   IMAGE_TAG_IMAGE_TO_IMAGE,
@@ -148,14 +149,20 @@ function isBillableFailure(error: unknown, sent: boolean): boolean {
   return true
 }
 
+/** 生成图片的临时目录（issue #174）——清理由 {@link pruneTempDir} 负责。 */
+const TEMP_IMAGE_DIR = join(tmpdir(), 'workbuddy-image-gen')
+
 /** 把 b64 图片落成一个临时文件，返回绝对路径。 */
 async function writeTempImage(b64: string, model: string): Promise<string> {
-  const dir = join(tmpdir(), 'workbuddy-image-gen')
-  await mkdir(dir, { recursive: true })
+  await mkdir(TEMP_IMAGE_DIR, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const safeModel = model.replace(/[^A-Za-z0-9._-]+/g, '_')
-  const path = join(dir, `${safeModel}-${stamp}.png`)
+  const path = join(TEMP_IMAGE_DIR, `${safeModel}-${stamp}.png`)
   await writeFile(path, Buffer.from(b64, 'base64'))
+  // 机会式清理（issue #174）：在写入之后跑，不 await——回给模型的是路径，不是清理
+  // 报告，而清理失败不该让一次成功的生成变成失败。`void` 而不是裸调用，是为了让
+  // 「这是故意不等」一眼能看出来。
+  void pruneTempDir(TEMP_IMAGE_DIR, TEMP_MEDIA_KEEP, ['.png'])
   return path
 }
 

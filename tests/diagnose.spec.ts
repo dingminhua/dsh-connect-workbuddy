@@ -14,7 +14,7 @@
 import { createCipheriv, createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { deriveAtRestKeyId } from '../src/at-rest.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
@@ -269,21 +269,44 @@ describe('WorkBuddyCredentialStore.diagnose', () => {
     expect(desktop[0]?.message).toContain('cn')
   })
 
-  it('counts every candidate path it names, so the total cannot under-report', async () => {
+  it('accounts for every DIRECTORY it probes, so the total cannot under-report', async () => {
     // The visible symptom of the bug above: the summary said "1" while the
     // signed-out message enumerated two desktop paths. Every path the store
     // consults must come back either as a failure or as a read credential —
     // never as nothing.
+    //
+    // ISSUE #174 changed what "every path" means: a build now probes BOTH known
+    // live basenames (`workbuddy-desktop.info` and `-ai.info`), so counting
+    // paths would demand two `missing` lines for one empty directory that the
+    // user cannot act on twice. The invariant is therefore stated per
+    // DIRECTORY — every directory the store names is either reported or held a
+    // readable credential — which is the property the original test was
+    // protecting, not a weaker one: a directory that vanished from both lists
+    // still fails here.
     const store = makeStore({ region: 'global' })
     const { tried, failures } = await store.diagnose()
     // Match on the `desktop app` source, not on a path substring: the plugin's
     // own copies are named `.workbuddy-auth*.json` and a loose `includes('auth')`
     // counts them too.
     const desktopTried = tried.filter(path => path.startsWith(root) && path.includes(AUTH_DIR))
-    expect(desktopTried).toHaveLength(1)
+    // Both known spellings are named, so a reader knows where to put a file.
+    expect(new Set(desktopTried.map(path => dirname(path)))).toEqual(new Set([join(root, AUTH_DIR)]))
+    expect(desktopTried.length).toBeGreaterThanOrEqual(2)
     const desktopFailures = failures.filter(failure => failure.source === 'desktop')
-    // Nothing on disk: each desktop candidate is reported as missing.
-    expect(desktopFailures).toHaveLength(desktopTried.length)
+    // Nothing on disk: the empty directory is reported exactly once as missing.
+    expect(desktopFailures).toHaveLength(1)
     expect(desktopFailures[0]).toMatchObject({ reason: 'missing' })
+  })
+
+  it('does not complain about the OTHER known filename when one of them is signed in', async () => {
+    // The bug issue #174 reports, in its second form: the 5.7.x app writes
+    // `workbuddy-desktop-ai.info`, so probing the canonical name misses by
+    // design. Reporting that miss would put "missing" on the card of a machine
+    // whose account list is already populated — the exact contradiction the
+    // reporter hit (`present: false` beside a working account).
+    await writeAuth('workbuddy-desktop-ai.info', accountDoc())
+    const { failures, tried } = await makeStore({ region: 'cn' }).diagnose()
+    expect(tried.map(path => path.split(/[\\/]/).pop())).toContain('workbuddy-desktop-ai.info')
+    expect(failures.filter(failure => failure.source === 'desktop')).toHaveLength(0)
   })
 })

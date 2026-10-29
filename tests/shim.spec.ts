@@ -171,6 +171,55 @@ describe('shim inbound hardening', () => {
     expect(response.status).toBe(415)
   })
 
+  it('answers an over-limit body with 413, not 500 (issue #174)', async () => {
+    // The body cap is `REQUEST_BODY_LIMIT` (64 MB). `readBody` used to reject
+    // with a bare `Error`, which the outer catch answered as `500 internal` —
+    // telling the reader to look for a server fault where the fault is the size
+    // of their request. 413 is the protocol answer.
+    //
+    // The body is streamed rather than string-built: 64 MB of contiguous JS
+    // string would dominate the suite's memory for one assertion, and the cap is
+    // enforced on ARRIVAL (`size += chunk.length`), so a stream of large chunks
+    // trips it exactly the same way.
+    shim = makeShim({ chatStream: async () => ({ ok: true, response: new Response('') }) })
+    await shim.ready
+    const url = new URL(`${shim.baseUrl()}/v1/chat/completions`)
+    const headers = await authed(shim, { 'content-type': 'application/json' })
+    const chunk = Buffer.alloc(4 * 1024 * 1024, 0x20)
+    const total = 20
+    let responseSeen: () => void = () => {}
+    const status = await new Promise<number>((resolve, reject) => {
+      const { request: httpRequest } = require('node:http') as typeof import('node:http')
+      const req = httpRequest({
+        host: url.hostname,
+        port: Number(url.port),
+        path: url.pathname,
+        method: 'POST',
+        headers: { ...headers, 'content-length': String(chunk.length * total) },
+      }, response => {
+        response.resume()
+        responseSeen()
+        resolve(response.statusCode ?? 0)
+      })
+      // Write until the server hangs up. It destroys the socket the moment the
+      // cap is crossed, so a write AFTER that fails with EPIPE/ECONNRESET — that
+      // is the behaviour under test, not an error. Only a failure to produce a
+      // response at all is fatal, and the timeout covers that.
+      req.on('error', () => { /* expected once the server destroys the socket */ })
+      const timer = setTimeout(() => reject(new Error('no response for the over-limit body')), 10_000)
+      responseSeen = (): void => { clearTimeout(timer) }
+      let sent = 0
+      const pump = (): void => {
+        if (sent >= total) { req.end(); return }
+        sent += 1
+        if (req.write(chunk)) setImmediate(pump)
+        else req.once('drain', pump)
+      }
+      pump()
+    })
+    expect(status).toBe(413)
+  })
+
   it('maps upstream credit exhaustion to HTTP 402', async () => {
     shim = makeShim({
       chatStream: async () => ({ ok: false, status: 400, kind: 'hard_credit', message: '积分不足' }),
