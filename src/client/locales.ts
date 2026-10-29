@@ -59,6 +59,11 @@ export const en = {
   // Shown when a REFRESH failed but the last good snapshot is still on
   // screen — distinct from `row.requestFailed`, which replaces the panel.
   'row.requestFailedHint': 'Refresh failed — showing the last loaded data: {message}',
+  // Shown when NO document ever landed for the region, so there is nothing to
+  // fall back to. Distinguishes a transient transport failure (recoverable,
+  // hence the automatic retry and the button) from a refused request.
+  'row.usageErrorHint': 'Could not read the account status: {message}. The local DSH service may have just restarted — retrying automatically.',
+  'row.usageRetry': 'Retry',
   'row.poolErrUnavailable': 'The account pool is not available in this build (or its batch route is missing). Restart the app; if it persists, the plugin needs reinstalling.',
   'row.poolErrFailed': 'The batch failed on the host side: {message}',
   'row.poolErrHttp': 'The batch was refused (HTTP {status}). Check the plugin is up to date and try again.',
@@ -640,6 +645,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.credentialRejectedChoose': '本机还有其他账号，但刚才都没能通过上游校验。可以在上方切换一个试试；如果都不行，请在桌面端重新登录。',
   'row.requestFailed': '请求失败',
   'row.requestFailedHint': '刷新失败——下方为上次加载的数据：{message}',
+  'row.usageErrorHint': '读取账号状态失败：{message}。本地 DSH 服务可能刚重启过，正在自动重试。',
+  'row.usageRetry': '重试',
   'row.poolErrUnavailable': '本版本没有可用的账号池（或其批量接口缺失）。请重启应用；若仍不行，插件可能需要重新安装。',
   'row.poolErrFailed': '批量操作在宿主侧失败：{message}',
   'row.poolErrHttp': '批量操作被拒绝（HTTP {status}）。请确认插件是最新版本后重试。',

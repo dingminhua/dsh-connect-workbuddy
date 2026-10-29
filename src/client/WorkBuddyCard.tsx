@@ -114,6 +114,19 @@ export type WorkBuddyCardProps =
 const POLL_INTERVAL_MS = 60_000
 
 /**
+ * Retry cadence for a status read that FAILED.
+ *
+ * The failed read used to be terminal: `status.status === 'error'` made
+ * `hasAccounts` false, which gated both the 60s poll and the open effect, so a
+ * single transient failure (a WebView fetch rejected while the DSH web process
+ * was restarting) left "Failed to fetch" on screen until the card was closed
+ * and reopened. Backoff doubles from BASE up to MAX and resets on the first
+ * read that lands; nothing is armed while the card is collapsed.
+ */
+const STATUS_RETRY_BASE_MS = 3_000
+const STATUS_RETRY_MAX_MS = 30_000
+
+/**
  * The reasoning tiers the local CodeBuddy CLI accepts for its `--effort` flag.
  *
  * Kept in sync with `EFFORT_LEVELS` in `src/cli-bridge/tool.ts` by hand: that
@@ -980,6 +993,32 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
       controller.abort()
     }
   }, [open, activeRegion, refreshUsage, status.status])
+
+  /**
+   * Recover from a failed status read without a close/reopen.
+   *
+   * Keyed on the document identity (`loaded`), not on `status.status`: every
+   * failed read writes a FRESH `{ status: 'error' }` object, so the identity
+   * changes and the next attempt is armed. A successful read replaces it with a
+   * new object too, which resets the counter through the branch below.
+   */
+  const statusRetries = useRef(0)
+  useEffect(() => {
+    if (!open || status.status !== 'error') {
+      statusRetries.current = 0
+      return
+    }
+    const delay = Math.min(STATUS_RETRY_MAX_MS, STATUS_RETRY_BASE_MS * 2 ** statusRetries.current)
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      statusRetries.current += 1
+      void refreshUsage(activeRegion, controller.signal)
+    }, delay)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [open, activeRegion, refreshUsage, loaded])
 
 
   /**
@@ -3493,7 +3532,25 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>
                 : null}
-              {status.status === 'error' ? <p className="dsm-workbuddy-usage-error">{status.message}</p> : null}
+              {status.status === 'error'
+                ? <div className="dsm-workbuddy-usage-error-block">
+                    <p className="dsm-workbuddy-usage-error" role="alert">
+                      {t('row.usageErrorHint', {
+                        message: status.message === '' ? t('row.requestFailed') : status.message,
+                      })}
+                    </p>
+                    <button
+                      type="button"
+                      className="dsm-btn dsm-btn-outline"
+                      onClick={() => {
+                        statusRetries.current = 0
+                        void refreshUsage(activeRegion)
+                      }}
+                    >
+                      {t('row.usageRetry')}
+                    </button>
+                  </div>
+                : null}
             </div>
           </CardBodyBoundary>
           : null}
