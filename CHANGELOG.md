@@ -27,6 +27,54 @@
   - 同时记录一条与 #164 建议 2 对应的口径：第 0 级改词会让 system 略长（#164 实测 +32 字节 / 5 行），
     自助对比正文长度时不要把它当成「扰动后长度」。
 
+### Bug Fixes
+
+- **新增的多模态模型不再被当成纯文本：广告值改为「用户勾选 ∪ 厂商核验表」（#168）**
+  - **现场**：`deepseek-v4.1-flash` 已勾选，发图仍被宿主拦下——`Model "…" does not
+    support image input`（`MODEL_DOES_NOT_SUPPORT_IMAGES`，宿主 `session/attachment-invalid`
+    的判据是 `resolveModelInfo().inputModalities` 不含 `image`）。报错来自宿主，但判据来自插件
+    广播的 `multimodal`。
+  - **根因**：`imageModelIds` 有两个写入者且语义不同——用户勾选（决定）与目录刷新（当天名册的
+    快照）。仅凭数组无法区分，于是「上次刷新之后才出现在名册里的模型」仅因**不在数组里**就被盖成
+    `multimodal: false`，`workBuddyModelInput` 答 `['text']`。本机实测复现：cn 的数组是
+    `deepseek-v4.1-flash / glm-5.3-flash / kimi-k3-1`，此后名册新增的
+    `minimax-m3.1-flash`、`kimi-k3.1-pro`、`kimi-k2.8-preview`、`hy3-x` 全部不可用。
+  - **修法**：`effectiveImageIds()` —— 保存的数组**优先**（用户勾过的照旧生效，反向勾选也尊重），
+    仅对数组**没有提到**的 id 用 `imageDefaultFor` 的厂商核验表补齐；`imageSelectionExplicit`
+    （卡片保存时置 `true`）一旦成立就完全以数组为准，使「显式取消勾选」不会被下一次读取悄悄改回去。
+    四个盖 `multimodal` 的地方（保存 / 发现 / 启动种子 / 卡片读数）统一走它。
+  - **没做的事**：不给未核验的 id 猜。`hy3-x` 仍是 `['text']`，守住 `docs/DESIGN.md` 那条
+    「不猜」的教训。
+  - **测试**：新增 `tests/issue168-image-seed.spec.ts`，经 `ctx.llm.resolveModelInfo`
+    （宿主自己的判据）断言广告值；含「不猜」「显式取消勾选仍有效」「显式反向勾选仍有效」三条对照。
+    对 5.13.1 代码跑该文件会红，即缺陷被真实钉住。
+
+- **状态读取失败不再被当成终态（#170，合并 PR #171 by @aa52312300aa-sys）**
+  - 失败文档带 `accounts: []`，于是 `hasAccounts` 为 false，60s 轮询与 open effect 一起把自己
+    关掉；一次瞬时 `Failed to fetch` 会永久停在卡片上，只能关掉卡片再打开。
+  - 现在：错误横幅在**展开时**按 3s→30s 指数退避重试（以 `loaded` 文档身份为 key，折叠即解除武装），
+    横幅从裸的 `TypeError` 改成「读取账号状态失败：…」+「重试」按钮；新增
+    `row.usageErrorHint` / `row.usageRetry`（中英）与 `.dsm-workbuddy-usage-error-block`。
+  - **测试**：新增 `tests/issue170-status-retry.spec.tsx`，钉住退避序列（3s 后有请求、再 3s 没有、
+    再 3s 才有）、读到即停、「重试」按钮立即读取且不等待退避、空 message 回落到
+    `row.requestFailed`、以及折叠期间零请求。
+
+- **Web GUI 段落的第二句也是独立指纹，改词表补齐（#167）**
+  - #167 用前缀二分测到最小失败窗口是 `er target, they mean this GUI.`：只改第一句（5.13.1 的做法）
+    仍 400，两句都改才 200。此前「第二句不是独立指纹」的结论被这次实测推翻，写入表中的注释与
+    `tests/issue163-sentence-rewrite.spec.ts` 里那条断言一并纠正。
+  - 新增两行长→短的表项（`without naming another target, …` 与 `they mean this GUI.`），因为门槛在
+    **截断形态**上也会触发；长行先跑，完整段落不会落到短行。
+  - **测试**：新增 `tests/issue167-second-gui-span.spec.ts`（两句都消失、截断窗口也消失、改写后
+    仍是可读指令、幂等、经 `prepareChatBody` 对 system 与 assistant 生效而对 user 不动、无关文本不变）。
+
+### Tests
+
+- **#170 的退避是「有界」的，不只是「有重试」**：`tests/issue170-status-retry.spec.tsx` 断言第二次
+  尝试**不在** 3s 时发生（恒为 3s 的定频实现会让这条红），并且读到成功后才回到安静的 60s 轮询。
+- **#168 断言的是宿主真正读的那个字段**：`inputModalities`，不是 `multimodal` 中间量；只测后者的话，
+  盖值的四个调用点全部传错数组也能绿。
+
 ## 5.13.1 (2026-10-29)
 
 ### Bug Fixes

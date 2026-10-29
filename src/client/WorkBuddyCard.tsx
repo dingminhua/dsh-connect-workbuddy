@@ -2098,6 +2098,11 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
         lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
         enabledModelIds: [...activeEnabledIds],
         imageModelIds: [...activeImageIds],
+        // #168: the user has now EDITED the boxes, so this array is the whole
+        // answer. Without this, an explicit untick of a verified-multimodal
+        // model would be re-ticked by the Host's seed on the next read — undoing
+        // a correction the user just made.
+        imageSelectionExplicit: true,
         offModelIds: [...activeOffIds],
         contextBudgets: activeContextBudgets,
       })

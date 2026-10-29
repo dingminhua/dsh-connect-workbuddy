@@ -59,6 +59,7 @@
     "tests/issue120-promo-discount.spec.ts",
     "tests/issue124-enterprise-credits.spec.ts",
     "tests/card-media-models.spec.tsx",
-    "tests/card-channel-continue.spec.tsx"
+    "tests/card-channel-continue.spec.tsx",
+    "tests/issue170-status-retry.spec.tsx"
   ]
 }

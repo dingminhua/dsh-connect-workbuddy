@@ -138,8 +138,12 @@ describe('the rewrite is wired into prepareChatBody in the required order', () =
     expect(atRewritten).toContain('Paths that begin with @')
     expect(atRewritten).toContain('Relative paths are resolved against')
     expect(guiRewritten).toContain('working with the user inside')
-    // The second GUI sentence is not a fingerprint of its own and is left alone.
-    expect(guiRewritten).toContain('they mean this GUI.')
+    // The second GUI sentence USED to be asserted as left alone, on the belief
+    // that it was not a fingerprint of its own. #167 disproved that against the
+    // live gateway: the minimal failing window is `er target, they mean this
+    // GUI.`, and rewriting the first sentence alone still answered 400. This
+    // line now pins the CORRECT behaviour — both sentences must be gone.
+    expect(guiRewritten).not.toContain('they mean this GUI.')
   })
 
   it('is a no-op on a body with no measured phrase', () => {

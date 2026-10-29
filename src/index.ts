@@ -143,6 +143,9 @@ export {
   nativeModalityOf,
   type WorkBuddyNativeModality,
 } from './native-modality.ts'
+// Re-exported above for consumers, and imported here because the image-selection
+// seeding (issue #168) is what applies the same table the card pre-ticks with.
+import { imageDefaultFor } from './native-modality.ts'
 import { defaultOffModelIds, offDefaultFor, lastRefusalFor, recordRefusal, REFUSES_OFF_MODEL_IDS, withEffectiveOff } from './off-thinking.ts'
 export { defaultOffModelIds, offDefaultFor, REFUSES_OFF_MODEL_IDS, withEffectiveOff }
 export {
@@ -412,8 +415,35 @@ export interface WorkBuddyRegionState {
   lastCatalog?: WorkBuddyModelInfo[]
   /** The user's selection in this region, as model ids. */
   enabledModelIds?: string[]
-  /** Model ids the user explicitly opted into image input. */
+  /**
+   * Model ids the user opted into image input for this region.
+   *
+   * Every id here is honoured. What the SAVED array cannot express is the
+   * difference between "I looked at this model and unticked it" and "this model
+   * did not exist when the list was last refreshed" — so the runtime also adds
+   * a model this build's vendor table classifies as verified-multimodal, UNLESS
+   * {@link imageSelectionExplicit} says the user has edited these boxes. See
+   * `effectiveImageIds` (issue #168); the seed never rewrites this array.
+   */
   imageModelIds?: string[]
+  /**
+   * Whether the image boxes have been edited by a human (issue #168).
+   *
+   * `imageModelIds` alone cannot distinguish a DECISION from a leftover refresh
+   * snapshot: the array is written both by the card's save (a judgement) and by
+   * a catalog refresh (what the roster said on that day). Without that
+   * distinction a model the roster gained after the last refresh was stamped
+   * `multimodal: false` purely by its ABSENCE, `workBuddyModelInput` answered
+   * `['text']`, and the host refused the attachment with
+   * `MODEL_DOES_NOT_SUPPORT_IMAGES` — 「这个模型不支持图片」 — for a model the
+   * plugin's own table calls verified-multimodal.
+   *
+   * `false`/absent means "nobody has chosen yet, so the table may fill the gaps";
+   * a card save sets `true`, after which this array is the whole answer — which
+   * is what keeps an explicit UNTICK of a verified-multimodal model from being
+   * silently re-ticked on the next read.
+   */
+  imageSelectionExplicit?: boolean
   /**
    * Model ids whose `off` thinking level is offered (issue #34). Seeded from
    * the built-in rule (upstream declaration minus the models known to reject
@@ -776,6 +806,12 @@ const regionStateConfig = z.object({
    * ticked correctly without the user having to save.
    */
   offModelIds: z.array(z.string()).default([]).description('Model ids whose "off" thinking level is offered; seeded from the built-in rule when first read.'),
+  /**
+   * Whether a human has edited the image boxes (issue #168). `false` lets the
+   * vendor-verified table fill ids the saved array does not mention; `true`
+   * makes `imageModelIds` the whole answer, so an explicit untick sticks.
+   */
+  imageSelectionExplicit: z.boolean().default(false),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
   pool: poolConfig.default({}),
 })
@@ -1322,6 +1358,56 @@ export function apply(ctx: Context, config: Config): void {
       ...model,
       ...images.has(model.id) ? { multimodal: true } : { multimodal: false },
     }))
+
+  /**
+   * The image selection one region should be stamped with (issue #168).
+   *
+   * The saved array alone cannot answer "does this model take images?", because
+   * it has two writers with different meanings: the user ticking a box (a
+   * DECISION, to be kept forever) and a catalog refresh re-deriving the
+   * vendor-verified defaults (a SNAPSHOT of the roster as it stood that day).
+   * Stamping the snapshot marks every model the roster gained SINCE as
+   * text-only, `workBuddyModelInput` then answers `['text']`, and the host
+   * refuses the attachment outright — `Model "…" does not support image input`
+   * (`MODEL_DOES_NOT_SUPPORT_IMAGES`) — for a model `imageDefaultFor`
+   * classifies as verified-multimodal.
+   *
+   * So the two sides are UNIONED, each contributing exactly what it can know:
+   *
+   *   - the SAVED array states every model the user has ticked. A tick is
+   *     honoured even where the vendor table disagrees (someone may know this
+   *     account refuses images for that model).
+   *   - the VENDOR TABLE states the models this build can vouch for, and is
+   *     consulted only for ids the saved array says nothing about. That is what
+   *     un-breaks a newcomer without touching a single decision already made.
+   *
+   * `imageSelectionExplicit` closes the one gap a union cannot: the array cannot
+   * say whether an ABSENT id was unticked or simply did not exist yet. Once a
+   * human has edited the boxes, absence is a decision again and the table stops
+   * contributing at all.
+   *
+   * This keeps every existing shape working: an empty `imageModelIds` on a
+   * never-edited region now means "the user has not chosen any" and is filled
+   * from the verified list; a populated one keeps every id it carries. It is
+   * deliberately NOT a hard gate on the flag alone, because the settings seam
+   * (`ctx.settings.update`) is a public write path and
+   * `tests/settings-integration.spec.ts` pins that writing `imageModelIds`
+   * there must reach the adapter without a second "I edited it" call.
+   */
+  const effectiveImageIds = (
+    state: ReturnType<typeof regionStateOf>,
+    models: readonly WorkBuddyModelInfo[],
+  ): ReadonlySet<string> => {
+    const chosen = new Set(state.imageModelIds ?? [])
+    if (state.imageSelectionExplicit === true) return chosen
+    for (const model of models) {
+      // `chosen.has` first: the saved array wins, so a model it names is never
+      // added or dropped by the table.
+      if (!chosen.has(model.id) && imageDefaultFor(model)) chosen.add(model.id)
+    }
+    return chosen
+  }
+
   // Runtime catalog derives from the last-refreshed directory plus the user's
   // selection; an empty selection serves the whole directory so a never-
   // configured plugin still exposes models. Image input is the user's explicit
@@ -1362,7 +1448,12 @@ export function apply(ctx: Context, config: Config): void {
     // decide the final answer.
     const declared = withImageSelection(
       deriveCatalog(roster, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
-      new Set(state.imageModelIds ?? []),
+      // #168: seeded from the vendor table while the user has never edited the
+      // boxes. The SET is computed from the roster this call is about to serve,
+      // not from the stored array, so a model the roster gained since the last
+      // refresh is stamped on its own verified capability instead of on its
+      // absence from a stale snapshot.
+      effectiveImageIds(state, roster),
     )
     // A refusal observed at request time is an OBSERVATION about the model, so it
     // is stamped beside the table's verdict — the card shows both, and one
@@ -2185,7 +2276,15 @@ export function apply(ctx: Context, config: Config): void {
      */
     busyLevels: region => liveBusyLevels(region),
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
-    imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
+    // #168: the card's model editor must show the SAME image ticks the runtime
+    // is stamping. Reporting the raw stored array while the runtime seeds from
+    // the vendor table would show an unticked box on a model that is actually
+    // served as multimodal — and the next save would then write that mismatch
+    // down as a decision.
+    imageModelIds: region => [...effectiveImageIds(
+      regionStateOf(current(), region),
+      displayModels(current(), region),
+    )],
     offModelIds: region => savedOffModelIds(regionStateOf(current(), region), displayModels(current(), region)),
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
@@ -3522,7 +3621,10 @@ export function apply(ctx: Context, config: Config): void {
               new Set(state.enabledModelIds ?? []),
               state.contextBudgets ?? {},
             ),
-            new Set(state.imageModelIds ?? []),
+            // #168: a discovery read is exactly the path that reveals a NEW
+            // model, so an unedited region must be seeded from the table here
+            // rather than from the array a previous refresh wrote.
+            effectiveImageIds(state, live),
           )
           return next.map(model => ({
             id: model.id,
@@ -3577,7 +3679,11 @@ export function apply(ctx: Context, config: Config): void {
             stacks[region].catalog.set(withEffectiveOff(
               withImageSelection(
                 deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
-                new Set(state.imageModelIds ?? []),
+                // #168: the startup seed is the FIFTH writer of `multimodal` and
+                // the one that decides what the picker shows for a whole
+                // session. Seeding it from the stored array is what froze a
+                // newly-added verified-multimodal model at `['text']`.
+                effectiveImageIds(state, models),
               ),
               new Set(savedOffModelIds(state, models)),
             ))

@@ -2087,6 +2087,30 @@ const CHANNEL_GATE_PHRASES: readonly (readonly [string, string])[] = [
     '@"..." quotes a path containing spaces.',
     'A path containing spaces is quoted with @"...".',
   ],
+  // ISSUE #167: the Web-GUI paragraph has TWO independently blocked sentences,
+  // not one. swaggylc bisected the host system prompt by prefix length against
+  // the live CN gateway and found a second failing window — the minimal one is
+  // `er target, they mean this GUI.` — while rewriting only the opening sentence
+  // still answered 400. Rewording both is what returned 200.
+  //
+  // This also RETIRES a claim the earlier table made: that the paragraph's
+  // second sentence "is not a fingerprint of its own". It is. The #164 test
+  // asserted the sentence SURVIVED the rewrite; that assertion encoded the wrong
+  // belief and is now inverted (see `tests/issue167-second-gui-span.spec.ts`).
+  //
+  // TWO rows, longest first, for the reason #164 established: the gate trips on
+  // a TRUNCATED prefix, so a row matching only the full sentence would be missed
+  // by a host (or a bisection) that ships part of it. The short row is therefore
+  // a real fallback rather than redundancy — and because the long row runs
+  // first, an intact paragraph never reaches it.
+  [
+    'without naming another target, they mean this GUI.',
+    'and names no other target, the interface described here is meant.',
+  ],
+  [
+    'they mean this GUI.',
+    'the interface described here is meant.',
+  ],
 ]
 
 /**
