@@ -40,6 +40,15 @@ export const NATIVE_MODALITY_BY_MODEL_ID: Readonly<Record<string, 'text' | 'mult
   'hy3': 'text',
   'hy4-preview': 'text',
   // ── Documented native multimodal ──
+  // `space-bunny` and `minimax-m3.1-flash` are recorded from the upstream
+  // catalog's OWN description for those ids on the CN gateway: both read
+  // 「支持原生多模态输入」/「原生多模态」 verbatim (measured 2026-10-30 against the
+  // live roster this profile carries). They were missing from the reviewed
+  // snapshot, so every refresh stamped them text-only and the host refused a
+  // pasted image with MODEL_DOES_NOT_SUPPORT_IMAGES — the same shape as #168.
+  // A description is weaker evidence than vendor documentation, so it is stated
+  // here rather than assumed: an id the catalog describes as native multimodal
+  // is multimodal for THIS build.
   'deepseek-v4.1-flash': 'multimodal',
   'glm-5.3-flash': 'multimodal',
   'glm-5v-turbo': 'multimodal',
@@ -47,6 +56,8 @@ export const NATIVE_MODALITY_BY_MODEL_ID: Readonly<Record<string, 'text' | 'mult
   'kimi-k2.7': 'multimodal',
   'kimi-k3-1': 'multimodal',
   'minimax-m3': 'multimodal',
+  'minimax-m3.1-flash': 'multimodal',
+  'space-bunny': 'multimodal',
 }
 
 /**
