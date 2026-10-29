@@ -455,7 +455,7 @@ const REGION_MAP_FOREIGN_KEYS: ReadonlySet<string> = new Set([
   // The section's own fields.
   'authFile', 'accountId', 'accounts', 'regions', 'cliBridge',
   // One region slot's fields.
-  'enabled', 'showCreditsInMainUi', 'creditPosition', 'lastCatalog',
+  'enabled', 'showCreditsInMainUi', 'showComposerCredits', 'creditPosition', 'lastCatalog',
   'enabledModelIds', 'imageModelIds', 'imageToolEnabled', 'offModelIds',
   'contextBudgets', 'pool',
 ])
@@ -503,6 +503,7 @@ function slotConfigWeight(slot: Record<string, unknown>): number {
   // Opt-outs are user decisions too, and the defaults are all `true` / `false`.
   if (slot['enabled'] === false) weight += 1
   if (slot['showCreditsInMainUi'] === false) weight += 1
+  if (slot['showComposerCredits'] === false) weight += 1
   if (slot['imageToolEnabled'] === true) weight += 1
   return weight
 }
@@ -778,6 +779,42 @@ export function regionPinsAccount(
  */
 export function regionCreditsShownOf(value: unknown, region: WorkBuddyWebRegion): boolean {
   return regionSlotOf(value, region)['showCreditsInMainUi'] !== false
+}
+
+/**
+ * Whether this region's credit CAPSULE is shown in the composer toolbar.
+ *
+ * A SECOND switch beside {@link regionCreditsShownOf}, because the two answer
+ * different questions: the existing one is the readout's master switch (the
+ * card's own credit line, the composer readout and its hide button all obey
+ * it), while this one hides ONLY the capsule that parks itself next to the
+ * model picker — the one users asked to be able to switch off on its own
+ * without losing the card's credit overview.
+ *
+ * Opt-out like its sibling: only an explicit `false` hides the capsule, so a
+ * config written before this switch existed keeps showing it exactly as a
+ * fresh install does.
+ */
+export function regionComposerCreditsShownOf(value: unknown, region: WorkBuddyWebRegion): boolean {
+  return regionSlotOf(value, region)['showComposerCredits'] !== false
+}
+
+/**
+ * Build the next `regions` settings value for the capsule switch.
+ *
+ * Same merge rule as {@link nextRegionCreditsShown}: only the target region's
+ * flag changes, so every other field of that slot and every other region's slot
+ * survive the write.
+ */
+export function nextRegionComposerCreditsShown(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  shown: boolean,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    showComposerCredits: shown,
+  })
 }
 
 /**
@@ -1222,6 +1259,15 @@ export type WorkBuddyWebUsage =
      */
     showCreditsInMainUi?: boolean
     /**
+     * Whether this region's credit CAPSULE is shown in the composer toolbar,
+     * independently of the master switch above.
+     *
+     * Travels on the Host's answer for the same measured reason as its sibling:
+     * a control reading the stale browser mirror would keep rendering the old
+     * value and the switch would look like it did nothing.
+     */
+    showComposerCredits?: boolean
+    /**
      * Whether the model may call the image-generation tool here (opt-in).
      *
      * Travels on the Host's answer for the same reason as the fields around it,
@@ -1346,6 +1392,15 @@ export type WorkBuddyWebUsage =
      * settings mirror.
      */
     showCreditsInMainUi?: boolean
+    /**
+     * Whether this region's credit CAPSULE is shown in the composer toolbar,
+     * independently of the master switch above.
+     *
+     * Travels on the Host's answer for the same measured reason as its sibling:
+     * a control reading the stale browser mirror would keep rendering the old
+     * value and the switch would look like it did nothing.
+     */
+    showComposerCredits?: boolean
     /**
      * Whether the model may call the image-generation tool here (opt-in).
      *

@@ -193,6 +193,25 @@ export function hostCreditsShownOf(usage: WorkBuddyWebUsage | undefined): boolea
   return typeof value === 'boolean' ? value : undefined
 }
 
+/**
+ * The Host's per-region capsule switch off a usage document, when it carries one.
+ *
+ * Sibling of {@link hostCreditsShownOf}: the master switch hides the whole
+ * readout family, while `showComposerCredits` hides only THIS capsule. Both are
+ * re-applied against the Host's answer as soon as the document lands, because
+ * the browser settings mirror is stale for this namespace on the affected
+ * deployments — the same reason the sibling exists.
+ *
+ * The `error` variant carries no data, so it can only answer `undefined`; a Host
+ * that predates the field answers `undefined` too, which leaves the settings
+ * scope in charge.
+ */
+export function hostComposerCreditsShownOf(usage: WorkBuddyWebUsage | undefined): boolean | undefined {
+  if (usage === undefined || usage.status === 'error') return undefined
+  const value = usage.showComposerCredits
+  return typeof value === 'boolean' ? value : undefined
+}
+
 function formatClock(value: number): string {
   return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
@@ -428,7 +447,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   // read is what tells us it is hidden, and re-reading a readout that must not
   // render would be a background poll for nothing. Should the Host flip the flag
   // back on, the scope subscription (or a remount) brings us back.
-  const hostHidden = hostCreditsShownOf(usage) === false
+  const hostHidden = hostCreditsShownOf(usage) === false || hostComposerCreditsShownOf(usage) === false
   useEffect(() => {
     if (owned === undefined || hostHidden) return undefined
     let cancelled = false
@@ -640,6 +659,10 @@ export function ComposerCredits(props: ComposerCreditsProps) {
    * may have hidden, against a persistent wrong number on screen.
    */
   if (hostCreditsShownOf(usage) === false) return null
+  // The capsule's own switch, re-applied against the Host's answer for the same
+  // stale-mirror reason documented above. `undefined` (no field / error
+  // document) leaves the gate's scope-based decision in charge.
+  if (hostComposerCreditsShownOf(usage) === false) return null
 
   const signedIn = usage?.status === 'signed-in' ? usage : undefined
   const total = signedIn === undefined ? undefined : creditsOf(signedIn)

@@ -365,6 +365,17 @@ export interface WorkBuddyRegionState {
    */
   showCreditsInMainUi?: boolean
   /**
+   * Whether this region's credit CAPSULE is shown in the composer toolbar.
+   *
+   * A SECOND, narrower switch beside {@link showCreditsInMainUi}: the master
+   * switch governs the whole readout family (the card's credit line and the
+   * capsule together), while this one hides only the capsule that parks itself
+   * next to the model picker. Users asked to be able to unclutter the composer
+   * row without losing the card's credit overview, so the two decisions are
+   * separate. Opt-out like its sibling: absent reads as ON.
+   */
+  showComposerCredits?: boolean
+  /**
    * Whether the model may call the image-generation tool here (opt-IN).
    *
    * The only switch in this interface where an ABSENT value means OFF. Every
@@ -747,6 +758,7 @@ const regionStateConfig = z.object({
    * which is reachable exactly where the feature renders.
    */
   showCreditsInMainUi: z.boolean().default(true).description('Show this region\'s remaining credits at the DSH sidebar foot (opt-out; the line carries its own hide button)'),
+  showComposerCredits: z.boolean().default(true).description('Show this region\'s credit capsule in the composer toolbar beside the model picker (opt-out; independent of the master credit switch, so the capsule can be hidden while the card keeps its credit overview)'),
   creditPosition: z.union([z.const('composer'), z.const('stats')]).default('composer').description('Where the credit readout sits: "composer" = the composer tool row (default), "stats" = the ambient row below the composer card, next to the shell\'s own token pills. Choose "stats" if another plugin occupies the composer row.'),
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
@@ -2306,6 +2318,12 @@ export function apply(ctx: Context, config: Config): void {
      * which made the switch look unable to turn the line off ("关闭不了").
      */
     showCreditsInMainUi: region => regionStateOf(current(), region).showCreditsInMainUi !== false,
+    /**
+     * The capsule switch, read from the same committed config. Independent of
+     * the master flag above so the two controls can be toggled separately and
+     * the card never has to infer one from the other.
+     */
+    showComposerCredits: region => regionStateOf(current(), region).showComposerCredits !== false,
     /**
      * Whether the model may call the image tool here. Read from the committed
      * value like the flag above, and deliberately `=== true`: an absent setting

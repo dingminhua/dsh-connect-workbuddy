@@ -517,6 +517,11 @@ export const en = {
   'row.showCreditsCn': 'Show credits in the composer toolbar',
   'row.showCreditsGlobal': 'Show credits in the composer toolbar',
   'row.showCreditsCnHint': 'Show the domestic (WB CN) credit balance in the composer toolbar, but only while this session uses a WB CN model. Click it for per-account balances and a one-click test of the checked accounts (the test spends real credits). The readout refreshes by itself every 5 minutes; the per-account table every 60 seconds while it is open.',
+  // The capsule's OWN switch, beside the master credit switch above. It hides
+  // only the composer capsule; the card's credit overview keeps rendering.
+  'row.showComposerCredits': 'Show the credit capsule beside the model picker',
+  'row.showComposerCreditsHintInline': 'Hides only the capsule in the composer row; the credit overview in this card is unaffected.',
+  'row.showComposerCreditsHint': 'The capsule in the composer row (next to the model picker) is a separate surface from this card: switch it off here without losing the credit overview. The master switch above still hides everything at once.',
   // WHERE the readout sits (issue #62). The composer row is a LIST seat shared
   // with any other plugin that registers there — one report is the readout
   // disappearing once another plugin was installed — so the seat is a choice.
@@ -1062,6 +1067,11 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.showCreditsCn': '在输入框工具栏显示积分读数',
   'row.showCreditsGlobal': '在输入框工具栏显示积分读数',
   'row.showCreditsCnHint': '在对话输入框工具栏显示国内版（WB CN）剩余积分，仅当本会话使用 WB CN 模型时出现。点击可看各账号余额并一键测试勾选的账号（测试会真实消耗积分）。读数每 5 分钟自动刷新；各账号明细在面板打开时每 60 秒刷新。',
+  // 胶囊的**独立开关**，紧挨上面的总开关。只关输入框那一行里的胶囊，
+  // 卡片里的积分概览照旧。
+  'row.showComposerCredits': '在输入框旁显示积分胶囊',
+  'row.showComposerCreditsHintInline': '只隐藏模型选择器旁那枚积分胶囊，本卡片的积分概览不受影响。',
+  'row.showComposerCreditsHint': '输入框那一行（模型选择器旁）的积分胶囊是独立读数：在这里关掉它，卡片里的积分概览仍然保留。上方总开关关闭时，胶囊和卡片读数会一起隐藏。',
   // 积分显示在哪个位置（issue #62）。输入框工具栏是**共享**的 list 插槽，
   // 别的插件也注册在那里时本插件读数会消失（报告者遇到的就是这个），
   // 所以位置做成可选项。

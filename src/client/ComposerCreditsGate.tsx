@@ -39,7 +39,7 @@
  */
 import { useEffect, useState } from 'react'
 import { ComposerCredits, WORKBUDDY_COMPOSER_PROVIDERS } from './ComposerCredits.tsx'
-import { regionCreditPositionOf, regionCreditsShownOf, regionEnabledOf, unwrapVolatileDeep } from '../status-paths.ts'
+import { regionComposerCreditsShownOf, regionCreditPositionOf, regionCreditsShownOf, regionEnabledOf, unwrapVolatileDeep } from '../status-paths.ts'
 import type { WorkBuddyCreditPosition, WorkBuddyWebRegion } from '../status-paths.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import type { WorkBuddyCardInjected } from './WorkBuddyCard.tsx'
@@ -115,6 +115,7 @@ export function composerCreditsRegionOf(
   }
   const value = scope === undefined ? undefined : unwrapVolatileDeep(scope.getSnapshot().value)
   if (!regionCreditsShownOf(value, region)) return undefined
+  if (!regionComposerCreditsShownOf(value, region)) return undefined
   if (!regionEnabledOf(value, region)) return undefined
   return region
 }

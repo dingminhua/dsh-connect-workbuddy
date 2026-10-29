@@ -170,6 +170,17 @@ export interface WorkBuddyStatusRouteOptions {
    */
   showCreditsInMainUi?(region: WorkBuddyRegion): boolean
   /**
+   * Whether the region's credit CAPSULE is shown in the composer toolbar.
+   *
+   * A second, narrower switch beside `showCreditsInMainUi`: the master switch
+   * governs the whole readout family, while this one hides only the capsule
+   * parked next to the model picker. Read from the COMMITTED value for the same
+   * stale-mirror reason as its sibling.
+   *
+   * Optional; absent reads as ON, matching the schema's `default(true)`.
+   */
+  showComposerCredits?(region: WorkBuddyRegion): boolean
+  /**
    * WHERE this region's credit readout sits (issue #62).
    *
    * Optional, and absent reads as `composer` — the only seat before the setting
@@ -1045,6 +1056,10 @@ export async function workBuddyWebStatus(
   // after a successful write — the switch looked impossible to turn off
   // ("关闭不了"). Absent means ON, matching the schema's `default(true)`.
   const showCreditsInMainUi = deps.showCreditsInMainUi?.(region) ?? true
+  // The capsule's own switch, absent-reads-ON like its master: only an explicit
+  // `false` hides the composer capsule. Carried on every answer so the card's
+  // checkbox renders the COMMITTED value instead of the stale mirror.
+  const showComposerCredits = deps.showComposerCredits?.(region) ?? true
   const creditPosition = deps.creditPosition?.(region) ?? 'composer'
   // `?? false`, unlike the two above: the image tool lets the MODEL spend,
   // so an older Host that cannot answer must not be read as consent.
@@ -1084,7 +1099,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showComposerCredits, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
   }
   let credential
   try {
@@ -1115,6 +1130,7 @@ export async function workBuddyWebStatus(
       selectionExplicit,
       enabled,
       showCreditsInMainUi,
+      showComposerCredits,
       creditPosition,
       imageToolEnabled,
       videoToolEnabled,
@@ -1149,6 +1165,7 @@ export async function workBuddyWebStatus(
     selectionExplicit,
     enabled,
     showCreditsInMainUi,
+    showComposerCredits,
     creditPosition,
     imageToolEnabled,
     videoToolEnabled,

@@ -28,12 +28,14 @@ import { createElement as h } from 'react'
 import type { ErrorInfo, ReactElement, ReactNode } from 'react'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
+  nextRegionComposerCreditsShown,
   nextRegionCreditPosition,
   nextRegionCreditsShown,
   nextRegionEnabled,
   nextRegionImageToolEnabled,
   nextRegionPreferredVideoModels,
   nextRegionVideoToolEnabled,
+  regionComposerCreditsShownOf,
   regionCreditsShownOf,
   regionEnabledOf,
   regionImageToolEnabledOf,
@@ -62,7 +64,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionComposerCreditsShown, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeUpstreamSwitch } from './account-selection.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { OAuthSignIn } from './OAuthSignIn.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
@@ -1124,6 +1126,22 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
   }
 
   /**
+   * Whether the active region's credit CAPSULE is shown in the composer row.
+   *
+   * Same two-level read as {@link creditsShownOn} (Host first, mirror second):
+   * it is a SEPARATE switch from the master credit flag above, because the
+   * capsule is the only surface some users want to hide while keeping the
+   * card's credit overview. Absent reads as ON, so a Host that predates the
+   * field keeps the capsule exactly as before.
+   */
+  const composerCreditsShownOn = (item: WorkBuddyWebRegion): boolean => {
+    const usage = statusByRegion[item] as { showComposerCredits?: unknown } | undefined
+    const fromHost = usage?.showComposerCredits
+    if (typeof fromHost === 'boolean') return fromHost
+    return regionComposerCreditsShownOf(settingsScope?.getSnapshot().value, item)
+  }
+
+  /**
    * Whether the model may call the image tool in this region.
    *
    * Read off the Host's answer first, like {@link creditsShownOn} and for the
@@ -1286,6 +1304,30 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
       // browser mirror is stale for this namespace), so without this re-read the
       // box keeps showing its previous state and the toggle looks dead even
       // though it landed — the "关闭不了" report.
+      await refreshUsage(item)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setTogglingCredits(undefined)
+    }
+  }
+
+  const toggleComposerCredits = async (item: WorkBuddyWebRegion, shown: boolean): Promise<void> => {
+    if (settingsScope === undefined) return
+    setTogglingCredits(item)
+    try {
+      const regions = nextRegionComposerCreditsShown(settingsScope.getSnapshot().value, item, shown) as Record<string, unknown>
+      const slot = regions[item]
+      await writeRegionComposerCreditsShown(
+        settingsScope,
+        item,
+        shown,
+        typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
+      )
+      // Re-read the Host so the box renders the COMMITTED value: it prefers the
+      // Host's `showComposerCredits` answer over the (stale) browser mirror, and
+      // without this read the box would keep showing its old state even after a
+      // write that landed.
       await refreshUsage(item)
     } catch (error: unknown) {
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
@@ -2754,6 +2796,27 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
             {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
           </span>
           <span className="dsm-workbuddy-pref-hint">{t('row.showCreditsHintInline')}</span>
+        </span>
+      </label>
+      {/* The capsule's OWN switch, directly under the master credit switch:
+          same row layout, same write path, but a separate field, so hiding the
+          composer capsule no longer costs the card's credit overview. */}
+      <label
+        className="dsm-workbuddy-pref"
+        title={t('row.showComposerCreditsHint')}
+      >
+        <input
+          type="checkbox"
+          className="dsm-workbuddy-pref-check"
+          checked={activeRegionOn ? composerCreditsShownOn(activeRegion) : false}
+          disabled={!activeRegionOn || togglingCredits === activeRegion || !canWrite || saving || poolBusy}
+          onChange={(event: { target: { checked: boolean } }) => {
+            void toggleComposerCredits(activeRegion, event.target.checked)
+          }}
+        />
+        <span className="dsm-workbuddy-pref-copy">
+          <span className="dsm-workbuddy-pref-label">{t('row.showComposerCredits')}</span>
+          <span className="dsm-workbuddy-pref-hint">{t('row.showComposerCreditsHintInline')}</span>
         </span>
       </label>
       {/* Indented to the checkbox's LABEL (15px box + 10px row gap), not to the

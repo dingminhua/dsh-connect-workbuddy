@@ -816,6 +816,29 @@ export async function writeRegionCreditsShown(
 }
 
 /**
+ * Show or hide one region's composer credit CAPSULE, with the same landed check
+ * as every other settings write.
+ *
+ * Sibling of {@link writeRegionCreditsShown} and deliberately a separate field:
+ * the capsule is the one credit surface users want to hide on its own without
+ * losing the card's credit overview. Routed through {@link writeField} for the
+ * same reason as its sibling — a direct `scope.set()` settles without storing
+ * anything on the affected deployments, and a switch that silently reverted
+ * would be worse than no switch.
+ */
+export async function writeRegionComposerCreditsShown(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  shown: boolean,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['showComposerCredits'] === shown
+  })
+}
+
+/**
  * Write one region's credit SEAT (issue #62), verifying it landed.
  *
  * Sibling of {@link writeRegionCreditsShown}: same whole-slot merge, same
