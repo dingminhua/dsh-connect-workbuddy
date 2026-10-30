@@ -521,3 +521,57 @@ describe('the panel header button tests every account', () => {
       .toContain('composer.lastRefresh')
   })
 })
+
+/**
+ * The footer's "last refreshed" stamp follows the READER's locale.
+ *
+ * Ported from dsh-connect-trae (issue #71): `formatClock` hardcoded `'zh-CN'`,
+ * so the English interface printed the Chinese convention's `23:59` instead of
+ * `11:59 PM`.
+ *
+ * This file already asserted that the stamp is PRESENT (`composer.lastRefresh`)
+ * — but never what it looks like, which is exactly why the hardcoded locale
+ * survived every release. The check below is about the FORMAT.
+ */
+describe("the refresh stamp follows the reader's locale", () => {
+  it('does not pin a locale for the refresh stamp', () => {
+    // Source-level, so it holds whatever locale the test environment runs in:
+    // a behavioural assertion would be vacuous under a zh-CN environment,
+    // where the pinned and the reader's rendering coincide.
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'ComposerCredits.tsx'),
+      'utf8',
+    )
+    const clock = /function formatClock\(value: number\): string \{([\s\S]*?)\n\}/.exec(source)?.[1] ?? ''
+    expect(clock, 'formatClock was not found in ComposerCredits.tsx').not.toBe('')
+    expect(
+      clock,
+      "formatClock still pins a locale — it must use undefined so the stamp follows the reader",
+    ).not.toContain("'zh-CN'")
+    expect(clock).toContain('undefined')
+  })
+
+  it('renders the stamp the way the reader\'s locale writes it', async () => {
+    // The behavioural half. The stamp is the moment of the last refresh — i.e.
+    // "now" — so the expected value is captured AROUND the render, and both
+    // the instant before and the one after are accepted, because a minute can
+    // tick over between the two.
+    const format = (ms: number): string =>
+      new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    const before = Date.now()
+    stubFetch((url) => ({
+      body: url.includes('account-credits')
+        ? { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 1072 }] }
+        : usageOf(1072),
+    }))
+    await openPanel()
+    const after = Date.now()
+
+    const foot = document.body.querySelector('.dsm-workbuddy-composer-panel-foot')?.textContent ?? ''
+    expect(foot).toContain('composer.lastRefresh')
+    expect(
+      foot.includes(format(before)) || foot.includes(format(after)),
+      `the stamp ${JSON.stringify(foot)} is not the reader's locale rendering of ${format(before)}`,
+    ).toBe(true)
+  })
+})
