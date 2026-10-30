@@ -184,9 +184,11 @@ One class of state in the pool **does not go through a draft**: probe results, c
 
 > ⚠️ **Version requirement: DSH 0.1.7-rc.1 or newer (current window: `0.1.7-rc.1` – `0.2.x` GA).** Since v2.1.0 this plugin only supports hosts on DSH 0.1.7-rc.1 and above (older hosts cannot resolve the dependencies to install this version); hosts on 0.1.5 and earlier should stay on v2.0.15. Since v2.1.2 the upper bound is **`<0.3.0-0`**; the 0.3.0 line is explicitly refused. See [Supported host range](#supported-host-range) below.
 
-> ⚠️ **For the CN 「channel verification」 400 (`code 11128`), make sure the plugin is ≥ 5.14.0.** From 5.13.1 the plugin rewrites the known fixed fingerprints **before the request is sent**, and 5.14.0 adds the Web-GUI paragraph's SECOND sentence (#167, the branch still reproducing on 5.13.1); 5.12.x and earlier only had the neutral-head + zero-width ladder, which measured **400 on every rung** for the same body (matrix in [#164](https://github.com/dingminhua/dsh-connect-workbuddy/issues/164)). Anyone left on an older build keeps hitting a 400 that is already fixed, and it looks like "fails every single time, restarting does nothing".
+> ⚠️ **For the CN 「channel verification」 400 (`code 11128`), make sure the plugin is ≥ 5.14.1.** From 5.13.1 the plugin rewrites the known fixed fingerprints **before the request is sent**, and 5.14.0 adds the Web-GUI paragraph's SECOND sentence (#167, the branch still reproducing on 5.13.1); 5.12.x and earlier only had the neutral-head + zero-width ladder, which measured **400 on every rung** for the same body (matrix in [#164](https://github.com/dingminhua/dsh-connect-workbuddy/issues/164)). Anyone left on an older build keeps hitting a 400 that is already fixed, and it looks like "fails every single time, restarting does nothing".
 >
-> Two things stop people from actually upgrading: **① different marketplace indexes can report three different "latest" at the same moment** (5.12.3 / 5.12.4 / 5.13.1 were all live at once per #164), so "check for updates" on a stale index never shows the new version; **② pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.14.0`.
+> ⚠️ **Do not treat the marketplace's "latest" as the schedule — it reads an index that lags.** The community marketplace serves a `dsh-plugin-catalog` snapshot, collected per package: **the snapshot built on 2026-10-30 still listed only 5.13.1 for this plugin** while npm `latest` was **5.14.1**, and a desktop host separately flags any release under 24 hours old as "waiting". Trust `npm view dsh-connect-workbuddy version` and [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases), and follow [Update](#update) below (pin the **exact version**); or hand [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 to an AI and let it run.
+>
+> The other thing that stops people from upgrading: **pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.14.1`.
 
 ### Supported host range
 
@@ -226,7 +228,9 @@ npm install dsh-connect-workbuddy
 
 Restart the DSH process after install/update/uninstall.
 
-> ⚠️ **Pin an EXACT version for a fresh release; do not rely on a floating range.** pnpm enforces a release-age window (`minimumReleaseAge`, 24h by default), so shortly after a version ships a floating range is **silently resolved back to the previous one**: `^4.4.2` still resolves to `4.4.2`, while an exact `4.4.3` gets `4.4.3` immediately. Both spellings "install successfully", so the symptom is *"the upgrade command finished and the version did not change"* — easily misread as a failed release. Measured (isolated directory, pnpm 12.3.4, `--lockfile-only`, touching nothing of the user's environment):
+> ⚠️ **Pin an EXACT version for a fresh release; do not rely on a floating range.** pnpm enforces a release-age window (`minimumReleaseAge`, 24h by default), so shortly after a version ships a floating range is **silently resolved back to the previous one**: `^4.4.2` still resolves to `4.4.2`, while an exact `4.4.3` gets `4.4.3` immediately. Both spellings "install successfully", so the symptom is *"the upgrade command finished and the version did not change"* — easily misread as a failed release. Measured twice (isolated directory, `--lockfile-only`, touching nothing of the user's environment):
+>
+> First run, pnpm 12.3.4 (the 4.4.x era):
 >
 > | Target spelling | Resolved version |
 > | --- | --- |
@@ -234,7 +238,16 @@ Restart the DSH process after install/update/uninstall.
 > | exact `4.4.3` | **4.4.3** |
 > | floating + `--config.minimum-release-age=0` | **4.4.3** |
 >
-> To pick up a new release right away, pin it: `dsh plugin --profile desktop add dsh-connect-workbuddy@4.4.4`. A floating range catches up once the window elapses.
+> Second run, pnpm 10.34.5 (2026-10-30, 5.14.1 eleven hours old, `minimumReleaseAge=1440` set explicitly):
+>
+> | Target spelling | Result |
+> | --- | --- |
+> | floating `^5.13.1` | resolves to **5.13.1**, **no error** ⚠️ |
+> | exact `5.14.1` | `ERR_PNPM_NO_MATURE_MATCHING_VERSION`, refused outright |
+> | exact `5.14.1` + `minimumReleaseAgeExclude: [dsh-connect-workbuddy]` in the profile's `pnpm-workspace.yaml` | **5.14.1** ✅ |
+> | setting absent (pnpm default) | floating `^5.13.1` → **5.14.1** ✅ |
+>
+> To pick up a new release right away, pin it: `dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1`; if the window refuses it, see [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 for the two routes (wait out the window, or add that exclude line). A floating range catches up once the window elapses.
 
 The plugin also runs under **Web** and **TUI**; pick the command matching your profile:
 
@@ -242,6 +255,39 @@ The plugin also runs under **Web** and **TUI**; pick the command matching your p
 dsh plugin --profile web add dsh-connect-workbuddy     # Web
 dsh plugin --profile dsh-tui add dsh-connect-workbuddy # TUI
 ```
+
+## Update
+
+> **Whatever the marketplace shows is a snapshot; `npm view dsh-connect-workbuddy version` and [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) are the truth.**
+> Measured 2026-10-30: the community index (`dsh-plugin-catalog`, built that same day) still listed only **5.13.1** for this plugin while npm `latest` was **5.14.1**. Lag happens **per package** — the same index carried `@changfenhuang/dsh-genui` 0.15.0, `dsh-client-auto-continue` 0.17.0 and `billion-context` 0.1.209 (all current) — so "that other package shows a new version" proves nothing about this one.
+
+**Manual update (one command)**:
+
+```sh
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1
+dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # first line carries the version
+```
+
+**Let an AI do it**: paste the block below into DSH; it runs the version check, the install and the verification, and comes back to you only when a pnpm setting has to change:
+
+```text
+Update dsh-connect-workbuddy to the latest version on npm. Follow these steps, do not skip any:
+1) run `npm view dsh-connect-workbuddy version` first to learn what latest currently is;
+2) install the EXACT version: `dsh plugin --profile desktop add dsh-connect-workbuddy@<version from step 1>`;
+3) if it fails with ERR_PNPM_NO_MATURE_MATCHING_VERSION, do NOT fall back to a floating range
+   (that silently installs the older build); tell me how long this version still has to wait, or ask
+   whether to add `minimumReleaseAgeExclude: dsh-connect-workbuddy` to the profile's pnpm-workspace.yaml;
+4) afterwards run `dsh plugin --profile desktop exec dsh-connect-workbuddy doctor`
+   and read the version on its first line back to me;
+5) remind me to restart/reload DSH (the bundle's host half loads at startup).
+My profile is desktop.
+```
+
+> Do not tell an AI to "retry until it succeeds": inside the window every retry gets the same refusal, and pnpm offers no one-shot bypass.
+
+**Confirming it actually changed**: the first line of `doctor` (`WorkBuddy Connect 5.14.1 on …`), or the top-level `version` in `status --json`. **Do not** look for `/workbuddy status` (the slash command this plugin registers is `/codebuddy`, which forwards to the local CodeBuddy CLI), and **do not** look for a version row in the card's Diagnostics tab (it has exactly eight rows — region, domain, serving account, sign-in expiry, catalog size, enabled count, account pool, last failure — and no version). Restart or reload, then judge.
+
+Details (how the market index and the pnpm window each stop you, and both ways through) are in [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md); the same text is posted as a long-term pinned issue.
 
 ## Platform support
 

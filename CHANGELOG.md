@@ -36,6 +36,25 @@
   而本版起核验表里多了两条证据档位为「上游目录自述」的条目，照旧文读会以为这两条不该预勾选。
   现在写明「只有核验表**收录**为原生多模态的才勾」，并点出两档证据与「新增 id 仍要厂商来源」。
 
+- **（5.14.1 发布后补记，仅文档）新增「更新」一节与置顶帖，专讲「市场滞后、请手动或用 AI 升上来」**：
+  两条 README 各加一节 `## 更新` / `## Update`，正文落在
+  [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md)（不随包发布），并贴成长期置顶 issue
+  [#181](https://github.com/dingminhua/dsh-connect-workbuddy/issues/181)。三条实测支撑：
+  - **市场索引按包各自滞后**：2026-10-30 构建的 `dsh-plugin-catalog` 快照里本插件仍只有 5.13.1、
+    `@dmh2002/dsh-connect-qoder` 仍只有 1.15.0，而同一份快照里 `@changfenhuang/dsh-genui`（0.15.0）、
+    `dsh-client-auto-continue`（0.17.0）、`billion-context`（0.1.209）都是最新——所以「别人的包有新版」
+    不能证明「本插件也该有」。
+  - **pnpm 等待期两种形态都实测了**（隔离目录、pnpm 10.34.5、`--lockfile-only`，未触碰用户环境）：
+    显式 `minimumReleaseAge=1440` 时浮动 `^5.13.1` 解析回 **5.13.1 且不报错**，精确 `5.14.1` 报
+    `ERR_PNPM_NO_MATURE_MATCHING_VERSION`；在 profile 的 `pnpm-workspace.yaml` 写
+    `minimumReleaseAgeExclude: [dsh-connect-workbuddy]` 后精确版本立即装上。**这条实验顺手纠正了
+    「精确版本号也会被静默压回」的读法**：被压回的是浮动范围，精确写法会如实报错。
+  - **纠正两条旧自查口径**（旧置顶里写着，实际都不成立）：`/workbuddy status` 并不存在（插件注册的
+    斜杠命令是 `/codebuddy`，供转发本机 CodeBuddy CLI）；卡片「诊断」栏也没有 `pluginVersion` 行——
+    那一栏恰好八行（区域 / 域名 / 服务账号 / 登录有效期 / 目录模型数 / 已启用数 / 账号池 / 最近一次失败）。
+    版本只在 `doctor` 第一行与 `status --json` 的 `version` 字段里。本来只改文档，因此**没有升版本号**；
+    #162 与 #125 两条置顶的同一处错误也一并改了。
+
 ### Notes
 
 - **未合入：PR #175 的「胶囊独立开关」**。它假设「输入框胶囊」与「卡片积分概览」共用一个开关，但
