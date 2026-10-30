@@ -62,7 +62,7 @@ README「Known Limitations and Deferred Work」逐字写着——
 > `MODEL_LABEL_PRIORITY`），**不引入任何联动**。详见
 > [`DSH-0.2.1-RC3-FOLLOWUP.md`](DSH-0.2.1-RC3-FOLLOWUP.md) §2.3。
 
-> **宿主面的边界写成了测试**：本插件认领的槽位是一个**封闭集合**（`conversation.input.left`、
+> **宿主面的边界写成了测试**：本插件认领的槽位是一个**封闭集合**（`conversation.input.right`、
 > `conversation.input.model.label`、`conversation.composer.dock`、`shell.quota-notice`），
 > 由 [`tests/host-slot-surface.spec.ts`](../tests/host-slot-surface.spec.ts) 钉住。加第五个槽位
 > 不会自动算错，但那是一次**改变了「我们在哪个宿主面上」的判断**，所以它先在那里变红，

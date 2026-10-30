@@ -12,7 +12,7 @@ afterEach(() => { vi.unstubAllGlobals() })
 
 /**
  * Issue #62: the credit readout sat in ONE fixed seat — the composer tool row
- * (`conversation.input.left`) — and a user reported that installing another
+ * (`conversation.input.right`) — and a user reported that installing another
  * plugin made it disappear. That row is a LIST seat shared with the shell's own
  * controls and with every other bundle, and a list seat cannot promise that
  * every occupant is visible: whoever else registers there can crowd it out.

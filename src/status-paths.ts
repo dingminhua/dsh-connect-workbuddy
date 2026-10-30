@@ -849,7 +849,8 @@ export function nextRegionPreferredVideoModels(
 /**
  * The two seats the credit readout can occupy (issue #62).
  *
- * `composer` is the composer tool row (`conversation.input.left`); `stats` is
+ * `composer` is the composer row (`conversation.input.right`, rendered just
+ * before the model picker); `stats` is
  * the ambient dock below the composer card (`conversation.composer.dock`),
  * beside the shell's own round/step/token pills. Named as a union rather than a
  * boolean because a third seat is plausible and `showAtTop: boolean` would have

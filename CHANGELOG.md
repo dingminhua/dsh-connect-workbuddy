@@ -1,5 +1,44 @@
 # Changelog
 
+## 5.15.1 (2026-10-30)
+
+> **积分读数从「权限切换器旁边」挪到「模型选择器左边」。** 两者原本相隔 8px 且都是
+> 可点元素——想去点「完全权限」，结果点到读数、弹出积分浮层。读数不是操作按钮，
+> 紧贴操作按钮只会制造误触。
+
+### 变更
+
+- **积分读数改挂 `conversation.input.right`**（同步自 `dsh-connect-trae` 的 issue #71）。
+  - **动机**：`conversation.input.left` 渲染在 `div.tools` 的**最末尾**，紧挨
+    `div.modes` 里的权限选择器，间距只有 8px；两个都是可点元素，误触后弹出的是
+    积分浮层——一个纯读数被当成了操作目标。
+  - **新位置**：宿主把 `conversation.input.right` 渲染在 `div.trailing` 的
+    `standardControls` 内、`conversation.input.model`（模型选择器）**之前**。
+    迁过去后与权限选择器之间隔开整段空白。
+  - **宿主要改吗**：不用。`conversation.input.right` 早已是 `kind: list` /
+    `scope: session` 的现成座位。
+  - **老 profile 无需迁移**：`creditPosition` 的两个取值（`composer` / `stats`）、
+    设置名、`order: 4` 全部不变。`composer` 的含义是「带模型选择器的那一行」，
+    而 `input.right` 渲染的正是那一行。
+  - **「输入框下方」那一档不受影响**：`stats` 仍挂 `conversation.composer.dock`。
+
+### 补齐一个测试盲点（本次发现）
+
+`tests/host-slot-surface.spec.ts` 的 `injectedSlots()` 只读
+`ctx.slots.inject('…')` 的参数，**不读 `register({ name })`**。而 `name` 才是
+注册表实际用来索引的字段——实测：只把 `register({ name })` 从 `input.right`
+改回 `input.left`，整个文件仍然全绿，而插件会「注入一个座位、注册到另一个座位」。
+
+现补一条一致性断言：`inject()` 的座位名与 `register({ name })` 必须相等，
+并带「守卫的守卫」（匹配对数 ≥ 3，防止正则失效后空转）。变异验证：只改
+`register({ name })`，新用例立刻红并点名两个座位。
+
+### 测试
+
+- 全仓 **2675** 例通过（159 文件），类型检查通过。
+- `tests/host-slot-surface.spec.ts` 的 `CLAIMED_SLOTS` 白名单与其余源码注释同步。
+- 构建产物中 `conversation.input.right` 出现 2 次、`input.left` 出现 0 次。
+
 ## 5.15.0 (2026-10-30)
 
 > 一个「每次开新对话都要重新挑思考强度」的抱怨（issue #179），和它附带的那个更值得追查的现象：

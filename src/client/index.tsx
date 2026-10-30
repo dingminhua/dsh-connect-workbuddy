@@ -141,8 +141,19 @@ export function apply(ctx: WorkBuddyClientContext): void {
     }
 
     /**
-     * Credit readout in the composer tool row (`conversation.input.left`, a
-     * session-scope list slot).
+     * Credit readout in the composer row (`conversation.input.right`, a
+     * session-scope list slot rendered immediately before the model picker).
+     *
+     * `input.right` rather than `input.left` (ported from dsh-connect-trae's
+     * issue #71): the host renders `input.right` inside `div.trailing`'s
+     * `standardControls`, i.e. IMMEDIATELY BEFORE the model picker, while
+     * `input.left` sits at the very end of `div.tools` — 8px from the
+     * permission selector. Both are clickable, so reaching for "完全权限"
+     * landed on the readout and opened the credit popover. A readout is not an
+     * action; next to the model picker it stops competing with a control the
+     * user is actually aiming at. The `composer` SETTING value keeps its
+     * meaning ("the row that carries the model picker"), so saved profiles
+     * need no migration.
      *
      * 参考：dingminhua/dsh-connect-trae（MIT，Copyright (c) 2026 LaoDing）
      *   — 该项目的 `registerComposerPoints`：无条件注册插槽、由 gate 读
@@ -160,13 +171,13 @@ export function apply(ctx: WorkBuddyClientContext): void {
      */
     const registerComposerCredits = (): (() => void) | undefined => {
       try {
-        return ctx.slots.inject('conversation.input.left' as never, () => (ctx.slots as unknown as {
+        return ctx.slots.inject('conversation.input.right' as never, () => (ctx.slots as unknown as {
           register(
             options: { name: string; id: string; order: number; locale: string; inject: () => WorkBuddyCardInjected },
             component: unknown,
           ): () => void
         }).register({
-          name: 'conversation.input.left',
+          name: 'conversation.input.right',
           id: 'dsh-connect-workbuddy-composer-credits',
           order: 4,
           locale: namespace,

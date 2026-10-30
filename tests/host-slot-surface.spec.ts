@@ -48,7 +48,7 @@ const SRC = fileURLToPath(new URL('src/', repoRoot))
  * thing the first case below refuses.
  */
 const CLAIMED_SLOTS: Record<string, string> = {
-  'conversation.input.left': 'composer tool-row credit capsule (order 4)',
+  'conversation.input.right': 'composer-row credit capsule (order 4, before the model picker)',
   'conversation.input.model.label': 'load badge in the model picker (single, priority -0.5)',
   'conversation.composer.dock': 'stats credits row (order 10) and CLI live row (order 11)',
   'shell.quota-notice': 'frame-wide quota notice chain contributor',
@@ -113,6 +113,49 @@ describe('the plugin claims a closed, documented set of host slots', () => {
     // premise has to be re-read before the slot is added. Failing here is how
     // that becomes a decision instead of an accident.
     expect(injectedSlots()).toEqual(Object.keys(CLAIMED_SLOTS).sort())
+  })
+
+  it('every registered seat agrees with the slot it was injected into', () => {
+    // A BLIND SPOT this table used to have: `injectedSlots()` reads only the
+    // `ctx.slots.inject('…')` argument, so changing the `register({ name })`
+    // seat alone left all five cases green (verified by mutation) — while
+    // `name` is what the registry actually keys the entry by. The two must
+    // agree, or the plugin injects into one seat and registers into another.
+    const source = read('client/index.tsx')
+    const pairs: Array<{ inject: string; name: string }> = []
+    // Each registration has this shape (the `.register(` sits on its own line
+    // after a multi-line type annotation, so the pattern must not assume the
+    // call and its object are adjacent):
+    //
+    //   slots.inject('X' as never, () => (ctx.slots as … {
+    //     register(options…): () => void
+    //   }).register({
+    //     name: 'X',
+    //
+    // Anchoring on `.register({` — with the dot — skips the type-annotation
+    // `register(` above it. Walking each `inject(` up to the NEXT `inject(`
+    // (or end of file) keeps neighbouring registrations from being paired
+    // with the wrong neighbour, without needing a lazy `[\s\S]*?` that can
+    // overshoot.
+    const injectCalls = [...source.matchAll(/(\w+\.)?slots\s*\.\s*inject\s*\(\s*(['"])([^'"]+)\2/g)]
+    for (const [index, call] of injectCalls.entries()) {
+      const injected = call[3] as string
+      const from = (call.index ?? 0) + call[0].length
+      const to = injectCalls[index + 1]?.index ?? source.length
+      const segment = source.slice(from, to)
+      // The object literal closes as `}, Component)` — the component argument
+      // follows the closing brace, so the pattern must not require `)` there.
+      const registered = /\.\s*register\s*\(\s*\{([\s\S]*?)\n\s*\}/.exec(segment)?.[1]
+      const name = registered === undefined
+        ? undefined
+        : /\bname\s*:\s*(['"])([^'"]+)\1/.exec(registered)?.[2]
+      if (name !== undefined) pairs.push({ inject: injected, name })
+    }
+    // Guard the guard: a regex that matched nothing would make this vacuous.
+    expect(pairs.length).toBeGreaterThanOrEqual(3)
+    for (const pair of pairs) {
+      expect(pair.name, `injects into "${pair.inject}" but registers into "${pair.name}"`).toBe(pair.inject)
+    }
   })
 
   it('claims nothing in the conversation.chat namespace', () => {

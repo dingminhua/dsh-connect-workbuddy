@@ -1,5 +1,6 @@
 /**
- * Credit readout for the composer tool row (`conversation.input.left`).
+ * Credit readout for the composer row (`conversation.input.right`, rendered
+ * immediately before the model picker).
  *
  * 参考：dingminhua/dsh-connect-trae（MIT，Copyright (c) 2026 LaoDing）
  *   — 该项目的 `client/ComposerPoints.tsx`：读数形态（`<区域> · <余额>`）、

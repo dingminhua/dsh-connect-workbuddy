@@ -3,7 +3,7 @@
  *
  * The risk here is not rendering a number — it is rendering the WRONG plugin's
  * number, or rendering one into a shared row that belongs to another provider.
- * The composer row (`conversation.input.left`) is shared with the shell's own
+ * The composer row (`conversation.input.right`) is shared with the shell's own
  * controls and with every other bundle, so every assertion below pins WHICH
  * provider/region leads to WHICH decision, not merely that something appeared.
  */
