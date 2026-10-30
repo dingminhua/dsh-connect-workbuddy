@@ -457,7 +457,7 @@ const REGION_MAP_FOREIGN_KEYS: ReadonlySet<string> = new Set([
   // One region slot's fields.
   'enabled', 'showCreditsInMainUi', 'creditPosition', 'lastCatalog',
   'enabledModelIds', 'imageModelIds', 'imageToolEnabled', 'offModelIds',
-  'contextBudgets', 'pool',
+  'contextBudgets', 'defaultThinkingEfforts', 'pool',
 ])
 
 /** A non-null, non-array object: the only shape a slot or a level can have. */
@@ -1504,6 +1504,20 @@ export type WorkBuddyWebUsage =
      * guessed at.
      */
     diagVolatile?: { regions: boolean, accounts: boolean, authFile: boolean }
+    /**
+     * The per-model default thinking tiers the user saved (issue #179), keyed by
+     * model id.
+     *
+     * Carried here for the same measured reason as {@link contextBudgets}: on the
+     * affected 0.1.7 deployment the browser settings mirror never picks up a
+     * write made through the Host save endpoint, so rendering this from a
+     * snapshot made a successful choice look like it reverted.
+     *
+     * An absent key is not "no opinion": it means "follow this model's own
+     * upstream `defaultEffort`", which is exactly what the card's first option
+     * says out loud.
+     */
+    defaultThinkingEfforts?: Record<string, string>
     /**
      * The persisted per-region context budgets as the Host reads them. The
      * browser settings mirror can lag a write made through the Host save

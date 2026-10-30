@@ -452,6 +452,16 @@ export interface WorkBuddyRegionState {
   offModelIds?: string[]
   /** Local DSH context budget per model in this region. */
   contextBudgets?: Record<string, WorkBuddyContextBudget>
+  /**
+   * The thinking tier each model runs on when a caller names none (issue #179).
+   *
+   * Keyed by model id because the vocabularies disagree across one roster (see
+   * `regionStateConfig`'s declaration of the same field). An ABSENT key follows
+   * the model's own upstream `defaultEffort` — the runtime answer is computed by
+   * `defaultEffortFor` in `src/default-effort.ts`, which is the only place that
+   * decides, and which refuses to name a tier the model does not declare.
+   */
+  defaultThinkingEfforts?: Record<string, string>
   /** This region's account-pool preferences (opt-in; see {@link WorkBuddyPoolPreferences}). */
   pool?: WorkBuddyPoolPreferences
 }
@@ -813,6 +823,30 @@ const regionStateConfig = z.object({
    */
   imageSelectionExplicit: z.boolean().default(false),
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
+  /**
+   * The thinking tier each model runs on when a caller names none (issue #179).
+   *
+   * Keyed by model id because the tier VOCABULARY is per model, not per route:
+   * the live CN roster carries `low/high/max` (deepseek, glm-5.3), `high/xhigh`
+   * (glm-5.2, deepseek-v4-pro), `low/medium/high` (step-5-preview) and five
+   * tiers on `space-bunny` / `minimax-m3.1-flash`. A single route-wide default —
+   * the `WORKBUDDY_DEFAULT_EFFORT` constant this replaces — therefore cannot be
+   * right for more than a subset of the roster, and naming a tier a model does
+   * not have is a hard `UNSUPPORTED_REASONING_EFFORT` (issue #90).
+   *
+   * An ABSENT key means "follow this model's own upstream `defaultEffort`",
+   * which every model in the live catalog declares (measured 2026-10-30: `high`
+   * on thirteen of fifteen, `max` on the two five-tier ones). That is NOT the
+   * same as "no opinion": the adapter must still pin SOMETHING for the request
+   * paths that name no tier, and issue #83 is the record of what happens when
+   * that is left to pi-ai's level map — it filled in `off`, the upstream answers
+   * 400 / 11133, and `/compact` failed.
+   *
+   * `off` is deliberately absent from this field's vocabulary: whether a model
+   * offers `off` is `offModelIds`' decision (issue #34), and letting both own it
+   * would give one question two answers that can disagree.
+   */
+  defaultThinkingEfforts: z.dict(z.string()).default({}),
   pool: poolConfig.default({}),
 })
 
@@ -2287,6 +2321,9 @@ export function apply(ctx: Context, config: Config): void {
     )],
     offModelIds: region => savedOffModelIds(regionStateOf(current(), region), displayModels(current(), region)),
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
+    // Issue #179: the card picks a default tier per model, and the Host answers
+    // with what it will actually DISPATCH, not what the browser mirror says.
+    defaultThinkingEfforts: region => regionStateOf(current(), region).defaultThinkingEfforts ?? {},
     discoverModels,
     /**
      * This region's first-sighting readout, the data behind the composer pill's
@@ -3525,6 +3562,17 @@ export function apply(ctx: Context, config: Config): void {
             displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES[region],
             resolveAttachments: () => ctx.get('attachments'),
             resolveContextRescue: () => contextRescue,
+            /**
+             * Issue #179: the per-model default tier, read LIVE for the same
+             * reason as the switch below — the card saves it mid-session, and a
+             * captured map would keep dispatching the old tier until a reload.
+             *
+             * `current()` rather than the captured `config` is what makes a save
+             * take effect on the very next request; `applySelection` still runs
+             * `invalidateCatalog()` on the same write, which is what re-publishes
+             * the advertised `defaultEffort` to the host's model catalog.
+             */
+            defaultThinkingEfforts: () => regionStateOf(current(), region).defaultThinkingEfforts ?? {},
             // Read through `current()` (not the captured `config`) so the
             // switch applies to the NEXT request: the user turns it on while
             // looking at a working-notes turn, and a stale capture would make

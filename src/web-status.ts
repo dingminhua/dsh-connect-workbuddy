@@ -121,6 +121,14 @@ export interface WorkBuddyStatusRouteOptions {
   offModelIds(region: WorkBuddyRegion): readonly string[]
   /** Saved local DSH context budgets by model id, for the requested region. */
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
+  /**
+   * The saved per-model default thinking tiers (issue #179), keyed by model id.
+   *
+   * Optional so a Host built before the feature keeps serving: the card then
+   * treats every model as "follow the upstream default" and offers the picker
+   * with only that option.
+   */
+  defaultThinkingEfforts?(region: WorkBuddyRegion): Readonly<Record<string, string | undefined>>
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
   /**
@@ -1194,6 +1202,15 @@ export async function workBuddyWebStatus(
     contextBudgets: Object.fromEntries(
       Object.entries(deps.contextBudgets(region)).filter(([, value]) => typeof value === 'number'),
     ) as Record<string, number>,
+    // The saved per-model default tiers (issue #179), for exactly the same
+    // reason as the budgets above: the card must render what the Host will
+    // DISPATCH, not a settings snapshot that this very endpoint's writes never
+    // refresh. Only string values survive the filter, so a malformed entry
+    // reads as "follow the upstream default" rather than as a broken row.
+    defaultThinkingEfforts: Object.fromEntries(
+      Object.entries(deps.defaultThinkingEfforts?.(region) ?? {})
+        .filter(([, value]) => typeof value === 'string' && value !== ''),
+    ) as Record<string, string>,
     // Host-side liveness probe for the settings write gate (diagnostic; see
     // the __save endpoint for why this is worth exposing). `dict`/`meta` are
     // schemastery internals the public typings do not describe, so the shape is
