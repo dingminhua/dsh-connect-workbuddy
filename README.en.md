@@ -206,9 +206,12 @@ DSH's shipped gate (`evaluatePluginCompatibility` in `packages/boot/app-boot/src
 > npm semver admits a prerelease only when a comparator carries a prerelease on the **same `major.minor.patch` tuple**.
 > The declared `>=0.1.7-rc.1 <0.3.0-0` opens only `0.1.7-x`, while `<0.3.0-0` excludes the `0.3.0` tuple — so versions such as
 > **`0.2.1-rc.1` satisfy neither comparator** (`satisfies('0.2.1-rc.1', …) === false`).
-> The practical impact is small: the host gate only evaluates the `@deepseek-ai/dsh*` namespace, and on rc hosts this plugin loads
-> normally via `link:` / a manual install. It is also **not fixable by editing the range** — no static range can cover "any `0.2.x`
-> prerelease"; five candidate formulations were computed and refuted (see CHANGELOG 4.7.0). It resolves itself once the host ships `0.2.1` GA.
+> The practical impact is small: the host gate only evaluates the `@deepseek-ai/dsh*` namespace (other peers are skipped entirely), and
+> it evaluates those peer ranges with `semver.satisfies(rt, range, { includePrerelease: true })` — so rc hosts are **admitted**: the gate
+> really does check, it just lets prereleases through (the corrected attribution is in
+> [`docs/DSH-0.2.1-RC3-FOLLOWUP.md`](docs/DSH-0.2.1-RC3-FOLLOWUP.md) §3). It is also **not fixable by editing the range** — no static range
+> can cover "any `0.2.x` prerelease"; five candidate formulations were computed and refuted (see CHANGELOG 4.7.0). It resolves itself once
+> the host ships `0.2.1` GA.
 
 > The upper bound is written `<0.3.0-0`, not `<0.3.0`: **every DSH tag to date is a prerelease** (`-alpha.N` / `-rc.N`), so `<0.3.0` alone would admit the entire unverified `0.3.0-alpha.1` / `0.3.0-rc.1` line, leaving the guardrail inert — exactly the defect shape 2.1.2 fixes. `tests/dsh-line.spec.ts` guards this contract, including the prerelease cliff.
 

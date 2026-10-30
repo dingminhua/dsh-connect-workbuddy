@@ -55,6 +55,42 @@
     版本只在 `doctor` 第一行与 `status --json` 的 `version` 字段里。本来只改文档，因此**没有升版本号**；
     #162 与 #125 两条置顶的同一处错误也一并改了。
 
+- **（5.14.1 发布后补记，仅文档）rc.5 宿主复核：无需改动，另订正两条 README 里的一句旧归因**
+  - **新增 [`docs/DSH-0.2.1-RC5-FOLLOWUP.md`](docs/DSH-0.2.1-RC5-FOLLOWUP.md)**：rc.3 → rc.5 的
+    完整复核。结论是**本插件不被影响**，理由可逐条复验：14 个直接依赖里 **13 个可打包的 `lib/`
+    与 rc.3 逐字节相同**（上一轮 rc.1→rc.3 至少有 `dsh-client-ui-primitives` 动过 75 个文件），
+    `dsh-app-boot` / `dsh-host-webserver` / `dsh-system-prompt` / `dsh-harness-dev-context` /
+    `dsh-file-reference` / `dsh-web-app` 六个关键包也逐字节相同；宿主对 rc.1~rc.5 五个版本
+    实算全部 ADMITTED，`0.3.0-rc.1` 仍被挡住。
+  - **rc.5 唯一的新特性不在本插件面上**：#7484 给 `conversation.chat.reasoning.body` 拆出
+    `rawText`（原始输出）与 `text`（已准备显示的文本），并新增 `reasoning-text.ts` 剥
+    `<signature>…</signature>` 信封。本插件对该槽**零贡献**（`grep -rn "conversation.chat" src/ tests/`
+    零命中），且宿主没有删字段——旧实现读 `text` 仍拿到字符串，只是语义从「原始」变成「已准备」。
+    记为「将来若要在展开推理体里插东西时必须同时读两个字段」的一条约定，不是待办。
+  - **本机实测**：运行中的 rc.5 GUI 上四个槽位占用齐全（`conversation.input.left` / `composer.dock`
+    的 `active: true`，`shell.quota-notice` 在位，`model.label` 的 `-0.5` 落在 qoder `-1` 之后属
+    `single` 槽常态）；`GET …/usage?region=cn` 200 / 18317 字节 / 15 模型 / 9 账号，
+    `POST …/media-models` 200，`GET …/models-refresh` 404 是 POST-only 的正确行为。
+  - **订正 README 的旧归因（两条）**：`README.md` / `README.en.md` 的「`0.2.x` 预发布」注里都还写着
+    「宿主门禁只校验 `@deepseek-ai/dsh*` 命名空间，且 rc 宿主上按 `link:` 照常加载」——后半句是
+    [`DSH-0.2.1-RC3-FOLLOWUP.md`](docs/DSH-0.2.1-RC3-FOLLOWUP.md) §3 已经订正过的那句错的，
+    README 当时漏改。现在写明「闸门确实校验，只是用 `includePrerelease: true` 放过」，并链到 §3。
+  - **没有升版本号**：本次是纯文档提交（`docs:`），与 5.14.1 之后那次置顶帖补记同例。
+  - **新增 [`tests/host-slot-surface.spec.ts`](tests/host-slot-surface.spec.ts)（5 条），把那句
+    「无需改动」的前提钉成测试**：本插件认领的槽位是**封闭集合**（恰好那四个，且没有一个落在
+    `conversation.chat.*` 命名空间里）；`conversation.chat.reasoning.body` 在 `src/` 里**零引用**；
+    另有一条**条件断言**——源码哪天碰到那个槽，就必须读 `rawText`（`text` 在 rc.5 起是已处理过的
+    显示文本，重复处理即错）。最后一条是 POLICY 守卫：`docs/DSH-0.2.1-RC5-FOLLOWUP.md` 必须还在、
+    且仍写着 `rawText` 与结论。变异验证做了三次：往允许表里加第五个槽 → 第 1 条红；在 `src/` 里
+    引用该槽 → 第 3、4 条红；引用它并**只**读 `text` → 第 4 条单独红。复核文档无法自我执行，
+    这 5 条是它的执行部分。
+  - **测试**：本仓库自有套件 **157 文件 / 2655 条通过**（2 条按平台跳过），`typecheck` 与 `build`
+    通过；把 `@deepseek-ai/dsh*` 全部 alias 到 rc.5 产物再跑全量是 **156 通过 / 1 失败 2653 条**，
+    唯一红的是 `tests/adapter-outgoing-body.spec.ts` 的 legacy 两格——该文件按
+    `piAiRuntimeInfo()` 选象限，而夹具里这个检测器读的是本仓库的 0.85.1、运行时导入却被 alias
+    换成了 1.1.0，属**夹具环境的两份库错配**，非宿主回归：同一配置下摘掉 pi-ai alias 即 6/6 通过，
+    仓库自己的 0.85.1 线上也 6/6 通过。
+
 ### Notes
 
 - **未合入：PR #175 的「胶囊独立开关」**。它假设「输入框胶囊」与「卡片积分概览」共用一个开关，但

@@ -216,7 +216,10 @@ DSH 的随包门禁（`packages/boot/app-boot/src/plugin-compatibility.ts` 的 `
 > npm semver 规定：预发布版本只有当一个比较器**在同一条 `major.minor.patch` 元组上**带预发布标签时才被放行。
 > 现声明 `>=0.1.7-rc.1 <0.3.0-0` 只对 `0.1.7-x` 开口，`<0.3.0-0` 又排除了 `0.3.0` 元组，因此
 > **`0.2.1-rc.1` 这类版本两条比较器都不满足**（`satisfies('0.2.1-rc.1', …) === false`）。
-> 实际影响很小：宿主门禁只校验 `@deepseek-ai/dsh*` 命名空间，且 rc 宿主上本插件按 `link:` / 手工安装照常加载。
+> 实际影响很小：宿主门禁只校验 `@deepseek-ai/dsh*` 命名空间（其余 peer 不参与），而它对这批 peer
+> 的范围求值用的是 `semver.satisfies(rt, range, { includePrerelease: true })`，所以 rc 宿主照旧
+> **放行**——闸门确实校验了，只是用 `includePrerelease` 放过（归因订正见
+> [`docs/DSH-0.2.1-RC3-FOLLOWUP.md`](docs/DSH-0.2.1-RC3-FOLLOWUP.md) §3）。
 > 这**不是**靠改范围能解决的问题——任何静态范围都覆盖不了「任意 `0.2.x` 预发布」，已逐一实算否证五种写法
 > （见 CHANGELOG 4.7.0）。等宿主发 `0.2.1` 正式版即自然成立。
 
