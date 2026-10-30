@@ -1,5 +1,59 @@
 # Changelog
 
+## 5.15.0 (2026-10-30)
+
+> 一个「每次开新对话都要重新挑思考强度」的抱怨（issue #179），和它附带的那个更值得追查的现象：
+> 对话中途切换账号后，输入框的强度标签会从 `low` 变回 `high`。前者是缺的设置项，后者是
+> **插件的默认值被写死成 `high`** 造成的显示回退——请求本身没变，但用户没法从界面上确认这一点。
+
+### Features
+
+- **每个模型可以单独指定默认思考强度，卡片上直接选（issue #179）**
+  - **现场**：`deepseek-v4.1-flash` 上游默认 `high`，而报告者通常用 `low`，于是每开一个新对话都要
+    在宿主的模型菜单里再挑一次。卡片原文只在模型行上**只读**地印一行「推理强度：low / high / max」。
+  - **改法**：这一行换成 `<select>`。第一项是「跟随 WorkBuddy 默认（high）」，其余各项就是该模型
+    自己声明的档位——选中的值存进区域槽位的新字段 `defaultThinkingEfforts`（按模型 id 存），
+    由适配器读成该模型的 `defaultEffort` 对外公布，宿主再把它写进每一个「没指定档位」的请求。
+  - **为什么必须是「每模型」而不是路由级**：本机 CN 名册 15 个模型的档位词汇各不相同——
+    `deepseek-v4.1-flash`/`glm-5.3` 是 `low/high/max`，`glm-5.2`/`deepseek-v4-pro` 是 `high/xhigh`，
+    `step-5-preview` 是 `low/medium/high`，`space-bunny`/`minimax-m3.1-flash` 有五个档位。
+    一个路由级常量（旧值 `WORKBUDDY_DEFAULT_EFFORT = 'high'`）不可能对整份名册都成立，而点名一个
+    模型没有的档位是硬错 `UNSUPPORTED_REASONING_EFFORT`（issue #90）。所以选择器只列该模型声明的档位，
+    名字照上游原样（不本地化、不跨模型统一），这和 qoder 插件的做法一致——它也是这么做的。
+  - **「跟随默认」是真正的答案，不是「未设置」**：上游每个模型都自己声明 `defaultEffort`
+    （本机实测：13 个是 `high`，`space-bunny` 与 `minimax-m3.1-flash` 是 `max`）。缺省项就走这条声明，
+    所以选择器第一项的标签会写出真实档位。
+  - **`off` 刻意不在这个字段里**：某个模型是否提供「关闭思考」是 `offModelIds` 的职责（issue #34），
+    两处都管会让同一个问题有两个能互相矛盾的答案。这个模块的解析函数遇到 `off` 一律当未设置。
+  - **保存的是整张表**：`--save` 的槽位合并只做两层，嵌套字典是**整体替换**的，所以卡片每次送来
+    完整的映射。这一点很重要——「跟随默认」正是用**键不存在**来表达的，只送一部分等于删掉其余模型的
+    选择。
+  - **测试**：`tests/issue179-default-thinking-effort.spec.ts`（19 条）。把本提交的
+    `advertiseDefaultEffort` 撤回，或把默认值写死回 `'high'`，其中 4 条会红。
+
+### Bug Fixes
+
+- **账号切换后输入框的强度标签不再回退成 `high`（issue #179 附带现象）**
+  - **现场**：报告者写到「对话开始后，如果中途触发账号切换，ui 处会从 low 变成 high，不清楚是只有
+    ui 切换还是实际请求的也是」。
+  - **根因（读宿主 `dsh-client-ui-model-selection` 与 `dsh-llm` 源码确认）**：输入框那个标签的值是
+    `current.reasoningEffort ?? reasoning.defaultEffort`，即**会话里的选择优先，否则用模型目录通告的
+    默认值**。而 `defaultEffort` 来自 `llm/adapters-updated` 触发的目录重载——本插件每次设置变更
+    （含账号切换）都会走 `applySelection` → `invalidateCatalog()` 发这个事件。插件此前把
+    `defaultEffort` 写死成路由级 `'high'`，于是重载后标签拿到的是 `high`，把用户选的 `low` 盖掉了；
+    而**持久化的会话选择（`model/selection` 事件）没变，所以真正发出的请求仍然是 `low`**。
+  - **结论：只是显示，请求没变。** 会话日志可查：`request/header` 里记录的是 `reasoningEffort: "high"`
+    （旧默认）或用户显式选的值，与 `model/selection` 一致，从未出现过「标签显示 low 而请求发 high」。
+  - **修法**：默认值不再是常量，而是该模型自己的声明/用户选择。目录重载后通告的 `defaultEffort` 与
+    用户选择一致，标签因此稳定，不需要改动宿主。
+  - **测试**：同上文件的「an account switch does not move the session's tier」两组，断言目录重载前后
+    `defaultEffort` 不变、且请求体里发出的是选中的档位。
+
+### Docs
+
+- 卡片的「推理强度：low / high / max」只读行与两条语言条目（`row.modelReasoning`）一并删除：
+  选择器本身就是那个信息面，留着等于同一件事说两遍。
+
 ## 5.14.1 (2026-10-30)
 
 > 一个「新模型进名册后被当成纯文本」的缺口，与 #168 同形：宿主以 `MODEL_DOES_NOT_SUPPORT_IMAGES`

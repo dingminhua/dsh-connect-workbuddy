@@ -268,6 +268,48 @@ Config:
 
 **失败分类复用 `classifyUpstreamError`**，使探测与真实 chat 对同一上游应答不可能得出不同结论；`401/403` 单独成一类（要的是重新登录/换账号，不是等待）。
 
+#### 默认思考强度：为什么是「每模型」而不是「每路由」（issue #179）
+
+用户要的是一个**默认值**：挑一次 `low`，以后每个新对话都不必在宿主的模型菜单里再挑一次。实现上真正要
+回答的问题有三个，任何一个答错都会让「默认值」变成「硬编码」。
+
+**第一，档位词汇是每模型的，不是每路由的。** 本机 CN 名册 15 个模型（2026-10-30 实测）各说各的：
+
+| 档位集合 | 模型 |
+|---|---|
+| `low / high / max` | `deepseek-v4.1-flash`、`glm-5.3`、`glm-5.3-flash`、`kimi-k3.1-pro`、`kimi-k2.8-preview` |
+| `high / xhigh` | `glm-5.2`、`deepseek-v4-pro` |
+| `low / medium / high` | `step-5-preview` |
+| `low / medium / high / xhigh / max` | `space-bunny`、`minimax-m3.1-flash`、`mimo-v2.6-pro` |
+| `low / high / xhigh` | `kimi-k3-1` |
+| 单档 `high` | `hy4-preview` |
+| `low / high` | `hy3`、`hy3-x` |
+
+所以「一个路由级默认值」在结构上不可能对整份名册成立，而点名一个模型没有的档位是硬错
+`UNSUPPORTED_REASONING_EFFORT`（issue #90 的现场就是这条）。选择器因此只列**该模型自己声明的档位**，
+名字照上游原样，不做本地化、不做跨模型统一——`low` 在 DeepSeek 和 Qwen 上不是同一回事，替用户「统一」
+反而会让他以为自己选的是同一个东西。
+
+**第二，`defaultEffort` 是宿主真正会用的那个字段，不是展示用的。** 宿主的
+`LlmRuntime.resolveCallWithInfo` 做的是 `options.reasoningEffort ?? reasoning.defaultEffort`，也就是说
+**每一个没指定档位的请求**（新对话、压缩摘要、会话标题）都由适配器公布的这个字段决定它走哪一档。
+把它写死成常量，等于把用户的设置关在卡片里。本版把这个字段改成「用户选的，否则上游自己声明的」。
+
+**第三，`off` 不能进这个字段。** 是否提供「关闭思考」是 `offModelIds` 的职责（issue #34 / #83），
+两处都管会让同一个问题有两个能互相矛盾的答案。`src/default-effort.ts` 的解析函数把 `off` 一律当作
+未设置处理，级别表里也不放它。
+
+**「跟随默认」用「键不存在」表达。** 上游每个模型都自己声明 `defaultEffort`（13 个 `high`，两个五档模型
+是 `max`），所以缺省项不是「没有意见」，而是「照上游说的办」——选择器第一项的标签因此写出真实档位。
+这也决定了保存语义：`--save` 的槽位合并只做两层，嵌套字典是**整体替换**的，卡片每次必须送完整映射，
+否则只送一部分就等于删掉其余模型的选择（而「未提到」正是「跟随默认」的表达方式）。
+
+**顺带修掉的现象：切换账号后输入框的强度标签回退成 `high`。** 输入框标签取值是
+`current.reasoningEffort ?? reasoning.defaultEffort`，而 `defaultEffort` 来自 `llm/adapters-updated`
+触发的目录重载——本插件每次设置变更都会发这个事件。默认值写死成 `high` 时，重载后标签就被 `high`
+盖掉了；**持久化的会话选择没变，所以发出的请求仍然是用户选的那一档**。本版改用真实默认值后，
+重载前后通告的 `defaultEffort` 一致，标签自然稳定，不需要改动宿主。
+
 ### 3.2 账号切换（实测可行，原版完全没有）
 
 **原版问题**：只认 `workbuddy-desktop.info` 单文件，账号切换只能靠在 WorkBuddy App 里重新登录。
