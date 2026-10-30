@@ -186,9 +186,9 @@ One class of state in the pool **does not go through a draft**: probe results, c
 
 > ⚠️ **For the CN 「channel verification」 400 (`code 11128`), make sure the plugin is ≥ 5.14.1.** From 5.13.1 the plugin rewrites the known fixed fingerprints **before the request is sent**, and 5.14.0 adds the Web-GUI paragraph's SECOND sentence (#167, the branch still reproducing on 5.13.1); 5.12.x and earlier only had the neutral-head + zero-width ladder, which measured **400 on every rung** for the same body (matrix in [#164](https://github.com/dingminhua/dsh-connect-workbuddy/issues/164)). Anyone left on an older build keeps hitting a 400 that is already fixed, and it looks like "fails every single time, restarting does nothing".
 >
-> ⚠️ **Do not treat the marketplace's "latest" as the schedule — it reads an index that lags.** The community marketplace serves a `dsh-plugin-catalog` snapshot, collected per package: **the snapshot built on 2026-10-30 still listed only 5.13.1 for this plugin** while npm `latest` was **5.14.1**, and a desktop host separately flags any release under 24 hours old as "waiting". Trust `npm view dsh-connect-workbuddy version` and [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases), and follow [Update](#update) below (pin the **exact version**); or hand [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 to an AI and let it run.
+> ⚠️ **Do not treat the marketplace's "latest" as the schedule — it reads an index that lags.** The community marketplace serves a periodically built snapshot, collected per package: at the 2026-10-30 15:00 observation this plugin still listed only 5.13.1 while npm `latest` was already 5.14.1, and a desktop host separately flags any release under 24 hours old as "waiting". Trust `npm view dsh-connect-workbuddy version` and [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases), and follow [Update](#update) below (pin the **exact version**); or hand [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 to an AI and let it run.
 >
-> The other thing that stops people from upgrading: **pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.14.1`.
+> The other thing that stops people from upgrading: **pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.15.1`.
 
 ### Supported host range
 
@@ -250,7 +250,7 @@ Restart the DSH process after install/update/uninstall.
 > | exact `5.14.1` + `minimumReleaseAgeExclude: [dsh-connect-workbuddy]` in the profile's `pnpm-workspace.yaml` | **5.14.1** ✅ |
 > | setting absent (pnpm default) | floating `^5.13.1` → **5.14.1** ✅ |
 >
-> To pick up a new release right away, pin it: `dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1`; if the window refuses it, see [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 for the two routes (wait out the window, or add that exclude line). A floating range catches up once the window elapses.
+> To pick up a new release right away, pin it: `dsh plugin --profile desktop add dsh-connect-workbuddy@5.15.1`; if the window refuses it, see [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 for the two routes (wait out the window, or add that exclude line). A floating range catches up once the window elapses.
 
 The plugin also runs under **Web** and **TUI**; pick the command matching your profile:
 
@@ -267,7 +267,7 @@ dsh plugin --profile dsh-tui add dsh-connect-workbuddy # TUI
 **Manual update (one command)**:
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.15.1
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # first line carries the version
 ```
 
@@ -288,7 +288,7 @@ My profile is desktop.
 
 > Do not tell an AI to "retry until it succeeds": inside the window every retry gets the same refusal, and pnpm offers no one-shot bypass.
 
-**Confirming it actually changed**: the first line of `doctor` (`WorkBuddy Connect 5.14.1 on …`), or the top-level `version` in `status --json`. **Do not** look for `/workbuddy status` (the slash command this plugin registers is `/codebuddy`, which forwards to the local CodeBuddy CLI), and **do not** look for a version row in the card's Diagnostics tab (it has exactly eight rows — region, domain, serving account, sign-in expiry, catalog size, enabled count, account pool, last failure — and no version). Restart or reload, then judge.
+**Confirming it actually changed**: the first line of `doctor` (`WorkBuddy Connect 5.15.1 on …`), or the top-level `version` in `status --json`. **Do not** look for `/workbuddy status` (the slash command this plugin registers is `/codebuddy`, which forwards to the local CodeBuddy CLI), and **do not** look for a version row in the card's Diagnostics tab (it has exactly eight rows — region, domain, serving account, sign-in expiry, catalog size, enabled count, account pool, last failure — and no version). Restart or reload, then judge.
 
 Details (how the market index and the pnpm window each stop you, and both ways through) are in [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md); the same text is posted as a long-term pinned issue.
 

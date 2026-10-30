@@ -196,9 +196,9 @@ DSH PiAiAdapter（每个 provider 一套）
 
 > ⚠️ **国内区的「渠道校验」400（`code 11128`）请确保插件 ≥ 5.14.0。** 5.13.1 起会在**发出请求之前**按句改写已知的固定指纹，5.14.0 又补上了 Web GUI 段落的第二句（#167，5.13.1 上仍然必现的那一支）；5.12.x 及更早只有「中性头 + 零宽扰动」三级救援，在同一份 body 上实测**全部 400**（对照矩阵见 [#164](https://github.com/dingminhua/dsh-connect-workbuddy/issues/164)）。停在旧版的人会反复撞上这个已经修好的 400，而表现是「每次必现、重启也没用」。
 >
-> ⚠️ **别把插件市场里那个「最新」当日程表——它读的是一份会落后的索引。** 社区市场走 `dsh-plugin-catalog` 的快照（按包各自收录），**2026-10-30 那份快照里本插件只到 5.13.1**，而 npm `latest` 已是 **5.14.1**；桌面宿主另有「24 小时内发布的版本先标成「新版等待中」」这条规则。以 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 为准，按下方[「更新」](#更新)一节做（写**精确版本号**），或者把 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 那段话丢给 AI 让它替你跑。
+> ⚠️ **别把插件市场里那个「最新」当日程表——它读的是一份会落后的索引。** 社区市场走定期构建的快照（按包各自收录），2026-10-30 15:00 那次观测里本插件还停在 5.13.1，而当时 npm `latest` 已是 5.14.1；桌面宿主另有「24 小时内发布的版本先标成「新版等待中」」这条规则。以 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 为准，按下方[「更新」](#更新)一节做（写**精确版本号**），或者把 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 那段话丢给 AI 让它替你跑。
 >
-> 另一个会让人升级不到的原因：**pnpm 的 24 小时新版本等待期**（`minimumReleaseAge`）会把浮动范围**静默压回上一个版本**。需要立刻修复时请写**精确版本号**：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1`（原因见下方「刚发布的版本请写精确版本号」那条）。
+> 另一个会让人升级不到的原因：**pnpm 的 24 小时新版本等待期**（`minimumReleaseAge`）会把浮动范围**静默压回上一个版本**。需要立刻修复时请写**精确版本号**：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.15.1`（原因见下方「刚发布的版本请写精确版本号」那条）。
 
 ### 受支持的宿主范围
 
@@ -262,7 +262,7 @@ npm install dsh-connect-workbuddy
 > | 精确 `5.14.1` + profile `pnpm-workspace.yaml` 里 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]` | **5.14.1** ✅ |
 > | 不设该项（pnpm 默认） | 浮动 `^5.13.1` → **5.14.1** ✅ |
 >
-> 想立刻用上新版，请写精确版本号：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1`；若被等待期拒绝，见 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 的两条路（等窗口过去，或加那行 exclude）。过了等待期之后，浮动范围会自然跟上。
+> 想立刻用上新版，请写精确版本号：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.15.1`；若被等待期拒绝，见 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 的两条路（等窗口过去，或加那行 exclude）。过了等待期之后，浮动范围会自然跟上。
 
 插件在 **Web**、**Desktop**、**TUI** 三种界面下均可运行，按你使用的 profile 选择对应命令：
 
@@ -274,12 +274,12 @@ dsh plugin --profile dsh-tui add dsh-connect-workbuddy # TUI
 ## 更新
 
 > **市场里显示几就是几，那是快照；`npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 才是准的。**
-> 2026-10-30 实测：社区市场索引（`dsh-plugin-catalog` 当天构建）里本插件仍只列到 **5.13.1**，npm `latest` 已是 **5.14.1**。滞后是**按包各自发生**的——同一份索引里 `@changfenhuang/dsh-genui` 0.15.0、`dsh-client-auto-continue` 0.17.0、`billion-context` 0.1.209 都是新的，所以「别人那个包有新版」不能证明「你这个包也该有」。
+> 2026-10-30 15:00 实测：社区市场索引里本插件还只列到 **5.13.1**，而 npm `latest` 当时已是 **5.14.1**（现在是 5.15.1）。滞后是**按包各自发生**的——同一份索引里 `@changfenhuang/dsh-genui` 0.15.0、`dsh-client-auto-continue` 0.17.0、`billion-context` 0.1.209 都是新的，所以「别人那个包有新版」不能证明「你这个包也该有」。
 
 **手动更新（一条命令）**：
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.14.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.15.1
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行就是版本
 ```
 
@@ -300,7 +300,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行就�
 
 > 别让 AI「反复重试到成功」：等待期内重试只会拿到同一个拒绝，pnpm 没有一次性的绕过开关。
 
-**怎么确认真的升上去了**：`doctor` 的第一行（`WorkBuddy Connect 5.14.1 on …`），或 `status --json` 顶层的 `version`。**不要**找 `/workbuddy status`（本插件注册的斜杠命令是 `/codebuddy`，用于转发本机 CodeBuddy CLI），也**不要**在卡片「诊断」栏找版本号（那一栏只有区域 / 域名 / 服务账号 / 登录有效期 / 目录模型数 / 已启用数 / 账号池 / 最近一次失败八行，没有版本行）。装完**重启或重载**再判断。
+**怎么确认真的升上去了**：`doctor` 的第一行（`WorkBuddy Connect 5.15.1 on …`），或 `status --json` 顶层的 `version`。**不要**找 `/workbuddy status`（本插件注册的斜杠命令是 `/codebuddy`，用于转发本机 CodeBuddy CLI），也**不要**在卡片「诊断」栏找版本号（那一栏只有区域 / 域名 / 服务账号 / 登录有效期 / 目录模型数 / 已启用数 / 账号池 / 最近一次失败八行，没有版本行）。装完**重启或重载**再判断。
 
 细节（市场索引与 pnpm 等待期分别怎么拦住你、两条绕过路径）见 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md)，同一份正文也贴成了长期置顶 issue。
 
