@@ -71,6 +71,7 @@ import { AccountTransfer } from './AccountTransfer.tsx'
 // and one set of tests.
 import { createLatestWins } from '../account-pool.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
+import { selectableEfforts } from '../default-effort.ts'
 import { selectPromoBadge, selectPromoMultiplier } from '../promo.ts'
 import { busyIcon } from './busy-icon.tsx'
 import { promoBadgeColor, promoBadgeLabel, promoBadgeTooltip, uiLanguage } from './promo-badge.ts'
@@ -248,6 +249,15 @@ interface WorkBuddyDraft {
   /** Model ids whose `off` thinking level is offered (issue #34). */
   offIds: Set<string>
   contextBudgets: Record<string, number>
+  /**
+   * The chosen DEFAULT thinking tier per model (issue #179).
+   *
+   * An absent key is a real value here — "follow the upstream's own
+   * `defaultEffort`" — so removal (not an empty string) is what the picker's
+   * first option writes. Keeping `''` in the map would persist a tier the model
+   * does not declare and make the runtime fall back silently.
+   */
+  defaultThinkingEfforts: Record<string, string>
 }
 
 /** Inject or refresh the shared card CSS for the current client bundle. */
@@ -1685,6 +1695,14 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
         const budget = activeContextBudgets[id]
         if (typeof budget === 'number') stillBudgets[id] = budget
       }
+      // Same shape rule for the default tiers (issue #179): keep the picks whose
+      // model survived the refresh, drop the rest so a re-added model starts on
+      // its upstream default instead of on a tier the roster no longer has.
+      const stillEfforts: Record<string, string> = {}
+      for (const id of freshIds) {
+        const effort = activeDefaultEfforts[id]
+        if (typeof effort === 'string' && effort !== '') stillEfforts[id] = effort
+      }
       setDrafts(prev => ({
         ...prev,
         [activeRegion]: {
@@ -1701,6 +1719,12 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
           // the user's correction. Only the directory is replaced.
           offIds: new Set(activeOffIds),
           contextBudgets: stillBudgets,
+          // The effort picks are carried forward for the models that still
+          // exist, for the same reason the `off` answers are: they are the
+          // user's decisions, and a refresh only replaces the DIRECTORY. A
+          // model the new roster dropped keeps no entry, so a re-added model
+          // starts on the upstream default rather than on a stale pick.
+          defaultThinkingEfforts: stillEfforts,
         },
       }))
     } catch (error: unknown) {
@@ -1749,9 +1773,14 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
   // stale), so reading it here made a successful save look like it reverted —
   // the "save did nothing" report.
   const savedContextBudgets = status.status === 'signed-in' ? (status.contextBudgets ?? {}) : {}
+  // The default thinking tier per model (issue #179), read from the Host for
+  // exactly the reason the budgets above are: this endpoint's own writes never
+  // refresh the browser mirror, so a saved pick would render as reverted.
+  const savedDefaultEfforts = status.status === 'signed-in' ? (status.defaultThinkingEfforts ?? {}) : {}
   void configured
   void settingsRevision
   const activeContextBudgets = draft?.contextBudgets ?? savedContextBudgets
+  const activeDefaultEfforts = draft?.defaultThinkingEfforts ?? savedDefaultEfforts
   const dirty = draft !== undefined
   /**
    * Whether the card's inputs accept edits.
@@ -1775,6 +1804,7 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
         imageIds: new Set(activeImageIds),
         offIds: new Set(activeOffIds),
         contextBudgets: { ...activeContextBudgets },
+        defaultThinkingEfforts: { ...activeDefaultEfforts },
       }),
     }))
   }
@@ -1823,6 +1853,25 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
       ...current,
       contextBudgets: { ...current.contextBudgets, [modelId]: budget },
     }))
+  }
+
+  /**
+   * Choose one model's default thinking tier (issue #179).
+   *
+   * `''` — the picker's first option — means "follow the upstream default", and
+   * is written as the ABSENCE of the key rather than as an empty string. The
+   * stored map is the whole answer the runtime reads, so an `''` entry would
+   * persist a tier nothing declares and then silently fall back; deleting the
+   * key keeps "no opinion" representable, which is what lets a future upstream
+   * change to `defaultEffort` take effect for this model.
+   */
+  const setDefaultThinkingEffort = (modelId: string, effort: string): void => {
+    editDraft(current => {
+      const next = { ...current.defaultThinkingEfforts }
+      if (effort === '') delete next[modelId]
+      else next[modelId] = effort
+      return { ...current, defaultThinkingEfforts: next }
+    })
   }
 
   const discardModels = (): void => {
@@ -2105,6 +2154,12 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
         imageSelectionExplicit: true,
         offModelIds: [...activeOffIds],
         contextBudgets: activeContextBudgets,
+        // Issue #179: the whole map, sent complete. The slot merge is two levels
+        // deep, so a nested dict is REPLACED rather than merged — sending a
+        // partial one would delete the picks for every model it omits, and
+        // "follow the upstream default" is expressed by absence, so an omitted
+        // model must mean exactly that.
+        defaultThinkingEfforts: activeDefaultEfforts,
       })
       // Loading stops with the WRITE. Refreshing usage awaits the upstream
       // billing route, which can wait on a 30-second per-account timeout, so
@@ -3304,8 +3359,58 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                                 <div className="dsm-workbuddy-model-meta">
                                   <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
                                   <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens, t('row.modelUnknown')) })}</span>
-                                  {model.reasoning === undefined || model.reasoning.supportedEfforts === undefined ? null
-                                    : <span>{t('row.modelReasoning', { efforts: model.reasoning.supportedEfforts.join(' / ') })}</span>}
+                                  {/* Issue #179: the tier the model runs on when a
+                                      caller names none, chosen per model.
+
+                                      This REPLACES the read-only 「推理强度: low / high /
+                                      max」 line. That line disclosed the vocabulary;
+                                      the picker discloses the same list AND is the
+                                      setting, so one control now answers both
+                                      questions instead of two surfaces restating
+                                      each other.
+
+                                      The vocabularies genuinely differ across the
+                                      roster (`low/high/max` on deepseek, `high/xhigh`
+                                      on glm-5.2), so the options are this model's
+                                      own tiers, named exactly as the upstream names
+                                      them — the same words every other client shows.
+
+                                      The first option is "follow upstream" and
+                                      carries the upstream's own `defaultEffort` in
+                                      its label, because an unset choice is a real
+                                      answer here, not an unknown one. */}
+                                  {(() => {
+                                    const efforts = selectableEfforts(model.reasoning)
+                                    if (efforts.length === 0) return null
+                                    const saved = activeDefaultEfforts[model.id]
+                                    const chosen = typeof saved === 'string' && efforts.includes(saved) ? saved : ''
+                                    const upstream = model.reasoning?.defaultEffort
+                                    const followLabel = upstream !== undefined && efforts.includes(upstream)
+                                      ? t('row.modelEffortFollowNamed', { effort: upstream })
+                                      : t('row.modelEffortFollow')
+                                    return (
+                                      <label
+                                        className="dsm-workbuddy-model-effort"
+                                        title={t('row.modelEffortHint')}
+                                      >
+                                        <span>{t('row.modelEffortLabel')}</span>
+                                        <select
+                                          className="dsm-workbuddy-model-effort-select"
+                                          value={chosen}
+                                          disabled={!canWrite || saving}
+                                          aria-label={t('row.modelEffortAria', { model: model.name })}
+                                          onChange={(event: { currentTarget: { value: string } }) => {
+                                            setDefaultThinkingEffort(model.id, event.currentTarget.value)
+                                          }}
+                                        >
+                                          <option value="">{followLabel}</option>
+                                          {efforts.map(level => (
+                                            <option key={level} value={level}>{level}</option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                    )
+                                  })()}
                                 </div>
                               </div>
                               {(() => {

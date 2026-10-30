@@ -360,6 +360,15 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
 .dsm-workbuddy-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}
 .dsm-workbuddy-model-meta-tag{padding:1px 7px;border-radius:999px;font-size:11px;line-height:15px;background:rgba(174,179,187,.11);color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The per-model default thinking tier (issue #179). It lives INSIDE the meta row
+   so it sits on the same baseline as the context/output figures it belongs with,
+   and stays a small inline control rather than a third row of its own — the row
+   already carries the probe buttons on its right-hand side. */
+.dsm-workbuddy-model-effort{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.dsm-workbuddy-model-effort-select{font:inherit;font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary,#c6c9d0);background:rgba(174,179,187,.11);border:1px solid transparent;border-radius:999px;padding:1px 6px;cursor:pointer;max-width:180px}
+.dsm-workbuddy-model-effort-select:hover:not(:disabled){border-color:var(--dsw-alias-border-l2,#3a3d45)}
+.dsm-workbuddy-model-effort-select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+.dsm-workbuddy-model-effort-select:disabled{opacity:.55;cursor:default}
 .dsm-workbuddy-context-budget{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
 .dsm-workbuddy-context-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .dsm-workbuddy-context-budget input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
