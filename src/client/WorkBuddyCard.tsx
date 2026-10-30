@@ -3375,17 +3375,23 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                                       own tiers, named exactly as the upstream names
                                       them — the same words every other client shows.
 
-                                      The first option just says "default": an
-                                      unset choice IS a real answer here (the
-                                      model's own upstream `defaultEffort`), and
-                                      naming that tier again would only repeat
-                                      the row beside it. The tooltip says where
-                                      the default comes from. */}
+                                      The first option is "default (high)" — the
+                                      tier is named, because an unset choice is a
+                                      real answer here (the model's own upstream
+                                      `defaultEffort`) and leaving it out hid
+                                      which tier that actually is. Only that one
+                                      word of prose is added; the fallback form
+                                      ("default") covers the rare upstream that
+                                      declares no default at all. */}
                                   {(() => {
                                     const efforts = selectableEfforts(model.reasoning)
                                     if (efforts.length === 0) return null
                                     const saved = activeDefaultEfforts[model.id]
                                     const chosen = typeof saved === 'string' && efforts.includes(saved) ? saved : ''
+                                    const upstream = model.reasoning?.defaultEffort
+                                    const followLabel = upstream !== undefined && efforts.includes(upstream)
+                                      ? t('row.modelEffortFollowNamed', { effort: upstream })
+                                      : t('row.modelEffortFollow')
                                     return (
                                       <label
                                         className="dsm-workbuddy-model-effort"
@@ -3401,7 +3407,7 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                                             setDefaultThinkingEffort(model.id, event.currentTarget.value)
                                           }}
                                         >
-                                          <option value="">{t('row.modelEffortFollow')}</option>
+                                          <option value="">{followLabel}</option>
                                           {efforts.map(level => (
                                             <option key={level} value={level}>{level}</option>
                                           ))}
