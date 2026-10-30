@@ -155,9 +155,8 @@ export const en = {
   'row.modelOffRefusedHint': 'Measured to reject the “off” level with HTTP 400 (code 11133) on both gateways. With this ticked, every request that carries no reasoning tier — compaction summaries above all — would fail, so it cannot be enabled here.',
   'row.modelEffortLabel': 'Default reasoning',
   'row.modelEffortAria': 'Default reasoning level for {model}',
-  'row.modelEffortHint': 'The reasoning level this model uses when a request names none — new conversations, compaction summaries and session titles. Only the levels WorkBuddy itself declares for this model are offered; the first option follows WorkBuddy’s own default.',
-  'row.modelEffortFollow': 'Follow WorkBuddy’s default',
-  'row.modelEffortFollowNamed': 'Follow WorkBuddy’s default ({effort})',
+  'row.modelEffortHint': 'The reasoning level this model uses when a request names none — new conversations, compaction summaries and session titles. Only the levels WorkBuddy itself declares for this model are offered; “Default” means WorkBuddy’s own declared default for it.',
+  'row.modelEffortFollow': 'Default',
   'row.modelUnknown': 'Unknown',
   'row.modelCapabilityPending': 'Only capabilities advertised by WorkBuddy are shown.',
   // The two one-click sweeps (issue #61 follow-up, mirroring the sibling `trae`
@@ -722,9 +721,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.modelOffRefusedHint': '实测在两个网关上都拒绝「关闭思考」档位（HTTP 400 / code 11133）。勾选后，所有未指定推理档位的请求（尤其是压缩摘要）都会失败，因此这里不能启用。',
   'row.modelEffortLabel': '默认推理强度',
   'row.modelEffortAria': '{model} 的默认推理强度',
-  'row.modelEffortHint': '请求未指定档位时这个模型使用的推理强度——新对话、压缩摘要、会话标题都属于这类请求。这里只列出 WorkBuddy 为该模型声明的档位；第一项表示跟随 WorkBuddy 自己的默认值。',
-  'row.modelEffortFollow': '跟随 WorkBuddy 默认',
-  'row.modelEffortFollowNamed': '跟随 WorkBuddy 默认（{effort}）',
+  'row.modelEffortHint': '请求未指定档位时这个模型使用的推理强度——新对话、压缩摘要、会话标题都属于这类请求。这里只列出 WorkBuddy 为该模型声明的档位；「默认」指 WorkBuddy 自己声明的默认档位。',
+  'row.modelEffortFollow': '默认',
   'row.modelUnknown': '未知',
   'row.modelCapabilityPending': '仅展示 WorkBuddy 接口明确公布的模型能力。',
   // 两个一键遍历按钮（issue #61 的后续，与同族 trae 插件对齐）。成本写在 title 提示里
