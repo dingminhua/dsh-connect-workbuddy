@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "dsh-connect-workbuddy",
-    "description": "Connects locally signed-in WorkBuddy models, CN and international alike, to DSH, reading each model's credit multiplier from the upstream catalog on every refresh, with per-model image input toggles, account switching backed by an auto-failing-over pool, manual daily check-in, and read-only credit overviews shown as compact pills on the card and in the composer."
+    "description": "Connects locally signed-in WorkBuddy models, CN and international alike, to DSH, reading each model's credit multiplier from the upstream catalog on every refresh, with per-model image input toggles, a per-model default reasoning level, account switching backed by an auto-failing-over pool, manual daily check-in, and read-only credit overviews shown as compact pills on the card and in the composer."
   }
 }
