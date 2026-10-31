@@ -510,6 +510,37 @@ pnpm run check   # typecheck + test + build
 dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 ```
 
+#### `link:` 安装必须先构建，否则 DSH 会拒绝加载
+
+`lib/` 是构建产物且被 gitignore，而 `link:` 安装**不执行包的生命周期脚本**（`prepare` 不会跑）。
+于是从一份没构建过的源码检出安装时，`package.json` 里声明的 `main` / `exports` 指向的文件并不存在，
+DSH 的插件市场据此判定：
+
+```
+声明的入口产物缺失(源码检出或构建被拦),下次启动会失败
+```
+
+这个判定来自 `dshmarket` 的 `entryArtifactExists()`——它只读安装目录里的 `main` 与 `exports`，
+文件在不在就是全部依据。所以：
+
+```sh
+pnpm install        # prepare 会构建一次（lib/ 出现）
+# 或只构建
+pnpm run build
+```
+
+改完源码也要再 `pnpm run build` 一次（或重跑 `pnpm install`），然后重启 DSH Desktop。
+`pnpm install` 之后仍报同样的话，先跑这一条自查——它打印每个被声明的产物在不在，
+并区分「从没构建过」和「manifest 与构建不一致」两种原因：
+
+```sh
+pnpm run verify:entries                                   # 当前仓库
+node scripts/verify-entry-artifacts.mjs <已安装的目录>      # 具体某个安装副本
+```
+
+> 从 npm 安装（`dsh plugin add dsh-connect-workbuddy`）不需要这一步：发布包里 `lib/` 已经在，
+> `prepack` 也只负责把它重新生成一遍。
+
 ### 写脚本调用 `chatStream()` 时注意：它返回的是**信封**，不是可迭代流
 
 ```ts

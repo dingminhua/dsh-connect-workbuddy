@@ -495,6 +495,38 @@ Local dev via a `link:` install to the desktop profile (restart DSH Desktop afte
 dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 ```
 
+#### A `link:` install must be built first, or DSH refuses to load it
+
+`lib/` is a build product and is gitignored, while a `link:` install runs **no lifecycle scripts**
+(`prepare` never fires). Install from a source checkout that was never built and the files named by
+`package.json`'s `main` / `exports` simply are not there, so DSH's plugin market answers:
+
+```
+声明的入口产物缺失(源码检出或构建被拦),下次启动会失败
+the declared entry artifact is missing (source-only checkout or blocked build) — the next boot would fail
+```
+
+That verdict comes from `dshmarket`'s `entryArtifactExists()`: it reads `main` and `exports` in the
+installed directory and that is the whole evidence. So:
+
+```sh
+pnpm install        # `prepare` builds once (lib/ appears)
+# or just build
+pnpm run build
+```
+
+Re-run a build after editing source (or `pnpm install` again), then restart DSH Desktop. If the warning
+survives that, run the check — it prints every declared artifact, and separates "never built" from
+"manifest and build disagree":
+
+```sh
+pnpm run verify:entries                                   # this checkout
+node scripts/verify-entry-artifacts.mjs <installed dir>    # a specific installed copy
+```
+
+> Installing from npm (`dsh plugin add dsh-connect-workbuddy`) needs none of this: the published
+> tarball already contains `lib/`, and `prepack` only regenerates it.
+
 ### Calling `chatStream()` from a script: it returns an **envelope**, not a stream
 
 ```ts

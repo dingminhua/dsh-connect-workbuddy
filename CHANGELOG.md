@@ -2,6 +2,16 @@
 
 ## 未发布
 
+### 修复
+
+- **`lib/` 不再可能"声明了但不存在"**：`pnpm install` 现在通过 `prepare` 构建一次；`build`
+  结束时会核对 `main` / `types` / `bin` / `exports` / `dsh.bundle.patch` 声明的每个文件是否
+  真的生成，并新增 `pnpm run verify:entries`（可对任意已安装目录运行）。
+  - 触发这次修复的现象：从源码检出 `link:` 安装后，DSH 报「声明的入口产物缺失(源码检出或
+    构建被拦),下次启动会失败」。`lib/` 是 gitignore 的构建产物，而 `link:` 安装**不执行**
+    包的 `prepare`，此前仓库里也只有 `prepack`（只在打包时跑），所以 `pnpm install` 之后
+    源码目录里依然没有入口文件。DSH 的判定本身是对的，缺的是构建这一步。
+
 ### 变更
 
 - **真实设备参数（P3，Windows）**：内置 Turing Shield SDK，新增「真实值」档，卡片新增
