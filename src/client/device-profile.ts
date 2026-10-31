@@ -18,10 +18,21 @@ export interface WorkBuddyDeviceProfile {
   sessionId?: string
 }
 
+/** 一个账号留空时真正会发出去的那一对 id（Host 用本机盐 + uid 算好送过来）。 */
+export interface WorkBuddyDeviceDerived {
+  machineId: string
+  sessionId: string
+}
+
 /** What the Host answers on `GET /device-profile`. */
 export interface WorkBuddyDeviceSettings {
   mode: WorkBuddyDeviceMode
   accounts: Record<string, WorkBuddyDeviceProfile>
+  /**
+   * accountId → 派生值。缺席 = Host 这次没算（旧版本、或盐不可用），
+   * 于是弹窗不能声称"留空会得到某个值"。
+   */
+  derived?: Record<string, WorkBuddyDeviceDerived>
 }
 
 /** 取不到设置时的答案：虚拟档、无覆盖。与 Host 的默认值一致。 */
@@ -48,6 +59,32 @@ export function randomDeviceId(): string {
 }
 
 /**
+ * Normalize one Host answer.
+ *
+ * 派生值逐条校验形状：它是画在输入框正下方的 36 位串，混进一个 undefined 会
+ * 直接渲染成 "undefined"，比不显示更糟。Host 与本页面同源，这里不做安全意义上的
+ * 校验，只是不让半截数据变成可见的胡说。
+ */
+function normalizeSettings(body: Partial<WorkBuddyDeviceSettings>): WorkBuddyDeviceSettings {
+  const accounts = typeof body.accounts === 'object' && body.accounts !== null ? body.accounts : {}
+  const derived: Record<string, WorkBuddyDeviceDerived> = {}
+  if (typeof body.derived === 'object' && body.derived !== null) {
+    for (const [accountId, entry] of Object.entries(body.derived)) {
+      const machineId = entry?.machineId
+      const sessionId = entry?.sessionId
+      if (typeof machineId !== 'string' || typeof sessionId !== 'string') continue
+      if (!isDeviceId(machineId) || !isDeviceId(sessionId)) continue
+      derived[accountId] = { machineId, sessionId }
+    }
+  }
+  return {
+    mode: body.mode === 'real' ? 'real' : 'virtual',
+    accounts,
+    ...body.derived === undefined ? {} : { derived },
+  }
+}
+
+/**
  * GET the current settings.
  *
  * `undefined` means "this Host has no such route" (404/503) — a different answer
@@ -59,11 +96,7 @@ export async function fetchDeviceSettings(path: string): Promise<WorkBuddyDevice
   const response = await fetch(path, { headers: { accept: 'application/json' }, credentials: 'same-origin' })
   if (response.status === 404 || response.status === 503) return undefined
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const body = await response.json() as Partial<WorkBuddyDeviceSettings>
-  return {
-    mode: body.mode === 'real' ? 'real' : 'virtual',
-    accounts: typeof body.accounts === 'object' && body.accounts !== null ? body.accounts : {},
-  }
+  return normalizeSettings(await response.json() as Partial<WorkBuddyDeviceSettings>)
 }
 
 /** POST one mutation and return the settings the Host now holds. */
@@ -75,11 +108,7 @@ async function post(path: string, body: unknown): Promise<WorkBuddyDeviceSetting
     body: JSON.stringify(body),
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const document = await response.json() as Partial<WorkBuddyDeviceSettings>
-  return {
-    mode: document.mode === 'real' ? 'real' : 'virtual',
-    accounts: typeof document.accounts === 'object' && document.accounts !== null ? document.accounts : {},
-  }
+  return normalizeSettings(await response.json() as Partial<WorkBuddyDeviceSettings>)
 }
 
 /** Switch the tier. 「真实值」is remembered but changes no outbound byte until P3. */

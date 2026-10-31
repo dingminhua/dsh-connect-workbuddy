@@ -3163,6 +3163,9 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                       {...deviceSettings === undefined ? {} : {
                         deviceMode: deviceSettings.mode,
                         deviceProfiles: deviceSettings.accounts,
+                        // 派生值随每次响应刷新：切档/保存后弹窗里显示的那一对必须
+                        // 与下一条请求真正发出的一致，不能停在打开页面时那份快照。
+                        ...deviceSettings.derived === undefined ? {} : { deviceDerived: deviceSettings.derived },
                         onDeviceModeChange: changeDeviceMode,
                         onSaveDeviceProfile: saveDeviceProfile,
                       }}

@@ -32,6 +32,21 @@ export interface DeviceProfileDialogProps {
   accountName: string
   /** The values the Host currently holds; '' means "not overridden". */
   saved: { machineId: string, sessionId: string }
+  /**
+   * 留空时真正会发出去的那一对 id。
+   *
+   * 缺席 = Host 没有算（旧 Host、或本机没有设备盐）。此时不能写"留空会自动
+   * 派生"就算完——那正是这条反馈要修的东西：用户看不到结果，也没法判断两个
+   * 账号是不是被算成了同一台设备。
+   */
+  derived?: { machineId: string, sessionId: string }
+  /**
+   * 没有 `derived` 时显示的那一句原因。
+   *
+   * 由调用方决定用哪一句：本机没有设备盐、和这个账号没有 uid，是两件不同的
+   * 事，用户的可操作动作也不同（前者要等本机首次派生，后者要重新登录账号）。
+   */
+  derivedNote?: 'row.deviceDerivedUnavailable' | 'row.deviceDerivedNoUid'
   saving: boolean
   /** A Host error, already localized by the caller. */
   error?: string
@@ -41,7 +56,7 @@ export interface DeviceProfileDialogProps {
 }
 
 export function DeviceProfileDialog(props: DeviceProfileDialogProps): ReactElement {
-  const { t, accountName, saved, saving, error, onCancel, onSave } = props
+  const { t, accountName, saved, derived, derivedNote, saving, error, onCancel, onSave } = props
   const [machineId, setMachineId] = useState(saved.machineId)
   const [sessionId, setSessionId] = useState(saved.sessionId)
   const firstField = useRef<HTMLInputElement | null>(null)
@@ -71,6 +86,7 @@ export function DeviceProfileDialog(props: DeviceProfileDialogProps): ReactEleme
     value: string,
     onChange: (next: string) => void,
     invalid: boolean,
+    derivedValue: string | undefined,
     ref?: typeof firstField,
   ) => (
     <label className="dsm-workbuddy-device-field">
@@ -86,6 +102,16 @@ export function DeviceProfileDialog(props: DeviceProfileDialogProps): ReactEleme
         aria-invalid={invalid ? true : undefined}
         onChange={event => onChange(event.target.value.trim().toLowerCase())}
       />
+      {/* 只在字段为空时出现：一旦填了覆盖值，派生值就不再是"会发生的事"，
+          把它继续挂在下面只会让人以为保存后还会发这个。 */}
+      {value !== '' || derivedValue === undefined
+        ? null
+        : (
+            <span className="dsm-workbuddy-device-derived">
+              <span>{t('row.deviceDerivedNow')}</span>
+              <code>{derivedValue}</code>
+            </span>
+          )}
       {invalid ? <span className="dsm-workbuddy-device-error">{t('row.deviceInvalid')}</span> : null}
     </label>
   )
@@ -108,8 +134,12 @@ export function DeviceProfileDialog(props: DeviceProfileDialogProps): ReactEleme
       >
         <h4 className="dsm-workbuddy-device-title">{t('row.deviceDialogTitle', { accountName })}</h4>
         <p className="dsm-workbuddy-hint">{t('row.deviceDialogIntro')}</p>
-        {field('row.deviceMachineLabel', machineId, setMachineId, machineInvalid, firstField)}
-        {field('row.deviceSessionLabel', sessionId, setSessionId, sessionInvalid)}
+        {field('row.deviceMachineLabel', machineId, setMachineId, machineInvalid, derived?.machineId, firstField)}
+        {field('row.deviceSessionLabel', sessionId, setSessionId, sessionInvalid, derived?.sessionId)}
+        {/* 派生值整块缺席时只说一次：两行一模一样的"不可用"读起来像两个问题。 */}
+        {derived !== undefined || derivedNote === undefined
+          ? null
+          : <p className="dsm-workbuddy-device-derived-missing">{t(derivedNote)}</p>}
         <div className="dsm-workbuddy-device-random-row">
           <button
             type="button"

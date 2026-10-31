@@ -47,7 +47,7 @@ import { availabilityLine, formatShortClock, outcomeOk, outcomeText, stateColor 
 import { formatCredits } from './credit-format.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import { DeviceModeBlockedDialog, DeviceProfileDialog } from './DeviceProfileDialog.tsx'
-import type { WorkBuddyDeviceMode, WorkBuddyDeviceProfile } from './device-profile.ts'
+import type { WorkBuddyDeviceDerived, WorkBuddyDeviceMode, WorkBuddyDeviceProfile } from './device-profile.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import type { Translate } from './searched-paths.ts'
 import { readNdjson } from './ndjson.ts'
@@ -222,6 +222,13 @@ export interface AccountPoolProps {
    */
   deviceMode?: WorkBuddyDeviceMode
   deviceProfiles?: Readonly<Record<string, WorkBuddyDeviceProfile>>
+  /**
+   * accountId → 留空时真正会发出的那一对 id（Host 算好送来）。
+   *
+   * 缺席时弹窗只说"派生值不可用"，不会凭空给一个数字：显示一个和线上不一致的
+   * id，比不显示危险得多。
+   */
+  deviceDerived?: Readonly<Record<string, WorkBuddyDeviceDerived>>
   onDeviceModeChange?: (mode: WorkBuddyDeviceMode) => void | Promise<unknown>
   /**
    * 保存一个账号的覆盖值。`''` 表示清空该项（回到派生值）。
@@ -290,7 +297,7 @@ function formatClock(value: number): string {
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
   const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
-  const { deviceMode, deviceProfiles, onDeviceModeChange, onSaveDeviceProfile } = props
+  const { deviceMode, deviceProfiles, deviceDerived, onDeviceModeChange, onSaveDeviceProfile } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -1161,6 +1168,24 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     }
   }
 
+  /**
+   * 弹窗的派生值那一块。
+   *
+   * 三种情况必须分开，因为它们对用户的含义完全不同：
+   * - 有值 → 直接显示"留空会发这个"；
+   * - 整块缺席 → Host 没算（旧版本、或本机没有设备盐），这时一个头都不发；
+   * - 有这块但这行没有 → 这个账号没有 uid，算不出来，同样不发设备头。
+   * 合成一句"暂无"会把"本机不可用"和"这个账号不可用"混成同一件事。
+   */
+  const derivedPropsFor = (accountId: string): {
+    derived?: WorkBuddyDeviceDerived
+    derivedNote?: 'row.deviceDerivedUnavailable' | 'row.deviceDerivedNoUid'
+  } => {
+    if (deviceDerived === undefined) return { derivedNote: 'row.deviceDerivedUnavailable' }
+    const entry = deviceDerived[accountId]
+    return entry === undefined ? { derivedNote: 'row.deviceDerivedNoUid' } : { derived: entry }
+  }
+
   return h('section', { className: 'dsm-workbuddy-pool' },
     // The row veil: a removal writes the Host state, and the table only
     // changes once the re-read lands. That gap is what the user used to sit
@@ -1622,6 +1647,9 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
             machineId: deviceProfiles?.[deviceEditing.accountId]?.machineId ?? '',
             sessionId: deviceProfiles?.[deviceEditing.accountId]?.sessionId ?? '',
           },
+          // 这个账号留空时到底会发什么：按 uid 派生，所以同一台机器上不同账号
+          // 必然不同。算不出来时只给一句原因，不给一个假的值。
+          ...derivedPropsFor(deviceEditing.accountId),
           saving: deviceSaving,
           ...deviceError === undefined ? {} : { error: deviceError },
           onCancel: () => {

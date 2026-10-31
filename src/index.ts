@@ -46,7 +46,8 @@ import {
   type HostSettingsService,
 } from './catalog-write.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
-import { createDeviceProfileLookup, readDeviceSettings, saveDeviceProfile, setDeviceMode } from './device-profile.ts'
+import { createDeviceProfileLookup, describeDerivedDevices, readDeviceSettings, saveDeviceProfile, setDeviceMode } from './device-profile.ts'
+import type { WorkBuddyDeviceSettings } from './device-profile.ts'
 import { createDeviceSdkPort, createTuringSdk } from './turing-sdk.ts'
 import { WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
 import { BENEFIT_CACHE_MS, claimableBenefits, type WorkBuddyBenefitView } from './benefits.ts'
@@ -2357,7 +2358,45 @@ export function apply(ctx: Context, config: Config): void {
   // Same-origin routes backing the Plugin-configuration card. `webServer`
   // can mount after this row, so wait reactively for it instead of sampling
   // ctx.get() once during apply (which silently loses all routes on Desktop).
-  ctx.inject(['webServer'], (webCtx) => registerWorkBuddyStatusRoute(webCtx, {
+  ctx.inject(['webServer'], (webCtx) => {
+    /**
+     * 池子里每个账号的 uid，用来算"留空时会发出什么"。
+     *
+     * 按 accountId 去重：同一个账号可能同时出现在两个区域的凭据目录里（用户
+     * 两边都登录过），而它的设备身份只该有一个。`credentialFor` 每账号一次
+     * 文件读，只在这条路由被打开/保存时发生，不在请求热路径上。
+     */
+    const deviceAccounts = async (): Promise<{ accountId: string, uid: string }[]> => {
+      const entries: { accountId: string, uid: string }[] = []
+      const seen = new Set<string>()
+      for (const region of REGION_KEYS) {
+        for (const account of await stacks[region].store.accounts()) {
+          if (seen.has(account.id)) continue
+          const credential = await stacks[region].store.credentialFor(account.id)
+          if (credential === undefined || credential.uid === '') continue
+          seen.add(account.id)
+          entries.push({ accountId: account.id, uid: credential.uid })
+        }
+      }
+      return entries
+    }
+    /**
+     * 给设置补上派生值。读、切档、保存三条路都走它，三个响应因此永远同形。
+     *
+     * 派生值算不出来（本机没有设备盐）时整块缺席，而不是回一个空对象：缺席是
+     * "这次没算"，空对象是"算过，一个都没有"，弹窗对这两种情况要说不同的话。
+     */
+    const withDerived = async (settings: WorkBuddyDeviceSettings): Promise<WorkBuddyDeviceSettings> => {
+      // 派生值只是"给用户看"的附加物：列举账号时的一次 IO 失败不该让整条设置
+      // 路由 500——那会让档位开关和齿轮一起打不开，而它们本来是可以用的。
+      try {
+        const derived = await describeDerivedDevices(await deviceAccounts())
+        return derived === undefined ? settings : { ...settings, derived }
+      } catch {
+        return settings
+      }
+    }
+    return registerWorkBuddyStatusRoute(webCtx, {
     store: region => stacks[region].store,
     client,
     // Verifies whether some OTHER local account is still accepted upstream, so
@@ -2380,18 +2419,24 @@ export function apply(ctx: Context, config: Config): void {
      *
      * uid 由 Host 自己解：卡片只认识 accountId，而构头时需要 uid——让浏览器把
      * uid 传上来，等于把账号在网关侧的身份交给前端，没有必要。
+     *
+     * 每次响应都带一份 `derived`：**留空时真正会发出去的那一对 id**。弹窗把它
+     * 显示在空输入框下面，于是"自动派生"不再是句承诺，而是一个能核对的值。
+     * 派生用 uid（与 `deviceHeaders()` 同一份输入），所以界面上的值等于线上的值。
      */
     deviceSettings: {
-      read: () => readDeviceSettings(),
-      setMode: mode => setDeviceMode(mode),
+      read: async () => withDerived(await readDeviceSettings()),
+      setMode: async mode => withDerived(await setDeviceMode(mode)),
       saveAccount: async (accountId, values) => {
         for (const region of REGION_KEYS) {
           const credential = await stacks[region].store.credentialFor(accountId)
-          if (credential !== undefined) return saveDeviceProfile(accountId, { ...values, uid: credential.uid })
+          if (credential !== undefined) {
+            return withDerived(await saveDeviceProfile(accountId, { ...values, uid: credential.uid }))
+          }
         }
         // 账号在本机已经不存在（凭据被清掉、或来自另一个 profile）：值照写，
         // 只是没有 uid，于是它不会影响任何请求，直到该账号重新出现并再次保存。
-        return saveDeviceProfile(accountId, values)
+        return withDerived(await saveDeviceProfile(accountId, values))
       },
     },
     /**
@@ -3071,7 +3116,8 @@ export function apply(ctx: Context, config: Config): void {
         return { imported, skipped }
       },
     },
-  }))
+    })
+  })
 
   /**
    * The region's nearest monthly quota refresh, or undefined when unknown.

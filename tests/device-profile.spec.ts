@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   DEVICE_PROFILE_FILE_NAME,
   createDeviceProfileLookup,
+  describeDerivedDevices,
   deviceProfilePath,
   readDeviceSettings,
   saveDeviceProfile,
@@ -151,5 +152,70 @@ describe('createDeviceProfileLookup', () => {
     expect(document.version).toBe(1)
     expect(document.accounts[ACCOUNT]?.uid).toBe(UID)
     expect(deviceProfilePath(dir)).toBe(file())
+  })
+})
+
+/**
+ * 「留空会发什么」这件事必须能被看见，也必须每个账号不同。
+ *
+ * 派生输入是 uid（与 `deviceHeaders()` 同一份），所以：
+ * - 不同账号 → 不同设备（相邻两个账号被上游合成一台机器，正是风控最敏感的信号）；
+ * - 同一账号 → 同一个值（换一次进程就换一台设备，比不发更糟）；
+ * - 没有 uid → 不编一个值出来：那个账号本来就不发设备头。
+ */
+describe('describeDerivedDevices', () => {
+  const SALT = 'a'.repeat(64)
+
+  it('gives every account its own pair, and machine ≠ session', async () => {
+    const derived = await describeDerivedDevices(
+      [{ accountId: 'a1', uid: 'uid-1' }, { accountId: 'a2', uid: 'uid-2' }],
+      { salt: SALT },
+    )
+    expect(derived).toBeDefined()
+    const first = derived?.['a1']
+    const second = derived?.['a2']
+    expect(first?.machineId).toMatch(/^[0-9a-f]{36}$/u)
+    expect(first?.sessionId).toMatch(/^[0-9a-f]{36}$/u)
+    expect(first?.machineId).not.toBe(first?.sessionId)
+    // 这一条就是"每个账号的值要不同"的守卫：只要派生退回 sha256(purpose) 或
+    // 用错了输入（比如拿 accountId 之外的常量），这里立刻变红。
+    expect(second?.machineId).not.toBe(first?.machineId)
+    expect(second?.sessionId).not.toBe(first?.sessionId)
+  })
+
+  it('is stable for the same uid across calls', async () => {
+    const one = await describeDerivedDevices([{ accountId: 'a1', uid: 'uid-1' }], { salt: SALT })
+    const two = await describeDerivedDevices([{ accountId: 'a1', uid: 'uid-1' }], { salt: SALT })
+    expect(two).toEqual(one)
+  })
+
+  it('skips an account without a uid instead of inventing one', async () => {
+    const derived = await describeDerivedDevices(
+      [{ accountId: 'a1', uid: '' }, { accountId: 'a2', uid: 'uid-2' }],
+      { salt: SALT },
+    )
+    expect(derived?.['a1']).toBeUndefined()
+    expect(derived?.['a2']).toBeDefined()
+  })
+
+  it('answers undefined when this machine has no salt', async () => {
+    // 不是空对象：空对象是"算过，一个都不能算"，undefined 是"这次没算"。
+    // 两种状态在弹窗里说不同的话，所以不能在类型上就糊成一种。
+    expect(await describeDerivedDevices([{ accountId: 'a1', uid: 'uid-1' }], { dir })).toBeUndefined()
+  })
+
+  it('reads the salt from the given directory when none is passed', async () => {
+    await writeFile(join(dir, '.workbuddy-device.json'), JSON.stringify({
+      version: 1,
+      salt: SALT,
+      createdAt: new Date().toISOString(),
+    }), 'utf8')
+    const derived = await describeDerivedDevices([{ accountId: 'a1', uid: 'uid-1' }], { dir })
+    expect(derived?.['a1']?.machineId).toMatch(/^[0-9a-f]{36}$/u)
+  })
+
+  it('never leaks the salt into the answer', async () => {
+    const derived = await describeDerivedDevices([{ accountId: 'a1', uid: 'uid-1' }], { salt: SALT })
+    expect(JSON.stringify(derived)).not.toContain(SALT)
   })
 })

@@ -26,7 +26,8 @@
 
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isDeviceId } from './device-id.ts'
+import { deriveDeviceId, isDeviceId } from './device-id.ts'
+import { readDeviceSalt } from './device-salt.ts'
 import { resolveDshHome, withFileLock, writeFileAtomic } from './host-peers.ts'
 
 /** 设备头档位。「真实值」目前只是占位，不改变出站字节（P3）。 */
@@ -44,11 +45,32 @@ export interface WorkBuddyDeviceProfile {
   sessionId?: string
 }
 
+/**
+ * 一个账号**留空时真正会发出去**的那一对 id。
+ *
+ * 它由 `sha256(命名空间 + 本机盐 + 用途 + uid)` 算出（见 `device-id.ts`），
+ * 因此同一台机器上不同账号必然不同、同一账号跨重启必然相同——前者是隔离，
+ * 后者是设备稳定性。UI 把它显示出来，是为了让"留空"这件事有一个可核对的结果，
+ * 而不是一句"自动派生"。
+ */
+export interface WorkBuddyDeviceDerived {
+  machineId: string
+  sessionId: string
+}
+
 /** What the card and the resolver both read. */
 export interface WorkBuddyDeviceSettings {
   mode: WorkBuddyDeviceMode
   /** accountId（sha256 前 24 位）→ 覆盖值。**不含 uid**：这份文档会发给浏览器。 */
   accounts: Readonly<Record<string, WorkBuddyDeviceProfile>>
+  /**
+   * accountId → 该账号当前自动派生的值。
+   *
+   * 缺席（而不是 `{}`）表示"这次没有算"——盐不可用、或调用方没有传账号列表。
+   * 空对象则表示"算过，但这个池子里没有一个能算"。两者在界面上要说不同的话：
+   * 前者是"本机没有设备盐"，后者是"这些账号没有 uid"。
+   */
+  derived?: Readonly<Record<string, WorkBuddyDeviceDerived>>
 }
 
 /** 文件不存在、不可读、版本不认识时的答案：虚拟档、无覆盖。 */
@@ -166,6 +188,43 @@ function toSettings(document: StoredDocument): WorkBuddyDeviceSettings {
 /** Read the settings the card renders. Never throws. */
 export async function readDeviceSettings(options: { dir?: string } = {}): Promise<WorkBuddyDeviceSettings> {
   return toSettings(await readStored(options.dir))
+}
+
+/**
+ * 算出每个账号"留空时会发出"的那一对 id，供弹窗直接显示。
+ *
+ * 为什么需要它：弹窗里两个输入框为空时只写"留空 = 自动派生"，用户既看不到
+ * 结果，也无法判断两个账号是否被算成了同一台设备。把派生值摆出来，"留空"就从
+ * 一句承诺变成了一个可核对的事实。
+ *
+ * `uid` 由调用方（Host 的凭据库）提供——浏览器只知道 accountId，而**派生必须
+ * 用 uid**，因为构头时 `deviceHeaders()` 手上只有 credential.uid。两边用同一种
+ * 输入，界面显示的值才等于真正发出去的值。
+ *
+ * 盐不可用时返回 `undefined`（而不是空对象）：那一档一个设备头都不发，显示一个
+ * "派生值"会是在说谎；而空对象表示"盐是好的，但这些账号没有一个算得出来"
+ * （没有 uid），两者在界面上要说不同的话。
+ */
+export async function describeDerivedDevices(
+  entries: readonly { accountId: string, uid: string }[],
+  options: { dir?: string, salt?: string } = {},
+): Promise<Record<string, WorkBuddyDeviceDerived> | undefined> {
+  let salt = options.salt
+  if (salt === undefined) {
+    const readout = options.dir === undefined ? await readDeviceSalt() : await readDeviceSalt({ dir: options.dir })
+    if (readout.state !== 'ok') return undefined
+    salt = readout.salt
+  }
+  if (salt === '') return undefined
+  const derived: Record<string, WorkBuddyDeviceDerived> = {}
+  for (const entry of entries) {
+    if (entry.accountId === '' || entry.uid === '') continue
+    derived[entry.accountId] = {
+      machineId: deriveDeviceId(entry.uid, 'machine', salt),
+      sessionId: deriveDeviceId(entry.uid, 'session', salt),
+    }
+  }
+  return derived
 }
 
 /**
