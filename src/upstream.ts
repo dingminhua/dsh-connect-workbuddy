@@ -1795,6 +1795,47 @@ function imageHeaders(
 }
 
 /**
+ * Which outbound request a header set belongs to (see
+ * {@link describeRequestHeaderNames}).
+ */
+export type WorkBuddyWireRequestKind = 'chat' | 'image' | 'refresh' | 'billing'
+
+/**
+ * The header NAMES one outbound request would carry — names only, never values.
+ *
+ * WHY THIS EXISTS. 审计（`docs/DEVICE-IDENTITY-AUDIT.md`）的 P0 要回答"我们现在
+ * 到底发了什么"，而这个答案必须**由代码给出**，不能由一段写死的清单给出：写死的
+ * 清单在上线三个月后一定与真实请求脱节，届时它会安静地撒谎。因此这里直接调用
+ * 请求路径上同一批构造器（{@link chatHeaders} / {@link imageHeaders} /
+ * {@link refreshHeaders} / {@link billingHeaders}），返回它们的键集合——往
+ * `chatHeaders` 里加一个头，这里自动跟着变，不需要第二次修改。
+ *
+ * 两处**刻意与调用点对齐**的地方：
+ *   - `chat` 的 `Authorization` 由调用点合并（`:3739` / `:3810`），不在这批构造器
+ *     里，所以这里补上；不补的话，"chat 有没有带鉴权"会被答成"没有"。
+ *   - `refresh` 确实没有 `Authorization`（它用 `X-Refresh-Token`），不补。
+ *
+ * READ-ONLY：不发请求、不返回任何值、不打印任何东西。调用方（`doctor`）决定
+ * 显示到哪一层。
+ */
+export function describeRequestHeaderNames(
+  kind: WorkBuddyWireRequestKind,
+  credential: WorkBuddyCredential,
+  identity: WorkBuddyWireIdentity = {},
+): string[] {
+  switch (kind) {
+    case 'chat':
+      return Object.keys({ ...chatHeaders(credential, identity), Authorization: `Bearer ${credential.accessToken}` })
+    case 'image':
+      return Object.keys(imageHeaders(credential, identity))
+    case 'refresh':
+      return Object.keys(refreshHeaders(credential))
+    case 'billing':
+      return Object.keys(billingHeaders(credential))
+  }
+}
+
+/**
  * Stand-in system message for a request that reached the wire carrying none.
  *
  * Not a stylistic default: both WorkBuddy gateways want the conversation to

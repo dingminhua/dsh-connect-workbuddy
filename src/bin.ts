@@ -31,7 +31,10 @@ import {
   workbuddyVaultDir,
 } from './auth.ts'
 import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutableWithSource } from './at-rest.ts'
-import { WorkBuddyUpstreamClient } from './upstream.ts'
+import type { WorkBuddyCredential } from './auth.ts'
+import { describeDeviceState } from './device-state.ts'
+import type { WorkBuddyDeviceReport } from './device-state.ts'
+import { WorkBuddyUpstreamClient, describeRequestHeaderNames } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -74,11 +77,46 @@ type Action = 'doctor' | 'logout' | 'status'
  * 5 → 6: added `credentialAcl` (issue #183). A store that could only ever ask
  * for `mode: 0o600` looked identical to one that enforced it; the new block
  * answers what the folder permissions actually ARE on this machine.
+ *
+ * 6 → 7: added `deviceIdentity` — which device headers are actually attached
+ * (none, today) plus the id a derived tier would send. Added because "the
+ * plugin has no device identity" was a fact only a source reader could know;
+ * `doctor` is where it has to be visible (docs/DEVICE-IDENTITY-AUDIT.md).
  */
-const JSON_SCHEMA_VERSION = 6
+const JSON_SCHEMA_VERSION = 7
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
+
+/**
+ * Set to `1` to have `doctor` print the header NAME list each request path
+ * would send. Names only — see the call site for why values are never printed.
+ */
+const HEADER_TRACE_ENV = 'WORKBUDDY_HEADER_TRACE'
+
+/**
+ * The human form of the `deviceIdentity` block.
+ *
+ * Two lines on purpose: the first says what is on the wire (today: nothing), the
+ * second says what a derived tier WOULD send and whether the pool would keep one
+ * device per account. Collapsing them would let "the derived tier looks fine"
+ * read as "we send a device identity" — exactly the confusion the audit exists
+ * to remove.
+ */
+function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): string[] {
+  const onWire = device.onWire.length === 0
+    ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached (see docs/DEVICE-IDENTITY-AUDIT.md)'
+    : device.onWire.join(', ')
+  const salt = `${device.salt.state}${device.salt.reason === undefined ? '' : `: ${device.salt.reason}`} — ${device.salt.path}`
+  const head = `Device identity on the wire: ${onWire}`
+  if (accounts === 0) return [head, `Derived tier (NOT sent): no signed-in account to derive from; salt ${salt}`]
+  if (device.derived === undefined) return [head, `Derived tier (NOT sent): unavailable; salt ${salt}`]
+  const { distinct, sample } = device.derived
+  return [
+    head,
+    `Derived tier (NOT sent): ${accounts} account(s) → ${distinct} distinct virtual device(s), sample machine=${sample.machineId} session=${sample.sessionId}; salt ${salt}`,
+  ]
+}
 
 /** Region labels for human output. */
 const REGION_LABELS: Readonly<Record<WorkBuddyRegion, string>> = {
@@ -241,6 +279,32 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     cn: credentialAcl.find(([region]) => region === 'cn')![1],
     global: credentialAcl.find(([region]) => region === 'global')![1],
   }
+  /**
+   * 设备身份取证（审计 `docs/DEVICE-IDENTITY-AUDIT.md` §4 的 D1 / §5.4 的隔离性）。
+   *
+   * 只读地算出两件事：现在**有没有**设备头上了线，以及派生档会给池子里的每个号
+   * 算出什么。唯一可能的写入是首次生成 `$DSH_HOME/.workbuddy-device.json`——
+   * 没有盐就算不出"这个池子会不会塌成一台设备"，而这个答案离线推不出来。
+   * 只在确有账号时生成：一台没登录的机器不该留下设备身份。
+   */
+  const deviceCredentials = (await Promise.all(
+    (await anyStore.accounts()).map(async account => anyStore.credentialFor(account.id)),
+  )).filter((credential): credential is WorkBuddyCredential => credential !== undefined)
+  const device = await describeDeviceState(deviceCredentials)
+  /**
+   * `WORKBUDDY_HEADER_TRACE=1` 时的头名清单。
+   *
+   * 只打**名字**，从不打值：这份输出是要贴进 issue 的，而头里混着令牌、会话 id
+   * 与派生设备 id。chat 与 billing 成对出现，是因为它们同 token 同分钟却声称两种
+   * 客户端形状——那正是审计 §1.3 的缺陷，能被看见才谈得上修。
+   */
+  const probeCredential = deviceCredentials[0]
+  const tracedHeaders = process.env[HEADER_TRACE_ENV] === '1' && probeCredential !== undefined
+    ? (['chat', 'billing'] as const).map(kind => ({
+      kind,
+      names: describeRequestHeaderNames(kind, probeCredential),
+    }))
+    : undefined
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-connect-workbuddy',
@@ -308,6 +372,18 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       vaultDirectory: join(resolveDshHome(), WORKBUDDY_VAULT_DIRNAME),
       regions: Object.fromEntries(credentialAcl),
     },
+    /**
+     * 设备身份：现在发了什么（`onWire`，由真实构造器算出而非写死）与派生档会发
+     * 什么。见 `docs/DEVICE-IDENTITY-AUDIT.md`。盐值本身永不出现，只报状态与路径。
+     */
+    deviceIdentity: {
+      onWire: device.onWire,
+      salt: device.salt,
+      ...device.derived === undefined ? {} : { derived: device.derived },
+      ...tracedHeaders === undefined
+        ? {}
+        : { requestHeaders: Object.fromEntries(tracedHeaders.map(({ kind, names }) => [kind, names] as const)) },
+    },
     hostHeartbeat: {
       path: workbuddyHostHeartbeatPath(),
       present: heartbeat !== undefined,
@@ -373,6 +449,10 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       `Atomic writes: ${hostPeers.atomicWrite === 'host' ? 'host-provided (@deepseek-ai/dsh-atomic-write)' : 'built-in copy (host peer not resolvable here; normal outside a booted DSH)'}`,
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
       `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable}${report.atRestDecryption.appExecutableSource === undefined ? '' : `, via ${report.atRestDecryption.appExecutableSource}`})`,
+      ...describeDeviceLines(device, deviceCredentials.length),
+      ...tracedHeaders === undefined
+        ? []
+        : tracedHeaders.map(({ kind, names }) => `Headers (${kind}, ${names.length}): ${names.join(', ')}`),
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       ...regionLists.flatMap(({ region, accounts }) => [
         `${REGION_LABELS[region]} accounts: ${accounts.length} (own copy ${workbuddyOwnAuthPath(region)})`,
