@@ -357,7 +357,7 @@ export interface WorkBuddyStatusRouteOptions {
    */
   deviceSettings?: WorkBuddyDeviceSettingsPort
   /**
-   * 真实设备参数（内置 SDK）的状态与取值口。
+   * 真实设备参数（本机安装的桌面端 SDK）的状态与取值口。
    *
    * Optional like the rest: 一个没有接 SDK 的宿主（别的平台、或构建时裁掉了
    * `native/`）答 503，卡片就把「SDK」这一页藏起来——比渲染一页永远"不可用"的
@@ -2343,7 +2343,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       },
     })
     /**
-     * 真实设备参数（内置 SDK）。
+     * 真实设备参数（本机安装的桌面端 SDK）。
      *
      * 三个动作的权限不一样：读状态是 GET，强制重取与取完整值是 POST。把完整值
      * 放在 POST 后面不是形式主义——它会进浏览器历史、会被 proxy 记日志、会被截图，

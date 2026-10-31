@@ -478,6 +478,20 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 
 `status` 与 `doctor` 支持 `--json` 输出机器可读格式。
 
+### 设备身份相关的环境变量
+
+出站身份档位（`wireProfile`）与设备头档位（`deviceTier`）都是**卡片配置项**，不是环境变量。下面这些是给"配置项够不着的场景"留的旁路：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WORKBUDDY_DEVICE_TOKEN_FILE` | 未设 | 「虚拟值」档外部 `X-Device-Token` 的文件源：指向别的工具维护的 token 文件（裸值或 `{"token":…}` 信封都吃），5 分钟重读、4 KB 上限；token 字节不进日志与 `doctor`。与卡片配置 `deviceToken.file` 同义，配置为空时读它 |
+| `WORKBUDDY_HEADER_TRACE` | 未设 | 设 `1` 后 `doctor` 多打一节：每条请求路径**将要发出的头名清单**（只有名字，永远没有值）——排查"这一档到底发了什么"用 |
+| `WORKBUDDY_TURING_SDK_DIR` | 未设 | 「真实值」档的 Turing Shield SDK 目录。不设置时插件按桌面端安装形状**自动发现**（`/Applications`、`%LOCALAPPDATA%`、卸载注册表等）；装了桌面端却仍报「未找到」时，用它显式指路。发现不到 = 真实值档不发任何设备头（不退回虚拟值） |
+| `WORKBUDDY_TURING_CHANNEL_ID` | `109144` | SDK 的渠道号，与桌面端 `product.json` 一致 |
+| `WORKBUDDY_TURING_PRODUCT_NAME` | `WorkBuddy` | SDK 初始化自称的产品名 |
+| `WORKBUDDY_TURING_PRODUCT_VERSION` | 插件版本 | SDK 初始化自称的产品版本 |
+| `WORKBUDDY_TURING_KEYCHAIN_STORAGE` | 未设（=关） | 设 `1` 允许 SDK 启用其自身的设备缓存存储；默认关闭——插件不把自己的设备状态写进用户机器的钥匙串 |
+
 > **为什么这三条命令能在「什么都没装」的机器上跑（issue #47）**
 >
 > 该插件把 `@deepseek-ai/dsh-atomic-write`、`@deepseek-ai/dsh-home-paths` 等一整套 DSH 包声明为 **peer**：由宿主提供，插件不自己带一份。这在**已启动的 DSH 进程内**工作正常（宿主有运行期拦截层负责按宿主安装位置解析这些名字），但 `dsh plugin … exec` 不是那种环境——它就是在 profile 目录里跑一次 `pnpm exec`，子进程用**普通 Node 解析规则**，而 profile 是按 `autoInstallPeers: false` 建的，peer 根本不会装进去。于是这两个包解析不到。

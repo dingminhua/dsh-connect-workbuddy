@@ -1,5 +1,15 @@
 /**
- * 真实设备参数：内置 Turing Shield SDK 的 Windows 取链（P3）。
+ * 真实设备参数：本机已安装的 WorkBuddy 桌面端自带 Turing Shield SDK 的取链（P3）。
+ *
+ * ## SDK 从哪来
+ *
+ * 插件**不携带任何 SDK 副本**。原生模块与厂商 DLL 是桌面端自己的构建产物
+ * （`turing_sdk.node` 内的 pdb 路径指向桌面端仓库），随插件再分发既无 provenance
+ * 也无许可证，因此这个模块找的是**用户机器上已安装的那份**：环境变量
+ * `WORKBUDDY_TURING_SDK_DIR` 显式指定优先，否则按桌面端的安装形状（Windows 卸载
+ * 注册表 + 常见目录，macOS `/Applications` 与 `~/Applications` 的 bundle）现推
+ * SDK 目录。找不到就是 `missing`——真实值档下发零个设备头，与从前"这个平台没有
+ * 副本"是同一个降级，用户能做的是装上桌面端或指定目录。
  *
  * ## 它补的是哪一格
  *
@@ -40,8 +50,13 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { join, posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  windowsRegistryAppExecutable,
+  workbuddyAppExecutableCandidates,
+} from './at-rest.ts'
 import type { WorkBuddyDeviceMode } from './device-profile.ts'
 
 /** 允许指向别的 SDK 副本（自建、或桌面端安装目录）。 */
@@ -55,6 +70,13 @@ export const TURING_PRODUCT_NAME_ENV = 'WORKBUDDY_TURING_PRODUCT_NAME'
 
 /** 产品版本；默认跟 {@link import('./upstream.ts').APP_VERSION} 同源，见 `createTuringSdk` 的 `version`。 */
 export const TURING_PRODUCT_VERSION_ENV = 'WORKBUDDY_TURING_PRODUCT_VERSION'
+
+/**
+ * 传给桌面端 SDK `configure` 第 4 参 `keychainStorageEnabled` 的开关（`1`/`true`
+ * 开启）。macOS 的 binding 要求它必须是 boolean——插件永远传布尔值，这个变量只
+ * 决定传 `true` 还是 `false`；默认关。
+ */
+export const TURING_KEYCHAIN_STORAGE_ENV = 'WORKBUDDY_TURING_KEYCHAIN_STORAGE'
 
 /** 默认 token 有效期（重取周期）。与 SDK 侧风险消息的缓存窗口同一量级。 */
 export const TURING_TOKEN_TTL_MS = 10 * 60 * 1000
@@ -139,12 +161,14 @@ export function nextAutoRefreshDelayMs(input: {
 }
 
 /** 内置副本的目录名，按 `platform-arch` 分。目前只有 Windows。 */
+/** 展示用的主机的三元组，`win32-x64` 之类。SDK 目录**不再**按它拼——见下方发现逻辑。 */
 export function bundledSdkBundleId(platform: string = process.platform, arch: string = process.arch): string {
   return `${platform}-${arch}`
 }
 
 /**
- * 内置 SDK 的根目录。
+ * 插件自带的 `native/turing-sdk` 根目录——现在里面**只有** `worker.cjs` 与这份
+ * README，不再有 SDK 副本（原生模块与厂商 DLL 是桌面端的构建产物，不随插件分发）。
  *
  * `import.meta.url` 指向 `lib/index.js`（构建产物）或 `src/turing-sdk.ts`（开发与
  * 测试），两者都在包根下一层，所以 `../native/...` 在两种形态下都成立——这是
@@ -154,18 +178,118 @@ export function bundledSdkRoot(): string {
   return fileURLToPath(new URL('../native/turing-sdk', import.meta.url))
 }
 
-/** 子进程脚本；与 `index.cjs` 分开放，这样每个平台的副本都保持原样不动。 */
+/** 子进程脚本的路径；随插件分发，加载的是**用户机器上**的 SDK。 */
 function workerPath(): string {
   return join(bundledSdkRoot(), 'worker.cjs')
 }
 
+/**
+ * SDK 目录相对桌面端安装根目录的形状（Electron 把原生模块从 asar 里解包出来）。
+ *
+ * macOS 实测（A 级，2026-11-01，`/Applications/WorkBuddy.app` 与
+ * `"/Applications/WorkBuddy AI.app"` 两份都在）：
+ * `<bundle>/Contents/Resources/app.asar.unpacked/native/turing-sdk`，里面有
+ * `index.cjs` / `package.json` / `build/Release/turing_sdk.node`。
+ * Windows 按 Electron 的默认打包约定推为
+ * `<install>\resources\app.asar.unpacked\native\turing-sdk`（B 级推断，待真机
+ * 验证——issue #186 的验证机上跑一次 `doctor` 即可确认）。
+ */
+function installedSdkDirFromExecutable(platform: string, executable: string): string | undefined {
+  if (platform === 'win32') {
+    const install = win32.dirname(executable)
+    return win32.join(install, 'resources', 'app.asar.unpacked', 'native', 'turing-sdk')
+  }
+  if (platform === 'darwin') {
+    // exe 是 `<bundle>/Contents/MacOS/<bin>`；CFBundleExecutable 可能叫
+    // `Electron`（两份真实 bundle 都是），所以只能向 bundle 问名字，不能倒推。
+    const contents = posix.dirname(posix.dirname(executable))
+    const bundle = posix.dirname(contents)
+    return posix.join(bundle, 'Contents', 'Resources', 'app.asar.unpacked', 'native', 'turing-sdk')
+  }
+  return undefined
+}
+
+/** 一份 turing-sdk 目录是不是能用：原生模块在不在它声明的位置。 */
+export function hasTuringSdkBinding(
+  dir: string,
+  exists: (path: string) => boolean = existsSync,
+  platform: string = process.platform,
+): boolean {
+  // 分隔符按**数据**的平台选，再兜底试**另一种**拼法：Windows API 本来就接受
+  // `/`，而注入 platform 的测试喂的可能是宿主形状的目录（docs/WINDOWS.md 的铁律，
+  // `at-rest.ts` 有前科：宿主 join 拼出混分隔符路径，永不命中）。
+  //
+  // 兜底的是「另一种分隔符」，不是「宿主的 join」——这是两者在 Windows 宿主上的
+  // 全部区别：`process.platform === 'win32'` 时宿主 join 就是 `win32.join`，于是
+  // 那句 `hostPath !== dataPath` 恒为假，兜底分支被整个短路掉。结果是这个函数的
+  // 行为随**跑它的机器**变化：同样的 `(dir, exists, 'win32')` 在 macOS 上会试
+  // 两种拼法、在 Windows 上只试一种。改成显式取另一种拼法后，答案只由参数决定，
+  // 与宿主无关（RELEASING.md §2.5）。
+  const parts = ['build', 'Release', 'turing_sdk.node'] as const
+  const dataJoin = platform === 'win32' ? win32.join : posix.join
+  const alternateJoin = platform === 'win32' ? posix.join : win32.join
+  const dataPath = dataJoin(dir, ...parts)
+  if (exists(dataPath)) return true
+  const alternatePath = alternateJoin(dir, ...parts)
+  return alternatePath !== dataPath && exists(alternatePath)
+}
+
+/**
+ * 按桌面端的安装形状找本机已安装的 SDK 目录，返回**第一个可用的**。
+ *
+ * 候选来自 `at-rest.ts` 的同一套安装形状（env 覆盖 → 默认布局；win32 再加
+ * 卸载注册表这一路，覆盖装在非默认盘的情况）。所有 win32 路径都用
+ * `path.win32`、darwin 用 `path.posix` 拼：这些是**数据**规定的分隔符，
+ * 用宿主的 `join` 会在 macOS CI 上产出永不存在的混分隔符路径（docs/WINDOWS.md
+ * 的铁律，`at-rest.ts` 里已有前科）。
+ *
+ * 每个注入参数都是测试缝（RELEASING.md §2.5：断言不能钉住跑测试的机器）：
+ * `exists` 决定"这份安装里有没有 SDK"，`readRegistryAppPath` 决定注册表答案；
+ * 注册表只在 `platform === 'win32'` 时读——否则 macOS 上的单元测试会去 spawn
+ * 一个本机根本不存在的 `reg.exe`。
+ */
+export function discoverInstalledSdkDir(options: {
+  platform?: string | undefined
+  home?: string | undefined
+  env?: NodeJS.ProcessEnv | undefined
+  exists?: ((path: string) => boolean) | undefined
+  readRegistryAppPath?: (() => string | undefined) | undefined
+} = {}): string | undefined {
+  const platform = options.platform ?? process.platform
+  const home = options.home ?? homedir()
+  const env = options.env ?? process.env
+  const exists = options.exists ?? existsSync
+  const executables = workbuddyAppExecutableCandidates(
+    platform as NodeJS.Platform,
+    home,
+    env,
+  )
+  if (platform === 'win32') {
+    // 默认布局全空时问卸载注册表（装在 E: 盘之类的非默认位置，issue #68 同款
+    // 教训：漏了这一步，装着也等于没装）。
+    const fromRegistry = (options.readRegistryAppPath ?? windowsRegistryAppExecutable)()
+    if (fromRegistry !== undefined) executables.push(fromRegistry)
+  }
+  const seen = new Set<string>()
+  for (const executable of executables) {
+    const dir = installedSdkDirFromExecutable(platform, executable)
+    if (dir === undefined || seen.has(dir)) continue
+    seen.add(dir)
+    // exe 本身存在才算一次真实安装：一个不存在的安装目录里的 binding 检查
+    // 只是碰运气，而运气不该进发现链。
+    if (!exists(executable)) continue
+    if (hasTuringSdkBinding(dir, exists, platform)) return dir
+  }
+  return undefined
+}
+
 /** What one `probe` established about the SDK on THIS machine. */
 export interface TuringSdkInfo {
-  /** `ready` = 能加载且自称支持；`unsupported` = 平台不支持；`missing` = 没有内置副本；`error` = 加载失败。 */
+  /** `ready` = 能加载且自称支持；`unsupported` = 平台不支持；`missing` = 没发现本机装有桌面端 SDK；`error` = 目录在但加载不了。 */
   state: 'ready' | 'unsupported' | 'missing' | 'error'
-  /** `win32-x64` 之类；空字符串表示这个平台没有内置副本。 */
+  /** `win32-x64` 之类的主机三元组；只用于展示与排障，不再决定目录。 */
   bundle: string
-  /** 内置副本（或被 `WORKBUDDY_TURING_SDK_DIR` 指向的目录）的绝对路径。 */
+  /** 本机桌面端里的 SDK 目录（或 `WORKBUDDY_TURING_SDK_DIR` 指向的目录）；空串 = 没找到。 */
   path: string
   platform: string
   arch: string
@@ -227,6 +351,7 @@ function runWorker(mode: 'probe' | 'token', options: {
   productName: string
   productVersion: string
   timeoutMs?: number
+  keychainStorage?: boolean
 }): Promise<WorkerAnswer> {
   return new Promise<WorkerAnswer>((resolve) => {
     const runtime = process.execPath
@@ -236,6 +361,9 @@ function runWorker(mode: 'probe' | 'token', options: {
       TURING_PRODUCT_NAME: options.productName,
       TURING_PRODUCT_VERSION: options.productVersion,
       TURING_TIMEOUT_MS: String(options.timeoutMs ?? RUN_TIMEOUT_MS - 2000),
+      // 永远显式传布尔字面量：worker 再转成 boolean 给 configure 的第 4 参，
+      // macOS 的 binding 对 undefined 直接报错。
+      TURING_KEYCHAIN_STORAGE: options.keychainStorage === true ? '1' : '0',
     }
     for (const name of [
       'PATH', 'SystemRoot', 'windir', 'TEMP', 'TMP', 'USERPROFILE', 'HOME',
@@ -377,11 +505,33 @@ export function createTuringSdk(options: {
   ttlMs?: number
   now?: () => number
   /**
-   * 子进程脚本的路径。**只为测试存在**：真实调用永远用内置的那个，而这个参数
+   * 子进程脚本的路径。**只为测试存在**：真实调用永远用插件自带的那个，而这个参数
    * 让"缓存 / 重取 / 宽限期"这三条逻辑可以在不连 SDK、不发网络请求的前提下被
    * 逐条验证——否则它们只能靠线上观察。
    */
   worker?: string
+  /**
+   * 主机平台与架构，同样**只为测试存在**：`bundle` 只是展示用的主机三元组，
+   * 但不注入就没法在 Linux/macOS 的 CI 上断言"ready 时 bundle 是 win32-x64"——
+   * 那条断言会把"跑测试的机器是什么平台"钉进期望值（RELEASING.md §2.5）。
+   * 发现链也读它：注入 `platform: 'win32'` 就是在测 Windows 的安装形状，而
+   * 不需要一台 Windows。默认值保持真实主机，行为不变。
+   */
+  platform?: string
+  /** 见 `platform`。 */
+  arch?: string
+  /** 发现链的注入缝（只为测试存在）：家目录、环境、存在性检查、注册表读数。 */
+  home?: string
+  env?: NodeJS.ProcessEnv
+  exists?: (path: string) => boolean
+  readRegistryAppPath?: () => string | undefined
+  /**
+   * 桌面端 `configure` 的第 4 参 `keychainStorageEnabled`。macOS 的原生 binding
+   * 会校验它必须是 boolean（缺了它直接报 `keychainStorageEnabled must be a
+   * boolean`），Windows 的老副本多收一个参数无害——所以这里**永远传布尔**。
+   * 默认 `false`：插件没有往钥匙串写设备缓存的设计意图，SDK 走自己的内存缓存。
+   */
+  keychainStorage?: boolean
   /**
    * 预热的时间参数。**只为测试存在**：把十分钟的 TTL 压成几百毫秒，才能验证
    * "到期会自动换新"这件事，而不是靠线上等一周。
@@ -392,14 +542,29 @@ export function createTuringSdk(options: {
   const worker = options.worker ?? workerPath()
   const ttlMs = options.ttlMs ?? TURING_TOKEN_TTL_MS
   const keepAliveTiming: TuringKeepAliveTiming = { ...TURING_KEEP_ALIVE_TIMING, ...options.keepAliveTiming }
-  const bundle = bundledSdkBundleId()
-  const configuredDir = options.dir ?? process.env[TURING_SDK_DIR_ENV]
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  const env = options.env ?? process.env
+  const exists = options.exists ?? existsSync
+  const bundle = bundledSdkBundleId(platform, arch)
+  // SDK 目录：显式 `dir` → 环境变量 → 本机安装的桌面端 → 没有（空串，下面
+  // probe 据此答 `missing`）。发现链读注入的 platform：CI 上它不是 win32，
+  // 这正是注册表读取被挡在 `platform === 'win32'` 后面的原因。
+  const configuredDir = options.dir ?? env[TURING_SDK_DIR_ENV]
   const dir = configuredDir !== undefined && configuredDir.trim() !== ''
     ? configuredDir.trim()
-    : join(bundledSdkRoot(), bundle)
-  const channelId = options.channelId ?? process.env[TURING_CHANNEL_ID_ENV] ?? '109144'
-  const productName = options.productName ?? process.env[TURING_PRODUCT_NAME_ENV] ?? 'WorkBuddy'
-  const productVersion = options.productVersion ?? process.env[TURING_PRODUCT_VERSION_ENV] ?? '5.8.3'
+    : discoverInstalledSdkDir({
+        platform,
+        home: options.home,
+        env,
+        exists,
+        readRegistryAppPath: options.readRegistryAppPath,
+      }) ?? ''
+  const channelId = options.channelId ?? env[TURING_CHANNEL_ID_ENV] ?? '109144'
+  const productName = options.productName ?? env[TURING_PRODUCT_NAME_ENV] ?? 'WorkBuddy'
+  const productVersion = options.productVersion ?? env[TURING_PRODUCT_VERSION_ENV] ?? '5.8.3'
+  const keychainStorage = options.keychainStorage
+    ?? /^(?:1|true)$/u.test(String(env[TURING_KEYCHAIN_STORAGE_ENV] ?? '').trim())
 
   let probeCache: { at: number, info: TuringSdkInfo } | undefined
   let cached: { token: string, fetchedAtMs: number } | undefined
@@ -419,17 +584,17 @@ export function createTuringSdk(options: {
     : `electron ${process.versions.electron}`
 
   const missingInfo = (path: string): TuringSdkInfo => {
-    const present = existsSync(path)
+    const present = path !== '' && exists(path)
     return {
       state: present ? 'error' : 'missing',
       bundle,
       path,
-      platform: process.platform,
-      arch: process.arch,
+      platform,
+      arch,
       runtime: runtimeLabel,
       reason: present
         ? 'SDK directory exists but the native binding was not found'
-        : `no bundled SDK for ${bundle}`,
+        : `no installed WorkBuddy desktop SDK detected on ${bundle}; install the desktop app or set ${TURING_SDK_DIR_ENV}`,
     }
   }
 
@@ -437,19 +602,24 @@ export function createTuringSdk(options: {
     const at = now()
     if (probeCache !== undefined && at - probeCache.at < PROBE_CACHE_MS) return probeCache.info
     let info: TuringSdkInfo
-    if (!existsSync(join(dir, 'build', 'Release'))) {
-      // 目录都不在：不值得起一个进程。`missing` 与 `error` 分开，是因为前者是
-      // "这个平台我们没有内置副本"（用户无能为力），后者是"有但坏了"（可修）。
+    // 门与发现链用**同一个**数据平台拼路径（`platform`）：dir 要么来自发现链
+    // （win32 形状），要么是调用方给的宿主原生路径。混用宿主 join 会让注入
+    // platform:'win32' 的测试永远拼不出它自己的假目录——正是这条曾以
+    // `darwin-arm64 !== win32-x64` 红过的那个坑（RELEASING.md §2.5）。
+    if (dir === '' || !hasTuringSdkBinding(dir, exists, platform)) {
+      // 没有可用目录：不值得起一个进程。`missing` 与 `error` 分开，是因为前者是
+      // "这台机器没装（或找不到）桌面端"（用户装一个就好），后者是"目录在但
+      // binding 坏了"（可修）。
       info = missingInfo(dir)
     } else {
-      const answer = await runWorker('probe', { dir, worker, channelId, productName, productVersion, timeoutMs: 15_000 })
+      const answer = await runWorker('probe', { dir, worker, channelId, productName, productVersion, timeoutMs: 15_000, keychainStorage })
       const supported = answer.ok === true && answer.supported === true
       info = {
         state: supported ? 'ready' : answer.ok === true ? 'unsupported' : 'error',
         bundle,
         path: dir,
-        platform: process.platform,
-        arch: process.arch,
+        platform,
+        arch,
         runtime: answer.node ?? runtimeLabel,
         ...supported ? {} : { reason: answer.loadError ?? answer.message ?? answer.reason ?? 'sdk reported unsupported' },
       }
@@ -497,7 +667,7 @@ export function createTuringSdk(options: {
       lastFailureAtMs = lastAttemptMs
       return undefined
     }
-    const answer = await runWorker('token', { dir, worker, channelId, productName, productVersion })
+    const answer = await runWorker('token', { dir, worker, channelId, productName, productVersion, keychainStorage })
     const token = typeof answer.token === 'string' ? answer.token.trim() : ''
     if (answer.ok !== true || token === '') {
       lastFailure = answer.message ?? answer.reason ?? 'sdk returned no token'

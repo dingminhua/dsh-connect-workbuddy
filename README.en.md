@@ -463,6 +463,20 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 
 `status` and `doctor` accept `--json` for machine-readable output.
 
+### Device-identity environment variables
+
+The outbound identity profile (`wireProfile`) and the device-header tier (`deviceTier`) are **card settings**, not environment variables. The variables below are the escape hatches for cases a card setting cannot reach:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `WORKBUDDY_DEVICE_TOKEN_FILE` | unset | File source for an external `X-Device-Token` in the *virtual* tier: points at a token file another tool maintains (bare value or `{"token":…}` envelope), re-read every 5 min, 4 KB cap; token bytes never reach logs or `doctor`. Same meaning as the card setting `deviceToken.file`, used when that is empty |
+| `WORKBUDDY_HEADER_TRACE` | unset | Set to `1` and `doctor` prints one more section: the header **name** list each request path would send (names only — never values). For answering "what does this tier actually send" |
+| `WORKBUDDY_TURING_SDK_DIR` | unset | Turing Shield SDK directory for the *real* tier. When unset the plugin **auto-discovers** the desktop app's install layouts (`/Applications`, `%LOCALAPPDATA%`, the uninstall registry hive, …); set it when the desktop app is installed yet `doctor` still reports "not found". No discovery = the real tier sends **zero** device headers (it never falls back to virtual) |
+| `WORKBUDDY_TURING_CHANNEL_ID` | `109144` | SDK channel id, matching the desktop app's `product.json` |
+| `WORKBUDDY_TURING_PRODUCT_NAME` | `WorkBuddy` | Product name the SDK initialises with |
+| `WORKBUDDY_TURING_PRODUCT_VERSION` | plugin version | Product version the SDK initialises with |
+| `WORKBUDDY_TURING_KEYCHAIN_STORAGE` | unset (= off) | Set to `1` to let the SDK enable its own device-cache storage; off by default — the plugin does not write device state into the user's keychain |
+
 > **Why these three commands work on a machine with nothing installed (issue #47)**
 >
 > The plugin declares `@deepseek-ai/dsh-atomic-write`, `@deepseek-ai/dsh-home-paths`, and the rest of the DSH packages as **peers**: the host supplies them and the plugin ships no copy. That works inside a **booted DSH process** (the host's runtime interception layer resolves those names against the installation), but `dsh plugin … exec` is not that — it runs one `pnpm exec` in the profile directory, and that child uses **stock Node resolution**. The profile is created with `autoInstallPeers: false`, so the peers are never installed there and the two packages cannot be found.
