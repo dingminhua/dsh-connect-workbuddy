@@ -18,14 +18,17 @@
 
 import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   defaultDesktopAuthCandidates,
   defaultDesktopAuthDirs,
   legacyWorkbuddyOwnAuthPath,
   WORKBUDDY_AUTH_FILE_ENV,
+  WORKBUDDY_VAULT_DIRNAME,
   WorkBuddyCredentialStore,
   workbuddyOwnAuthPath,
+  workbuddyVaultDir,
 } from './auth.ts'
 import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutableWithSource } from './at-rest.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
@@ -34,8 +37,26 @@ import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './c
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
 import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
-import { hostPeersInfo } from './host-peers.ts'
+import { hostPeersInfo, resolveDshHome } from './host-peers.ts'
 import { describeRosterSeenPayload, isKnownRosterSeenVersion, rosterSeenPath } from './roster-seen-store.ts'
+import { inspectCredentialDirectory, protectCredentialDirectory } from './windows-acl.ts'
+import type { CredentialAclReport } from './windows-acl.ts'
+
+/**
+ * One region's entry in `doctor`'s `credentialAcl` block (issue #183).
+ *
+ * Declared as a named type rather than inferred from an `Object.fromEntries`
+ * result: the report is consumed field by field in both the JSON and the human
+ * output, and an inferred `unknown` there would turn a missing field into a
+ * compile error at the call site instead of at the definition.
+ */
+interface CredentialAclEntry {
+  directory: string
+  state: CredentialAclReport['state']
+  unexpected?: string[]
+  reason?: string
+  protectError?: string
+}
 
 type Action = 'doctor' | 'logout' | 'status'
 
@@ -49,8 +70,12 @@ type Action = 'doctor' | 'logout' | 'status'
  * 4 → 5: added `rosterSeen`, so a first-sighting history that is corrupt or in
  * a version this build cannot read is REPORTED rather than silently answered as
  * "no new models".
+ *
+ * 5 → 6: added `credentialAcl` (issue #183). A store that could only ever ask
+ * for `mode: 0o600` looked identical to one that enforced it; the new block
+ * answers what the folder permissions actually ARE on this machine.
  */
-const JSON_SCHEMA_VERSION = 5
+const JSON_SCHEMA_VERSION = 6
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -182,6 +207,40 @@ async function doctor(jsonOutput: boolean): Promise<number> {
    */
   const hostPeers = await hostPeersInfo()
   const rosterSeen = await Promise.all(REGIONS.map(async region => ({ region, summary: await describeRosterSeen(region) })))
+  /**
+   * Per-region folder permissions of the plaintext credential vault (issue #183).
+   *
+   * Computed BEFORE the report object because both the report AND its `hints`
+   * read it, and a hint that reached back into the half-built report would be a
+   * use-before-declaration. It also runs the repair, so `doctor` fixes an
+   * exposed directory rather than only describing it.
+   */
+  const credentialAcl = await Promise.all(REGIONS.map(async region => {
+    const directory = workbuddyVaultDir(region)
+    // Harden the vault ROOT first (it is what carries the inherited
+    // `Everyone: FullControl` from `~/.dsh`), then this region's directory.
+    // `protectCredentialDirectory` also walks immediate subdirectories, so
+    // hardening the root alone already covers both regions; the per-region call
+    // stays because it is what the write path uses and is memoized anyway.
+    const rootOutcome = await protectCredentialDirectory(dirname(directory))
+    const outcome = await protectCredentialDirectory(directory)
+    const acl = await inspectCredentialDirectory(directory)
+    const entry: CredentialAclEntry = {
+      directory: acl.directory,
+      state: acl.state,
+      ...acl.weak === undefined ? {} : { unexpected: acl.weak },
+      ...acl.reason === undefined ? {} : { reason: acl.reason },
+      ...outcome.state === 'failed'
+        ? { protectError: outcome.reason }
+        : rootOutcome.state === 'failed' ? { protectError: rootOutcome.reason } : {},
+    }
+    return [region, entry] as const
+  }))
+  /** Indexed by region so the human output cannot silently skip a missing one. */
+  const credentialAclByRegion: Record<WorkBuddyRegion, CredentialAclEntry> = {
+    cn: credentialAcl.find(([region]) => region === 'cn')![1],
+    global: credentialAcl.find(([region]) => region === 'global')![1],
+  }
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-connect-workbuddy',
@@ -232,6 +291,23 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       global: workbuddyOwnAuthPath('global'),
       legacy: legacyWorkbuddyOwnAuthPath(),
     },
+    /**
+     * Whether the plaintext credential vault is actually restricted (issue #183).
+     *
+     * The `mode: 0o600` the writer passes is a POSIX concept; on Windows the
+     * DACL decides. Reporting it here is the difference between "we asked for
+     * 0600" and "the token file is readable only by its owner" — the reporter
+     * found out it was the former while believing the latter. Per region,
+     * because the two directories are hardened independently.
+     *
+     * On POSIX every entry reads `not-windows` and no hint is emitted: `mode`
+     * carries the same intent there, and warning every macOS user about a
+     * Windows-only measure would be noise.
+     */
+    credentialAcl: {
+      vaultDirectory: join(resolveDshHome(), WORKBUDDY_VAULT_DIRNAME),
+      regions: Object.fromEntries(credentialAcl),
+    },
     hostHeartbeat: {
       path: workbuddyHostHeartbeatPath(),
       present: heartbeat !== undefined,
@@ -275,6 +351,15 @@ async function doctor(jsonOutput: boolean): Promise<number> {
         }
         return []
       }),
+      // Issue #183. Only machines where the ACL does NOT hold get a hint: a
+      // POSIX host reports `not-windows` (mode already conveys the intent) and a
+      // hardened Windows host reports `protected`, and neither is a problem the
+      // user can act on.
+      ...credentialAcl.flatMap(([region, entry]) => {
+        if (entry.state !== 'exposed') return []
+        const weak = entry.unexpected === undefined ? '' : ` (readable by ${entry.unexpected.join(', ')})`
+        return [`The ${region} credential vault holds PLAINTEXT tokens but its folder permissions do not restrict them${weak}: ${entry.directory}. Re-run doctor to retry the repair, or fix it by hand with: icacls "${entry.directory}" /inheritance:r /grant:r "*S-1-3-4:(OI)(CI)(F)" /grant:r "*S-1-5-18:(OI)(CI)(F)" /grant:r "*S-1-5-32-544:(OI)(CI)(F)"`]
+      }),
     ],
   }
   if (jsonOutput) {
@@ -294,6 +379,17 @@ async function doctor(jsonOutput: boolean): Promise<number> {
         ...accounts.map(account => `  - ${account.accountName === '' ? '(unnamed)' : account.accountName} (${account.id})${account.selected ? ' [selected]' : ''} expires ${new Date(account.tokenExpiresAtMs).toISOString()}`),
       ]),
       `Static fallback models: CN ${report.fallbackModels.cn}, Global ${report.fallbackModels.global}`,
+      ...REGIONS.map(region => {
+        const entry = credentialAclByRegion[region]
+        const detail = entry.state === 'protected'
+          ? 'owner / SYSTEM / Administrators only'
+          : entry.state === 'not-windows'
+            ? 'POSIX mode 0600 applies'
+            : entry.state === 'exposed'
+              ? `EXPOSED${entry.unexpected === undefined ? '' : ` to ${entry.unexpected.join(', ')}`}`
+              : 'unverified'
+        return `Credential vault ACL (${REGION_LABELS[region]}): ${entry.state} — ${detail} (${entry.directory})`
+      }),
       ...REGIONS.map(region => {
         const summary = report.rosterSeen[region]
         if (summary === undefined) return `New-model history (${REGION_LABELS[region]}): not available`

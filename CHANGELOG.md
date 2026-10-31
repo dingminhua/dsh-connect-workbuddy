@@ -1,5 +1,110 @@
 # Changelog
 
+## 5.16.0 (2026-10-31)
+
+> **Windows 上凭据库的明文 token 之前对同机低权限进程可读。** issue #183。
+> `mode: 0o600` 在 Windows 上不生效，而插件一直把它当成已经做了权限限制。
+
+### 变更
+
+- **凭据库在 Windows 上显式加固文件夹权限**（issue #183）。
+  - **问题**：`~/.dsh/workbuddy-vault/<region>/<accountId>.json` 存着解密后的
+    `accessToken` / `refreshToken` 明文，写入时传 `mode: 0o600`。Node 的
+    `fs.writeFile` / `fs.rename` 在 Windows 上**忽略** `mode`——权限完全由继承的
+    DACL 决定。报告者用 `Get-Acl` 实测：该文件对
+    `<机器>\CodexSandboxUsers`（DSH 自己沙箱进程的账户）可写可读，也就是本机
+    任何沙箱进程 / 插件 / 脚本都能取到一枚可用 JWT。
+  - **改法**：新增 `src/windows-acl.ts`。`writeVaultEntry()` 在写入**之前**加固
+    vault **根目录**（`dirname(dir)`——它才是承载 `~/.dsh` 那个
+    `Everyone: FullControl` 的一层），**一次 `icacls` 调用**，不遍历子目录：
+    实测 Windows 会把新的可继承 ACE 沿树重新传播，父目录加固后，子目录与其中的
+    既有文件都变成恰好那三条 ACE（`weak=0`）。ACE 只保留
+    `OWNER RIGHTS`(S-1-3-4) / `SYSTEM`(S-1-5-18) / `Administrators`(S-1-5-32-544)，
+    全部用 SID 而非账户名，因此在任意语言的 Windows 上行为一致。
+  - **为什么必须加固在写入之前**：`writeFileAtomic` 是「写临时 inode → rename
+    覆盖」，替换产生的是**新 inode**。写在之后加固，既留下 pre-rename 窗口，也
+    会被下一次替换抹掉。加固目录在前，替换出来的 inode 一出生就继承受限 ACE。
+  - **为什么不用 `icacls /T`**：实测 `/T` 配合 `(OI)(CI)` 会让它走过的**每个
+    文件得到空 DACL**（`ACEcount=0`），谁都读不了。正确形态是目录用
+    `(OI)(CI)`、文件用裸 `(F)`；本实现的写入路径只加固目录，靠传播覆盖文件。
+  - **成本与并发**：`icacls` 是子进程，实测静止态 19–52 ms、**并行负载下最高
+    1242 ms**。因此除了「一个目录一次调用」，同一路径**正在进行的**加固会被
+    join 而不是重复发起，突发写入只排一个子进程。这个数字是实测得来的：
+    最初「每次写入再加固一次文件」的版本把
+    `tests/issue12-region-hiding.spec.ts` 的 1 s 轮询预算顶穿，才改成现在的形态。
+  - **失败不致命**：加固是纵深防御，不是写入前置条件。`icacls` 失败时凭据照常
+    落盘，`doctor` 会把失败情况报出来。
+  - **POSIX 不付任何代价**：非 Windows 直接返回 `not-windows`，不 spawn 任何子
+    进程——那里的 `mode 0600` 本来就是这个意思。
+  - **没有实现的**：issue 的建议 1（DPAPI / `safeStorage` 加密落盘）。落盘内容
+    仍是明文，只是权限收紧了；管理员、SYSTEM 服务，或已取得该用户令牌的攻击者
+    仍可读取。要做到那一步需要改 vault 的磁盘格式并做迁移，属独立改动。
+
+- **`doctor` 新增 `credentialAcl` 块**（`--json` schema 5 → 6）。逐 region 报告
+  vault 目录的权限状态，并在报告前**先尝试修复**——所以这个命令对已经被旧版本
+  暴露过的机器是有用的，而不只是描述问题。取值：
+  - `protected`：只有 OWNER RIGHTS / SYSTEM / Administrators
+  - `exposed`：还有别的持有者，并在 `unexpected` 里点名 SID
+  - `unverified`：读不回来（PowerShell 缺失 / 超时）。**故意不折进 `exposed`**
+    ——「没测到」和「测到是脏的」需要用户做不同的事，谎报暴露本身就是一种误导
+  - `not-windows`：POSIX，`mode 0600` 已表达同样意图，因此不产生任何提示
+
+- **人类可读输出新增一行** `Credential vault ACL (<region>): <state> — <detail>`，
+  且在 `exposed` 时给出可直接粘贴的 `icacls` 修复命令。
+
+### 文档
+
+- 新增 `docs/CACHE-HIT-70-RESEARCH.md` + `docs/ISSUE-184-REPLY.md`（issue #184
+  「缓存命中太低，一直在 70 左右徘徊」的取证报告与可直接粘贴的 issue 回复）。
+  **只是记录，不含任何产品代码改动**——`src/upstream.ts` / `src/shim.ts` /
+  `src/index.ts` / `src/adapter.ts` / `src/account-pool.ts` / `src/body-report.ts`
+  与 `tests/upstream.spec.ts` 均未修改，`keepPromptLast` 保持原样。
+  - **本机复现不出 70%**：全机 workbuddy 加权命中率 97.5%，主力模型
+    `deepseek-v4.1-flash` 97.9%（13,282 请求 / 3,157,473,803 prompt token）。
+  - **量级足够解释 70% 的机制**：会话混用模型，其中 `minimax-m3.1-flash`
+    完全不复用缓存（44.6%）；反推混入 52.3% 的 prompt 量即可落到 70%，
+    本机 61 个混用会话实测落在 55–75%。
+  - **缓存按账号隔离**（A 97.4% / B 0.0% / A 复测 97.3%，同分钟同字节），
+    但账号池换号要每 3.8 请求一次才能造成 70%，实测远低。
+  - **`keepPromptLast` 确实是 bug**（开启后每轮边界必断，断点在 message[1]
+    这类极早期位置），但真实代价只有 **−1.74 个点**——真实宿主并不每个 step
+    注入（两个真实会话分别 386 step/12 条、682 step/34 条）。
+  - **追加取证（§8）**：`billion-context` 确实在请求链路上（`127.0.0.1:18787`），
+    但以代理 `startedAt` 为界做**同会话**前后对照只掉 0.31 个点；真正的最大
+    单一成因是**工具注册表在会话中途增删工具**——单会话 7 个 `system/message`
+    版本两两不同，每次变更整段前缀失效，turn 12 之后不再变化时命中率立刻回到
+    96% 以上。次因是 `trae` 通道上游不报缓存（34 个请求 `read=0`，占该会话
+    未命中的 33.7%）。
+  - 报告里同时记录了我自己的两次判断修正：用「`read` 冻结不动」当断裂信号是
+    **错的**（短 step 也会满足），改用「相对上一请求缩水 >20%」；以及用
+    **安装时间**而非**代理启动时间**做分界会把跨越期错算进「生效后」。
+
+### 测试
+
+- 新增 **12** 例（`tests/issue183-credential-acl.spec.ts`）：
+  - 写入路径对 vault 根目录发起**恰好一次** `icacls`（既是「加固了」，也是
+    「没有退化成逐目录遍历」——后者是实测 1242 ms 的来源）
+  - `icacls` 失败时凭据**照样落盘**（纵深防御不能变成故障）
+  - POSIX 上**一个子进程都不 spawn**
+  - 传的是 SID 不是账户名（zh-CN 主机上账户名会被本地化）
+  - 目录授权必须带 `(OI)(CI)`、文件授权必须**不带**
+  - `/T` 永不出现
+  - `doctor` 的四个状态各有一条
+  - 记忆化只在**成功**时生效（失败必须让下次写入重试）
+- **变异验证**：9 个变异体，8 个被当场打红。第 9 个（把文件授权改成
+  `*:(OI)(CI)(F)`）**首轮 12/12 全绿**——因为测试当时用
+  `filter(arg => arg.startsWith('*S-1-'))` 取授权，而变异体产生的畸形串根本
+  进不了那个过滤器。已把取法改成「取 `/grant:r` 后面的那个值」并断言**恰好 3
+  条**，重跑后该变异体转红。这条留在注释里，免得下一个人再写出同样取不到的断言。
+- **全仓结果**：2691 例通过（160 文件），类型检查通过。
+  - 需要说明的是，`tests/issue12-region-hiding.spec.ts` 的
+    「does not report the in-use model as withdrawn after a directoryless
+    save」在本机**改动前**就不稳定：未修改的 HEAD 连跑 5 次，4 次失败、1 次
+    通过；本改动落地后连跑 5 次，3 次失败、2 次通过。两者属同一量级，且该用例
+    断言的是上游目录内容而非文件权限，因此判定为**既有 flake**，不是本改动的
+    回归。本改动与它的唯一交集是 icacls 的调用耗时，现已压到「一目录一次、
+    并发合并」，不再让该用例的 1 s 轮询预算受此影响。
+
 ## 5.15.2 (2026-10-30)
 
 > **英文界面下的「最近刷新」不再显示成中文式的时间。** 同步自

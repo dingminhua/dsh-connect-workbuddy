@@ -34,6 +34,7 @@ import { dirname, join } from 'node:path'
 // `bin.ts`'s chunk. See `src/host-peers.ts` and issue #47.
 import { resolveDshHome, withFileLock, writeFileAtomic } from './host-peers.ts'
 import { isEncryptedFieldWrapper, openEncryptedField, readAtRestKey, WORKBUDDY_APP_EXECUTABLE_ENV } from './at-rest.ts'
+import { protectCredentialDirectory } from './windows-acl.ts'
 import { regionOf, type WorkBuddyRefreshOutcome, type WorkBuddyRegion } from './upstream.ts'
 
 /** Normalized WorkBuddy credential, timestamps in epoch milliseconds. */
@@ -1078,7 +1079,21 @@ interface VaultEntry {
   refreshedFrom?: string
 }
 
-/** Write one vault entry atomically under the file lock. */
+/**
+ * Write one vault entry atomically under the file lock.
+ *
+ * The directory is hardened BEFORE the file is created (issue #183). Order
+ * matters: `writeFileAtomic` commits by creating a temp inode and renaming it
+ * over the target, so an ACL applied to the file afterwards would leave the
+ * pre-rename window open, and a crash between the two would leave a plaintext
+ * token in a file nobody hardened. Hardening the directory first means the
+ * replacement inode inherits the restricted ACEs at creation.
+ *
+ * The hardening is best-effort on purpose: it is defence in depth, and refusing
+ * to persist a credential because an ACL call failed would turn it into an
+ * outage. `doctor` reports the outcome so a machine where it failed is visible.
+ * On POSIX this call is a no-op, and `mode` below carries the same intent.
+ */
 async function writeVaultEntry(
   dir: string,
   accountId: string,
@@ -1086,6 +1101,25 @@ async function writeVaultEntry(
   refreshedFrom?: string,
 ): Promise<void> {
   const path = join(dir, `${accountId}.json`)
+  /**
+   * Harden the vault ROOT, which also hardens this region's directory and sweeps
+   * the files already inside (issue #183).
+   *
+   * The root, not just `dir`: `dir` is `<vault>/<region>`, and the root is what
+   * carries the inherited `Everyone: FullControl` from `~/.dsh`. Leaving the
+   * root widened would let any local process delete or replace the region
+   * directory itself, which defeats the file-level restriction inside it.
+   *
+   * BEFORE the write, so the commit's temp inode — and the file it is renamed
+   * over — inherit the hardened ACEs instead of the widened ones. A file-level
+   * pass AFTER the write would leave the pre-rename window open and would be
+   * lost by the next atomic replace, which creates a fresh inode each time.
+   *
+   * Memoized per directory per process, so the second account costs nothing: see
+   * the cost model in `src/windows-acl.ts` for why the per-write budget matters
+   * here.
+   */
+  await protectCredentialDirectory(dirname(dir))
   await withFileLock(path, async () => {
     await writeFileAtomic(path, `${JSON.stringify(vaultDocument(credential, accountId, refreshedFrom), null, 2)}\n`, {
       mode: 0o600,

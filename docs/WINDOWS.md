@@ -14,9 +14,9 @@ Windows 在本项目里不是「顺带能跑」的平台，而是**有专属分�
 >
 > 因此**「在 Mac 上试过了，没问题」不足以判定 Windows 行为**。这类结论必须来自：CI 的 windows-latest、Windows 用户回报的现场、或真机取证的向量。
 
-## 1. 五个 Windows 专属分支
+## 1. 七个 Windows 专属分支
 
-改动这五处中的任何一处，都要考虑 Windows。
+改动这七处中的任何一处，都要考虑 Windows。
 
 | # | 位置 | Windows 行为 | 若改错会怎样 |
 | --- | --- | --- | --- |
@@ -26,6 +26,20 @@ Windows 在本项目里不是「顺带能跑」的平台，而是**有专属分�
 | 4 | 设置写入回读校验（`src/client/account-selection.ts`） | 写入后**回读校验**：profile 的 `cordis.patch.yml` 被占用会让 rename 覆盖失败，而 `set()` 的 promise 仍 resolve | 用户看到假确认（显示「已清除」但没落盘）→ issue #11 |
 | 5 | 子进程启动选项：`src/host-heartbeat.ts` `PROCESS_PROBE_OPTIONS` 与 `src/at-rest.ts` `fetchAtRestKeyPayload()` | 一律带 `windowsHide: true`（POSIX 忽略该选项） | **宿主本身没有控制台**（Electron GUI 进程，实测 `MainWindowHandle = 0`），Windows 会给子进程**新建一个可见的控制台窗口** → 每次进程存活判定都在屏幕上闪一次黑框 |
 | 6 | `src/at-rest.ts` `readAtRestKey()` → `findWorkbuddyAppExecutableWithSource()` | 字段密钥**不带参数**调用时才走注册表回退（`reg query` × 3 个卸载 hive）；这个探测曾被**只按成功结果**缓存 | 桌面端不在候选目录、凭据又是加密的机器上，`scanAll()` 会**逐文件**重跑整套探测。issue #77 实测：19.1 s 的请求里 15.3 s 花在 `spawnSync`，约 **135 个 `reg query` 子进程**（`findWorkbuddyAppExecutable()` 被调用 45 次）→ 打开页面白等 60 s。POSIX 上这一支根本不跑，**在 macOS 开发机上永远看不到** |
+| 7 | `src/windows-acl.ts` `protectCredentialDirectory()`（issue #183） | 凭据库的访问权限**不能靠 `mode: 0o600`**：Windows 上 `fs.writeFile` / `fs.rename` 的 `mode` 被接受但不生效，权限完全由继承的 DACL 决定。改为在**写入之前**对 vault 根目录发一次 `icacls`（`/inheritance:r` + `*S-1-3-4`、`*S-1-5-18`、`*S-1-5-32-544`，含 `(OI)(CI)`），靠 Windows 的继承传播覆盖整棵子树 | vault 里是**明文** `accessToken` / `refreshToken`。未加固时实测该文件被 `<机器>\CodexSandboxUsers`（DSH 自己沙箱账户）以 `Modify` 读取，且本机 `~/.dsh` 还额外带着 `Everyone: FullControl` → 本机任何低权限进程都能取到可用 JWT |
+
+**第 7 条为什么单列**：它是本项目里**第一个「静默失效的防御」**——`mode: 0o600` 看起来像已做了权限限制，代码注释、目录名（`vault`）和既有文档都暗示这一点，而 Windows 上它**什么都不做**。这类缺陷的危险不在于写错，而在于**看起来已经写对了**：没有报错、没有日志、`doctor` 也一切正常。真机取证（2026-10-27，Windows 11）用 `Get-Acl` 读到的事实与代码意图相反，这才把它暴露出来。
+
+**加固的四条实测结论**（A 档，真机 `icacls` / `Get-Acl`）：
+
+1. **`/T` 必须禁用**。`icacls <dir> /T /inheritance:r /grant:r "*S-1-3-4:(OI)(CI)(F)"` 会让它走过的**每个文件得到空 DACL**（实测 `ACEcount=0`）——比原来更糟，因为谁都读不了，包括插件自己。正确形态是目录用 `(OI)(CI)`、文件用裸 `(F)`；本实现的写入路径只加固目录，靠传播覆盖文件。
+2. **一次 `icacls` 覆盖整棵树，不需要遍历**。实测：对一个同时含 `cn/`、`global/` 子目录与文件、且全部带 `Everyone`/`CodexSandboxUsers` 的根目录只跑一次 `icacls`，事后根、两个子目录、子目录里的文件全部变成恰好三条 ACE（`weak=0`）。因此实现里没有按目录遍历，也没有按文件逐个加固。
+3. **加固必须在写入之前**。`writeFileAtomic` 是「写临时 inode → rename 覆盖」，替换出来的是**新 inode**；写在之后加固既留下 pre-rename 窗口，也会被下一次替换抹掉。
+4. **要加固 vault 根目录，不只是 region 目录**。`Everyone: FullControl` 是从 `~/.dsh` 继承到 `…/workbuddy-vault` 上的；只加固 `<vault>/<region>` 时根目录仍可写，任何进程都能替换掉 region 目录本身。`writeVaultEntry()` 传的是 `dirname(dir)`。
+
+**成本是这里的一等约束**（A 档实测）：`icacls` 是子进程，静止态 19–52 ms，**并行负载下最高 1242 ms**。因此实现遵守两条：一个目录**一次**调用；同一路径**正在进行的**加固被 join 而不重复发起。这不是提前优化——最初「每次写入后再加固一次文件」的版本把 `tests/issue12-region-hiding.spec.ts` 的 1 s 轮询预算顶穿，才定位到成本形态并改成现在这样。**改动这里的调用次数或等待策略时，请以该用例为成本哨兵。**
+
+**没有做的事**（诚实登记）：issue #183 的建议 1（DPAPI / `safeStorage` 加密落盘）**未实现**。当前落盘的仍是明文，只是权限收紧了；管理员、SYSTEM 服务，或已经拿到该用户令牌的攻击者仍可读取。要做到那一步需要改变 vault 的**磁盘格式**并做迁移，属独立改动。README 明写「此文件含明文 token」。
 
 **第 6 条为什么单列**：这是**第 5 条之外的第二个**「只在 Windows 才付费」形态——不是正确性错误，而是**成本随文件数 × 读取次数放大**的性能缺陷，且两个乘数都在 Windows 特有的分支里。`tests/issue77-at-rest-key-cache.spec.ts` 用 `process.platform` 影子 + `execFileSync` 打桩，在**任何宿主**上都能数出这三件事（失败结果被记住、一次探测 3 次 `reg`、5 个加密文件的一轮读取仍是 3 次）。
 

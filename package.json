@@ -2,7 +2,7 @@
   "name": "dsh-connect-workbuddy",
   "displayName": "DSH Connect WorkBuddy",
   "description": "把本机登录的 WorkBuddy 模型（国内版与国际版）接入 DeepSeek Harness：每次刷新按上游目录自动读取每个模型的积分倍率，支持逐模型图片输入开关、多账号切换与账号池自动换号，并提供每日签到、卡片与输入框里的胶囊积分读数等只读积分概览。",
-  "version": "5.15.2",
+  "version": "5.16.0",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
   "license": "MIT",

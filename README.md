@@ -315,13 +315,15 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行就�
 | 进程心跳的时间戳来源 | PowerShell `Get-Process` 的 `StartTime`（POSIX 无 `ps -lstart` 等价物） | `ps -o lstart=` | `ps -o lstart=` |
 | 子进程的窗口 | **必须 `windowsHide`**：宿主本身没有控制台（GUI 进程），漏设会让每次探测都在屏幕上闪一个可见的黑框 | 不适用（该选项仅 Windows 生效） | 不适用 |
 | 设置写入的瞬时占用 | **会踩到**：profile 的配置文件 `cordis.patch.yml` 被杀毒软件 / OneDrive / 编辑器短暂锁定会拒绝 rename 覆盖，`@deepseek-ai/dsh-atomic-write` 的重试**只在 `win32` 生效** | 不踩：POSIX 的 rename 直接替换，同一段代码不进重试分支 | 同 macOS |
+| 凭据库（vault）的文件权限 | **`mode: 0o600` 不生效**，权限由继承的 DACL 决定 → 写入前后用 `icacls` 显式加固（只允许 所有者 / SYSTEM / Administrators）。`doctor` 会回读并报告 `protected` / `exposed` / `unverified` | 由 `mode 0600` 生效 | 由 `mode 0600` 生效 |
 | CI 覆盖 | `windows-latest` 跑完整套件 | 开发者本机（macOS） | `ubuntu-latest` 跑完整套件 |
 
-**Windows 上需要知道的三个具体点**：
+**Windows 上需要知道的四个具体点**：
 
 1. **账号改动可能保存失败**（profile 的配置文件 `cordis.patch.yml` 被占用）。插件会在写入后**回读校验**：确认落盘才显示「已清除」，失败则明确报错并保留原选择。遇到提示时关闭占用该文件的程序后重试。详见[已知限制](#已知限制)。
 2. **凭据路径已部分经真机验证**。候选列表按平台约定推导并有单元测试钉住（含 `LOCALAPPDATA` / `APPDATA` 缺省与空白串两种回落）。已在真实 Windows 11 上确认：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth` 与 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe` **命中**，加密凭据的 `keyId` 与登记向量逐字一致。**其余候选仍未经真机逐项验证**——若你的凭据或 App 不在默认位置，用 `WORKBUDDY_AUTH_FILE` / `WORKBUDDY_APP_EXECUTABLE` 指定，并欢迎回报现场。
 3. **加密凭据（5.6.0 起）需要桌面 App 在场**，Windows 与 macOS 同样如此；App 装在自定义目录（如 `E:\WorkBuddy\WorkBuddy.exe`）时用 `WORKBUDDY_APP_EXECUTABLE` 指定。
+4. **凭据库里存的是明文 token**（issue #183）。插件的 vault 目录 `<DSH home>/workbuddy-vault/<region>/<accountId>.json` 保存解密后的 `accessToken` / `refreshToken`，**未加密**。Windows 上从 5.16.0 起会在写入前后用 `icacls` 把该目录限制为所有者 / SYSTEM / Administrators 可读，并用 `doctor` 的 `Credential vault ACL` 一行回读确认；但**权限收紧不等于加密**——管理员、SYSTEM 服务，或已取得你用户令牌的攻击者仍可读取。若你需要磁盘加密，请把 DSH home 放在 BitLocker / FileVault 卷上。POSIX 平台依靠 `mode 0600`。
 
 ### 在服务器上使用：搬运已登录的凭据
 
