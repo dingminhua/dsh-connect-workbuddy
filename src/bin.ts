@@ -35,6 +35,7 @@ import type { WorkBuddyCredential } from './auth.ts'
 import { describeDeviceState } from './device-state.ts'
 import type { WorkBuddyDeviceReport } from './device-state.ts'
 import { ensureDeviceSalt, readDeviceSalt } from './device-salt.ts'
+import { readDeviceTokenFile, WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
 import { WorkBuddyUpstreamClient, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
 import type { WorkBuddyRegion, WorkBuddyWireIdentity } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
@@ -85,8 +86,13 @@ type Action = 'doctor' | 'logout' | 'status'
  * because "the plugin has no device identity" was a fact only a source reader
  * could know; `doctor` is where it has to be visible
  * (docs/DEVICE-IDENTITY-AUDIT.md).
+ *
+ * 7 → 8: added `deviceIdentity.token` (P2). The field is absent when this CLI did
+ * not inspect a token file at all — which is a different answer from "I looked
+ * and found none", so a consumer must be able to tell them apart rather than
+ * guess whether the absence means "old build" or "not configured".
  */
-const JSON_SCHEMA_VERSION = 7
+const JSON_SCHEMA_VERSION = 8
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -97,12 +103,21 @@ const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
  */
 const HEADER_TRACE_ENV = 'WORKBUDDY_HEADER_TRACE'
 
+/** 毫秒 → `42s` / `3m` / `2h5m`，只用于人读的诊断。 */
+function describeAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 120) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h${minutes % 60 === 0 ? '' : `${minutes % 60}m`}`
+}
+
 /**
  * The human form of the `deviceIdentity` block.
  *
- * Two lines on purpose: the first says what is on the wire, the second says how
- * many distinct virtual devices the pool would present and whether the salt is
- * usable. Collapsing them would let "3 accounts → 3 devices" read as "we send
+ * Three lines on purpose: what is on the wire, whether an external token was
+ * inspected at all, and how many distinct virtual devices the pool would
+ * present. Collapsing them would let "3 accounts → 3 devices" read as "we send
  * three devices".
  *
  * The first line names the tier because `doctor` runs outside the plugin and
@@ -116,13 +131,20 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
     : device.onWire.join(', ')
   const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} tier): ${onWire}`
   const salt = `${device.salt.state}${device.salt.reason === undefined ? '' : `: ${device.salt.reason}`} — ${device.salt.path}`
-  if (accounts === 0) return [head, `Derived devices: no signed-in account to derive from; salt ${salt}`]
-  if (device.derived === undefined) return [head, `Derived devices: unavailable; salt ${salt}`]
-  const { distinct, sample } = device.derived
-  return [
-    head,
-    `Derived devices: ${accounts} account(s) → ${distinct} distinct, sample machine=${sample.machineId} session=${sample.sessionId}; salt ${salt}`,
-  ]
+  // "没查"与"查了没有"必须分开：前者是这台 CLI 看不到插件配置，后者是配了但文件不在。
+  const token = device.token === undefined
+    ? `Device token: not inspected here — set ${WORKBUDDY_DEVICE_TOKEN_FILE_ENV} to the same file the plugin reads`
+    : `Device token: ${device.token.state}`
+      + `${device.token.ageMs === undefined ? '' : `, written ${describeAge(device.token.ageMs)} ago`}`
+      + `${device.token.reason === undefined ? '' : ` (${device.token.reason})`}`
+      + ` — ${device.token.path}`
+  const derived = accounts === 0
+    ? `Derived devices: no signed-in account to derive from; salt ${salt}`
+    : device.derived === undefined
+      ? `Derived devices: unavailable; salt ${salt}`
+      : `Derived devices: ${accounts} account(s) → ${device.derived.distinct} distinct, `
+        + `sample machine=${device.derived.sample.machineId} session=${device.derived.sample.sessionId}; salt ${salt}`
+  return [head, token, derived]
 }
 
 /** Region labels for human output. */
@@ -301,8 +323,20 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     (await anyStore.accounts()).map(async account => anyStore.credentialFor(account.id)),
   )).filter((credential): credential is WorkBuddyCredential => credential !== undefined)
   const deviceSalt = deviceCredentials.length === 0 ? await readDeviceSalt() : await ensureDeviceSalt()
-  const device = describeDeviceState(deviceCredentials, deviceSalt)
-  const wireIdentity: WorkBuddyWireIdentity = deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {}
+  /**
+   * 外部设备 token（P2）。
+   *
+   * `doctor` 读不到插件配置，只能读环境变量——所以路径只有一种写法时两侧才一致
+   * （见 `WORKBUDDY_DEVICE_TOKEN_FILE_ENV` 的注释）。没设就**不去猜**：报告里
+   * 明确写"这里没查"，而不是假装"没有 token"。
+   */
+  const deviceTokenFile = (process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV] ?? '').trim()
+  const deviceToken = deviceTokenFile === '' ? undefined : await readDeviceTokenFile(deviceTokenFile)
+  const device = describeDeviceState(deviceCredentials, deviceSalt, deviceToken)
+  const wireIdentity: WorkBuddyWireIdentity = {
+    ...deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {},
+    ...deviceToken?.state === 'ok' ? { deviceToken: deviceToken.token } : {},
+  }
   /**
    * `WORKBUDDY_HEADER_TRACE=1` 时的头名清单。
    *
@@ -391,6 +425,7 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     deviceIdentity: {
       onWire: device.onWire,
       salt: device.salt,
+      ...device.token === undefined ? {} : { token: device.token },
       ...device.derived === undefined ? {} : { derived: device.derived },
       ...tracedHeaders === undefined
         ? {}

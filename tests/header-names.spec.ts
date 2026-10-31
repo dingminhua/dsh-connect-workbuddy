@@ -71,13 +71,24 @@ describe('describeRequestHeaderNames', () => {
     expect(withSalt).toContain('X-Session-ID')
   })
 
-  it('never sends X-Device-Token from this tier — that is P2/P3', () => {
-    // A real token alongside derived machine/session ids is the self-
-    // contradiction the audit's §5.3 warns about. This assertion is the tripwire
-    // for anyone wiring the token source without splitting the tiers first.
-    for (const kind of ['chat', 'image', 'refresh', 'billing'] as const) {
-      expect(describeRequestHeaderNames(kind, credential, { deviceSalt: SALT }), kind).not.toContain('X-Device-Token')
+  it('sends X-Device-Token only when a token was actually supplied', () => {
+    // P2: the token is optional and comes from a file; when it is absent the
+    // header must not appear at all (a header with an empty value is worse than
+    // no header — it claims a device identity that was never resolved).
+    expect(describeRequestHeaderNames('chat', credential, { deviceSalt: SALT })).not.toContain('X-Device-Token')
+    for (const kind of ['chat', 'image', 'billing'] as const) {
+      expect(describeRequestHeaderNames(kind, credential, { deviceSalt: SALT, deviceToken: 'v3:abc' }), kind)
+        .toContain('X-Device-Token')
     }
+    // refresh 不参与身份统一，永远不带。
+    expect(describeRequestHeaderNames('refresh', credential, { deviceSalt: SALT, deviceToken: 'v3:abc' }))
+      .not.toContain('X-Device-Token')
+  })
+
+  it('never sends the token in the conservative tier', () => {
+    // conservative 的契约是"逐字节等于 5.16.0"，而 5.16.0 从不发这个头。
+    const names = describeRequestHeaderNames('chat', credential, { profile: 'conservative', deviceToken: 'v3:abc' })
+    expect(names).not.toContain('X-Device-Token')
   })
 
   it('closes the billing gap the audit called D2', () => {

@@ -44,7 +44,12 @@ type Kind = 'chat' | 'billing' | 'refresh'
  * `init.headers` is a plain object in every path this module builds, so copying
  * it is enough — no Header instance is involved.
  */
-async function headersOf(kind: Kind, identity: WorkBuddyWireIdentity, overrides: Partial<WorkBuddyCredential> = {}): Promise<Record<string, string>> {
+async function headersOf(
+  kind: Kind,
+  identity: WorkBuddyWireIdentity,
+  overrides: Partial<WorkBuddyCredential> = {},
+  options: { deviceTokenFile?: string } = {},
+): Promise<Record<string, string>> {
   const seen: Record<string, string> = {}
   vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
     Object.assign(seen, init.headers)
@@ -59,7 +64,7 @@ async function headersOf(kind: Kind, identity: WorkBuddyWireIdentity, overrides:
       text: async () => JSON.stringify(body),
     } as unknown as Response
   })
-  const client = new WorkBuddyUpstreamClient(undefined, identity)
+  const client = new WorkBuddyUpstreamClient(undefined, identity, options)
   const cred = credential(overrides)
   if (kind === 'chat') await client.chatStream(cred, '{}')
   else if (kind === 'billing') await client.claimDailyCheckin(cred)
@@ -171,6 +176,51 @@ describe('balanced — one client identity everywhere', () => {
     expect(seen['Accept-Language']).toBeUndefined()
     expect(seen['X-Product']).toBeUndefined()
     expect(seen['X-Machine-ID']).toBeUndefined()
+  })
+})
+
+describe('P2 — the external device token (file source)', () => {
+  it('sends nothing when no token source is configured', async () => {
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT })
+    expect(seen['X-Device-Token']).toBeUndefined()
+  })
+
+  it('reads the token from the configured file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-token-wire-'))
+    const file = join(dir, 'token')
+    await writeFile(file, 'v3:from-file\n')
+    try {
+      const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, { deviceTokenFile: file })
+      expect(seen['X-Device-Token']).toBe('v3:from-file')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('carries the token on billing too, and never on refresh', async () => {
+    const billing = await headersOf('billing', { profile: 'balanced', deviceSalt: SALT, deviceToken: 'v3:abc' })
+    expect(billing['X-Device-Token']).toBe('v3:abc')
+    const refresh = await headersOf('refresh', { profile: 'balanced', deviceSalt: SALT, deviceToken: 'v3:abc' })
+    expect(refresh['X-Device-Token']).toBeUndefined()
+  })
+
+  it('skips the header when the configured file cannot be read', async () => {
+    // A missing/unreadable token degrades to "no header", never to a made-up
+    // value and never to a failed request.
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, { deviceTokenFile: '/nonexistent/device-token' })
+    expect(seen['X-Device-Token']).toBeUndefined()
+    // The rest of the identity is unaffected.
+    expect(seen['X-Machine-ID']).toMatch(/^[0-9a-f]{36}$/)
+  })
+
+  it('sends the pair AND the token at once — the interim mixed tier', async () => {
+    // Deliberate: the exclusivity rule (real token ⇒ no derived pair) is the P3
+    // decision. Pinning the current behaviour here means P3 cannot change it by
+    // accident — flipping this test is the checkpoint.
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT, deviceToken: 'v3:abc' })
+    expect(seen['X-Device-Token']).toBe('v3:abc')
+    expect(seen['X-Machine-ID']).toMatch(/^[0-9a-f]{36}$/)
+    expect(seen['X-Session-ID']).toMatch(/^[0-9a-f]{36}$/)
   })
 })
 

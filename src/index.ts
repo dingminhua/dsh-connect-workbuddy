@@ -46,6 +46,7 @@ import {
   type HostSettingsService,
 } from './catalog-write.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
+import { WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
 import { BENEFIT_CACHE_MS, claimableBenefits, type WorkBuddyBenefitView } from './benefits.ts'
 import {
   createWorkBuddyAdapter,
@@ -620,6 +621,29 @@ export interface Config {
    */
   wireProfile?: 'conservative' | 'balanced'
   /**
+   * 外部设备 token（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P2）。
+   *
+   * 只收**文件**，不收内联字符串：token 是分钟级过期的，写在配置里的值十分钟后
+   * 就是死值，只能靠人改配置——那条路只在一次性排障里成立。文件可以由 A 自己的
+   * `.turing_token_cache.json`、一个 cron 或任何脚本刷新，插件按 `ttlMs` 重读。
+   *
+   * 文件支持两种形状：裸 token，或 A 的 `{"token":"v3:…","ts":…}` 信封。上限
+   * 4 KB（A 实测 1210 字符，B 的 1 KB 上限会把它误杀成"没配"）。
+   *
+   * 读不到时**不发送该头**并记一条 warn，绝不回退成临时造一个 token。只在
+   * `wireProfile: 'balanced'` 下生效——`conservative` 的契约是逐字节等于 5.16.0。
+   */
+  deviceToken?: {
+    /**
+     * token 文件的绝对路径（支持 `~`）。空 = 不启用。
+     *
+     * 指向 A 的缓存文件即可直接复用它的设备身份，不需要额外脚本。
+     */
+    file?: string
+    /** 重读周期，默认 5 分钟。token 本身约 10 分钟过期。 */
+    ttlMs?: number
+  }
+  /**
    * Adopt the official client's usage-page identity on chat requests (issue #132).
    *
    * 2026-10-31（P1）：`X-IDE-*` 从这里搬到了 {@link Config.wireProfile} 的
@@ -1019,6 +1043,13 @@ export const Config: z<Config> = z.object({
       .default('balanced')
       .description('Outbound identity profile. "balanced" (default) makes every request claim the same client (WorkBuddy product/IDE/agent headers, X-CodeBuddy-Request, Accept-Language, X-Root-Request-ID, and a per-account X-Machine-ID/X-Session-ID pair) and gives the billing routes a User-Agent plus Origin/Referer. "conservative" restores the 5.16.0 bytes exactly, including X-Product: SaaS.'),
   ) as unknown as z<'conservative' | 'balanced'>,
+  deviceToken: asVolatile(
+    z.object({
+      file: z.string().default(''),
+      ttlMs: z.number().step(1).min(1000).default(300_000),
+    }).default({})
+      .description('Optional X-Device-Token supplied by a file, re-read every ttlMs (default 5 min; the token itself expires in about 10). Accepts a bare token or an {"token":…} JSON envelope, so pointing it at workbuddy2openapi\'s .turing_token_cache.json works as-is. Empty file = off. Only used by wireProfile "balanced"; a token that cannot be read is skipped with a warning, never invented.'),
+  ) as unknown as z<{ file: string, ttlMs: number }>,
   keepPromptLast: asVolatile(
     z.boolean()
       .default(false)
@@ -1263,6 +1294,20 @@ export function apply(ctx: Context, config: Config): void {
         ? {}
         : { profile: unwrapVolatile(config.wireProfile) },
     },
+    (() => {
+      // 设备 token 的文件源（P2）。空路径 = 不启用；读取器在客户端内部按 TTL
+      // 重读，所以这里只传配置，不在这里读盘。
+      //
+      // 配置为空时回落到 `WORKBUDDY_DEVICE_TOKEN_FILE`——同一个值、两个读者
+      // （插件读配置，`doctor` 只能读环境变量），因此不会出现两处不一致。
+      const token = unwrapVolatile(config.deviceToken)
+      const configured = typeof token?.file === 'string' ? token.file.trim() : ''
+      const file = configured !== '' ? configured : (process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV] ?? '').trim()
+      return {
+        deviceTokenFile: file,
+        ...typeof token?.ttlMs === 'number' ? { deviceTokenTtlMs: token.ttlMs } : {},
+      }
+    })(),
   )
 
   /**

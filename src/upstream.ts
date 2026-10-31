@@ -34,6 +34,8 @@ import { join } from 'node:path'
 import type { WorkBuddyCredential } from './auth.ts'
 import { deriveDeviceId } from './device-id.ts'
 import { ensureDeviceSalt } from './device-salt.ts'
+import { createDeviceTokenReader } from './device-token.ts'
+import type { DeviceTokenReader } from './device-token.ts'
 import { isRouterModelId } from './native-modality.ts'
 import { pruneTempDir, TEMP_MEDIA_KEEP } from './temp-files.ts'
 import { parseQueueAnswer } from './queue.ts'
@@ -1743,6 +1745,17 @@ export interface WorkBuddyWireIdentity {
    * 新设备，比不发更糟。构造器保持纯函数，盐是调用方的事实。
    */
   deviceSalt?: string
+  /**
+   * 外部供给的真设备 token（P2），由 `deviceToken.file` 指向的文件读出。
+   *
+   * 它每 5 分钟重读一次（token 分钟级过期，进程却是小时级），所以这条不是构造期
+   * 的事实，而是**每条请求现取**——见 `WorkBuddyUpstreamClient.wireIdentity()`。
+   *
+   * 与 {@link deviceSalt} 同时存在时两者都会发出去。这个组合（审计 §5.3 的
+   * `mixed` 档）是 P2 的过渡形态：档位互斥规则留到 P3 决定，这里不做静默取舍
+   * ——悄悄关掉一半，等于替使用者做了一个他还没做的决定。
+   */
+  deviceToken?: string
 }
 
 /** 生效档位；未配置时取默认。 */
@@ -1806,27 +1819,37 @@ function attributionHeaders(identity: WorkBuddyWireIdentity): Record<string, str
 }
 
 /**
- * 设备头：一个账号一台稳定的"虚拟设备"（P1 的纯计算半边）。
+ * 设备头：真 token（P2，可选）+ 一对按账号派生的"虚拟设备"id（P1）。
  *
  * 盐来自本机 `$DSH_HOME/.workbuddy-device.json`（见 `src/device-salt.ts`），由
- * 客户端解析一次后放进 identity。**盐缺席就整对不发**：只发 Machine-ID 不发
- * Session-ID 是一个真实客户端不会出现的形状。
+ * 客户端解析一次后放进 identity；**盐缺席就整对不发**——只发 Machine-ID 不发
+ * Session-ID 是一个真实客户端不会出现的形状。token 来自
+ * `deviceToken.file`（见 `src/device-token.ts`），每 5 分钟重读。
  *
- * 它与 `X-Device-Token`（P2/P3）是互斥的两档，不是叠加项：真 token 内含设备
- * 信息，再配一对伪造 id 等于自证不一致（审计 §5.3）。所以这里刻意**不认识**
- * token —— 将来接 token 时，那一路要么不调用本函数，要么由档位互斥保证。
+ * ## 两者同时出现是 P2 的过渡形态，不是终态
+ *
+ * 真 token 内含设备信息（A 调 `fetchDeviceToken({includesDeviceInfo:true})`），
+ * 再配一对伪造 id 等于自证不一致（审计 §5.3）。互斥规则（`real` 档自动关掉
+ * 派生对）留到 P3 按实测决定；在这里静默关掉一半会更糟：那等于替使用者做完了
+ * 一个他明确说要自己做的决定，而且会让 `doctor` 报出的组合与真实请求不一致。
  */
 function deviceHeaders(
   credential: WorkBuddyCredential,
   identity: WorkBuddyWireIdentity,
 ): Record<string, string> {
   if (profileOf(identity) !== 'balanced') return {}
-  const salt = identity.deviceSalt
-  if (salt === undefined || salt === '' || credential.uid === '') return {}
-  return {
-    'X-Machine-ID': deriveDeviceId(credential.uid, 'machine', salt),
-    'X-Session-ID': deriveDeviceId(credential.uid, 'session', salt),
+  const headers: Record<string, string> = {}
+  // 真 token 先放：它是最强的那条声明。P2 的过渡形态允许它与派生的两个 id
+  // 同时出现；互斥规则由 P3 决定（见 `WorkBuddyWireIdentity.deviceToken`）。
+  if (identity.deviceToken !== undefined && identity.deviceToken !== '') {
+    headers['X-Device-Token'] = identity.deviceToken
   }
+  const salt = identity.deviceSalt
+  if (salt !== undefined && salt !== '' && credential.uid !== '') {
+    headers['X-Machine-ID'] = deriveDeviceId(credential.uid, 'machine', salt)
+    headers['X-Session-ID'] = deriveDeviceId(credential.uid, 'session', salt)
+  }
+  return headers
 }
 
 /**
@@ -3954,24 +3977,46 @@ export class WorkBuddyUpstreamClient {
    * same silence the previous single-source reader had.
    */
   /**
-   * 出站身份，**在第一条请求之前就已解析完毕**。
-   *
-   * P1 之前，identity 是构造参数的一份只读引用，构造完就能用。P1 之后它多了一个
-   * 来自本机文件的事实（设备盐），而 `ensureDeviceSalt` 是异步的——构造器是同步的，
-   * 所以解析只能挂在一条 promise 上。
-   *
-   * 为什么不让"盐缺席就先不发、下次再补"：那会让同一个进程的前几条请求是一台
-   * "没有设备"的客户端、之后突然变成"有设备"的客户端。设备身份从无到有本身就是
-   * 一次设备变更，比晚几百毫秒发出请求贵得多。因此每个构造头的调用点都
-   * `await this.ready`——它只阻塞第一条请求，之后是已决议的 promise。
+   * 解析一次的底座：设备盐（P1）。真 token 不在这里——它分钟级过期，
+   * 必须每条请求现取，见 {@link wireIdentity}。
    */
-  private readonly ready: Promise<WorkBuddyWireIdentity>
+  private readonly baseIdentity: Promise<WorkBuddyWireIdentity>
+  /** 外部 device token 的 TTL 读取器；未配置时为 undefined。 */
+  private readonly deviceTokens: DeviceTokenReader | undefined
 
   constructor(
     private readonly onFallback?: (message: string) => void,
     identity: WorkBuddyWireIdentity = {},
+    options: {
+      /** `deviceToken.file`：裸值或 A 的 `{token,ts}` 信封都可。 */
+      deviceTokenFile?: string
+      /** 重读周期，默认 5 分钟。 */
+      deviceTokenTtlMs?: number
+    } = {},
   ) {
-    this.ready = resolveWireIdentity(identity)
+    this.baseIdentity = resolveWireIdentity(identity)
+    const file = options.deviceTokenFile === undefined ? '' : options.deviceTokenFile.trim()
+    this.deviceTokens = file === ''
+      ? undefined
+      : createDeviceTokenReader({
+        file,
+        ...options.deviceTokenTtlMs === undefined ? {} : { ttlMs: options.deviceTokenTtlMs },
+        warn: message => this.onFallback?.(message),
+      })
+  }
+
+  /**
+   * 本次请求的完整身份：底座（盐）+ 当前有效的真 token。
+   *
+   * 为什么不是"构造时算一次"：盐是本机常量，token 是分钟级过期的东西。把 token
+   * 也钉在构造期，一个跑了几小时的进程会一直发那枚早就过期的值——而它看起来
+   * 完全正常（有个头在那儿），排查时最难判断。
+   */
+  private async wireIdentity(): Promise<WorkBuddyWireIdentity> {
+    const base = await this.baseIdentity
+    if (this.deviceTokens === undefined || profileOf(base) !== 'balanced') return base
+    const token = await this.deviceTokens.current()
+    return token === undefined ? base : { ...base, deviceToken: token }
   }
 
   /** POST the chat endpoint; a successful answer is the raw SSE response. */
@@ -3997,7 +4042,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, await this.ready), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, await this.wireIdentity()), 'Authorization': `Bearer ${credential.accessToken}` },
         body: bodyJson,
         ...signal === undefined ? {} : { signal },
       })
@@ -4068,7 +4113,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, await this.ready), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, await this.wireIdentity()), 'Authorization': `Bearer ${credential.accessToken}` },
         body: bodyJson,
         signal: signal === undefined ? ceiling.signal : AbortSignal.any([signal, ceiling.signal]),
       })
@@ -4322,7 +4367,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<WorkBuddyImageOutcome> {
     const response = await fetch(`${chatBase(credential)}${IMAGE_GENERATIONS_PATH}`, {
       method: 'POST',
-      headers: imageHeaders(credential, await this.ready),
+      headers: imageHeaders(credential, await this.wireIdentity()),
       body: JSON.stringify(buildImageBody(request)),
       signal: signal ?? AbortSignal.timeout(IMAGE_TIMEOUT_MS),
     })
@@ -4372,7 +4417,7 @@ export class WorkBuddyUpstreamClient {
     }
     const response = await fetch(`${chatBase(credential)}${IMAGE_EDITS_PATH}`, {
       method: 'POST',
-      headers: imageHeaders(credential, await this.ready),
+      headers: imageHeaders(credential, await this.wireIdentity()),
       body: JSON.stringify(buildEditBody(request)),
       signal: signal ?? AbortSignal.timeout(IMAGE_TIMEOUT_MS),
     })
@@ -4434,7 +4479,7 @@ export class WorkBuddyUpstreamClient {
     )
     const response = await fetch(`${chatBase(credential)}${VIDEO_GENERATIONS_PATH}`, {
       method: 'POST',
-      headers: imageHeaders(credential, await this.ready),
+      headers: imageHeaders(credential, await this.wireIdentity()),
       body: JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(VIDEO_TIMEOUT_MS),
     })
@@ -4488,7 +4533,7 @@ export class WorkBuddyUpstreamClient {
       try {
         const response = await fetch(`${chatBase(credential)}${VIDEO_TASKS_PATH}`, {
           method: 'POST',
-          headers: imageHeaders(credential, await this.ready),
+          headers: imageHeaders(credential, await this.wireIdentity()),
           body: JSON.stringify({ task_id: taskId }),
           signal: combined,
         })
@@ -4576,7 +4621,7 @@ export class WorkBuddyUpstreamClient {
   async fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus> {
     const response = await fetch(`${billingBase(credential)}/v2/billing/meter/checkin-activity-status`, {
       method: 'POST',
-      headers: billingHeaders(credential, await this.ready),
+      headers: billingHeaders(credential, await this.wireIdentity()),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4645,7 +4690,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<WorkBuddyBenefit> {
     const response = await fetch(`${billingBase(credential)}${path}`, {
       method: 'POST',
-      headers: billingHeaders(credential, await this.ready),
+      headers: billingHeaders(credential, await this.wireIdentity()),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4696,7 +4741,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<void> {
     const response = await fetch(`${billingBase(credential)}${BENEFIT_CLAIM_PATHS[kind]}`, {
       method: 'POST',
-      headers: billingHeaders(credential, await this.ready),
+      headers: billingHeaders(credential, await this.wireIdentity()),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4708,7 +4753,7 @@ export class WorkBuddyUpstreamClient {
   async claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim> {
     const response = await fetch(`${billingBase(credential)}/v2/billing/meter/daily-checkin`, {
       method: 'POST',
-      headers: billingHeaders(credential, await this.ready),
+      headers: billingHeaders(credential, await this.wireIdentity()),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4748,7 +4793,7 @@ export class WorkBuddyUpstreamClient {
   private async fetchEnterpriseCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits | undefined> {
     const response = await fetch(`${billingBase(credential)}/billing/meter/get-enterprise-user-usage`, {
       method: 'POST',
-      headers: billingHeaders(credential, await this.ready),
+      headers: billingHeaders(credential, await this.wireIdentity()),
       body: JSON.stringify({}),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4831,7 +4876,7 @@ export class WorkBuddyUpstreamClient {
     ].join(':')
     const response = await fetch(`${billingBase(credential)}/v2/billing/meter/get-user-resource`, {
       method: 'POST',
-      headers: billingHeaders(credential, await this.ready),
+      headers: billingHeaders(credential, await this.wireIdentity()),
       body: JSON.stringify({
         PageNumber: 1,
         PageSize: 100,

@@ -25,6 +25,7 @@
 
 import { deriveDeviceId } from './device-id.ts'
 import type { DeviceSaltReadout } from './device-salt.ts'
+import type { DeviceTokenReadout } from './device-token.ts'
 import { describeRequestHeaderNames } from './upstream.ts'
 import type { WorkBuddyWireIdentity } from './upstream.ts'
 import type { WorkBuddyCredential } from './auth.ts'
@@ -59,6 +60,20 @@ export interface WorkBuddyDeviceReport {
     reason?: string
   }
   /**
+   * 外部设备 token（P2）。
+   *
+   * 缺席 = 本次诊断没有看到 token 源（`doctor` 读不到插件配置，只能读环境变量，
+   * 见 `WORKBUDDY_DEVICE_TOKEN_FILE_ENV`）。这与 `state: 'absent'`（配了路径但
+   * 文件不在）必须分开：一个是"没查"，一个是"查了没有"。
+   */
+  token?: {
+    path: string
+    state: DeviceTokenReadout['state']
+    /** 文件 mtime 至今的毫秒数，只有 `ok` 时有意义。 */
+    ageMs?: number
+    reason?: string
+  }
+  /**
    * 派生档会给什么，以及池子会不会塌成一台设备。
    *
    * 缺席的两种情形要能区分：没有账号（无从派生）、盐不可用（不能派生）。"能派生
@@ -86,15 +101,27 @@ export interface WorkBuddyDeviceReport {
 export function describeDeviceState(
   credentials: readonly WorkBuddyCredential[],
   saltReadout: DeviceSaltReadout,
+  tokenReadout?: DeviceTokenReadout,
 ): WorkBuddyDeviceReport {
   const salt: WorkBuddyDeviceReport['salt'] = {
     path: saltReadout.path,
     state: saltReadout.state,
     ...'reason' in saltReadout ? { reason: saltReadout.reason } : {},
   }
-  // 头名要与真实请求一致：档位取默认，盐取刚刚那份读数。少传盐就会答成
-  // "device 头没发"，而实际上发了——那正是这个模块最不该犯的错。
-  const identity: WorkBuddyWireIdentity = saltReadout.state === 'ok' ? { deviceSalt: saltReadout.salt } : {}
+  const token: WorkBuddyDeviceReport['token'] = tokenReadout === undefined
+    ? undefined
+    : {
+        path: tokenReadout.path,
+        state: tokenReadout.state,
+        ...tokenReadout.ageMs === undefined ? {} : { ageMs: tokenReadout.ageMs },
+        ...'reason' in tokenReadout ? { reason: tokenReadout.reason } : {},
+      }
+  // 头名要与真实请求一致：档位取默认，盐与 token 取刚刚那两份读数。少传一个，
+  // 报告就会答成"那个头没发"，而实际上发了——那正是这个模块最不该犯的错。
+  const identity: WorkBuddyWireIdentity = {
+    ...saltReadout.state === 'ok' ? { deviceSalt: saltReadout.salt } : {},
+    ...tokenReadout?.state === 'ok' ? { deviceToken: tokenReadout.token } : {},
+  }
   const probe = credentials[0]
   const onWire = probe === undefined
     ? []
@@ -102,12 +129,12 @@ export function describeDeviceState(
       .filter(name => WORKBUDDY_DEVICE_HEADER_NAMES.includes(name))
 
   const uids = [...new Set(credentials.map(credential => credential.uid).filter(uid => uid !== ''))]
-  if (uids.length === 0 || saltReadout.state !== 'ok') return { onWire, salt }
+  const base: WorkBuddyDeviceReport = token === undefined ? { onWire, salt } : { onWire, salt, token }
+  if (uids.length === 0 || saltReadout.state !== 'ok') return base
 
   const machineIds = uids.map(uid => deriveDeviceId(uid, 'machine', saltReadout.salt))
   return {
-    onWire,
-    salt,
+    ...base,
     derived: {
       accounts: uids.length,
       distinct: new Set(machineIds).size,

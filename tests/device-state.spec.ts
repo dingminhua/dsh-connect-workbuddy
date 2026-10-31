@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { describeDeviceState } from '../src/device-state.ts'
 import type { DeviceSaltReadout } from '../src/device-salt.ts'
+import type { DeviceTokenReadout } from '../src/device-token.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 
 /**
@@ -77,8 +78,44 @@ describe('describeDeviceState — the derived tier', () => {
   })
 })
 
-describe('describeDeviceState — the states it must keep distinct', () => {
-  it('reports no accounts without pretending the salt is the problem', () => {
+describe('describeDeviceState — the external token (P2)', () => {
+  const tokenOk = (): DeviceTokenReadout => ({
+    path: '/tmp/device-token',
+    state: 'ok',
+    token: 'v3:abc',
+    ageMs: 42_000,
+  })
+
+  it('reports the token header when the file resolved', () => {
+    const report = describeDeviceState([credentialOf('u-1')], saltOk(), tokenOk())
+    expect(report.onWire).toContain('X-Device-Token')
+    expect(report.token?.state).toBe('ok')
+    expect(report.token?.ageMs).toBe(42_000)
+  })
+
+  it('separates "not inspected" from "configured but unreadable"', () => {
+    // `doctor` cannot see the plugin config, so an unset env var means "not
+    // inspected" — a different answer from "I looked and it was broken".
+    const notInspected = describeDeviceState([credentialOf('u-1')], saltOk())
+    expect(notInspected.token).toBeUndefined()
+
+    const broken = describeDeviceState([credentialOf('u-1')], saltOk(), {
+      path: '/tmp/device-token',
+      state: 'too-large',
+      reason: '9000 bytes exceeds the 4096-byte limit',
+    })
+    expect(broken.token?.state).toBe('too-large')
+    expect(broken.token?.reason).toContain('4096')
+    expect(broken.onWire).not.toContain('X-Device-Token')
+  })
+
+  it('never puts the token itself in the report', () => {
+    const report = describeDeviceState([credentialOf('u-1')], saltOk(), tokenOk())
+    expect(JSON.stringify(report)).not.toContain('v3:abc')
+  })
+})
+
+describe('describeDeviceState — the states it must keep distinct', () => {  it('reports no accounts without pretending the salt is the problem', () => {
     const report = describeDeviceState([], saltOk())
     expect(report.derived).toBeUndefined()
     expect(report.salt.state).toBe('ok')
