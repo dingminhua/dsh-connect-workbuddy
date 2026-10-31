@@ -602,6 +602,10 @@ describe('registerWorkBuddyStatusRoute', () => {
       // registered unconditionally so the pill can tell "no turn" from "no
       // route" without the client having to know the switch's state.
       '/plugins/dsh-connect-workbuddy/cli-live',
+      // 设备头的档位与逐账号覆盖值（P2.5）。GET 读设置，POST 写——写要过 loopback。
+      '/plugins/dsh-connect-workbuddy/device-profile',
+      // 内置 SDK 的连接状态与真实取值（P3）。GET 只有掩码；完整值要 POST。
+      '/plugins/dsh-connect-workbuddy/device-sdk',
     ])
   })
 
@@ -1164,6 +1168,8 @@ describe('registerWorkBuddyStatusRoute', () => {
       ['__save', '/plugins/dsh-connect-workbuddy/__save', 'POST'],
       ['oauth', '/plugins/dsh-connect-workbuddy/oauth', 'POST'],
       ['transfer', '/plugins/dsh-connect-workbuddy/transfer', 'POST'],
+      ['device-profile', '/plugins/dsh-connect-workbuddy/device-profile', 'POST'],
+      ['device-sdk', '/plugins/dsh-connect-workbuddy/device-sdk', 'GET'],
     ]
 
     it('registers exactly the routes this table lists', async () => {
@@ -2209,7 +2215,7 @@ describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
 
   it('registers every route on the first mount', async () => {
     const mounted = await mount()
-    expect(mounted.paths).toHaveLength(14)
+    expect(mounted.paths).toHaveLength(16)
     await mounted.dispose()
   })
 
@@ -2220,7 +2226,7 @@ describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
     await ctx.plugin(fake)
     const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
     registerWorkBuddyStatusRoute(ctx, deps())
-    expect(fake.paths()).toHaveLength(14)
+    expect(fake.paths()).toHaveLength(16)
     await ctx.fiber.dispose()
     expect(fake.paths()).toEqual([])
   })
@@ -2245,7 +2251,7 @@ describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
     await reloaded.fiber.dispose()
 
     expect(second).toEqual(first)
-    expect(second).toHaveLength(14)
+    expect(second).toHaveLength(16)
   })
 
 /**

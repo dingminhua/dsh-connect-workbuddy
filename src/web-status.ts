@@ -2277,12 +2277,14 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       kind: 'exact',
       path: WORKBUDDY_DEVICE_PROFILE_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
+        // 闸门先于一切：包括"这条路由有没有接线"。503 会顺带告诉一个外部来源
+        // "此路由存在但未接"——那不是它该知道的事；403 对任何来源都是同一句话。
+        if (!requireLoopback(req, res)) return
         const port = deps.deviceSettings
         if (port === undefined) {
           return json(res, 503, { reason: 'device-settings-unavailable', error: 'device settings unavailable' })
         }
         if (req.method === 'GET') {
-          if (!requireLoopback(req, res)) return
           try {
             json(res, 200, await port.read())
           } catch (error: unknown) {
@@ -2291,9 +2293,8 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           return
         }
         // Writes carry "what this machine claims to be", so they take the same
-        // POST + loopback guards as every other mutation on this card.
+        // POST guard as every other mutation on this card.
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
         let body: Record<string, unknown>
         try {
           body = await readJsonBody(req)
@@ -2352,11 +2353,12 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       kind: 'exact',
       path: WORKBUDDY_DEVICE_SDK_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
+        // 同上：闸门先于"是否接线"，否则 503 会把这条路由的存在性告诉外部来源。
+        if (!requireLoopback(req, res)) return
         const port = deps.deviceSdk
         if (port === undefined) {
           return json(res, 503, { reason: 'device-sdk-unavailable', error: 'device sdk unavailable' })
         }
-        if (!requireLoopback(req, res)) return
         if (req.method === 'GET') {
           try {
             json(res, 200, await port.read())
