@@ -867,6 +867,95 @@ export const WORKBUDDY_CARD_CSS = `
 @keyframes dsm-workbuddy-veil-spin{to{transform:rotate(360deg)}}
 @keyframes dsm-workbuddy-veil-dash{0%{stroke-dasharray:12 150;stroke-dashoffset:0}50%{stroke-dasharray:24 150;stroke-dashoffset:-6}to{stroke-dasharray:12 150;stroke-dashoffset:0}}
 @media (prefers-reduced-motion: reduce){.dsm-workbuddy-veil-spinner{animation:none}.dsm-workbuddy-veil-spinner-arc{animation:none;stroke-dasharray:18 150;stroke-dashoffset:-3}}
+
+/* ---- 设备头档位与逐账号参数弹窗 ------------------------------------------
+   档位那一行贴着账号表：它同时决定"这台机器对外声称自己是谁"和"每行的齿轮能
+   不能用"，埋进「更多设置」会让齿轮看起来时好时坏。
+   弹窗用 fixed 遮罩而不是行内展开：每行已经有两个按钮和一段探针文本，再展开
+   两块输入框会把表格挤成表单；而且这些值必须显式确认，误点不该直接生效。 */
+.dsm-workbuddy-device-mode{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  margin:10px 0 2px;
+}
+.dsm-workbuddy-device-mode-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#e8e9ed)}
+.dsm-workbuddy-device-mode-seg{
+  display:inline-flex;border:1px solid var(--dsw-alias-border-l2,#3a3d45);
+  border-radius:999px;overflow:hidden;
+}
+/* 分段控件：两个按钮共享一条边框，选中态用底色而不是描边——描边会让"选中"
+   与"聚焦"看起来一样，键盘操作时分不清光标在哪。 */
+.dsm-workbuddy-device-seg-btn{
+  appearance:none;border:0;background:transparent;cursor:pointer;
+  padding:2px 10px;font:inherit;font-size:12px;line-height:20px;
+  color:var(--dsw-alias-label-secondary,#b8bcc4);
+}
+.dsm-workbuddy-device-seg-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
+.dsm-workbuddy-device-seg-btn:disabled{opacity:.55;cursor:default}
+.dsm-workbuddy-device-seg-on{
+  background:var(--dsw-alias-brand-primary,#5686fe);
+  color:#fff;
+}
+/* 齿轮：置灰只表达"现在用不了"，仍然可点——点了会说明原因。 */
+.dsm-workbuddy-device-gear{line-height:1;padding:0 6px}
+.dsm-workbuddy-device-gear-off{opacity:.45}
+.dsm-workbuddy-device-backdrop{
+  position:fixed;inset:0;z-index:70;
+  display:flex;align-items:center;justify-content:center;
+  padding:16px;
+  background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.32));
+  backdrop-filter:var(--dsw-mask-blur);
+}
+.dsm-workbuddy-device-dialog{
+  width:min(460px,100%);max-height:calc(100vh - 32px);overflow:auto;
+  padding:16px;
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;
+  background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-l1,#1b1d23));
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  box-shadow:0 12px 40px rgba(0,0,0,.35);
+}
+.dsm-workbuddy-device-title{margin:0 0 8px;font-size:13px;font-weight:600}
+.dsm-workbuddy-device-field{display:flex;flex-direction:column;gap:4px;margin:10px 0}
+.dsm-workbuddy-device-field-label{font-size:12px;color:var(--dsw-alias-label-secondary,#b8bcc4)}
+.dsm-workbuddy-device-input{
+  font:inherit;font-size:12px;line-height:20px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  padding:4px 8px;border-radius:6px;
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  background:var(--dsw-alias-bg-l1,transparent);
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);
+}
+.dsm-workbuddy-device-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-workbuddy-device-input-bad{border-color:var(--dsw-alias-label-error,#e5534b)}
+.dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;margin:4px 0 0}
+.dsm-workbuddy-device-random-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 12px}
+/* P3 的占位行：虚线边框 + 降低对比度，读起来是"位置已经留好，还没接线"。 */
+.dsm-workbuddy-device-p3{
+  display:flex;flex-direction:column;gap:2px;margin:0 0 12px;padding:8px 10px;
+  border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;
+}
+.dsm-workbuddy-device-p3-label{font-size:12px;color:var(--dsw-alias-label-dimmed,#8b8f98)}
+.dsm-workbuddy-device-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+
+/* ---- 「SDK」分区：连接状态与真实取值 --------------------------------------
+   状态点用 6px 圆点而不是图标：这一行已经有文字说清楚状态，圆点只负责"一眼"。
+   token 块必须能换行——真实 token 一千多字符，不换行会把面板撑出一条横向滚动，
+   而横向滚动条会让"复制"按钮跑出视口。 */
+.dsm-workbuddy-sdk-dot{
+  display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;
+  background:var(--dsw-alias-label-error,#e5534b);vertical-align:middle;
+}
+.dsm-workbuddy-sdk-dot-ok{background:var(--dsw-alias-label-success,#3fb950)}
+.dsm-workbuddy-sdk-value{
+  display:block;max-height:96px;overflow:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11px;line-height:16px;
+  word-break:break-all;white-space:pre-wrap;
+  padding:4px 8px;border-radius:6px;
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  background:var(--dsw-alias-bg-l1,transparent);
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);
+}
+
 `
 /**
  * Composer credit readout styles, injected by the readout component itself.
@@ -1101,93 +1190,5 @@ export const WORKBUDDY_COMPOSER_CSS = `
    information, and they keep updating with the animation off. */
 @media (prefers-reduced-motion:reduce){
   .dsm-workbuddy-cli-live-dot{animation:none;opacity:.8}
-}
-
-/* ---- 设备头档位与逐账号参数弹窗 ------------------------------------------
-   档位那一行贴着账号表：它同时决定"这台机器对外声称自己是谁"和"每行的齿轮能
-   不能用"，埋进「更多设置」会让齿轮看起来时好时坏。
-   弹窗用 fixed 遮罩而不是行内展开：每行已经有两个按钮和一段探针文本，再展开
-   两块输入框会把表格挤成表单；而且这些值必须显式确认，误点不该直接生效。 */
-.dsm-workbuddy-device-mode{
-  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
-  margin:10px 0 2px;
-}
-.dsm-workbuddy-device-mode-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#e8e9ed)}
-.dsm-workbuddy-device-mode-seg{
-  display:inline-flex;border:1px solid var(--dsw-alias-border-l2,#3a3d45);
-  border-radius:999px;overflow:hidden;
-}
-/* 分段控件：两个按钮共享一条边框，选中态用底色而不是描边——描边会让"选中"
-   与"聚焦"看起来一样，键盘操作时分不清光标在哪。 */
-.dsm-workbuddy-device-seg-btn{
-  appearance:none;border:0;background:transparent;cursor:pointer;
-  padding:2px 10px;font:inherit;font-size:12px;line-height:20px;
-  color:var(--dsw-alias-label-secondary,#b8bcc4);
-}
-.dsm-workbuddy-device-seg-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
-.dsm-workbuddy-device-seg-btn:disabled{opacity:.55;cursor:default}
-.dsm-workbuddy-device-seg-on{
-  background:var(--dsw-alias-brand-primary,#5686fe);
-  color:#fff;
-}
-/* 齿轮：置灰只表达"现在用不了"，仍然可点——点了会说明原因。 */
-.dsm-workbuddy-device-gear{line-height:1;padding:0 6px}
-.dsm-workbuddy-device-gear-off{opacity:.45}
-.dsm-workbuddy-device-backdrop{
-  position:fixed;inset:0;z-index:70;
-  display:flex;align-items:center;justify-content:center;
-  padding:16px;
-  background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.32));
-  backdrop-filter:var(--dsw-mask-blur);
-}
-.dsm-workbuddy-device-dialog{
-  width:min(460px,100%);max-height:calc(100vh - 32px);overflow:auto;
-  padding:16px;
-  border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;
-  background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-l1,#1b1d23));
-  color:var(--dsw-alias-label-primary,#e8e9ed);
-  box-shadow:0 12px 40px rgba(0,0,0,.35);
-}
-.dsm-workbuddy-device-title{margin:0 0 8px;font-size:13px;font-weight:600}
-.dsm-workbuddy-device-field{display:flex;flex-direction:column;gap:4px;margin:10px 0}
-.dsm-workbuddy-device-field-label{font-size:12px;color:var(--dsw-alias-label-secondary,#b8bcc4)}
-.dsm-workbuddy-device-input{
-  font:inherit;font-size:12px;line-height:20px;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  padding:4px 8px;border-radius:6px;
-  color:var(--dsw-alias-label-primary,#e8e9ed);
-  background:var(--dsw-alias-bg-l1,transparent);
-  border:1px solid var(--dsw-alias-border-l2,#3a3d45);
-}
-.dsm-workbuddy-device-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-workbuddy-device-input-bad{border-color:var(--dsw-alias-label-error,#e5534b)}
-.dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;margin:4px 0 0}
-.dsm-workbuddy-device-random-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 12px}
-/* P3 的占位行：虚线边框 + 降低对比度，读起来是"位置已经留好，还没接线"。 */
-.dsm-workbuddy-device-p3{
-  display:flex;flex-direction:column;gap:2px;margin:0 0 12px;padding:8px 10px;
-  border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;
-}
-.dsm-workbuddy-device-p3-label{font-size:12px;color:var(--dsw-alias-label-dimmed,#8b8f98)}
-.dsm-workbuddy-device-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
-
-/* ---- 「SDK」分区：连接状态与真实取值 --------------------------------------
-   状态点用 6px 圆点而不是图标：这一行已经有文字说清楚状态，圆点只负责"一眼"。
-   token 块必须能换行——真实 token 一千多字符，不换行会把面板撑出一条横向滚动，
-   而横向滚动条会让"复制"按钮跑出视口。 */
-.dsm-workbuddy-sdk-dot{
-  display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;
-  background:var(--dsw-alias-label-error,#e5534b);vertical-align:middle;
-}
-.dsm-workbuddy-sdk-dot-ok{background:var(--dsw-alias-label-success,#3fb950)}
-.dsm-workbuddy-sdk-value{
-  display:block;max-height:96px;overflow:auto;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:11px;line-height:16px;
-  word-break:break-all;white-space:pre-wrap;
-  padding:4px 8px;border-radius:6px;
-  color:var(--dsw-alias-label-primary,#e8e9ed);
-  background:var(--dsw-alias-bg-l1,transparent);
-  border:1px solid var(--dsw-alias-border-l2,#3a3d45);
 }
 `
