@@ -540,11 +540,22 @@ describe('自动预热（auto refresh）', () => {
       }, { timeout: 10_000 })
       const first = sdk.tokens.readout().fetchedAtMs
       const callsAtFirst = await readCalls()
-      await vi.waitFor(async () => {
-        expect(await readCalls()).toBeGreaterThan(callsAtFirst)
+      /**
+       * 等「这一枚真的换了」，而不是等「子进程又起来了」。
+       *
+       * 假 worker 在**启动时**就把 `calls` 加一，而 `fetchedAtMs` 要等子进程退出、
+       * 父进程收下答案才更新——两者之间有几十毫秒的窗口。旧写法先等 `calls` 变大、
+       * 再**立刻**比较时间戳，正好落在这个窗口里：约一半的跑法拿到的是上一个值，
+       * 于是这条用例间歇性红（在作者的 26be06e 上 4/4 复现）。
+       *
+       * 把条件改成"时间戳确实前进了"，`vi.waitFor` 就会等到缓存真正更新为止——
+       * 断言的仍然是同一件事，只是不再假设两个计数器同步。
+       */
+      await vi.waitFor(() => {
+        expect(sdk.tokens.readout().fetchedAtMs).toBeGreaterThan(first ?? 0)
       }, { timeout: 10_000 })
-      // 不只是"又跑了一次"，而是这一枚 token 确实被换成了新的。
-      expect(sdk.tokens.readout().fetchedAtMs).toBeGreaterThan(first ?? 0)
+      // 顺手确认那确实是又跑了一次子进程，而不是把时间戳改了个名字。
+      expect(await readCalls()).toBeGreaterThan(callsAtFirst)
     } finally {
       sdk.stopAutoRefresh()
     }

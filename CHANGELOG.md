@@ -68,7 +68,7 @@
 
 ### 测试
 
-- 新增 **17** 例（2846 总例，较上一条净增 17）：
+- 新增 **17** 例（2879 总例，较本套改动前净增 17）：
   - `tests/device-profile.spec.ts` +9：留空 = 自动发现、`undefined` 不动这一项、
     两个控件互不覆盖、坏路径保留不静默回退、缺字段 = 回退开（5.16.0 的文件升级
     即生效）、只有显式 `false` 才关、保存目录不动档位与覆盖值、lookup 暴露两项。
@@ -84,7 +84,7 @@
   `real requested, virtual values (fell back: no real device token)`；把
   `sdkFallbackToVirtual` 改回 `false`，首行变回 `real values: X-Device-Token`
   （P3 原行为）。两条都在真机上跑过，不是纸面推演。
-- **全仓** 2846 例通过（169 文件），类型检查通过，build 通过。
+- **全仓** 2879 例中 2878 通过（171 文件），类型检查通过，build 通过。
   `tests/issue12-region-hiding.spec.ts` 那条轮询 flake 依旧失败——已在未修改的
   `d5183b2` 上同样复现，与本套改动无关（详见 5.16.0 那一条记录）。
 
@@ -140,6 +140,18 @@
     相对 5.16.0 的 schemaVersion 6，本套变更合起来是 **6 → 9**）。
 
 ### 测试
+
+- **修掉 `refreshes itself when the token expires` 的竞态**（在作者的 `26be06e`
+  上 4/4 复现，不是本套改动引入的）。
+  - 症状：该用例间歇性红，报
+    `AssertionError: expected 1793477227956 to be greater than 1793477227956`。
+  - 根因：假 worker 在**启动时**就把 `calls` 加一，而 `cached.fetchedAtMs` 要等
+    子进程**退出**、父进程收下答案才更新——两者之间有几十毫秒的窗口。旧写法先
+    `waitFor` 到 `calls` 变大、再**立刻**比较时间戳，正好落在这个窗口里，于是
+    约一半的跑法拿到的是上一个值。
+  - 改法：`waitFor` 的条件换成"时间戳确实前进了"，断言的仍然是同一件事，只是不再
+    假设两个计数器同步；跑完再确认 `calls` 也变大了（证明不是把时间戳改了个名字）。
+  - 变异验证：把断言换回旧写法，连跑 4 次红 3 次；换成新写法连跑 6 次全绿。
 
 - **`hasTuringSdkBinding` 的兜底不再随宿主平台分岔**（Windows 腿上发现的真分岔）。
   - 症状：`tests/turing-sdk.spec.ts` 的 "exposes the binding gate as a
