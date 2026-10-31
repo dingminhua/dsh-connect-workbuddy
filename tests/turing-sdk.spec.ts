@@ -68,10 +68,15 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
+// `platform`/`arch` 注入与假 worker 的 probe 输出（win32/x64）保持一致：`bundle`
+// 在生产路径取真实主机，但断言不能钉住跑测试的机器（RELEASING.md §2.5）。
+// 不注入时这条套件在 Linux/macOS CI 上会因为 `darwin-arm64 !== win32-x64` 而红。
 const make = (overrides: { ttlMs?: number } = {}) => createTuringSdk({
   dir: sdkDir,
   worker,
   now: () => clock,
+  platform: 'win32',
+  arch: 'x64',
   ...overrides,
 })
 

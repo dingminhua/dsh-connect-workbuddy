@@ -306,11 +306,22 @@ export function createTuringSdk(options: {
    * 逐条验证——否则它们只能靠线上观察。
    */
   worker?: string
+  /**
+   * 主机平台与架构，同样**只为测试存在**：`bundle` 在生产路径必须取真实主机
+   * （据此选内置目录），但不注入就没法在 Linux/macOS 的 CI 上断言"ready 时
+   * bundle 是 win32-x64"——那条断言会把"跑测试的机器是什么平台"钉进期望值
+   * （RELEASING.md §2.5）。默认值保持真实主机，行为不变。
+   */
+  platform?: string
+  /** 见 `platform`。 */
+  arch?: string
 } = {}): TuringSdk {
   const now = options.now ?? (() => Date.now())
   const worker = options.worker ?? workerPath()
   const ttlMs = options.ttlMs ?? TURING_TOKEN_TTL_MS
-  const bundle = bundledSdkBundleId()
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  const bundle = bundledSdkBundleId(platform, arch)
   const configuredDir = options.dir ?? process.env[TURING_SDK_DIR_ENV]
   const dir = configuredDir !== undefined && configuredDir.trim() !== ''
     ? configuredDir.trim()
@@ -337,8 +348,8 @@ export function createTuringSdk(options: {
       state: present ? 'error' : 'missing',
       bundle,
       path,
-      platform: process.platform,
-      arch: process.arch,
+      platform,
+      arch,
       runtime: runtimeLabel,
       reason: present
         ? 'SDK directory exists but the native binding was not found'
@@ -361,8 +372,8 @@ export function createTuringSdk(options: {
         state: supported ? 'ready' : answer.ok === true ? 'unsupported' : 'error',
         bundle,
         path: dir,
-        platform: process.platform,
-        arch: process.arch,
+        platform,
+        arch,
         runtime: answer.node ?? runtimeLabel,
         ...supported ? {} : { reason: answer.loadError ?? answer.message ?? answer.reason ?? 'sdk reported unsupported' },
       }
