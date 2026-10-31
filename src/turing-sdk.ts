@@ -146,16 +146,23 @@ export function hasTuringSdkBinding(
   exists: (path: string) => boolean = existsSync,
   platform: string = process.platform,
 ): boolean {
-  // 分隔符按**数据**的平台选，同时兜底试宿主拼法：Windows API 本来就接受 `/`，
-  // 而注入 platform 的测试喂的可能是宿主形状的目录（docs/WINDOWS.md 的铁律，
+  // 分隔符按**数据**的平台选，再兜底试**另一种**拼法：Windows API 本来就接受
+  // `/`，而注入 platform 的测试喂的可能是宿主形状的目录（docs/WINDOWS.md 的铁律，
   // `at-rest.ts` 有前科：宿主 join 拼出混分隔符路径，永不命中）。
+  //
+  // 兜底的是「另一种分隔符」，不是「宿主的 join」——这是两者在 Windows 宿主上的
+  // 全部区别：`process.platform === 'win32'` 时宿主 join 就是 `win32.join`，于是
+  // 那句 `hostPath !== dataPath` 恒为假，兜底分支被整个短路掉。结果是这个函数的
+  // 行为随**跑它的机器**变化：同样的 `(dir, exists, 'win32')` 在 macOS 上会试
+  // 两种拼法、在 Windows 上只试一种。改成显式取另一种拼法后，答案只由参数决定，
+  // 与宿主无关（RELEASING.md §2.5）。
   const parts = ['build', 'Release', 'turing_sdk.node'] as const
   const dataJoin = platform === 'win32' ? win32.join : posix.join
-  const hostJoin = process.platform === 'win32' ? win32.join : posix.join
+  const alternateJoin = platform === 'win32' ? posix.join : win32.join
   const dataPath = dataJoin(dir, ...parts)
   if (exists(dataPath)) return true
-  const hostPath = hostJoin(dir, ...parts)
-  return hostPath !== dataPath && exists(hostPath)
+  const alternatePath = alternateJoin(dir, ...parts)
+  return alternatePath !== dataPath && exists(alternatePath)
 }
 
 /**

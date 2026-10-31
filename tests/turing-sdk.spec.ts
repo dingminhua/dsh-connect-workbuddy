@@ -193,13 +193,26 @@ describe('discoverInstalledSdkDir', () => {
   })
 
   it('exposes the binding gate as a platform-aware helper', () => {
-    // 数据平台优先（win32 → `\` 拼法），再兜底宿主拼法——Windows API 两种
+    // 数据平台优先（win32 → `\` 拼法），再兜底**另一种**拼法——Windows API 两种
     // 分隔符都吃，而注入 platform 的测试喂的可能是宿主形状的目录。
     const parts = ['build', 'Release', 'turing_sdk.node'] as const
     expect(hasTuringSdkBinding('C:\\x', path => path === win32.join('C:\\x', ...parts), 'win32')).toBe(true)
     expect(hasTuringSdkBinding('C:\\x', path => path === posix.join('C:\\x', ...parts), 'win32')).toBe(true)
     expect(hasTuringSdkBinding('C:\\x', () => false, 'win32')).toBe(false)
     expect(hasTuringSdkBinding('/x', () => true, 'win32')).toBe(true)
+  })
+
+  // 两个方向都断言，不是凑数：兜底曾经写成「宿主的 join」而不是「另一种拼法」，
+  // 而这两种写法**只在宿主与数据同平台时**才分岔。于是只测 win32 一个方向时，
+  // 它在 macOS 上是绿的（宿主 posix ≠ 数据 win32，兜底真跑起来了）、在 Windows 上
+  // 却是红的（宿主 win32 = 数据 win32，兜底被短路）。两个方向一起测，这个分岔
+  // 在任意宿主上都会红——这正是 RELEASING.md §2.5 要的形态。
+  it('answers the same way whichever platform the test host runs on', () => {
+    const parts = ['build', 'Release', 'turing_sdk.node'] as const
+    // 反向：数据是 POSIX，喂 Windows 形状的目录也必须认。
+    expect(hasTuringSdkBinding('/x', path => path === posix.join('/x', ...parts), 'linux')).toBe(true)
+    expect(hasTuringSdkBinding('/x', path => path === win32.join('/x', ...parts), 'linux')).toBe(true)
+    expect(hasTuringSdkBinding('/x', () => false, 'linux')).toBe(false)
   })
 
   it('createTuringSdk uses discovery when neither dir nor env named one', () => {
