@@ -34,8 +34,9 @@ import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutableWithSource } fr
 import type { WorkBuddyCredential } from './auth.ts'
 import { describeDeviceState } from './device-state.ts'
 import type { WorkBuddyDeviceReport } from './device-state.ts'
-import { WorkBuddyUpstreamClient, describeRequestHeaderNames } from './upstream.ts'
-import type { WorkBuddyRegion } from './upstream.ts'
+import { ensureDeviceSalt, readDeviceSalt } from './device-salt.ts'
+import { WorkBuddyUpstreamClient, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
+import type { WorkBuddyRegion, WorkBuddyWireIdentity } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
@@ -79,9 +80,11 @@ type Action = 'doctor' | 'logout' | 'status'
  * answers what the folder permissions actually ARE on this machine.
  *
  * 6 → 7: added `deviceIdentity` — which device headers are actually attached
- * (none, today) plus the id a derived tier would send. Added because "the
- * plugin has no device identity" was a fact only a source reader could know;
- * `doctor` is where it has to be visible (docs/DEVICE-IDENTITY-AUDIT.md).
+ * (nothing before P1, the derived `X-Machine-ID` / `X-Session-ID` pair from P1
+ * on) plus how many distinct virtual devices the pool would present. Added
+ * because "the plugin has no device identity" was a fact only a source reader
+ * could know; `doctor` is where it has to be visible
+ * (docs/DEVICE-IDENTITY-AUDIT.md).
  */
 const JSON_SCHEMA_VERSION = 7
 
@@ -97,24 +100,28 @@ const HEADER_TRACE_ENV = 'WORKBUDDY_HEADER_TRACE'
 /**
  * The human form of the `deviceIdentity` block.
  *
- * Two lines on purpose: the first says what is on the wire (today: nothing), the
- * second says what a derived tier WOULD send and whether the pool would keep one
- * device per account. Collapsing them would let "the derived tier looks fine"
- * read as "we send a device identity" — exactly the confusion the audit exists
- * to remove.
+ * Two lines on purpose: the first says what is on the wire, the second says how
+ * many distinct virtual devices the pool would present and whether the salt is
+ * usable. Collapsing them would let "3 accounts → 3 devices" read as "we send
+ * three devices".
+ *
+ * The first line names the tier because `doctor` runs outside the plugin and
+ * therefore cannot see the configured `wireProfile`: it renders the DEFAULT
+ * tier. A user who set `conservative` will see `balanced` here — stated rather
+ * than silently assumed, so the discrepancy is at least visible.
  */
 function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): string[] {
   const onWire = device.onWire.length === 0
-    ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached (see docs/DEVICE-IDENTITY-AUDIT.md)'
+    ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached'
     : device.onWire.join(', ')
+  const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} tier): ${onWire}`
   const salt = `${device.salt.state}${device.salt.reason === undefined ? '' : `: ${device.salt.reason}`} — ${device.salt.path}`
-  const head = `Device identity on the wire: ${onWire}`
-  if (accounts === 0) return [head, `Derived tier (NOT sent): no signed-in account to derive from; salt ${salt}`]
-  if (device.derived === undefined) return [head, `Derived tier (NOT sent): unavailable; salt ${salt}`]
+  if (accounts === 0) return [head, `Derived devices: no signed-in account to derive from; salt ${salt}`]
+  if (device.derived === undefined) return [head, `Derived devices: unavailable; salt ${salt}`]
   const { distinct, sample } = device.derived
   return [
     head,
-    `Derived tier (NOT sent): ${accounts} account(s) → ${distinct} distinct virtual device(s), sample machine=${sample.machineId} session=${sample.sessionId}; salt ${salt}`,
+    `Derived devices: ${accounts} account(s) → ${distinct} distinct, sample machine=${sample.machineId} session=${sample.sessionId}; salt ${salt}`,
   ]
 }
 
@@ -286,23 +293,28 @@ async function doctor(jsonOutput: boolean): Promise<number> {
    * 算出什么。唯一可能的写入是首次生成 `$DSH_HOME/.workbuddy-device.json`——
    * 没有盐就算不出"这个池子会不会塌成一台设备"，而这个答案离线推不出来。
    * 只在确有账号时生成：一台没登录的机器不该留下设备身份。
+   *
+   * 盐在这里读**一次**，同一份读数同时喂给报告和下面的头名清单。两处各读一次
+   * 就可能读到两种状态（一次 absent、一次 ok），于是同一屏里自相矛盾。
    */
   const deviceCredentials = (await Promise.all(
     (await anyStore.accounts()).map(async account => anyStore.credentialFor(account.id)),
   )).filter((credential): credential is WorkBuddyCredential => credential !== undefined)
-  const device = await describeDeviceState(deviceCredentials)
+  const deviceSalt = deviceCredentials.length === 0 ? await readDeviceSalt() : await ensureDeviceSalt()
+  const device = describeDeviceState(deviceCredentials, deviceSalt)
+  const wireIdentity: WorkBuddyWireIdentity = deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {}
   /**
    * `WORKBUDDY_HEADER_TRACE=1` 时的头名清单。
    *
    * 只打**名字**，从不打值：这份输出是要贴进 issue 的，而头里混着令牌、会话 id
-   * 与派生设备 id。chat 与 billing 成对出现，是因为它们同 token 同分钟却声称两种
-   * 客户端形状——那正是审计 §1.3 的缺陷，能被看见才谈得上修。
+   * 与派生设备 id。chat 与 billing 成对出现，是因为它们同 token 同分钟却曾经声称
+   * 两种客户端（审计 §1.3 的 D2）——能被看见才谈得上验证"现在统一了"。
    */
   const probeCredential = deviceCredentials[0]
   const tracedHeaders = process.env[HEADER_TRACE_ENV] === '1' && probeCredential !== undefined
     ? (['chat', 'billing'] as const).map(kind => ({
       kind,
-      names: describeRequestHeaderNames(kind, probeCredential),
+      names: describeRequestHeaderNames(kind, probeCredential, wireIdentity),
     }))
     : undefined
   const report = {

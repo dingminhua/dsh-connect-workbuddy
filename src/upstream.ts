@@ -32,6 +32,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkBuddyCredential } from './auth.ts'
+import { deriveDeviceId } from './device-id.ts'
+import { ensureDeviceSalt } from './device-salt.ts'
 import { isRouterModelId } from './native-modality.ts'
 import { pruneTempDir, TEMP_MEDIA_KEEP } from './temp-files.ts'
 import { parseQueueAnswer } from './queue.ts'
@@ -1533,14 +1535,24 @@ function originReferer(credential: WorkBuddyCredential): string {
 }
 
 /** Headers every upstream request shares. */
-function commonHeaders(credential: WorkBuddyCredential): Record<string, string> {
-  return {
+function commonHeaders(
+  credential: WorkBuddyCredential,
+  identity: WorkBuddyWireIdentity = {},
+): Record<string, string> {
+  const headers: Record<string, string> = {
     'Accept': 'application/json, text/plain, */*',
     'X-Requested-With': 'XMLHttpRequest',
     'Origin': originReferer(credential),
     'Referer': `${originReferer(credential)}/`,
     'User-Agent': CLIENT_UA,
   }
+  if (profileOf(identity) === 'balanced') {
+    // 风控闸门头：官方客户端的每个请求都带（B 的 D1）。`conservative` 下不发，
+    // 因为那一档的契约是"逐字节等于 5.16.0"。
+    headers['X-CodeBuddy-Request'] = '1'
+    headers['Accept-Language'] = acceptLanguageOf(credential)
+  }
+  return headers
 }
 
 /**
@@ -1610,9 +1622,14 @@ function conversationHeaders(
   const officialIds = shape === 'chat' && identity.usageIdentity === true
   const id = officialIds ? uuidv7 : randomUUID
   const messageId = id()
+  const conversationRequestId = id()
   return {
     'X-Conversation-ID': id(),
-    'X-Conversation-Request-ID': id(),
+    'X-Conversation-Request-ID': conversationRequestId,
+    // 根请求追踪：官方客户端把这一轮的根请求 id 单独再发一次（B 的 issue #35
+    // 后台聚合就按这一族读）。值必须与 X-Conversation-Request-ID 相同——它是
+    // 同一个事实的第二个名字，不是第二个 id。
+    ...profileOf(identity) === 'balanced' ? { 'X-Root-Request-ID': conversationRequestId } : {},
     'X-Conversation-Message-ID': messageId,
     ...officialIds ? { 'X-Request-ID': messageId } : {},
   }
@@ -1650,59 +1667,165 @@ export function uuidv7(nowMs = Date.now()): string {
 }
 
 /**
+ * 出站身份档位（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P1）。
+ *
+ * 两档而不是三档：`conservative` 逐字节还原 5.16.0，`balanced` 是 P1 的完整形态。
+ * 审计里预留的 `max`（B3 / Trace 链路族）刻意没有实现——那几项只影响上游侧的
+ * 可观测性与聚合，不影响放行，而伪造一棵并不存在的 trace 树比不发更可疑。
+ *
+ * 为什么需要档位而不是直接改：这一次改动动的是**每一条出站请求**的头。P0.5 的
+ * 对照实验证明收益存在，但它证明的是"这组头",不是"这组头的每一条"；留一个
+ * 逐字节回退档，是让"换回来"成为一个配置项而不是一次回滚发版。
+ */
+export type WorkBuddyWireProfile = 'conservative' | 'balanced'
+
+/**
+ * 没有显式配置时用的档位。
+ *
+ * `balanced`：P0.5 已证实有效，默认就应该吃到收益；`conservative` 留给
+ * "某台机器上某个账号忽然不行了"的排查场景。
+ */
+export const DEFAULT_WIRE_PROFILE: WorkBuddyWireProfile = 'balanced'
+
+/**
  * How the plugin should identify itself where the upstream only RECORDS the
- * request (issue #132). One switch, because the two halves are one decision.
+ * request (issue #132), plus the two P1 axes.
  */
 export interface WorkBuddyWireIdentity {
   /**
    * Adopt the official client's usage-page identity on chat requests.
    *
-   * ON adds `X-IDE-Type` / `X-IDE-Name` / `X-IDE-Version` and switches the
-   * conversation-identity triple to the 32-hex UUIDv7 shape the official client
-   * uses (plus `X-Request-ID`, which mirrors the message id there).
+   * ON switches the conversation-identity triple to the 32-hex UUIDv7 shape the
+   * official client uses and adds `X-Request-ID`, which mirrors the message id
+   * there.
+   *
+   * 2026-10-31 (P1): `X-IDE-*` 从这条开关上摘出去了。它们现在是
+   * {@link WorkBuddyWireProfile} 的 `balanced` 档的一部分，因为"用量页那一列
+   * 写着谁"属于客户端身份，而客户端身份现在整体统一（见
+   * {@link attributionHeaders}）。这条开关剩下的唯一职责是**id 的格式**。
    *
    * OFF by default, and the reason is the evidence tier, not the mechanism: the
    * reporter measured HTTP 200 on their own build of this PLUGIN at 5.3.1
    * (the WorkBuddy client itself was 5.8.3), and this plugin has not
-   * reproduced that against the live gateway. Nothing in either gate is documented
-   * as reading these headers — `11128`'s three doors are the message openings,
-   * the missing conversation id and a non-system first message, none of which a
-   * header can change — but this gateway has repeatedly refused requests for
-   * reasons visible only in the answer, so a display-only alignment ships behind a
-   * switch rather than as a silent upgrade for every account. `User-Agent` and the
-   * request BODY are untouched either way.
+   * reproduced that against the live gateway. `User-Agent` and the request BODY
+   * are untouched either way.
    */
   usageIdentity?: boolean
+  /**
+   * 出站头档位，缺省 {@link DEFAULT_WIRE_PROFILE}。
+   *
+   * `conservative` 必须逐字节还原 5.16.0 —— 不是"少发几个新头"，而是连
+   * `X-Product: SaaS` 这种被改名前的值也要还原，否则它就不是回退档。
+   */
+  profile?: WorkBuddyWireProfile
+  /**
+   * 本机设备盐，由客户端解析一次后传入（见 `WorkBuddyUpstreamClient.ready`）。
+   *
+   * 缺席 = 不发设备头。**绝不现场生成一个临时盐**：那会让每次进程启动都是一台
+   * 新设备，比不发更糟。构造器保持纯函数，盐是调用方的事实。
+   */
+  deviceSalt?: string
+}
+
+/** 生效档位；未配置时取默认。 */
+function profileOf(identity: WorkBuddyWireIdentity): WorkBuddyWireProfile {
+  return identity.profile ?? DEFAULT_WIRE_PROFILE
 }
 
 /**
- * The IDE identity headers the official desktop client sends on chat (issue #132).
+ * 归属头的产品名。
  *
- * WHY. The gateway records the usage page's 使用端 (client) column from
- * `X-IDE-Name`, and it is EMPTY when the header is absent. The plugin has always
- * spoken the CLI channel — {@link CLIENT_UA}, which is correct for the chat
- * contract — but it sent no `X-IDE-*` at all, so every request this plugin made
- * appeared on the user's own usage page as an unidentified client while the
- * official app's requests read `WorkBuddy`. That is a reporting mismatch, not a
- * gate: the reporter measured that adding the header changes the usage column
- * and nothing else (HTTP 200, model unaffected).
- *
- * `X-IDE-Type` stays `CLI` on purpose. Claiming the desktop app's type as well
- * would be a bigger identity claim than the one this fix needs, and the mixed
- * CLI + WorkBuddy shape is what the reporter measured. The version comes from
- * {@link PRODUCT_UA} rather than a second hardcoded number, so the two cannot
- * drift apart when the app version is bumped.
- *
- * Sent only when {@link WorkBuddyWireIdentity.usageIdentity} is on — see that
- * field for the evidence tier behind the default.
+ * `WorkBuddy` 而不是 `SaaS`：`SaaS` 是"某种 SaaS 租户"的泛化标签，官方客户端
+ * 从不会这么称呼自己；A（`client_name` 默认 `WorkBuddy`）与 B
+ * （`attributionClientName` 默认 `WorkBuddy`）都发 `WorkBuddy`，而 B 的注释直接
+ * 把 `SaaS` 称作"还原旧行为"。同值三头（Name / Type / Product）也是两家的共同
+ * 形状——官方客户端不会一边说自己是 WorkBuddy、一边说自己是 CLI。
  */
-function ideHeaders(identity: WorkBuddyWireIdentity): Record<string, string> {
-  if (identity.usageIdentity !== true) return {}
+const ATTRIBUTION_CLIENT_NAME = 'WorkBuddy'
+
+/**
+ * `Accept-Language`：按账号域切。
+ *
+ * 官方客户端按账号所属区发对应语言（B 的 D5：CN `zh-CN` / global `en-US`）。
+ * 一个中文账号发 `en-US` 是"这台机器换了语言"，而语言是设备指纹里最廉价、
+ * 也最常被用来做聚类的一维——顺手对齐没有成本。
+ */
+function acceptLanguageOf(credential: WorkBuddyCredential): string {
+  return regionOf(credential.domain) === 'global' ? 'en-US' : 'zh-CN'
+}
+
+/**
+ * 归属头：这台客户端"是谁"，一次说清（P1 的"统一为 WorkBuddy 客户端"）。
+ *
+ * ## 为什么是从 `ideHeaders` 扩成函数族
+ *
+ * 5.16.0 发的是 `X-Product: SaaS` + 可选的 `X-IDE-Type: CLI` / `X-IDE-Name:
+ * WorkBuddy`，而且三个头分两处、其中两个还被 `usageIdentity` 挡着。结果是同一条
+ * 请求里"产品"说自己是泛化 SaaS、"类型"说自己是 CLI、"名字"说自己是 WorkBuddy —
+ * 三个互不相同的自称。A 与 B 都不是这么做的：两家都是 Name / Type / Product
+ * **同值**，且都发 `X-Agent-Purpose: conversation`。
+ *
+ * ## `conservative` 为什么还原的是 `SaaS` 而不是"少发几个"
+ *
+ * 回退档的契约是"逐字节等于 5.16.0"。只删新头、留下改名后的 `X-Product`，等于
+ * 造出第三个从未上线过的形状——排查时最怕的就是"回退了但没完全回退"。
+ *
+ * 版本号取 {@link APP_VERSION}（从 {@link PRODUCT_UA} 解析出来），不写字面量：
+ * 两个独立字面量正是版本升级时开始互相矛盾的方式。
+ */
+function attributionHeaders(identity: WorkBuddyWireIdentity): Record<string, string> {
+  if (profileOf(identity) !== 'balanced') return { 'X-Product': 'SaaS' }
   return {
-    'X-IDE-Type': 'CLI',
-    'X-IDE-Name': 'WorkBuddy',
+    'X-Agent-Purpose': 'conversation',
+    'X-IDE-Name': ATTRIBUTION_CLIENT_NAME,
+    // Name 与 Type 同源。5.16.0 刻意混搭（Name=WorkBuddy / Type=CLI）是"最小
+    // 身份声明"时期的取舍；P1 的目标是统一的客户端身份，混搭本身就是一处
+    // 会被比对的矛盾。
+    'X-IDE-Type': ATTRIBUTION_CLIENT_NAME,
     'X-IDE-Version': APP_VERSION,
+    'X-Product': ATTRIBUTION_CLIENT_NAME,
   }
+}
+
+/**
+ * 设备头：一个账号一台稳定的"虚拟设备"（P1 的纯计算半边）。
+ *
+ * 盐来自本机 `$DSH_HOME/.workbuddy-device.json`（见 `src/device-salt.ts`），由
+ * 客户端解析一次后放进 identity。**盐缺席就整对不发**：只发 Machine-ID 不发
+ * Session-ID 是一个真实客户端不会出现的形状。
+ *
+ * 它与 `X-Device-Token`（P2/P3）是互斥的两档，不是叠加项：真 token 内含设备
+ * 信息，再配一对伪造 id 等于自证不一致（审计 §5.3）。所以这里刻意**不认识**
+ * token —— 将来接 token 时，那一路要么不调用本函数，要么由档位互斥保证。
+ */
+function deviceHeaders(
+  credential: WorkBuddyCredential,
+  identity: WorkBuddyWireIdentity,
+): Record<string, string> {
+  if (profileOf(identity) !== 'balanced') return {}
+  const salt = identity.deviceSalt
+  if (salt === undefined || salt === '' || credential.uid === '') return {}
+  return {
+    'X-Machine-ID': deriveDeviceId(credential.uid, 'machine', salt),
+    'X-Session-ID': deriveDeviceId(credential.uid, 'session', salt),
+  }
+}
+
+/**
+ * 把 identity 补全成"可以直接拿去构造头"的形态——解析本机设备盐。
+ *
+ * 三条提前返回，各有理由：
+ *   - 非 `balanced`：这一档根本不发设备头，去读盘只是浪费一次 IO；
+ *   - 调用方已经给了盐（测试、或 doctor 已经解析过）：不复读；
+ *   - 读不到（absent / unreadable / unwritable）：原样返回，`deviceHeaders`
+ *     会因为 `deviceSalt === undefined` 整对不发。**绝不现场造一个临时盐**。
+ */
+async function resolveWireIdentity(identity: WorkBuddyWireIdentity): Promise<WorkBuddyWireIdentity> {
+  if (profileOf(identity) !== 'balanced') return identity
+  if (identity.deviceSalt !== undefined && identity.deviceSalt !== '') return identity
+  const readout = await ensureDeviceSalt()
+  if (readout.state !== 'ok') return identity
+  return { ...identity, deviceSalt: readout.salt }
 }
 
 /** Chat request headers, including the X-No-* conventions the official CLI uses. */
@@ -1711,7 +1834,7 @@ function chatHeaders(
   identity: WorkBuddyWireIdentity = {},
 ): Record<string, string> {
   const headers: Record<string, string> = {
-    ...commonHeaders(credential),
+    ...commonHeaders(credential, identity),
     'Content-Type': 'application/json',
     // 安全红线：chat 请求绝不携带 refresh token。
     ...credential.uid === '' ? { 'X-No-User-Id': '1' } : { 'X-User-Id': credential.uid },
@@ -1719,18 +1842,26 @@ function chatHeaders(
       ? { 'X-No-Enterprise-Id': '1' }
       : { 'X-Enterprise-Id': credential.enterpriseId },
     ...credential.domain === '' ? { 'X-No-Department-Info': '1' } : { 'X-Domain': credential.domain },
-    'X-Product': 'SaaS',
-    ...ideHeaders(identity),
+    ...attributionHeaders(identity),
+    ...deviceHeaders(credential, identity),
     ...conversationHeaders('chat', identity),
   }
   return headers
 }
 
 /** Refresh-endpoint headers; X-Refresh-Token appears here and nowhere else. */
-function refreshHeaders(credential: WorkBuddyCredential): Record<string, string> {
+function refreshHeaders(
+  credential: WorkBuddyCredential,
+  identity: WorkBuddyWireIdentity = {},
+): Record<string, string> {
   const headers: Record<string, string> = {
-    ...commonHeaders(credential),
+    ...commonHeaders(credential, identity),
     'X-Refresh-Token': credential.refreshToken,
+    // 这个取值 A（`converter.py:307`）与 B（`headers.go:410`）都是 `plugin`，
+    // 本插件用的是 `workbuddy`。两者在当前网关上都被接受（刷新一直是好的），
+    // 属于一致性隐患而非现行故障；但"能用"不等于"该改"——refresh 是整条链路
+    // 里最不能出错的一跳，改它必须单独实测，所以 P1 刻意不碰，留给 P2 一次性
+    // 连同 token 源一起验（见审计 §4 的 D3）。
     'X-Auth-Refresh-Source': 'workbuddy',
   }
   if (credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
@@ -1739,12 +1870,43 @@ function refreshHeaders(credential: WorkBuddyCredential): Record<string, string>
   return headers
 }
 
-/** Billing request headers. */
-function billingHeaders(credential: WorkBuddyCredential): Record<string, string> {
+/**
+ * Billing request headers.
+ *
+ * ## 为什么这条路径要补这么多（审计 §1.3 的 D2）
+ *
+ * 5.16.0 的 billing 只发三件套 + 用户/企业/域，**没有 UA、没有 Origin/Referer、
+ * 没有 X-Requested-With、没有任何归属头**。于是同一个 token 在同一分钟里发出
+ * 两种客户端：chat 声称自己是 CLI，billing 声称自己是一个连 UA 都没有的裸 HTTP
+ * 客户端。这种"两条路径互不承认"的反差不需要任何启发式就能被静态规则挑出来，
+ * 而 billing 恰好是签到、领补偿这类**写操作**所在的域——最不该显得可疑的地方。
+ *
+ * 补齐的四类，每一类都有参照实现：
+ *   - `User-Agent: WorkBuddy/<ver>`：B 的 billing 域用单段形态（官方 banner
+ *     白名单头组不带 CLI 段），A 则对所有路径复用同一套头。
+ *   - `Origin` / `Referer` / `X-Requested-With`：B 的 `CommonHeaders` 全路径发送。
+ *   - `X-CodeBuddy-Request` + `Accept-Language`：B 在 billing 域单独注入（D1/D5）。
+ *   - 归属头与设备头：与本插件的 chat 路径同源，保证"同一个客户端"这个说法成立。
+ *
+ * `conservative` 档整段跳过，billing 逐字节还原 5.16.0 的裸形状。
+ */
+function billingHeaders(
+  credential: WorkBuddyCredential,
+  identity: WorkBuddyWireIdentity = {},
+): Record<string, string> {
+  const balanced = profileOf(identity) === 'balanced'
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${credential.accessToken}`,
     'Accept': 'application/json',
     'Content-Type': 'application/json',
+  }
+  if (balanced) {
+    headers['User-Agent'] = `WorkBuddy/${APP_VERSION}`
+    headers['X-Requested-With'] = 'XMLHttpRequest'
+    headers['X-CodeBuddy-Request'] = '1'
+    headers['Accept-Language'] = acceptLanguageOf(credential)
+    headers['Origin'] = originReferer(credential)
+    headers['Referer'] = `${originReferer(credential)}/`
   }
   if (credential.uid !== '') headers['X-User-Id'] = credential.uid
   if (credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
@@ -1752,6 +1914,7 @@ function billingHeaders(credential: WorkBuddyCredential): Record<string, string>
     headers['X-Tenant-Id'] = credential.enterpriseId
   }
   if (credential.domain !== '') headers['X-Domain'] = credential.domain
+  if (balanced) Object.assign(headers, attributionHeaders(identity), deviceHeaders(credential, identity))
   return headers
 }
 
@@ -1762,6 +1925,12 @@ function billingHeaders(credential: WorkBuddyCredential): Record<string, string>
  * 用户/企业/域三连 + 会话身份三连 + `PRODUCT_UA`，在 `copilot.tencent.com` 与
  * `www.workbuddy.cn` 两个入口都返回 200。刻意**不带** `Origin` / `Referer`：
  * 探针当时没带，带了只是多一个可能被网关拒掉的变量，没有收益。
+ *
+ * 2026-10-31（P1）：`X-Product` 由 `SaaS` 改为 `WorkBuddy`，并补上
+ * `X-Agent-Purpose` / `X-IDE-*` 与设备头，与 chat / billing 同一份自称（见
+ * {@link attributionHeaders}）。`Origin` / `Referer` 的缺席是**上表实测的一部分**，
+ * 仍然不动——"统一"改的是身份，不是把当时特意排除的变量加回来。`conservative`
+ * 档下这一行还原成 `X-Product: SaaS` 且不带归属头与设备头。
  *
  * 复用 {@link conversationHeaders}：官方 CLI 的 ImageService 也是每次现生成
  * 一组会话 UUID。但这里**传 `'image'`，且刻意不跟 `usageIdentity` 开关走**：
@@ -1783,13 +1952,14 @@ function imageHeaders(
     'Accept': 'application/json, text/plain, */*',
     'Content-Type': 'application/json',
     'User-Agent': PRODUCT_UA,
-    'X-Product': 'SaaS',
     'X-Requested-With': 'XMLHttpRequest',
     ...credential.uid === '' ? { 'X-No-User-Id': '1' } : { 'X-User-Id': credential.uid },
     ...credential.enterpriseId === undefined || credential.enterpriseId === ''
       ? { 'X-No-Enterprise-Id': '1' }
       : { 'X-Enterprise-Id': credential.enterpriseId },
     ...credential.domain === '' ? { 'X-No-Department-Info': '1' } : { 'X-Domain': credential.domain },
+    ...attributionHeaders(identity),
+    ...deviceHeaders(credential, identity),
     ...conversationHeaders('image', identity),
   }
 }
@@ -1829,9 +1999,9 @@ export function describeRequestHeaderNames(
     case 'image':
       return Object.keys(imageHeaders(credential, identity))
     case 'refresh':
-      return Object.keys(refreshHeaders(credential))
+      return Object.keys(refreshHeaders(credential, identity))
     case 'billing':
-      return Object.keys(billingHeaders(credential))
+      return Object.keys(billingHeaders(credential, identity))
   }
 }
 
@@ -3749,10 +3919,26 @@ export class WorkBuddyUpstreamClient {
    * `ctx.logger.warn` in; without a host the event is dropped, which is the
    * same silence the previous single-source reader had.
    */
+  /**
+   * 出站身份，**在第一条请求之前就已解析完毕**。
+   *
+   * P1 之前，identity 是构造参数的一份只读引用，构造完就能用。P1 之后它多了一个
+   * 来自本机文件的事实（设备盐），而 `ensureDeviceSalt` 是异步的——构造器是同步的，
+   * 所以解析只能挂在一条 promise 上。
+   *
+   * 为什么不让"盐缺席就先不发、下次再补"：那会让同一个进程的前几条请求是一台
+   * "没有设备"的客户端、之后突然变成"有设备"的客户端。设备身份从无到有本身就是
+   * 一次设备变更，比晚几百毫秒发出请求贵得多。因此每个构造头的调用点都
+   * `await this.ready`——它只阻塞第一条请求，之后是已决议的 promise。
+   */
+  private readonly ready: Promise<WorkBuddyWireIdentity>
+
   constructor(
     private readonly onFallback?: (message: string) => void,
-    private readonly identity: WorkBuddyWireIdentity = {},
-  ) {}
+    identity: WorkBuddyWireIdentity = {},
+  ) {
+    this.ready = resolveWireIdentity(identity)
+  }
 
   /** POST the chat endpoint; a successful answer is the raw SSE response. */
   async chatStream(
@@ -3777,7 +3963,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, this.identity), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, await this.ready), 'Authorization': `Bearer ${credential.accessToken}` },
         body: bodyJson,
         ...signal === undefined ? {} : { signal },
       })
@@ -3848,7 +4034,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, this.identity), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, await this.ready), 'Authorization': `Bearer ${credential.accessToken}` },
         body: bodyJson,
         signal: signal === undefined ? ceiling.signal : AbortSignal.any([signal, ceiling.signal]),
       })
@@ -3869,7 +4055,7 @@ export class WorkBuddyUpstreamClient {
   async refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome> {
     const response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
       method: 'POST',
-      headers: refreshHeaders(credential),
+      headers: refreshHeaders(credential, await this.ready),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
     const envelope = await readEnvelope(response)
@@ -3928,7 +4114,10 @@ export class WorkBuddyUpstreamClient {
           'Accept': 'application/json',
           ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
           ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
-          'X-Product': 'SaaS',
+          // 归属头统一走 attributionHeaders：`conservative` 下它恰好还原
+          // 5.16.0 的 `X-Product: SaaS`（那一档连这个值都不改），`balanced`
+          // 下补上 Name / Type / Purpose 三头，与 chat/billing 同一份自称。
+          ...attributionHeaders(await this.ready),
           'X-Requested-With': 'XMLHttpRequest',
           'Connection': 'close',
           'User-Agent': PRODUCT_UA,
@@ -3996,6 +4185,10 @@ export class WorkBuddyUpstreamClient {
       const response = await fetch(`${chatBase(credential)}${MODEL_BUSY_PATH}`, {
         method: 'POST',
         headers: {
+          // 只带 commonHeaders（含 P1 的 `X-CodeBuddy-Request` / `Accept-Language`），
+          // 刻意**不**带归属头与设备头：这是一个身份无关的元数据读（`:439` 起实测
+          // 三个 CN 入口在两种 UA 下逐字节相同）。把合成设备 id 撒到每一条刷新读上，
+          // 只是多几个能被比对的落点，换不来任何东西。
           ...commonHeaders(credential),
           'Authorization': `Bearer ${credential.accessToken}`,
           'Content-Type': 'application/json',
@@ -4094,7 +4287,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<WorkBuddyImageOutcome> {
     const response = await fetch(`${chatBase(credential)}${IMAGE_GENERATIONS_PATH}`, {
       method: 'POST',
-      headers: imageHeaders(credential, this.identity),
+      headers: imageHeaders(credential, await this.ready),
       body: JSON.stringify(buildImageBody(request)),
       signal: signal ?? AbortSignal.timeout(IMAGE_TIMEOUT_MS),
     })
@@ -4144,7 +4337,7 @@ export class WorkBuddyUpstreamClient {
     }
     const response = await fetch(`${chatBase(credential)}${IMAGE_EDITS_PATH}`, {
       method: 'POST',
-      headers: imageHeaders(credential),
+      headers: imageHeaders(credential, await this.ready),
       body: JSON.stringify(buildEditBody(request)),
       signal: signal ?? AbortSignal.timeout(IMAGE_TIMEOUT_MS),
     })
@@ -4206,7 +4399,7 @@ export class WorkBuddyUpstreamClient {
     )
     const response = await fetch(`${chatBase(credential)}${VIDEO_GENERATIONS_PATH}`, {
       method: 'POST',
-      headers: imageHeaders(credential, this.identity),
+      headers: imageHeaders(credential, await this.ready),
       body: JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(VIDEO_TIMEOUT_MS),
     })
@@ -4260,7 +4453,7 @@ export class WorkBuddyUpstreamClient {
       try {
         const response = await fetch(`${chatBase(credential)}${VIDEO_TASKS_PATH}`, {
           method: 'POST',
-          headers: imageHeaders(credential, this.identity),
+          headers: imageHeaders(credential, await this.ready),
           body: JSON.stringify({ task_id: taskId }),
           signal: combined,
         })
@@ -4348,7 +4541,7 @@ export class WorkBuddyUpstreamClient {
   async fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus> {
     const response = await fetch(`${billingBase(credential)}/v2/billing/meter/checkin-activity-status`, {
       method: 'POST',
-      headers: billingHeaders(credential),
+      headers: billingHeaders(credential, await this.ready),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4417,7 +4610,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<WorkBuddyBenefit> {
     const response = await fetch(`${billingBase(credential)}${path}`, {
       method: 'POST',
-      headers: billingHeaders(credential),
+      headers: billingHeaders(credential, await this.ready),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4468,7 +4661,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<void> {
     const response = await fetch(`${billingBase(credential)}${BENEFIT_CLAIM_PATHS[kind]}`, {
       method: 'POST',
-      headers: billingHeaders(credential),
+      headers: billingHeaders(credential, await this.ready),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4480,7 +4673,7 @@ export class WorkBuddyUpstreamClient {
   async claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim> {
     const response = await fetch(`${billingBase(credential)}/v2/billing/meter/daily-checkin`, {
       method: 'POST',
-      headers: billingHeaders(credential),
+      headers: billingHeaders(credential, await this.ready),
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4520,7 +4713,7 @@ export class WorkBuddyUpstreamClient {
   private async fetchEnterpriseCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits | undefined> {
     const response = await fetch(`${billingBase(credential)}/billing/meter/get-enterprise-user-usage`, {
       method: 'POST',
-      headers: billingHeaders(credential),
+      headers: billingHeaders(credential, await this.ready),
       body: JSON.stringify({}),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
@@ -4603,7 +4796,7 @@ export class WorkBuddyUpstreamClient {
     ].join(':')
     const response = await fetch(`${billingBase(credential)}/v2/billing/meter/get-user-resource`, {
       method: 'POST',
-      headers: billingHeaders(credential),
+      headers: billingHeaders(credential, await this.ready),
       body: JSON.stringify({
         PageNumber: 1,
         PageSize: 100,

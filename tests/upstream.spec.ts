@@ -835,7 +835,10 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     // The CLI user agent returns a 35-model roster without this model; only the
     // app channel's document carries the account's real chat list.
     expect(seen['User-Agent']).toBe('WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0')
-    expect(seen['X-Product']).toBe('SaaS')
+    // P1 把这处从 `SaaS` 统一成 `WorkBuddy`：同一个客户端不该在读目录时叫
+    // "某种 SaaS 租户"、在聊天时叫 "WorkBuddy"（见 src/upstream.ts 的
+    // attributionHeaders）。
+    expect(seen['X-Product']).toBe('WorkBuddy')
     expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
     expect(models[0]?.creditMultiplier).toBe(0)
   })
@@ -1556,8 +1559,22 @@ describe('the conversation-identity triple (issue #66)', () => {
     const seen = await headersOf('www.workbuddy.ai')
     const hyphenated = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     for (const name of TRIPLE) expect(seen[name]).toMatch(hyphenated)
-    expect(seen['X-IDE-Name']).toBeUndefined()
     expect(seen['X-Request-ID']).toBeUndefined()
+    // P1 之后 `usageIdentity` 只剩"id 格式"这一半职责：客户端身份
+    // （X-IDE-*）由 wireProfile 的 balanced 档统一发出，不再跟这条开关走。
+    expect(seen['X-IDE-Name']).toBe('WorkBuddy')
+  })
+
+  it('restores the 5.16.0 header set under the conservative profile', async () => {
+    // 回退档的契约是"逐字节等于 5.16.0"，不是"少发几个新头"：连改名前的
+    // `X-Product: SaaS` 都要还原，否则回退出来的是第三个从未上线过的形状。
+    const seen = await headersOf('www.workbuddy.ai', { profile: 'conservative' })
+    expect(seen['X-Product']).toBe('SaaS')
+    expect(seen['X-IDE-Name']).toBeUndefined()
+    expect(seen['X-IDE-Type']).toBeUndefined()
+    expect(seen['X-Agent-Purpose']).toBeUndefined()
+    expect(seen['X-CodeBuddy-Request']).toBeUndefined()
+    expect(seen['Accept-Language']).toBeUndefined()
   })
 
   it('adopts the official usage identity on the chat path when asked (issue #132)', async () => {
@@ -1568,7 +1585,9 @@ describe('the conversation-identity triple (issue #66)', () => {
     const v7 = /^[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/
     for (const name of TRIPLE) expect(seen[name]).toMatch(v7)
     expect(seen['X-IDE-Name']).toBe('WorkBuddy')
-    expect(seen['X-IDE-Type']).toBe('CLI')
+    // P1 起 Name 与 Type 同源。5.16.0 刻意混搭（Name=WorkBuddy / Type=CLI）是
+    // "最小身份声明"时期的取舍；统一客户端身份之后，混搭本身成了会被比对的矛盾。
+    expect(seen['X-IDE-Type']).toBe('WorkBuddy')
     // The version must agree with the UA the plugin already claims, not a second
     // hardcoded number.
     expect(seen['X-IDE-Version']).toMatch(/^\d+\.\d+\.\d+/)

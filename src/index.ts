@@ -604,13 +604,29 @@ export interface Config {
    */
   channelPerturbation?: 'off' | 'failure' | 'always'
   /**
+   * 出站身份档位（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P1）。
+   *
+   * `balanced`（默认）让每一条出站请求说同一种话：`X-Product` / `X-IDE-Name` /
+   * `X-IDE-Type` 同值 `WorkBuddy`，加 `X-Agent-Purpose`、`X-CodeBuddy-Request`、
+   * `Accept-Language`、`X-Root-Request-ID`，以及按账号派生的一对
+   * `X-Machine-ID` / `X-Session-ID`；billing 域补齐 UA / Origin / Referer。
+   *
+   * `conservative` 逐字节还原 5.16.0：**连 `X-Product: SaaS` 这个改名前的值也还原**，
+   * 因为"回退了但没完全回退"会造出第三个从未上线过的形状，排查时最误导人。
+   *
+   * 为什么默认已经是 `balanced`：P0.5 的对照实验（2026-10-31）证实这组头有效。
+   * 留这一档不是为了默认值，是为了让"某台机器上某个账号忽然不行了"能先换档排除，
+   * 而不必先回滚一个版本。
+   */
+  wireProfile?: 'conservative' | 'balanced'
+  /**
    * Adopt the official client's usage-page identity on chat requests (issue #132).
    *
-   * Adds `X-IDE-Name: WorkBuddy` (which is what fills the upstream's 使用端
-   * column) and sends the conversation-identity triple in the 32-hex UUIDv7
-   * shape the official client uses. Off by default: the reporter measured it at
-   * HTTP 200, this plugin has not reproduced that against the live gateway, and a
-   * display-only change should not be the reason an account starts failing.
+   * 2026-10-31（P1）：`X-IDE-*` 从这里搬到了 {@link Config.wireProfile} 的
+   * `balanced` 档（它属于"客户端是谁"，而那一层现在整体统一）。这条开关**现在
+   * 只管 id 的格式**：把会话身份三连换成官方客户端用的 32 位十六进制 UUIDv7，并
+   * 补一个镜像消息 id 的 `X-Request-ID`。Off by default：它是 reporter 测的、
+   * 本插件未复现的显示对齐，不该成为某个账号开始失败的理由。
    */
   usageIdentity?: boolean
   /**
@@ -996,8 +1012,13 @@ export const Config: z<Config> = z.object({
   usageIdentity: asVolatile(
     z.boolean()
       .default(false)
-      .description("Make the upstream's usage page record these calls like the official client's: " + "add the X-IDE-* identity headers (which fill the 使用端 column) and send the conversation " + "ids as 32-hex UUIDv7. Off by default — it is a display alignment measured by a reporter, not by " + "this plugin, and the chat channel identity (User-Agent) and request body never change."),
+      .description("Send the chat conversation ids in the official client's 32-hex UUIDv7 shape and add a mirroring X-Request-ID. Off by default — it is a display alignment measured by a reporter, not by this plugin, and the chat channel identity (User-Agent) and request body never change."),
   ) as unknown as z<boolean>,
+  wireProfile: asVolatile(
+    z.union([z.const('conservative'), z.const('balanced')])
+      .default('balanced')
+      .description('Outbound identity profile. "balanced" (default) makes every request claim the same client (WorkBuddy product/IDE/agent headers, X-CodeBuddy-Request, Accept-Language, X-Root-Request-ID, and a per-account X-Machine-ID/X-Session-ID pair) and gives the billing routes a User-Agent plus Origin/Referer. "conservative" restores the 5.16.0 bytes exactly, including X-Product: SaaS.'),
+  ) as unknown as z<'conservative' | 'balanced'>,
   keepPromptLast: asVolatile(
     z.boolean()
       .default(false)
@@ -1234,7 +1255,14 @@ export function apply(ctx: Context, config: Config): void {
     message => {
       ctx.logger.warn(`dsh-connect-workbuddy: ${message}`)
     },
-    { usageIdentity: unwrapVolatile(config.usageIdentity) === true },
+    {
+      usageIdentity: unwrapVolatile(config.usageIdentity) === true,
+      // 未配置时由 upstream 的 DEFAULT_WIRE_PROFILE 决定（`balanced`），这里
+      // 不重复写一份默认值——两处默认值是它们开始分叉的方式。
+      ...unwrapVolatile(config.wireProfile) === undefined
+        ? {}
+        : { profile: unwrapVolatile(config.wireProfile) },
+    },
   )
 
   /**

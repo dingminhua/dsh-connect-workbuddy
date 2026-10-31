@@ -1,15 +1,22 @@
 /**
- * 设备身份的**只读取证视图**（审计报告 P0）。
+ * 设备身份的**只读取证视图**（审计报告 P0，P1 起同时是"派生档会发什么"的唯一答案）。
  *
- * 这一层不注入任何头、不改任何字节，只回答两个问题：
+ * 这一层不注入头、不写盘、不发请求，只回答两个问题：
  *
  *   1. **现在**有没有设备身份真的上了线？——答案不是写死的文案，而是把请求路径
  *      上同一批构造器跑出来的头名集合过滤一遍（{@link describeRequestHeaderNames}）。
- *      于是"P1 还没做"这件事是可验证的：往 `chatHeaders` 里加 `X-Machine-ID`，
- *      这里立刻非空，`doctor` 的文案跟着变，而没有任何地方需要改。
- *   2. **派生档**会给这台机器的每个账号发什么？——用同一个盐算出 machine/session
+ *      于是它随代码自动变化：P1 之前是空数组，P1 之后是 `X-Machine-ID` /
+ *      `X-Session-ID`，而没有任何地方需要改两次。
+ *   2. **派生档**会给这台机器的每个账号发什么？——同一个盐算出 machine/session
  *      一对 id，并统计"N 个账号 → 几个不同设备"。第二个数字是审计 §5.4 的核心
  *      问题：池子里的号是共用一台设备（易被聚成一群），还是各自一台（隔离）。
+ *
+ * ## 为什么盐由调用方传进来
+ *
+ * P0 时这个模块自己 `ensureDeviceSalt()`，因为那时它是唯一的调用者。P1 之后
+ * `doctor` 还要把同一个盐交给 {@link describeRequestHeaderNames} 去渲染完整的
+ * 头名清单——两处各自读一次盐，就可能各自读到不同的状态（一次读到 absent、
+ * 一次读到 ok），于是报告会在同一屏里自相矛盾。盐是调用方的事实，这里只做算术。
  *
  * 两者都不含凭据、不含盐本身。
  *
@@ -17,9 +24,9 @@
  */
 
 import { deriveDeviceId } from './device-id.ts'
-import { ensureDeviceSalt, readDeviceSalt } from './device-salt.ts'
-import type { DeviceSaltState } from './device-salt.ts'
+import type { DeviceSaltReadout } from './device-salt.ts'
 import { describeRequestHeaderNames } from './upstream.ts'
+import type { WorkBuddyWireIdentity } from './upstream.ts'
 import type { WorkBuddyCredential } from './auth.ts'
 
 /**
@@ -41,21 +48,21 @@ export interface WorkBuddyDerivedDevice {
 /** The read-only answer `doctor` renders. */
 export interface WorkBuddyDeviceReport {
   /**
-   * 设备头名，**按当前代码实际会发的那一组算出来**。空数组 = 一个都不发，
-   * 也就是审计 §4 的 D1。它不是断言，是测量。
+   * 设备头名，**按当前代码实际会发的那一组算出来**。空数组 = 一个都不发。
+   * 它不是断言，是测量。
    */
   onWire: readonly string[]
   /** 盐文件的状态；`salt` 本身永不出现在报告里。 */
   salt: {
     path: string
-    state: DeviceSaltState
+    state: DeviceSaltReadout['state']
     reason?: string
   }
   /**
    * 派生档会给什么，以及池子会不会塌成一台设备。
    *
-   * 缺席的三种情况都要能被区分：没有账号（无从派生）、盐不可用（不能派生）、
-   * 以及"能派生但就是没派生"（不该发生，因此不设这一态）。
+   * 缺席的两种情形要能区分：没有账号（无从派生）、盐不可用（不能派生）。"能派生
+   * 但就是没派生"不该发生，因此不设这一态。
    */
   derived?: {
     /** 参与派生的账号数（= 输入里非空 uid 的个数）。 */
@@ -68,38 +75,36 @@ export interface WorkBuddyDeviceReport {
 }
 
 /**
- * Compose the device report from the local accounts.
+ * 把已经读到的盐与本地账号，组合成 `doctor` 要的那份报告。
  *
  * `credentials` 只用来取 `uid`：报告里不出现账号名、账号 id 或任何令牌。重复的
  * uid 会被折叠（同一个号的两个历史凭据文件不该被算成两台设备）。
  *
- * 盐**只在这一步**被创建，且仅在确有账号可派生时：一个还没登录的机器不需要
- * 也不必留下一个设备盐。
+ * 纯函数（无 IO、无时钟），所以测试不需要临时目录，也不会因为读写顺序不同而
+ * 得到两种答案。
  */
-export async function describeDeviceState(
+export function describeDeviceState(
   credentials: readonly WorkBuddyCredential[],
-  options: { dir?: string } = {},
-): Promise<WorkBuddyDeviceReport> {
-  // 头名集合与账号无关，只与"选了哪个档"有关；用第一个凭据做探针就够，
-  // 也保证探针走的是真实构造器而不是复刻的清单。
+  saltReadout: DeviceSaltReadout,
+): WorkBuddyDeviceReport {
+  const salt: WorkBuddyDeviceReport['salt'] = {
+    path: saltReadout.path,
+    state: saltReadout.state,
+    ...'reason' in saltReadout ? { reason: saltReadout.reason } : {},
+  }
+  // 头名要与真实请求一致：档位取默认，盐取刚刚那份读数。少传盐就会答成
+  // "device 头没发"，而实际上发了——那正是这个模块最不该犯的错。
+  const identity: WorkBuddyWireIdentity = saltReadout.state === 'ok' ? { deviceSalt: saltReadout.salt } : {}
   const probe = credentials[0]
   const onWire = probe === undefined
     ? []
-    : describeRequestHeaderNames('chat', probe)
+    : describeRequestHeaderNames('chat', probe, identity)
       .filter(name => WORKBUDDY_DEVICE_HEADER_NAMES.includes(name))
 
   const uids = [...new Set(credentials.map(credential => credential.uid).filter(uid => uid !== ''))]
-  // 没有账号就**不创建**盐：一个还没登录的机器不该留下设备身份。此时只报告
-  // "我们会在哪里找它"，那本身就是排障需要的信息。
-  const readout = uids.length === 0 ? await readDeviceSalt(options) : await ensureDeviceSalt(options)
-  const salt: WorkBuddyDeviceReport['salt'] = {
-    path: readout.path,
-    state: readout.state,
-    ...'reason' in readout ? { reason: readout.reason } : {},
-  }
-  if (uids.length === 0 || readout.state !== 'ok') return { onWire, salt }
+  if (uids.length === 0 || saltReadout.state !== 'ok') return { onWire, salt }
 
-  const machineIds = uids.map(uid => deriveDeviceId(uid, 'machine', readout.salt))
+  const machineIds = uids.map(uid => deriveDeviceId(uid, 'machine', saltReadout.salt))
   return {
     onWire,
     salt,
@@ -108,7 +113,7 @@ export async function describeDeviceState(
       distinct: new Set(machineIds).size,
       sample: {
         machineId: machineIds[0] as string,
-        sessionId: deriveDeviceId(uids[0] as string, 'session', readout.salt),
+        sessionId: deriveDeviceId(uids[0] as string, 'session', saltReadout.salt),
       },
     },
   }
