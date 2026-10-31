@@ -604,7 +604,7 @@ describe('registerWorkBuddyStatusRoute', () => {
       '/plugins/dsh-connect-workbuddy/cli-live',
       // 设备头的档位与逐账号覆盖值（P2.5）。GET 读设置，POST 写——写要过 loopback。
       '/plugins/dsh-connect-workbuddy/device-profile',
-      // 内置 SDK 的连接状态与真实取值（P3）。GET 只有掩码；完整值要 POST。
+      // 本机安装的桌面端 SDK 的连接状态与真实取值（P3）。GET 只有掩码；完整值要 POST。
       '/plugins/dsh-connect-workbuddy/device-sdk',
     ])
   })

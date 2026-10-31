@@ -161,7 +161,9 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
         + ` — ${device.token.path}`
   const sdk = device.sdk === undefined
     ? []
-    : [`Device SDK: ${device.sdk.state}${device.sdk.reason === undefined ? '' : `: ${device.sdk.reason}`} (${device.sdk.bundle} — ${device.sdk.path})`
+    // path 为空串是"没发现本机装有桌面端 SDK"，直接打出来是一行 `(win32-x64 — )`
+    // 的悬空破折号——换成一句人话。
+    : [`Device SDK: ${device.sdk.state}${device.sdk.reason === undefined ? '' : `: ${device.sdk.reason}`} (${device.sdk.bundle} — ${device.sdk.path === '' ? 'no installed SDK found' : device.sdk.path})`
         + `; token ${device.sdk.token.state}`
         + `${device.sdk.token.length === 0 ? '' : ` (${device.sdk.token.length} chars)`}`
         + `${device.sdk.token.ageMs === undefined ? '' : `, fetched ${describeAge(device.sdk.token.ageMs)} ago`}`

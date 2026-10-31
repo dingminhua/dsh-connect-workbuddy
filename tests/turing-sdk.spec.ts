@@ -13,9 +13,15 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { bundledSdkBundleId, createTuringSdk, maskToken } from '../src/turing-sdk.ts'
+import {
+  bundledSdkBundleId,
+  createTuringSdk,
+  discoverInstalledSdkDir,
+  hasTuringSdkBinding,
+  maskToken,
+} from '../src/turing-sdk.ts'
 
 /** 假 worker：读同目录的 `state.json`，每次调用把 `calls` 加一。 */
 const FAKE_WORKER = `'use strict'
@@ -54,9 +60,10 @@ async function readCalls(): Promise<number> {
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'turing-sdk-'))
   sdkDir = join(root, 'win32-x64')
-  // probe 前的存在性检查看的是 `build/Release`：没有它就连子进程都不起，
+  // probe 前的门检查的是 `build/Release/turing_sdk.node`：没有它连子进程都不起，
   // 所以假目录必须造出这个形状，否则测的就不是"取 token"而是"提前返回"。
   await mkdir(join(sdkDir, 'build', 'Release'), { recursive: true })
+  await writeFile(join(sdkDir, 'build', 'Release', 'turing_sdk.node'), '', 'utf8')
   worker = join(root, 'worker.cjs')
   await writeFile(worker, FAKE_WORKER, 'utf8')
   statePath = join(root, 'state.json')
@@ -102,13 +109,136 @@ describe('bundledSdkBundleId', () => {
   })
 })
 
+describe('discoverInstalledSdkDir', () => {
+  // 平台、家目录、环境、exists 全部注入：这套断言在三种 CI 主机上必须给出
+  // 同样的答案（RELEASING.md §2.5），而真实的主机——比如装着 WorkBuddy 的
+  // 开发 mac——恰恰是最不该参与的路径。
+  const winExe = 'C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy\\WorkBuddy.exe'
+  const winSdk = 'C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy\\resources\\app.asar.unpacked\\native\\turing-sdk'
+  const macExe = '/Applications/WorkBuddy.app/Contents/MacOS/Electron'
+  const macSdk = '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/native/turing-sdk'
+
+  const tree = (files: string[]) => (path: string): boolean => files.includes(path)
+
+  it('finds the unpacked SDK next to a Windows install', () => {
+    const found = discoverInstalledSdkDir({
+      platform: 'win32',
+      home: 'C:\\Users\\dev',
+      env: { WORKBUDDY_APP_EXECUTABLE: winExe, LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local' },
+      exists: tree([winExe, `${winSdk}\\build\\Release\\turing_sdk.node`]),
+      readRegistryAppPath: () => undefined,
+    })
+    expect(found).toBe(winSdk)
+  })
+
+  it('falls back to the uninstall registry when the default layout missed', () => {
+    // issue #68 的形状：装在非默认盘。没有这一步，装着也等于没装。
+    const found = discoverInstalledSdkDir({
+      platform: 'win32',
+      home: 'C:\\Users\\dev',
+      env: { LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local' },
+      exists: tree(['E:\\Apps\\WorkBuddy\\WorkBuddy.exe',
+        'E:\\Apps\\WorkBuddy\\resources\\app.asar.unpacked\\native\\turing-sdk\\build\\Release\\turing_sdk.node']),
+      readRegistryAppPath: () => 'E:\\Apps\\WorkBuddy\\WorkBuddy.exe',
+    })
+    expect(found).toBe('E:\\Apps\\WorkBuddy\\resources\\app.asar.unpacked\\native\\turing-sdk')
+  })
+
+  it('never reads the registry on a non-Windows host', () => {
+    let registryReads = 0
+    const found = discoverInstalledSdkDir({
+      platform: 'darwin',
+      home: '/Users/dev',
+      env: {},
+      exists: tree([]),
+      readRegistryAppPath: () => { registryReads += 1; return undefined },
+    })
+    expect(found).toBeUndefined()
+    expect(registryReads).toBe(0)
+  })
+
+  it('finds the unpacked SDK inside a macOS bundle (exe may be named Electron)', () => {
+    // CFBundleExecutable 是 `Electron`（两份真实 bundle 实测如此），推导只能
+    // 走 Contents 的层级，不能从 exe 名倒推 bundle 名。
+    const found = discoverInstalledSdkDir({
+      platform: 'darwin',
+      home: '/Users/dev',
+      env: { WORKBUDDY_APP_EXECUTABLE: macExe },
+      exists: tree([macExe, `${macSdk}/build/Release/turing_sdk.node`]),
+    })
+    expect(found).toBe(macSdk)
+  })
+
+  it('skips an install whose unpacked SDK has no binding', () => {
+    // 装了桌面端但解包不完整（或被安全软件动了）：跳过，别拿一个加载不了的目录
+    // 去起子进程——那是 `missing` 和 `error` 分家的意义。
+    const found = discoverInstalledSdkDir({
+      platform: 'win32',
+      home: 'C:\\Users\\dev',
+      env: { WORKBUDDY_APP_EXECUTABLE: winExe },
+      exists: tree([winExe, `${winSdk}\\build\\Release\\TuringShieldSDK.dll`]),
+    })
+    expect(found).toBeUndefined()
+  })
+
+  it('skips a candidate executable that does not exist', () => {
+    const found = discoverInstalledSdkDir({
+      platform: 'win32',
+      home: 'C:\\Users\\dev',
+      env: { WORKBUDDY_APP_EXECUTABLE: winExe },
+      // binding 在，exe 不在：环境变量指着一条死路，不该信。
+      exists: tree([`${winSdk}\\build\\Release\\turing_sdk.node`]),
+    })
+    expect(found).toBeUndefined()
+  })
+
+  it('exposes the binding gate as a platform-aware helper', () => {
+    // 数据平台优先（win32 → `\` 拼法），再兜底宿主拼法——Windows API 两种
+    // 分隔符都吃，而注入 platform 的测试喂的可能是宿主形状的目录。
+    const parts = ['build', 'Release', 'turing_sdk.node'] as const
+    expect(hasTuringSdkBinding('C:\\x', path => path === win32.join('C:\\x', ...parts), 'win32')).toBe(true)
+    expect(hasTuringSdkBinding('C:\\x', path => path === posix.join('C:\\x', ...parts), 'win32')).toBe(true)
+    expect(hasTuringSdkBinding('C:\\x', () => false, 'win32')).toBe(false)
+    expect(hasTuringSdkBinding('/x', () => true, 'win32')).toBe(true)
+  })
+
+  it('createTuringSdk uses discovery when neither dir nor env named one', () => {
+    // 端到端缝：发现链的产物要真的进到 probe 的 spawn 目录里。假 worker 只认
+    // state.json，不关心 dir——所以这里看的是 info().path。
+    const sdk = createTuringSdk({
+      worker,
+      now: () => clock,
+      platform: 'win32',
+      arch: 'x64',
+      home: 'C:\\Users\\dev',
+      env: { WORKBUDDY_APP_EXECUTABLE: winExe },
+      exists: tree([winExe, `${winSdk}\\build\\Release\\turing_sdk.node`]),
+    })
+    return sdk.info().then(info => {
+      expect(info.path).toBe(winSdk)
+      expect(info.state).toBe('ready')
+    })
+  })
+})
+
 describe('probe', () => {
   it('reports missing without spawning anything when the bundle is absent', async () => {
     const sdk = createTuringSdk({ dir: join(root, 'nope'), worker, now: () => clock })
     const info = await sdk.info()
     expect(info.state).toBe('missing')
-    expect(info.reason).toContain('no bundled SDK')
+    expect(info.reason).toContain('no installed WorkBuddy desktop SDK detected')
     // 没有 SDK 就**不该**起子进程：那是排障命令里最容易变成"卡三秒"的一段。
+    expect(await readCalls()).toBe(0)
+  })
+
+  it('reports missing when there is no dir at all (discovery found nothing)', async () => {
+    // `env: {}` 不是笔误：不传就会读真实 process.env，而这台机器上**可能**真的
+    // 装着桌面端——那条安装链属于发现测试，不属于兜底行为测试。
+    const sdk = createTuringSdk({ worker, now: () => clock, env: {}, home: root, platform: 'linux' })
+    const info = await sdk.info()
+    expect(info.state).toBe('missing')
+    expect(info.path).toBe('')
+    expect(info.reason).toContain('WORKBUDDY_TURING_SDK_DIR')
     expect(await readCalls()).toBe(0)
   })
 

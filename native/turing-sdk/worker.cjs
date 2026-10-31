@@ -23,11 +23,15 @@
 
 'use strict'
 
-const path = require('node:path')
-
 const mode = process.argv[2] === 'probe' ? 'probe' : 'token'
-const sdkDir = process.env.TURING_SDK_DIR || path.join(__dirname, 'win32-x64')
+// 没有默认副本可退：SDK 来自用户机器上已安装的桌面端（或 WORKBUDDY_TURING_SDK_DIR
+// 显式指定），父进程总会在有目录时才起这个进程。空目录直接结构化报错收场。
+const sdkDir = (process.env.TURING_SDK_DIR || '').trim()
 const timeoutMs = Number.parseInt(process.env.TURING_TIMEOUT_MS || '', 10) || 15000
+if (sdkDir === '') {
+  finish(1, { ok: false, reason: 'no-dir', message: 'TURING_SDK_DIR is not set' })
+  return
+}
 
 /** 收尾：先冲刷 stdout 再退出，否则 1 KB 以上的 token 会被截断。 */
 function finish(code, payload) {
@@ -93,11 +97,15 @@ if (!supported) {
 const channelId = Number.parseInt(process.env.TURING_CHANNEL_ID || '109144', 10)
 const productName = process.env.TURING_PRODUCT_NAME || 'WorkBuddy'
 const productVersion = process.env.TURING_PRODUCT_VERSION || '5.8.3'
+// configure 的第 4 参：桌面端 macOS 的原生 binding 校验它必须是 boolean，缺了
+// 直接报 "keychainStorageEnabled must be a boolean"；Windows 上多传一个参数对
+// 三参的老副本无害。所以永远传布尔，值由父进程经环境变量给。
+const keychainStorageEnabled = /^(?:1|true)$/i.test((process.env.TURING_KEYCHAIN_STORAGE || '').trim())
 
 /** 取一次 token；SDK 的回调可能永不触发，所以外面还有一层 Promise.race。 */
 function fetchOnce() {
   try {
-    sdk.configure(channelId, productName, productVersion)
+    sdk.configure(channelId, productName, productVersion, keychainStorageEnabled)
   } catch (error) {
     return Promise.reject(error)
   }

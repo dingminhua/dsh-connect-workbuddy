@@ -4,8 +4,29 @@
 
 ### 变更
 
-- **真实设备参数（P3，Windows）**：内置 Turing Shield SDK，新增「真实值」档，卡片新增
-  「SDK」分区。
+- **设备身份取证面（P0）**：新增 `src/device-id.ts`（36 位十六进制 id，
+  `sha256(namespace + salt + purpose + uid)`，命名空间与用途进哈希、不进线上）、
+  `src/device-salt.ts`（本机盐，`$DSH_HOME/.workbuddy-device.json`，首建后只读——
+  文件缺失与不可读分开处理，**不可读永不重键**：重键等于给同一台机器换身份）、
+  `src/device-state.ts`（`onWire` 为算出的实际发出头）。`doctor` 增 `deviceIdentity`
+  块（schemaVersion 6 → 7）。
+- **出站身份统一到 `WorkBuddy`（P1）**：chat 的 `X-Product: SaaS`、`X-IDE-Type: CLI`
+  与 billing 的裸 HTTP 形态统一为 `X-Product` / `X-IDE-Type` / `X-Agent-Purpose:
+  conversation` + billing 补齐 `User-Agent: WorkBuddy/<ver>` / `Origin` / `Referer` /
+  `X-Requested-With` / `X-CodeBuddy-Request`，`Accept-Language` 按区 `zh-CN` /
+  `en-US`，并加 `X-Root-Request-ID`（与 `X-Conversation-Request-ID` 同值）。
+  元数据读（`/v3/config`、`/v2/chat/busy`）与 refresh 一跳**字节不动**。
+  配置项 `wireProfile: conservative` 逐字节还原 5.16.0（含 `X-Product: SaaS`），
+  默认 `balanced`（schemaVersion 7，字段级见 `doctor`）。
+- **外部 deviceToken 文件源（P2）**：`WORKBUDDY_DEVICE_TOKEN_FILE` 指向别的工具
+  （A / B 面板）维护的 token 文件，5 分钟重读、4 KB 上限，裸值与 `{"token":…}`
+  信封都吃；token 字节绝不进日志与 `doctor`（schemaVersion 7 → 8，
+  `deviceIdentity.token`）。
+- **设备头档位 UI（P2.5）**：卡片设备头档位「虚拟值 / 真实值」切换与逐账号齿轮
+  （覆盖 `X-Machine-ID` / `X-Session-ID`），落盘
+  `$DSH_HOME/.workbuddy-device-profiles.json`（`0600`、锁内合并写）。路由
+  `GET`/`POST /plugins/dsh-connect-workbuddy/device-profile`（loopback-only）。
+- **真实设备参数（P3）**：新增「真实值」档，卡片新增「SDK」分区。
   - **档位互斥落在档位上**：`虚拟值` 发派生的 `X-Machine-ID` / `X-Session-ID`（可逐账号
     覆盖），`真实值` **只发** `X-Device-Token`，派生对整条路径不存在。此前的过渡形态
     （真 token + 派生对同时发）不再是可达的组合——真 token 内含设备信息，旁边挂一对
@@ -13,15 +34,26 @@
   - **真实值档下所有账号共用这台机器的真实设备**，因此每行的齿轮关闭，点击时说明原因。
     取不到 token 时**一个设备头都不发**，不退回派生对：界面写着「真实值」而线上跑着
     虚拟值，正是分档要消灭的那种不一致。
-  - SDK 原始文件在 `native/turing-sdk/win32-x64/`，**子进程**调用（`worker.cjs`）：
-    原生模块的加载失败与不可取消的死等只该是"这一条命令失败"，不该是插件进程失败。
+  - **SDK 用本机已安装的桌面端，不随包分发**：插件包**不再**包含 Turing Shield
+    的二进制（`.node` 里的 pdb 路径证明它是桌面端仓库的构建产物；重新分发闭源
+    厂商二进制需要回答"从哪来、什么版本、依不依得着 EULA"，这些答案属于桌面端
+    发行方，不属于我们）。目录解析：`WORKBUDDY_TURING_SDK_DIR` 显式指定优先，
+    否则按桌面端安装形状自动发现（Windows 默认布局 + 卸载注册表，macOS
+    `/Applications` 与 `~/Applications` 的 bundle；见
+    `native/turing-sdk/README.md`）。**子进程**调用（`worker.cjs`）：原生模块的
+    加载失败与不可取消的死等只该是"这一条命令失败"，不该是插件进程失败。
     子进程只拿白名单环境变量，不整份继承。
+  - **macOS 现状如实记录**：probe 能过（真机验证），token 取不到——SDK 向
+    dispatch 主队列 `dispatch_sync`，纯 libuv 进程永不排空它（`sample` 栈实测，
+    见 `native/turing-sdk/README.md`）。mac 上表现为 `ready` 但 token 不可用，
+    真实值档按上面的规则降级。修它需要排空主队列的伴生原生模块，不在本次范围。
   - token 10 分钟重取、失败时 24 h 内旧值可用并标 `stale`、**不落盘**；完整值只在用户
     点「显示 / 复制」时经 `POST ?action=reveal` 给一次，其余输出只有掩码与长度。
   - 卡片新增「SDK」分区（与「模型 / 能力 / 诊断」同一行）：连接状态、SDK 目录与运行时、
     最近取到时间与当前档位、`X-Device-Token` 的掩码 + 长度，附「显示 / 复制 / 重新获取」。
-  - `doctor` 增 `deviceIdentity.tier` 与 `deviceIdentity.sdk`（schemaVersion 8 → 9）。
-  - 未做：macOS 副本（需要排空主队列的伴生模块）。
+    路由 `GET`/`POST /plugins/dsh-connect-workbuddy/device-sdk`（loopback-only）。
+  - `doctor` 增 `deviceIdentity.tier` 与 `deviceIdentity.sdk`（schemaVersion 8 → 9；
+    相对 5.16.0 的 schemaVersion 6，本套变更合起来是 **6 → 9**）。
 
 ## 5.16.0 (2026-10-31)
 

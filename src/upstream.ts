@@ -4035,7 +4035,7 @@ export class WorkBuddyUpstreamClient {
   private readonly deviceTokens: DeviceTokenReader | undefined
   /** 每账号覆盖值的读取器（设置里齿轮保存的那些）；未接线时为 undefined。 */
   private readonly deviceProfiles: WorkBuddyDeviceProfileLookup | undefined
-  /** 真实值档的 token 源（内置 SDK）；未接线时为 undefined。 */
+  /** 真实值档的 token 源（本机安装的桌面端 SDK）；未接线时为 undefined。 */
   private readonly realDevice: TuringTokenSource | undefined
 
   constructor(

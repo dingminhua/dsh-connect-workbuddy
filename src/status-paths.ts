@@ -139,7 +139,7 @@ export const WORKBUDDY_POOL_ACTION_PARAM = 'action'
 export const WORKBUDDY_DEVICE_PROFILE_PATH = '/plugins/dsh-connect-workbuddy/device-profile'
 
 /**
- * 真实设备参数（内置 Turing Shield SDK）的状态与取值。
+ * 真实设备参数（本机安装的桌面端 Turing Shield SDK）的状态与取值。
  *
  * - `GET` → `{ tier, sdk, token }`，`token` 只有掩码与长度。
  * - `POST ?action=refresh` → 强制重取一次，再返回同一形状。
