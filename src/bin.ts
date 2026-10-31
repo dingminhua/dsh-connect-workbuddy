@@ -31,8 +31,15 @@ import {
   workbuddyVaultDir,
 } from './auth.ts'
 import { WORKBUDDY_APP_EXECUTABLE_ENV, findWorkbuddyAppExecutableWithSource } from './at-rest.ts'
-import { WorkBuddyUpstreamClient } from './upstream.ts'
-import type { WorkBuddyRegion } from './upstream.ts'
+import type { WorkBuddyCredential } from './auth.ts'
+import { describeDeviceState } from './device-state.ts'
+import type { WorkBuddyDeviceReport } from './device-state.ts'
+import { ensureDeviceSalt, readDeviceSalt } from './device-salt.ts'
+import { readDeviceTokenFile, WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
+import { readDeviceSettings } from './device-profile.ts'
+import { createTuringSdk } from './turing-sdk.ts'
+import { WorkBuddyUpstreamClient, APP_VERSION, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
+import type { WorkBuddyRegion, WorkBuddyWireIdentity } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
@@ -74,11 +81,93 @@ type Action = 'doctor' | 'logout' | 'status'
  * 5 → 6: added `credentialAcl` (issue #183). A store that could only ever ask
  * for `mode: 0o600` looked identical to one that enforced it; the new block
  * answers what the folder permissions actually ARE on this machine.
+ *
+ * 6 → 7: added `deviceIdentity` — which device headers are actually attached
+ * (nothing before P1, the derived `X-Machine-ID` / `X-Session-ID` pair from P1
+ * on) plus how many distinct virtual devices the pool would present. Added
+ * because "the plugin has no device identity" was a fact only a source reader
+ * could know; `doctor` is where it has to be visible
+ * (docs/DEVICE-IDENTITY-AUDIT.md).
+ *
+ * 7 → 8: added `deviceIdentity.token` (P2). The field is absent when this CLI did
+ * not inspect a token file at all — which is a different answer from "I looked
+ * and found none", so a consumer must be able to tell them apart rather than
+ * guess whether the absence means "old build" or "not configured".
+ *
+ * 8 → 9: added `deviceIdentity.tier` and `deviceIdentity.sdk` (P3). `tier` is
+ * required because the same `onWire` list now has two explanations: in the real
+ * tier it is one header and derived devices do not exist. Without it a consumer
+ * reading `onWire: ['X-Device-Token']` cannot tell "real tier, working" from
+ * "virtual tier with a file token".
  */
-const JSON_SCHEMA_VERSION = 6
+const JSON_SCHEMA_VERSION = 9
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
+
+/**
+ * Set to `1` to have `doctor` print the header NAME list each request path
+ * would send. Names only — see the call site for why values are never printed.
+ */
+const HEADER_TRACE_ENV = 'WORKBUDDY_HEADER_TRACE'
+
+/** 毫秒 → `42s` / `3m` / `2h5m`，只用于人读的诊断。 */
+function describeAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 120) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h${minutes % 60 === 0 ? '' : `${minutes % 60}m`}`
+}
+
+/**
+ * The human form of the `deviceIdentity` block.
+ *
+ * Three lines on purpose: what is on the wire, whether an external token was
+ * inspected at all, and how many distinct virtual devices the pool would
+ * present. Collapsing them would let "3 accounts → 3 devices" read as "we send
+ * three devices".
+ *
+ * The first line names the tier because `doctor` runs outside the plugin and
+ * therefore cannot see the configured `wireProfile`: it renders the DEFAULT
+ * tier. A user who set `conservative` will see `balanced` here — stated rather
+ * than silently assumed, so the discrepancy is at least visible.
+ */
+function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): string[] {
+  const onWire = device.onWire.length === 0
+    ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached'
+    : device.onWire.join(', ')
+  const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} headers, ${device.tier} values): ${onWire}`
+  const salt = `${device.salt.state}${device.salt.reason === undefined ? '' : `: ${device.salt.reason}`} — ${device.salt.path}`
+  // 真实值档下"派生设备"这一行不是事实：所有账号共用这台真机，一对算出来的 id
+  // 既不会发出去，也不该出现在报告里。这一行换成一个明确的说明，而不是留空。
+  const derived = device.tier === 'real'
+    ? 'Derived devices: not used in the real tier — every account shares this machine\'s real device'
+    : accounts === 0
+      ? `Derived devices: no signed-in account to derive from; salt ${salt}`
+      : device.derived === undefined
+        ? `Derived devices: unavailable; salt ${salt}`
+        : `Derived devices: ${accounts} account(s) → ${device.derived.distinct} distinct, `
+          + `sample machine=${device.derived.sample.machineId} session=${device.derived.sample.sessionId}; salt ${salt}`
+  // 真 token（P2 的文件源）只在虚拟值档有意义；真实值档由 SDK 供数，那一行会
+  // 写着"这里没查"却其实根本不该看，容易误导，所以按档位换文案。
+  const token = device.tier === 'real'
+    ? `Device token file: not consulted in the real tier (the SDK is the source there)`
+    : device.token === undefined
+      ? `Device token: not inspected here — set ${WORKBUDDY_DEVICE_TOKEN_FILE_ENV} to the same file the plugin reads`
+      : `Device token: ${device.token.state}`
+        + `${device.token.ageMs === undefined ? '' : `, written ${describeAge(device.token.ageMs)} ago`}`
+        + `${device.token.reason === undefined ? '' : ` (${device.token.reason})`}`
+        + ` — ${device.token.path}`
+  const sdk = device.sdk === undefined
+    ? []
+    : [`Device SDK: ${device.sdk.state}${device.sdk.reason === undefined ? '' : `: ${device.sdk.reason}`} (${device.sdk.bundle} — ${device.sdk.path})`
+        + `; token ${device.sdk.token.state}`
+        + `${device.sdk.token.length === 0 ? '' : ` (${device.sdk.token.length} chars)`}`
+        + `${device.sdk.token.ageMs === undefined ? '' : `, fetched ${describeAge(device.sdk.token.ageMs)} ago`}`
+        + `${device.sdk.token.reason === undefined ? '' : ` (${device.sdk.token.reason})`}`]
+  return [head, token, ...sdk, derived]
+}
 
 /** Region labels for human output. */
 const REGION_LABELS: Readonly<Record<WorkBuddyRegion, string>> = {
@@ -241,6 +330,69 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     cn: credentialAcl.find(([region]) => region === 'cn')![1],
     global: credentialAcl.find(([region]) => region === 'global')![1],
   }
+  /**
+   * 设备身份取证（审计 `docs/DEVICE-IDENTITY-AUDIT.md` §4 的 D1 / §5.4 的隔离性）。
+   *
+   * 只读地算出两件事：现在**有没有**设备头上了线，以及派生档会给池子里的每个号
+   * 算出什么。唯一可能的写入是首次生成 `$DSH_HOME/.workbuddy-device.json`——
+   * 没有盐就算不出"这个池子会不会塌成一台设备"，而这个答案离线推不出来。
+   * 只在确有账号时生成：一台没登录的机器不该留下设备身份。
+   *
+   * 盐在这里读**一次**，同一份读数同时喂给报告和下面的头名清单。两处各读一次
+   * 就可能读到两种状态（一次 absent、一次 ok），于是同一屏里自相矛盾。
+   */
+  const deviceCredentials = (await Promise.all(
+    (await anyStore.accounts()).map(async account => anyStore.credentialFor(account.id)),
+  )).filter((credential): credential is WorkBuddyCredential => credential !== undefined)
+  const deviceSalt = deviceCredentials.length === 0 ? await readDeviceSalt() : await ensureDeviceSalt()
+  /**
+   * 外部设备 token（P2）。
+   *
+   * `doctor` 读不到插件配置，只能读环境变量——所以路径只有一种写法时两侧才一致
+   * （见 `WORKBUDDY_DEVICE_TOKEN_FILE_ENV` 的注释）。没设就**不去猜**：报告里
+   * 明确写"这里没查"，而不是假装"没有 token"。
+   */
+  const deviceTokenFile = (process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV] ?? '').trim()
+  const deviceToken = deviceTokenFile === '' ? undefined : await readDeviceTokenFile(deviceTokenFile)
+  /**
+   * 真实值档（P3）。
+   *
+   * 档位来自磁盘上的设备设置，不是猜的：同一台机器上插件与 `doctor` 读的是同一份
+   * 文件。`probe` 只起一个 6 ms 的子进程读 `isSupported`，**不发网络请求**；只有
+   * 真的处于真实值档时才去取一枚 token——那正是"SDK 现在能不能工作"的答案，
+   * 而它恰好是排障时最想知道的。
+   */
+  const deviceTier = (await readDeviceSettings()).mode
+  const turing = createTuringSdk({ productVersion: APP_VERSION })
+  const turingInfo = await turing.info()
+  const turingToken = deviceTier === 'real' ? await turing.tokens.current() : undefined
+  const turingReadout = turing.tokens.readout()
+  const device = describeDeviceState(deviceCredentials, deviceSalt, deviceToken, {
+    tier: deviceTier,
+    sdk: turingInfo,
+    token: turingReadout,
+    ...turingToken === undefined ? {} : { value: turingToken },
+  })
+  const wireIdentity: WorkBuddyWireIdentity = deviceTier === 'real'
+    ? { deviceTier: 'real', ...turingToken === undefined ? {} : { deviceReal: turingToken } }
+    : {
+        ...deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {},
+        ...deviceToken?.state === 'ok' ? { deviceToken: deviceToken.token } : {},
+      }
+  /**
+   * `WORKBUDDY_HEADER_TRACE=1` 时的头名清单。
+   *
+   * 只打**名字**，从不打值：这份输出是要贴进 issue 的，而头里混着令牌、会话 id
+   * 与派生设备 id。chat 与 billing 成对出现，是因为它们同 token 同分钟却曾经声称
+   * 两种客户端（审计 §1.3 的 D2）——能被看见才谈得上验证"现在统一了"。
+   */
+  const probeCredential = deviceCredentials[0]
+  const tracedHeaders = process.env[HEADER_TRACE_ENV] === '1' && probeCredential !== undefined
+    ? (['chat', 'billing'] as const).map(kind => ({
+      kind,
+      names: describeRequestHeaderNames(kind, probeCredential, wireIdentity),
+    }))
+    : undefined
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-connect-workbuddy',
@@ -308,6 +460,21 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       vaultDirectory: join(resolveDshHome(), WORKBUDDY_VAULT_DIRNAME),
       regions: Object.fromEntries(credentialAcl),
     },
+    /**
+     * 设备身份：现在发了什么（`onWire`，由真实构造器算出而非写死）与派生档会发
+     * 什么。见 `docs/DEVICE-IDENTITY-AUDIT.md`。盐值本身永不出现，只报状态与路径。
+     */
+    deviceIdentity: {
+      tier: device.tier,
+      onWire: device.onWire,
+      salt: device.salt,
+      ...device.token === undefined ? {} : { token: device.token },
+      ...device.sdk === undefined ? {} : { sdk: device.sdk },
+      ...device.derived === undefined ? {} : { derived: device.derived },
+      ...tracedHeaders === undefined
+        ? {}
+        : { requestHeaders: Object.fromEntries(tracedHeaders.map(({ kind, names }) => [kind, names] as const)) },
+    },
     hostHeartbeat: {
       path: workbuddyHostHeartbeatPath(),
       present: heartbeat !== undefined,
@@ -373,6 +540,10 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       `Atomic writes: ${hostPeers.atomicWrite === 'host' ? 'host-provided (@deepseek-ai/dsh-atomic-write)' : 'built-in copy (host peer not resolvable here; normal outside a booted DSH)'}`,
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
       `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable}${report.atRestDecryption.appExecutableSource === undefined ? '' : `, via ${report.atRestDecryption.appExecutableSource}`})`,
+      ...describeDeviceLines(device, deviceCredentials.length),
+      ...tracedHeaders === undefined
+        ? []
+        : tracedHeaders.map(({ kind, names }) => `Headers (${kind}, ${names.length}): ${names.join(', ')}`),
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       ...regionLists.flatMap(({ region, accounts }) => [
         `${REGION_LABELS[region]} accounts: ${accounts.length} (own copy ${workbuddyOwnAuthPath(region)})`,

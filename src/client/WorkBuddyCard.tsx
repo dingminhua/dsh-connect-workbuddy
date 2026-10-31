@@ -41,6 +41,8 @@ import {
   regionVideoToolEnabledOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
+  WORKBUDDY_DEVICE_PROFILE_PATH,
+  WORKBUDDY_DEVICE_SDK_PATH,
   WORKBUDDY_MEDIA_MODELS_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_GITHUB_URL,
@@ -64,6 +66,9 @@ import type {
 } from '../status-paths.ts'
 import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeUpstreamSwitch } from './account-selection.ts'
 import { AccountPool } from './AccountPool.tsx'
+import { DeviceSdkPanel } from './DeviceSdkPanel.tsx'
+import { fetchDeviceSettings, putDeviceMode, putDeviceProfile } from './device-profile.ts'
+import type { WorkBuddyDeviceMode, WorkBuddyDeviceSettings } from './device-profile.ts'
 import { OAuthSignIn } from './OAuthSignIn.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
 // `createLatestWins` is the same tested latest-wins factory the Host uses for
@@ -635,7 +640,7 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
    * bar, where every added control competes with the account table for the same
    * screen.
    */
-  const [panel, setPanel] = useState<'accounts' | 'models' | 'capabilities' | 'diag'>('accounts')
+  const [panel, setPanel] = useState<'accounts' | 'models' | 'capabilities' | 'diag' | 'sdk'>('accounts')
   const [busy, setBusy] = useState(false)
   const [settingsRevision, setSettingsRevision] = useState(0)
   /** Per-region unsaved model edits; a draft on one tab is never dropped by
@@ -664,6 +669,13 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
    * — the two save buttons are serialized to make that impossible.
    */
   const [poolBusy, setPoolBusy] = useState(false)
+  /**
+   * 设备头设置：`undefined` = 还没读到 / 这台 Host 没有这条路由。
+   *
+   * 两种"没有值"必须合并成同一个信号（不渲染控件），因为卡片无论哪种情况都不该
+   * 显示一个点不动的开关；区别只在实现上：前者下一轮轮询会补上，后者永远不会。
+   */
+  const [deviceSettings, setDeviceSettings] = useState<WorkBuddyDeviceSettings | undefined>(undefined)
   /** A refused account write (silently unpersisted settings on a locked file). */
   const [accountError, setAccountError] = useState<string | undefined>(undefined)
   /** Region whose on/off checkbox write is in flight, so its box can't race. */
@@ -1003,6 +1015,43 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
       controller.abort()
     }
   }, [open, activeRegion, refreshUsage, status.status])
+
+  /**
+   * 设备头设置：卡片打开时读一次。
+   *
+   * 不跟 60 秒轮询走：这份文档只在用户自己点开关或保存齿轮时变，定时重读只是
+   * 每分钟多一次请求。每次写完都把 Host 的返回值直接放进状态（见下面两个
+   * handler），所以这个标签页看到的永远是最新写入的那一份。
+   */
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const settings = await fetchDeviceSettings(WORKBUDDY_DEVICE_PROFILE_PATH)
+        if (!cancelled && mounted.current) setDeviceSettings(settings)
+      } catch {
+        // 读失败当作"这台 Host 没有这条路由"：不渲染控件，也不打扰用户——
+        // 设备参数是可选功能，读不到它不该在卡片上留下一行红字。
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open])
+
+  /** 切档：Host 是唯一真源，所以用它的返回值覆盖本地状态，而不是猜一个。 */
+  const changeDeviceMode = async (mode: WorkBuddyDeviceMode): Promise<void> => {
+    const settings = await putDeviceMode(WORKBUDDY_DEVICE_PROFILE_PATH, mode)
+    if (mounted.current) setDeviceSettings(settings)
+  }
+
+  /** 保存一个账号的覆盖值。抛错由 AccountPool 接住并留在弹窗里。 */
+  const saveDeviceProfile = async (
+    accountId: string,
+    values: { machineId: string, sessionId: string },
+  ): Promise<void> => {
+    const settings = await putDeviceProfile(WORKBUDDY_DEVICE_PROFILE_PATH, accountId, values)
+    if (mounted.current) setDeviceSettings(settings)
+  }
 
   /**
    * Recover from a failed status read without a close/reopen.
@@ -2938,6 +2987,21 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                     >
                       {t('row.panelDiag')}
                     </button>
+                    {/* 「SDK」 sits with the other sections rather than inside
+                        Diagnostics: this is the page a user opens to CONFIRM
+                        something works (and to copy a value), which is the one
+                        thing the read-only Diagnostics tab must not become. */}
+                    <button
+                      type="button"
+                      role="tab"
+                      id="dsm-workbuddy-tab-sdk"
+                      aria-controls="dsm-workbuddy-panel-sdk"
+                      aria-selected={panel === 'sdk'}
+                      className={`dsm-workbuddy-panel-tab${panel === 'sdk' ? ' dsm-workbuddy-panel-tab-active' : ''}`}
+                      onClick={() => { setPanel('sdk') }}
+                    >
+                      {t('row.panelSdk')}
+                    </button>
                   </div>
                 : null}
 
@@ -3093,6 +3157,15 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                       // pool keeps its row veil up until the fresh snapshot has landed
                       // (see the `onRefresh` prop note in AccountPool).
                       onRefresh={() => refreshUsage(activeRegion)}
+                      // 设备头设置（「虚拟值 / 真实值」+ 每账号齿轮）。三件一起
+                      // 只在 Host 真的回了设置时才传：一个没有这条路由的 Host
+                      // 不该出现一个点不动的开关。
+                      {...deviceSettings === undefined ? {} : {
+                        deviceMode: deviceSettings.mode,
+                        deviceProfiles: deviceSettings.accounts,
+                        onDeviceModeChange: changeDeviceMode,
+                        onSaveDeviceProfile: saveDeviceProfile,
+                      }}
                     />
                   </>
                 : null}
@@ -3593,6 +3666,20 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                       </div>
                       <p className="dsm-workbuddy-diag-hint">{t('row.diagHint')}</p>
                     </>}
+              </div>
+              {/* SDK — the real-device section. Mounted only when its tab is
+                  open, unlike the panels above which stay mounted to keep their
+                  state: this one's first render spawns a probe child process,
+                  and a virtual-tier user who never opens it should never pay
+                  for that. Hidden-on-503 is handled inside the panel. */}
+              <div
+                className="dsm-workbuddy-panel"
+                role="tabpanel"
+                id="dsm-workbuddy-panel-sdk"
+                aria-labelledby="dsm-workbuddy-tab-sdk"
+                hidden={!signedIn || panel !== 'sdk'}
+              >
+                {panel === 'sdk' ? <DeviceSdkPanel t={t} path={WORKBUDDY_DEVICE_SDK_PATH} /> : null}
               </div>
               {status.status === 'signed-out' && loading
                 // NOT the signed-out branch: nothing has answered yet. Showing

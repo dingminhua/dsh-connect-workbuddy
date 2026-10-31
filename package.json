@@ -39,6 +39,7 @@
   },
   "files": [
     "lib",
+    "native",
     "icons",
     "locale",
     "docs/assets",
