@@ -46,6 +46,8 @@ import {
   type HostSettingsService,
 } from './catalog-write.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
+import { createDeviceProfileLookup, readDeviceSettings, saveDeviceProfile, setDeviceMode } from './device-profile.ts'
+import { createDeviceSdkPort, createTuringSdk } from './turing-sdk.ts'
 import { WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
 import { BENEFIT_CACHE_MS, claimableBenefits, type WorkBuddyBenefitView } from './benefits.ts'
 import {
@@ -109,7 +111,7 @@ import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import { createFileRosterSeenStore } from './roster-seen-store.ts'
 import type { RosterSeenStore } from './roster-seen-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
-import { WorkBuddyUpstreamClient, knownRegionOf, regionOf } from './upstream.ts'
+import { WorkBuddyUpstreamClient, APP_VERSION, knownRegionOf, regionOf } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { attachBusyLevels } from './busy.ts'
 import type { WorkBuddyBusyLevel } from './busy.ts'
@@ -1282,6 +1284,19 @@ export function apply(ctx: Context, config: Config): void {
   // A fallback is worth a line in the log: it means the card's roster may no
   // longer match the app's prices, which is a user-visible difference rather
   // than a purely internal degradation.
+  /**
+   * 每账号的设备覆盖值（设置里齿轮改的那份）。
+   *
+   * 读盘缓存在 `device-profile.ts` 里是**模块级**的，所以这里、路由、以及客户端
+   * 看到的永远是同一份；`saveDeviceProfile` 写完后会立即失效它，改完下一条请求
+   * 就生效，不需要重启。
+   */
+  const deviceProfiles = createDeviceProfileLookup()
+  /**
+   * 真实设备参数的取链（P3）。构造时不碰 SDK：`info()` 与 `current()` 都是懒的，
+   * 所以一个用「虚拟值」档的机器永远不会起那个子进程。
+   */
+  const turing = createTuringSdk({ productVersion: APP_VERSION })
   const client = new WorkBuddyUpstreamClient(
     message => {
       ctx.logger.warn(`dsh-connect-workbuddy: ${message}`)
@@ -1306,6 +1321,12 @@ export function apply(ctx: Context, config: Config): void {
       return {
         deviceTokenFile: file,
         ...typeof token?.ttlMs === 'number' ? { deviceTokenTtlMs: token.ttlMs } : {},
+        // 每账号覆盖值（设置里齿轮保存的那些）。请求路径按 uid 查，读盘有 5 秒
+        // 缓存；保存会立刻失效那次缓存，所以改完下一条请求就生效。
+        deviceProfiles,
+        // 真实值档的 token 源。档位由 `deviceProfiles.mode()` 决定：真实值档只
+        // 认这一个源，虚拟值档完全不碰它（见 `wireIdentity`）。
+        realDevice: turing.tokens,
       }
     })(),
   )
@@ -2354,6 +2375,35 @@ export function apply(ctx: Context, config: Config): void {
      * document.
      */
     cliLive: () => cliRuntime?.live.snapshot() ?? { turns: [], serverTime: Date.now() },
+    /**
+     * 设备头设置（「虚拟值 / 真实值」+ 每账号覆盖参数）。
+     *
+     * uid 由 Host 自己解：卡片只认识 accountId，而构头时需要 uid——让浏览器把
+     * uid 传上来，等于把账号在网关侧的身份交给前端，没有必要。
+     */
+    deviceSettings: {
+      read: () => readDeviceSettings(),
+      setMode: mode => setDeviceMode(mode),
+      saveAccount: async (accountId, values) => {
+        for (const region of REGION_KEYS) {
+          const credential = await stacks[region].store.credentialFor(accountId)
+          if (credential !== undefined) return saveDeviceProfile(accountId, { ...values, uid: credential.uid })
+        }
+        // 账号在本机已经不存在（凭据被清掉、或来自另一个 profile）：值照写，
+        // 只是没有 uid，于是它不会影响任何请求，直到该账号重新出现并再次保存。
+        return saveDeviceProfile(accountId, values)
+      },
+    },
+    /**
+     * 真实设备参数（内置 SDK）的状态与取值。
+     *
+     * `mode` 现读而不是缓存：切档与面板是同一屏的两件事，中间隔一次 5 秒缓存就会
+     * 出现"已经切到真实值、面板还说虚拟值"的一屏。
+     */
+    deviceSdk: createDeviceSdkPort({
+      sdk: turing,
+      mode: async () => (await readDeviceSettings()).mode,
+    }),
     /**
      * Why each of the region's accounts cannot serve right now, for the composer
      * panel's table.

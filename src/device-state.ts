@@ -26,6 +26,7 @@
 import { deriveDeviceId } from './device-id.ts'
 import type { DeviceSaltReadout } from './device-salt.ts'
 import type { DeviceTokenReadout } from './device-token.ts'
+import type { TuringSdkInfo, TuringTokenReadout } from './turing-sdk.ts'
 import { describeRequestHeaderNames } from './upstream.ts'
 import type { WorkBuddyWireIdentity } from './upstream.ts'
 import type { WorkBuddyCredential } from './auth.ts'
@@ -48,6 +49,13 @@ export interface WorkBuddyDerivedDevice {
 
 /** The read-only answer `doctor` renders. */
 export interface WorkBuddyDeviceReport {
+  /**
+   * 当前档位（设置里的「虚拟值 / 真实值」）。
+   *
+   * 它必须排在 `onWire` 旁边：真实值档下 `onWire` 只有 `X-Device-Token` 一个名字，
+   * 而虚拟值档下是另一个组合。没有这一行，"为什么这次只有一条"要靠读者自己猜。
+   */
+  tier: 'virtual' | 'real'
   /**
    * 设备头名，**按当前代码实际会发的那一组算出来**。空数组 = 一个都不发。
    * 它不是断言，是测量。
@@ -87,6 +95,21 @@ export interface WorkBuddyDeviceReport {
     /** 一个样例，供人工比对两次 `doctor` 是否稳定；不代表"唯一"。 */
     sample: WorkBuddyDerivedDevice
   }
+  /**
+   * 真实值档的 SDK 状态（P3）。`token.masked` 是掩码，完整值永远不进报告。
+   */
+  sdk?: {
+    state: TuringSdkInfo['state']
+    bundle: string
+    path: string
+    reason?: string
+    token: {
+      state: TuringTokenReadout['state']
+      length: number
+      ageMs?: number
+      reason?: string
+    }
+  }
 }
 
 /**
@@ -102,7 +125,20 @@ export function describeDeviceState(
   credentials: readonly WorkBuddyCredential[],
   saltReadout: DeviceSaltReadout,
   tokenReadout?: DeviceTokenReadout,
+  /**
+   * 真实值档的读数（P3）。`tier` 单独传，不能由 `real` 在不在推断：真实值档在
+   * SDK 不可用时是"一个设备头都不发"，虚拟值档在同样情况下发派生对——两种沉默
+   * 的原因不同，不传 tier 就只能猜。
+   */
+  real?: {
+    tier: 'virtual' | 'real'
+    sdk: TuringSdkInfo
+    token: TuringTokenReadout
+    /** 完整 token，只用来让头名清单算得出来；**绝不进报告**。 */
+    value?: string
+  },
 ): WorkBuddyDeviceReport {
+  const tier: 'virtual' | 'real' = real?.tier ?? 'virtual'
   const salt: WorkBuddyDeviceReport['salt'] = {
     path: saltReadout.path,
     state: saltReadout.state,
@@ -116,20 +152,49 @@ export function describeDeviceState(
         ...tokenReadout.ageMs === undefined ? {} : { ageMs: tokenReadout.ageMs },
         ...'reason' in tokenReadout ? { reason: tokenReadout.reason } : {},
       }
-  // 头名要与真实请求一致：档位取默认，盐与 token 取刚刚那两份读数。少传一个，
-  // 报告就会答成"那个头没发"，而实际上发了——那正是这个模块最不该犯的错。
-  const identity: WorkBuddyWireIdentity = {
-    ...saltReadout.state === 'ok' ? { deviceSalt: saltReadout.salt } : {},
-    ...tokenReadout?.state === 'ok' ? { deviceToken: tokenReadout.token } : {},
-  }
+  // 头名要与真实请求一致：档位、盐、token 都取刚刚那几份读数。少传一个，报告就会
+  // 答成"那个头没发"，而实际上发了——那正是这个模块最不该犯的错。
+  const identity: WorkBuddyWireIdentity = tier === 'real'
+    ? {
+        deviceTier: 'real',
+        ...real?.value === undefined ? {} : { deviceReal: real.value },
+      }
+    : {
+        ...saltReadout.state === 'ok' ? { deviceSalt: saltReadout.salt } : {},
+        ...tokenReadout?.state === 'ok' ? { deviceToken: tokenReadout.token } : {},
+      }
   const probe = credentials[0]
   const onWire = probe === undefined
     ? []
     : describeRequestHeaderNames('chat', probe, identity)
       .filter(name => WORKBUDDY_DEVICE_HEADER_NAMES.includes(name))
 
+  const sdk: WorkBuddyDeviceReport['sdk'] = real === undefined
+    ? undefined
+    : {
+        state: real.sdk.state,
+        bundle: real.sdk.bundle,
+        path: real.sdk.path,
+        ...real.sdk.reason === undefined ? {} : { reason: real.sdk.reason },
+        token: {
+          state: real.token.state,
+          length: real.token.length,
+          ...real.token.fetchedAtMs === undefined ? {} : { ageMs: Date.now() - real.token.fetchedAtMs },
+          ...real.token.reason === undefined ? {} : { reason: real.token.reason },
+        },
+      }
+
   const uids = [...new Set(credentials.map(credential => credential.uid).filter(uid => uid !== ''))]
-  const base: WorkBuddyDeviceReport = token === undefined ? { onWire, salt } : { onWire, salt, token }
+  const base: WorkBuddyDeviceReport = {
+    tier,
+    onWire,
+    salt,
+    ...token === undefined ? {} : { token },
+    ...sdk === undefined ? {} : { sdk },
+  }
+  // 真实值档不派生：所有账号共用这一台真机，算出来的一对 id 既不会发出去，
+  // 也不该在报告里出现——那只会让读者以为它跟请求有关。
+  if (tier === 'real') return base
   if (uids.length === 0 || saltReadout.state !== 'ok') return base
 
   const machineIds = uids.map(uid => deriveDeviceId(uid, 'machine', saltReadout.salt))

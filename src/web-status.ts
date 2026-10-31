@@ -24,6 +24,10 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { preferredAccountName } from './auth.ts'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import { isVaultAccountId } from './auth.ts'
+import { isDeviceId } from './device-id.ts'
+import { isDeviceMode } from './device-profile.ts'
+import type { WorkBuddyDeviceSettingsPort } from './device-profile.ts'
+import type { WorkBuddyDeviceSdkPort } from './turing-sdk.ts'
 import { lastRefusalFor, offRefused } from './off-thinking.ts'
 import { hostMatchesListener, originIsLoopback } from './loopback.ts'
 import type { WorkBuddyBusyLevel } from './busy.ts'
@@ -61,6 +65,9 @@ import {
   WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_BENEFIT_CLAIM_PATH,
   WORKBUDDY_CLI_LIVE_PATH,
+  WORKBUDDY_DEVICE_PROFILE_PATH,
+  WORKBUDDY_DEVICE_SDK_ACTION_PARAM,
+  WORKBUDDY_DEVICE_SDK_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_POOL_ACCOUNT_PARAM,
   WORKBUDDY_PROBE_PATH,
@@ -341,6 +348,22 @@ export interface WorkBuddyStatusRouteOptions {
    * the chip renders as nothing at all.
    */
   cliLive?(): unknown
+  /**
+   * 设备头设置（「虚拟值 / 真实值」+ 每账号覆盖参数）的读写口。
+   *
+   * Optional like the other ports: a Host mounted without it answers 503, and the
+   * card hides the toggle and the row gears entirely rather than showing controls
+   * that cannot do anything.
+   */
+  deviceSettings?: WorkBuddyDeviceSettingsPort
+  /**
+   * 真实设备参数（内置 SDK）的状态与取值口。
+   *
+   * Optional like the rest: 一个没有接 SDK 的宿主（别的平台、或构建时裁掉了
+   * `native/`）答 503，卡片就把「SDK」这一页藏起来——比渲染一页永远"不可用"的
+   * 红字诚实。
+   */
+  deviceSdk?: WorkBuddyDeviceSdkPort
   /**
    * Why each of the region's accounts cannot serve right now, keyed by account
    * id. Absent key (or an absent dep) means "no reason known" — the composer
@@ -2243,6 +2266,122 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
+    /**
+     * 设备头设置：档位切换 + 每账号的虚拟参数。
+     *
+     * GET 与 POST 描述的是同一份文档，所以一条路由两种方法。POST 的两种 `kind`
+     * 都是**即时生效**——这里没有草稿，因为齿轮改的是"这台机器对外声称自己是谁"，
+     * 一个需要点保存才生效的设备身份，会让"我改完到底发出去的是什么"变成猜测。
+     */
+    const disposeDeviceProfile = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_DEVICE_PROFILE_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        const port = deps.deviceSettings
+        if (port === undefined) {
+          return json(res, 503, { reason: 'device-settings-unavailable', error: 'device settings unavailable' })
+        }
+        if (req.method === 'GET') {
+          if (!requireLoopback(req, res)) return
+          try {
+            json(res, 200, await port.read())
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
+          }
+          return
+        }
+        // Writes carry "what this machine claims to be", so they take the same
+        // POST + loopback guards as every other mutation on this card.
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!requireLoopback(req, res)) return
+        let body: Record<string, unknown>
+        try {
+          body = await readJsonBody(req)
+        } catch (error: unknown) {
+          return json(res, 400, { error: safeMessage(error) })
+        }
+        if (body['kind'] === 'mode') {
+          if (!isDeviceMode(body['mode'])) {
+            return json(res, 400, { error: 'mode must be virtual or real' })
+          }
+          try {
+            json(res, 200, await port.setMode(body['mode']))
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
+          }
+          return
+        }
+        if (body['kind'] === 'account') {
+          const accountId = typeof body['accountId'] === 'string' ? body['accountId'] : ''
+          // The id becomes a key in the device-settings file; reject a malformed
+          // one HERE so it is a 400 rather than a thrown error the card sees as 500.
+          if (!isVaultAccountId(accountId)) {
+            return json(res, 400, { error: 'accountId is not a well-formed account id' })
+          }
+          const values: { machineId?: string, sessionId?: string } = {}
+          for (const key of ['machineId', 'sessionId'] as const) {
+            const raw = body[key]
+            if (raw === undefined) continue
+            if (typeof raw !== 'string') return json(res, 400, { error: `${key} must be a string` })
+            // '' clears the override (back to the derived value); anything else
+            // must be a 36-character lowercase hex id, or the upstream would
+            // receive a header we know is malformed.
+            if (raw !== '' && !isDeviceId(raw)) {
+              return json(res, 400, { error: `${key} must be 36 lowercase hex characters` })
+            }
+            values[key] = raw
+          }
+          try {
+            json(res, 200, await port.saveAccount(accountId, values))
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
+          }
+          return
+        }
+        json(res, 400, { error: "kind must be 'mode' or 'account'" })
+      },
+    })
+    /**
+     * 真实设备参数（内置 SDK）。
+     *
+     * 三个动作的权限不一样：读状态是 GET，强制重取与取完整值是 POST。把完整值
+     * 放在 POST 后面不是形式主义——它会进浏览器历史、会被 proxy 记日志、会被截图，
+     * 而 `GET` 是三者里最容易被动触发的（预取、刷新、插件间的探测）。
+     */
+    const disposeDeviceSdk = ctx.webServer.register({
+      kind: 'exact',
+      path: WORKBUDDY_DEVICE_SDK_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        const port = deps.deviceSdk
+        if (port === undefined) {
+          return json(res, 503, { reason: 'device-sdk-unavailable', error: 'device sdk unavailable' })
+        }
+        if (!requireLoopback(req, res)) return
+        if (req.method === 'GET') {
+          try {
+            json(res, 200, await port.read())
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'device-sdk-failed', error: safeMessage(error) })
+          }
+          return
+        }
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        const action = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get(WORKBUDDY_DEVICE_SDK_ACTION_PARAM)
+        try {
+          if (action === 'reveal') {
+            const token = await port.reveal()
+            if (token === undefined) return json(res, 409, { reason: 'device-sdk-no-token', error: 'no device token is available' })
+            return json(res, 200, { token })
+          }
+          if (action === 'refresh') {
+            return json(res, 200, await port.refresh())
+          }
+        } catch (error: unknown) {
+          return json(res, 500, { reason: 'device-sdk-failed', error: safeMessage(error) })
+        }
+        json(res, 400, { error: "action must be 'refresh' or 'reveal'" })
+      },
+    })
     return () => {
       // EVERY route registered above must appear here. `benefit/claim` was
       // missing from this list (issue #86), and the cost is not a stray handler:
@@ -2265,6 +2404,8 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       disposeTransfer()
       disposeDiagWrite()
       disposeCliLive()
+      disposeDeviceProfile()
+      disposeDeviceSdk()
     }
   }, 'dsh-connect-workbuddy: Web status route')
 }

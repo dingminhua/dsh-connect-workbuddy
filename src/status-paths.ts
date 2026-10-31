@@ -124,6 +124,38 @@ export const WORKBUDDY_OAUTH_PATH = '/plugins/dsh-connect-workbuddy/oauth'
 /** Query parameter selecting which pool batch action a request means. */
 export const WORKBUDDY_POOL_ACTION_PARAM = 'action'
 
+/**
+ * 设备头设置（「虚拟值 / 真实值」+ 每账号的覆盖参数）。
+ *
+ * 一条路由两种方法，因为读和写描述的是同一份文档：
+ *   - `GET`  → `{ mode, accounts }`，卡片渲染切换项与每行的齿轮状态；
+ *   - `POST` → 立即生效（不像账号池那样有草稿）：`{ kind: 'mode', mode }` 或
+ *     `{ kind: 'account', accountId, machineId?, sessionId? }`。
+ *
+ * POST + loopback-only：写的是"这台机器对外声称自己是谁"，和凭据写入同级。
+ * 之所以不挂在账号池的 `/pool` 下面：那份草稿是"点保存才生效"的偏好，而这里的
+ * 两个动作都是即时生效，混在一条路由里会让"保存"按钮的语义变得说不清。
+ */
+export const WORKBUDDY_DEVICE_PROFILE_PATH = '/plugins/dsh-connect-workbuddy/device-profile'
+
+/**
+ * 真实设备参数（内置 Turing Shield SDK）的状态与取值。
+ *
+ * - `GET` → `{ tier, sdk, token }`，`token` 只有掩码与长度。
+ * - `POST ?action=refresh` → 强制重取一次，再返回同一形状。
+ * - `POST ?action=reveal` → `{ token }`，完整值，**只在用户显式点击时**。
+ *
+ * 为什么把"完整值"单独做成一个动作：这是一枚能代表这台机器的凭据，卡片是
+ * 一个会被截图、被贴进 issue 的界面。默认只给掩码，复制/查看各要一次显式动作。
+ */
+export const WORKBUDDY_DEVICE_SDK_PATH = '/plugins/dsh-connect-workbuddy/device-sdk'
+
+/** Which SDK action a POST means. */
+export type WorkBuddyDeviceSdkAction = 'refresh' | 'reveal'
+
+/** Query parameter selecting it. */
+export const WORKBUDDY_DEVICE_SDK_ACTION_PARAM = 'action'
+
 /** The OAuth session steps. */
 export type WorkBuddyOAuthAction = 'start' | 'poll'
 

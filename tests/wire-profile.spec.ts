@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyUpstreamClient } from '../src/upstream.ts'
 import type { WorkBuddyWireIdentity } from '../src/upstream.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
+import type { WorkBuddyDeviceProfileLookup } from '../src/device-profile.ts'
+import type { TuringTokenSource } from '../src/turing-sdk.ts'
 
 /**
  * P1 —— 出站身份档位（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P1）。
@@ -48,7 +50,11 @@ async function headersOf(
   kind: Kind,
   identity: WorkBuddyWireIdentity,
   overrides: Partial<WorkBuddyCredential> = {},
-  options: { deviceTokenFile?: string } = {},
+  options: {
+    deviceTokenFile?: string
+    deviceProfiles?: WorkBuddyDeviceProfileLookup
+    realDevice?: TuringTokenSource
+  } = {},
 ): Promise<Record<string, string>> {
   const seen: Record<string, string> = {}
   vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
@@ -103,10 +109,10 @@ describe('balanced — one client identity everywhere', () => {
     expect(seen['X-Root-Request-ID']).toBe(seen['X-Conversation-Request-ID'])
   })
 
-  it('sends the per-account device pair, and never a device token', async () => {
-    // The pair is the P1 (synthetic) tier. X-Device-Token is P2/P3 and must stay
-    // absent here: a real token plus a derived machine id is the self-
-    // contradiction the audit's §5.3 warns about.
+  it('sends the per-account device pair, and no token when none is configured', async () => {
+    // Virtual tier with no token source at all: the pair is the whole identity.
+    // A token APPEARS here only when one is configured (the P2 file source); the
+    // real tier drops the pair instead — see the P3 block below.
     const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT })
     expect(seen['X-Machine-ID']).toMatch(/^[0-9a-f]{36}$/)
     expect(seen['X-Session-ID']).toMatch(/^[0-9a-f]{36}$/)
@@ -213,14 +219,91 @@ describe('P2 — the external device token (file source)', () => {
     expect(seen['X-Machine-ID']).toMatch(/^[0-9a-f]{36}$/)
   })
 
-  it('sends the pair AND the token at once — the interim mixed tier', async () => {
-    // Deliberate: the exclusivity rule (real token ⇒ no derived pair) is the P3
-    // decision. Pinning the current behaviour here means P3 cannot change it by
-    // accident — flipping this test is the checkpoint.
+  it('sends the file token alongside the derived pair — still the virtual tier', async () => {
+    // P3 moved the exclusivity rule to the TIER, not to "a token exists". A file
+    // source is a virtual-tier feature: it supplies a token someone else wrote,
+    // and the account still presents its own derived pair. The real tier is a
+    // different path entirely (see the P3 block below), so this shape is not a
+    // contradiction — it is the virtual tier with an extra header.
     const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT, deviceToken: 'v3:abc' })
     expect(seen['X-Device-Token']).toBe('v3:abc')
     expect(seen['X-Machine-ID']).toMatch(/^[0-9a-f]{36}$/)
     expect(seen['X-Session-ID']).toMatch(/^[0-9a-f]{36}$/)
+  })
+})
+
+/**
+ * P3 —— 真实值档：所有账号共用这台机器的真实设备。
+ *
+ * 这一组的核心断言只有一个：**真实值档下不会出现派生的 id**。审计 §5.3 的
+ * 结论是"真 token 旁边挂一对按 uid 算出来的 id 等于自证不一致"，所以互斥不是
+ * "少发几个头"，而是两条互斥的路径。
+ */
+describe('P3 — the real tier', () => {
+  const tokenSource = (token: string | undefined): TuringTokenSource => ({
+    current: async () => token,
+    readout: () => ({ state: token === undefined ? 'unavailable' : 'ok', masked: token === undefined ? '' : 'v3:****************', length: token?.length ?? 0 }),
+    refresh: async () => ({ state: 'ok', masked: '', length: 0 }),
+    reveal: async () => token,
+  })
+  const realMode = (mode: 'real' | 'virtual'): WorkBuddyDeviceProfileLookup => ({
+    forUid: async () => ({ machineId: 'c'.repeat(36), sessionId: 'd'.repeat(36) }),
+    mode: async () => mode,
+  })
+
+  it('sends the real token and NOT the derived pair', async () => {
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+      deviceProfiles: realMode('real'),
+      realDevice: tokenSource('v3:real'),
+    })
+    expect(seen['X-Device-Token']).toBe('v3:real')
+    expect(seen['X-Machine-ID']).toBeUndefined()
+    expect(seen['X-Session-ID']).toBeUndefined()
+  })
+
+  it('ignores the per-account overrides — one machine cannot be two devices', async () => {
+    // The gear would have written machineId 'cccc…'. In the real tier that value
+    // must not reach the wire even though the file still holds it.
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+      deviceProfiles: realMode('real'),
+      realDevice: tokenSource('v3:real'),
+    })
+    expect(seen['X-Machine-ID']).toBeUndefined()
+  })
+
+  it('sends no device header at all when the SDK has no token', async () => {
+    // NOT a fallback to the derived pair: that would make the card say "real"
+    // while the wire says "virtual", which is the one thing the tier split
+    // exists to prevent.
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+      deviceProfiles: realMode('real'),
+      realDevice: tokenSource(undefined),
+    })
+    expect(seen['X-Device-Token']).toBeUndefined()
+    expect(seen['X-Machine-ID']).toBeUndefined()
+    expect(seen['X-Session-ID']).toBeUndefined()
+    // Everything else about the identity is untouched.
+    expect(seen['X-Product']).toBe('WorkBuddy')
+  })
+
+  it('carries the real token on billing too', async () => {
+    const seen = await headersOf('billing', { profile: 'balanced', deviceSalt: SALT }, {}, {
+      deviceProfiles: realMode('real'),
+      realDevice: tokenSource('v3:real'),
+    })
+    expect(seen['X-Device-Token']).toBe('v3:real')
+  })
+
+  it('keeps conservative byte-identical even in the real tier', async () => {
+    // The rollback tier is a promise about BYTES, so it wins over the tier
+    // selection: a user who set `conservative` gets 5.16.0, full stop.
+    const seen = await headersOf('chat', { profile: 'conservative', deviceSalt: SALT }, {}, {
+      deviceProfiles: realMode('real'),
+      realDevice: tokenSource('v3:real'),
+    })
+    expect(seen['X-Device-Token']).toBeUndefined()
+    expect(seen['X-Machine-ID']).toBeUndefined()
+    expect(seen['X-Product']).toBe('SaaS')
   })
 })
 

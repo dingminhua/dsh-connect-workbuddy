@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { describeDeviceState } from '../src/device-state.ts'
 import type { DeviceSaltReadout } from '../src/device-salt.ts'
 import type { DeviceTokenReadout } from '../src/device-token.ts'
+import type { TuringSdkInfo, TuringTokenReadout } from '../src/turing-sdk.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 
 /**
@@ -115,7 +116,58 @@ describe('describeDeviceState — the external token (P2)', () => {
   })
 })
 
-describe('describeDeviceState — the states it must keep distinct', () => {  it('reports no accounts without pretending the salt is the problem', () => {
+describe('describeDeviceState — the real tier (P3)', () => {
+  const sdkInfo = (): TuringSdkInfo => ({
+    state: 'ready',
+    bundle: 'win32-x64',
+    path: '/app/native/turing-sdk/win32-x64',
+    platform: 'win32',
+    arch: 'x64',
+    runtime: '22.22.2',
+  })
+  const tokenOk = (): TuringTokenReadout => ({
+    state: 'ok',
+    masked: 'v3:****************',
+    length: 1174,
+    fetchedAtMs: Date.now() - 5_000,
+  })
+
+  it('reports the tier so one header has one explanation', () => {
+    expect(describeDeviceState([credentialOf('u-1')], saltOk()).tier).toBe('virtual')
+    const real = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+      tier: 'real', sdk: sdkInfo(), token: tokenOk(), value: 'v3:real',
+    })
+    expect(real.tier).toBe('real')
+    expect(real.onWire).toEqual(['X-Device-Token'])
+  })
+
+  it('drops derived devices entirely — there is nothing per account to derive', () => {
+    // A derived count here would read as "3 accounts → 3 devices", which is the
+    // opposite of what this tier does.
+    const real = describeDeviceState(['u-1', 'u-2'].map(credentialOf), saltOk(), undefined, {
+      tier: 'real', sdk: sdkInfo(), token: tokenOk(), value: 'v3:real',
+    })
+    expect(real.derived).toBeUndefined()
+  })
+
+  it('reports no device header when the SDK has no token', () => {
+    const real = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+      tier: 'real', sdk: sdkInfo(), token: { state: 'idle', masked: '', length: 0 },
+    })
+    expect(real.onWire).toEqual([])
+  })
+
+  it('never puts the real token in the report', () => {
+    const real = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+      tier: 'real', sdk: sdkInfo(), token: tokenOk(), value: 'v3:real',
+    })
+    expect(JSON.stringify(real)).not.toContain('v3:real')
+    expect(real.sdk?.token.length).toBe(1174)
+  })
+})
+
+describe('describeDeviceState — the states it must keep distinct', () => {
+  it('reports no accounts without pretending the salt is the problem', () => {
     const report = describeDeviceState([], saltOk())
     expect(report.derived).toBeUndefined()
     expect(report.salt.state).toBe('ok')

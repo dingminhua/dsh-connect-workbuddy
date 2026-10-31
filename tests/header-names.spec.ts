@@ -91,6 +91,28 @@ describe('describeRequestHeaderNames', () => {
     expect(names).not.toContain('X-Device-Token')
   })
 
+  it('reports one header, not three, in the real tier (P3)', () => {
+    // 真实值档下派生对不发——这条清单必须与真实请求一致，否则 `doctor` 会声称
+    // 一条请求带了三个设备头，而它只带了一个。
+    const real = describeRequestHeaderNames('chat', credential, {
+      deviceSalt: SALT,
+      deviceTier: 'real',
+      deviceReal: 'v3:real',
+    })
+    expect(real).toContain('X-Device-Token')
+    expect(real).not.toContain('X-Machine-ID')
+    expect(real).not.toContain('X-Session-ID')
+  })
+
+  it('reports NO device header when the real tier has no token', () => {
+    // 这一档在 SDK 不可用时是"一个设备头都不发"，而不是退回派生对。少了这条，
+    // 报告里的空数组会被读成"设备层没接线"，而实际原因是"取不到真值"。
+    const real = describeRequestHeaderNames('chat', credential, { deviceSalt: SALT, deviceTier: 'real' })
+    expect(real).not.toContain('X-Device-Token')
+    expect(real).not.toContain('X-Machine-ID')
+    expect(real).not.toContain('X-Session-ID')
+  })
+
   it('closes the billing gap the audit called D2', () => {
     // Before P1 the same token presented two clients a second apart: chat with a
     // UA, Origin and identity; billing as a bare HTTP client with none of them.

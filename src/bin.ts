@@ -36,7 +36,9 @@ import { describeDeviceState } from './device-state.ts'
 import type { WorkBuddyDeviceReport } from './device-state.ts'
 import { ensureDeviceSalt, readDeviceSalt } from './device-salt.ts'
 import { readDeviceTokenFile, WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
-import { WorkBuddyUpstreamClient, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
+import { readDeviceSettings } from './device-profile.ts'
+import { createTuringSdk } from './turing-sdk.ts'
+import { WorkBuddyUpstreamClient, APP_VERSION, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
 import type { WorkBuddyRegion, WorkBuddyWireIdentity } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -91,8 +93,14 @@ type Action = 'doctor' | 'logout' | 'status'
  * not inspect a token file at all — which is a different answer from "I looked
  * and found none", so a consumer must be able to tell them apart rather than
  * guess whether the absence means "old build" or "not configured".
+ *
+ * 8 → 9: added `deviceIdentity.tier` and `deviceIdentity.sdk` (P3). `tier` is
+ * required because the same `onWire` list now has two explanations: in the real
+ * tier it is one header and derived devices do not exist. Without it a consumer
+ * reading `onWire: ['X-Device-Token']` cannot tell "real tier, working" from
+ * "virtual tier with a file token".
  */
-const JSON_SCHEMA_VERSION = 8
+const JSON_SCHEMA_VERSION = 9
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -129,22 +137,36 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
   const onWire = device.onWire.length === 0
     ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached'
     : device.onWire.join(', ')
-  const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} tier): ${onWire}`
+  const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} headers, ${device.tier} values): ${onWire}`
   const salt = `${device.salt.state}${device.salt.reason === undefined ? '' : `: ${device.salt.reason}`} — ${device.salt.path}`
-  // "没查"与"查了没有"必须分开：前者是这台 CLI 看不到插件配置，后者是配了但文件不在。
-  const token = device.token === undefined
-    ? `Device token: not inspected here — set ${WORKBUDDY_DEVICE_TOKEN_FILE_ENV} to the same file the plugin reads`
-    : `Device token: ${device.token.state}`
-      + `${device.token.ageMs === undefined ? '' : `, written ${describeAge(device.token.ageMs)} ago`}`
-      + `${device.token.reason === undefined ? '' : ` (${device.token.reason})`}`
-      + ` — ${device.token.path}`
-  const derived = accounts === 0
-    ? `Derived devices: no signed-in account to derive from; salt ${salt}`
-    : device.derived === undefined
-      ? `Derived devices: unavailable; salt ${salt}`
-      : `Derived devices: ${accounts} account(s) → ${device.derived.distinct} distinct, `
-        + `sample machine=${device.derived.sample.machineId} session=${device.derived.sample.sessionId}; salt ${salt}`
-  return [head, token, derived]
+  // 真实值档下"派生设备"这一行不是事实：所有账号共用这台真机，一对算出来的 id
+  // 既不会发出去，也不该出现在报告里。这一行换成一个明确的说明，而不是留空。
+  const derived = device.tier === 'real'
+    ? 'Derived devices: not used in the real tier — every account shares this machine\'s real device'
+    : accounts === 0
+      ? `Derived devices: no signed-in account to derive from; salt ${salt}`
+      : device.derived === undefined
+        ? `Derived devices: unavailable; salt ${salt}`
+        : `Derived devices: ${accounts} account(s) → ${device.derived.distinct} distinct, `
+          + `sample machine=${device.derived.sample.machineId} session=${device.derived.sample.sessionId}; salt ${salt}`
+  // 真 token（P2 的文件源）只在虚拟值档有意义；真实值档由 SDK 供数，那一行会
+  // 写着"这里没查"却其实根本不该看，容易误导，所以按档位换文案。
+  const token = device.tier === 'real'
+    ? `Device token file: not consulted in the real tier (the SDK is the source there)`
+    : device.token === undefined
+      ? `Device token: not inspected here — set ${WORKBUDDY_DEVICE_TOKEN_FILE_ENV} to the same file the plugin reads`
+      : `Device token: ${device.token.state}`
+        + `${device.token.ageMs === undefined ? '' : `, written ${describeAge(device.token.ageMs)} ago`}`
+        + `${device.token.reason === undefined ? '' : ` (${device.token.reason})`}`
+        + ` — ${device.token.path}`
+  const sdk = device.sdk === undefined
+    ? []
+    : [`Device SDK: ${device.sdk.state}${device.sdk.reason === undefined ? '' : `: ${device.sdk.reason}`} (${device.sdk.bundle} — ${device.sdk.path})`
+        + `; token ${device.sdk.token.state}`
+        + `${device.sdk.token.length === 0 ? '' : ` (${device.sdk.token.length} chars)`}`
+        + `${device.sdk.token.ageMs === undefined ? '' : `, fetched ${describeAge(device.sdk.token.ageMs)} ago`}`
+        + `${device.sdk.token.reason === undefined ? '' : ` (${device.sdk.token.reason})`}`]
+  return [head, token, ...sdk, derived]
 }
 
 /** Region labels for human output. */
@@ -332,11 +354,31 @@ async function doctor(jsonOutput: boolean): Promise<number> {
    */
   const deviceTokenFile = (process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV] ?? '').trim()
   const deviceToken = deviceTokenFile === '' ? undefined : await readDeviceTokenFile(deviceTokenFile)
-  const device = describeDeviceState(deviceCredentials, deviceSalt, deviceToken)
-  const wireIdentity: WorkBuddyWireIdentity = {
-    ...deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {},
-    ...deviceToken?.state === 'ok' ? { deviceToken: deviceToken.token } : {},
-  }
+  /**
+   * 真实值档（P3）。
+   *
+   * 档位来自磁盘上的设备设置，不是猜的：同一台机器上插件与 `doctor` 读的是同一份
+   * 文件。`probe` 只起一个 6 ms 的子进程读 `isSupported`，**不发网络请求**；只有
+   * 真的处于真实值档时才去取一枚 token——那正是"SDK 现在能不能工作"的答案，
+   * 而它恰好是排障时最想知道的。
+   */
+  const deviceTier = (await readDeviceSettings()).mode
+  const turing = createTuringSdk({ productVersion: APP_VERSION })
+  const turingInfo = await turing.info()
+  const turingToken = deviceTier === 'real' ? await turing.tokens.current() : undefined
+  const turingReadout = turing.tokens.readout()
+  const device = describeDeviceState(deviceCredentials, deviceSalt, deviceToken, {
+    tier: deviceTier,
+    sdk: turingInfo,
+    token: turingReadout,
+    ...turingToken === undefined ? {} : { value: turingToken },
+  })
+  const wireIdentity: WorkBuddyWireIdentity = deviceTier === 'real'
+    ? { deviceTier: 'real', ...turingToken === undefined ? {} : { deviceReal: turingToken } }
+    : {
+        ...deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {},
+        ...deviceToken?.state === 'ok' ? { deviceToken: deviceToken.token } : {},
+      }
   /**
    * `WORKBUDDY_HEADER_TRACE=1` 时的头名清单。
    *
@@ -423,9 +465,11 @@ async function doctor(jsonOutput: boolean): Promise<number> {
      * 什么。见 `docs/DEVICE-IDENTITY-AUDIT.md`。盐值本身永不出现，只报状态与路径。
      */
     deviceIdentity: {
+      tier: device.tier,
       onWire: device.onWire,
       salt: device.salt,
       ...device.token === undefined ? {} : { token: device.token },
+      ...device.sdk === undefined ? {} : { sdk: device.sdk },
       ...device.derived === undefined ? {} : { derived: device.derived },
       ...tracedHeaders === undefined
         ? {}

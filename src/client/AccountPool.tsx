@@ -46,6 +46,8 @@ import { exclusionText } from './exclusion-text.ts'
 import { availabilityLine, formatShortClock, outcomeOk, outcomeText, stateColor } from './account-state.ts'
 import { formatCredits } from './credit-format.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
+import { DeviceModeBlockedDialog, DeviceProfileDialog } from './DeviceProfileDialog.tsx'
+import type { WorkBuddyDeviceMode, WorkBuddyDeviceProfile } from './device-profile.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import type { Translate } from './searched-paths.ts'
 import { readNdjson } from './ndjson.ts'
@@ -212,6 +214,21 @@ export interface AccountPoolProps {
    * in its signed-out branch, where this section does not exist at all.
    */
   accountTools?: ReactNode
+  /**
+   * 设备头档位与每账号覆盖值（`src/client/device-profile.ts`）。
+   *
+   * 四个一起可选：一个没有挂 `/device-profile` 路由的 Host 不会传它们，这时
+   * 切换项与齿轮整块都不渲染——显示一个点不动的控件，比不显示更糟。
+   */
+  deviceMode?: WorkBuddyDeviceMode
+  deviceProfiles?: Readonly<Record<string, WorkBuddyDeviceProfile>>
+  onDeviceModeChange?: (mode: WorkBuddyDeviceMode) => void | Promise<unknown>
+  /**
+   * 保存一个账号的覆盖值。`''` 表示清空该项（回到派生值）。
+   *
+   * 抛错表示没写成功：面板会把消息留在弹窗里并让它保持打开，用户不必重填。
+   */
+  onSaveDeviceProfile?: (accountId: string, values: { machineId: string, sessionId: string }) => Promise<void>
 }
 
 /** How many activity lines are kept; the oldest are dropped. */
@@ -273,6 +290,7 @@ function formatClock(value: number): string {
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
   const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
+  const { deviceMode, deviceProfiles, onDeviceModeChange, onSaveDeviceProfile } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -297,6 +315,18 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   // something the user would ever want to "save", and it must survive the
   // re-renders that a pool refresh causes.
   const [orderRulesOpen, setOrderRulesOpen] = useState(false)
+  /**
+   * 设备头编辑器：哪个账号、是否在保存、上一次失败的原因。
+   *
+   * `undefined` = 弹窗关着。分开存 `saving`/`error` 而不是塞进同一个对象，是因为
+   * 保存失败时弹窗必须**保持打开**并保留用户填的值——关掉再重开一次，填写内容
+   * 就全没了。
+   */
+  const [deviceEditing, setDeviceEditing] = useState<{ accountId: string, name: string } | undefined>(undefined)
+  const [deviceSaving, setDeviceSaving] = useState(false)
+  const [deviceError, setDeviceError] = useState<string | undefined>(undefined)
+  const [deviceBlockedOpen, setDeviceBlockedOpen] = useState(false)
+  const [deviceModeBusy, setDeviceModeBusy] = useState(false)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -1095,6 +1125,42 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     ),
   )
 
+  /**
+   * 切换设备头档位。**即时生效**，不走草稿：这个开关决定每一行那个齿轮是否可用，
+   * 如果它要等一次「保存」才生效，用户会先看到齿轮没反应、再去找保存按钮。
+   */
+  const changeDeviceMode = async (mode: WorkBuddyDeviceMode): Promise<void> => {
+    if (onDeviceModeChange === undefined || deviceModeBusy || mode === deviceMode) return
+    setDeviceModeBusy(true)
+    setActionError(undefined)
+    try {
+      await onDeviceModeChange(mode)
+    } catch (error: unknown) {
+      if (mounted.current) setActionError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setDeviceModeBusy(false)
+    }
+  }
+
+  /** 保存一个账号的覆盖值；失败时让弹窗留着、把原因放在里面。 */
+  const saveDeviceProfileFor = async (
+    accountId: string,
+    values: { machineId: string, sessionId: string },
+  ): Promise<void> => {
+    if (onSaveDeviceProfile === undefined) return
+    setDeviceSaving(true)
+    setDeviceError(undefined)
+    try {
+      await onSaveDeviceProfile(accountId, values)
+      if (mounted.current) setDeviceEditing(undefined)
+    } catch (error: unknown) {
+      // 失败不关弹窗：关掉就等于把用户刚填的两个 36 位十六进制扔掉。
+      if (mounted.current) setDeviceError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setDeviceSaving(false)
+    }
+  }
+
   return h('section', { className: 'dsm-workbuddy-pool' },
     // The row veil: a removal writes the Host state, and the table only
     // changes once the re-read lands. That gap is what the user used to sit
@@ -1354,6 +1420,31 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       // collapsed disclosure line was the last thing read before the accounts
       // themselves — annotation before data. It now lives at the top of 「更多
       // 设置」, below everything actionable (see `orderRules`).
+
+      // 设备头档位：它同时决定"这台机器对外声称自己是谁"和每一行那个齿轮能不能
+      // 用，所以必须贴着账号表——埋进「更多设置」会让齿轮看起来时好时坏。
+      deviceMode === undefined || onDeviceModeChange === undefined
+        ? null
+        : h('div', { className: 'dsm-workbuddy-device-mode' },
+            h('span', { className: 'dsm-workbuddy-device-mode-title' }, t('row.deviceModeTitle')),
+            h('span', {
+              className: 'dsm-workbuddy-device-mode-seg',
+              role: 'group',
+              'aria-label': t('row.deviceModeTitle'),
+            },
+              ...(['virtual', 'real'] as const).map(mode => h('button', {
+                key: mode,
+                type: 'button',
+                className: `dsm-workbuddy-device-seg-btn${deviceMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
+                'aria-pressed': deviceMode === mode,
+                disabled: deviceModeBusy,
+                onClick: () => { void changeDeviceMode(mode) },
+              }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))),
+            ),
+            h('span', { className: 'dsm-workbuddy-hint' },
+              deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
+          ),
+
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
         h('div', { className: 'dsm-workbuddy-pool-row dsm-workbuddy-pool-row-head' },
           h('span', null, t('row.poolColumnAccount')),
@@ -1402,6 +1493,19 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               poolModelId: pool.targetModelId ?? '',
               onTest: () => { void runRowTest(account.accountId) },
               onRemove: () => { void runRowRemove(account.accountId, account.accountName) },
+              // 齿轮只在 Host 真的能保存时才出现；「真实值」档下置灰但仍可点，
+              // 点了弹出"为什么"。两条路都通向一次说明，而不是一个死按钮。
+              ...onSaveDeviceProfile === undefined ? {} : {
+                onEditDevice: () => {
+                  if (deviceMode === 'real') {
+                    setDeviceBlockedOpen(true)
+                    return
+                  }
+                  setDeviceError(undefined)
+                  setDeviceEditing({ accountId: account.accountId, name: account.accountName })
+                },
+              },
+              deviceGearBlocked: deviceMode === 'real',
               // Per-campaign claim, passed through as a factory: the button is
               // rendered only for benefits that are actually claimable, and the
               // row supplies the campaign so one route serves both kinds.
@@ -1505,6 +1609,28 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolRegionNote')),
 
     renderLog({ t, log, busy: busy !== undefined, onClear: () => { logStore.set(region, []); setLog([]) } }),
+
+    // 设备参数弹窗挂在 section 末尾：它是 fixed 定位的遮罩，DOM 位置不影响呈现，
+    // 挂在这里能保证它盖在整段内容之上（而不是被下面的表格挤开）。
+    deviceEditing === undefined
+      ? null
+      : h(DeviceProfileDialog, {
+          t,
+          accountName: deviceEditing.name,
+          // 已保存的值：只有被覆盖过的那一项才非空，另一项留空即"继续派生"。
+          saved: {
+            machineId: deviceProfiles?.[deviceEditing.accountId]?.machineId ?? '',
+            sessionId: deviceProfiles?.[deviceEditing.accountId]?.sessionId ?? '',
+          },
+          saving: deviceSaving,
+          ...deviceError === undefined ? {} : { error: deviceError },
+          onCancel: () => {
+            setDeviceEditing(undefined)
+            setDeviceError(undefined)
+          },
+          onSave: values => { void saveDeviceProfileFor(deviceEditing.accountId, values) },
+        }),
+    deviceBlockedOpen ? h(DeviceModeBlockedDialog, { t, onClose: () => setDeviceBlockedOpen(false) }) : null,
   )
 }
 
@@ -1571,11 +1697,24 @@ function renderAccountRow(input: {
   /** First member's ↑ (and last member's ↓) stay visible but disabled, so rows never shift. */
   moveUpDisabled: boolean
   moveDownDisabled: boolean
+  /**
+   * 打开这个账号的设备参数弹窗；undefined = 这台 Host 没有设备设置路由，
+   * 整颗齿轮不渲染（而不是渲染一个点了没反应的）。
+   */
+  onEditDevice?: () => void
+  /**
+   * 「真实值」档下齿轮置灰。
+   *
+   * 仍然是 `<button>` 而不是 `disabled`：置灰表达"现在用不了"，点击表达"为什么"。
+   * 一个真正 disabled 的按钮点不动，用户只会以为界面坏了。
+   */
+  deviceGearBlocked: boolean
 }): ReturnType<typeof h> {
   const {
     t, account, checked, canEdit, checkinSupported, onToggle, busy, rowBusy, testDisabled,
     targetHint, onTest, onRemove, onClaim, rowBusyAction, claimBusy, orderIndex, orderIsManual, moveEnabled,
     onMoveUp, onMoveDown, moveUpDisabled, moveDownDisabled, poolModelId,
+    onEditDevice, deviceGearBlocked,
   } = input
   const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
   const excluded = exclusionText(t, account.excludedBy)
@@ -1851,6 +1990,18 @@ function renderAccountRow(input: {
     // vault entry — a desktop sign-in reappears on the next rescan, which the
     // log message states instead of a silent no-op.
     h('span', { className: 'dsm-workbuddy-pool-row-actions' },
+      // 设备参数入口。放在「测试」左边：它改的是"这个账号以什么身份出现"，
+      // 与"它现在能不能用"是同一层的问题，两个按钮挨着才读得通。
+      onEditDevice === undefined
+        ? null
+        : h('button', {
+            type: 'button',
+            className: `dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn dsm-workbuddy-device-gear${deviceGearBlocked ? ' dsm-workbuddy-device-gear-off' : ''}`,
+            'aria-disabled': deviceGearBlocked ? true : undefined,
+            title: deviceGearBlocked ? t('row.deviceGearBlockedHint') : t('row.deviceGearHint'),
+            'aria-label': t('row.deviceGearAria', { accountName: name }),
+            onClick: onEditDevice,
+          }, '⚙'),
       h('button', {
         type: 'button',
         className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',

@@ -1,0 +1,8 @@
+{
+    "name": "workbuddy-turing-sdk",
+    "version": "0.1.0",
+    "private": true,
+    "description": "N-API bridge for the Tencent T-Sec TuringShield desktop SDK.",
+    "main": "index.cjs",
+    "gypfile": true
+}
