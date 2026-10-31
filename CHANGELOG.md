@@ -55,6 +55,31 @@
   - `doctor` 增 `deviceIdentity.tier` 与 `deviceIdentity.sdk`（schemaVersion 8 → 9；
     相对 5.16.0 的 schemaVersion 6，本套变更合起来是 **6 → 9**）。
 
+### 测试
+
+- **`hasTuringSdkBinding` 的兜底不再随宿主平台分岔**（Windows 腿上发现的真分岔）。
+  - 症状：`tests/turing-sdk.spec.ts` 的 "exposes the binding gate as a
+    platform-aware helper" 在 **Windows 腿确定性失败**、在 macOS 腿上绿。macOS 上
+    跑过整套的评审看不到它，所以它一路绿到了这里。
+  - 根因在被测代码，不在测试：兜底拼法取的是**宿主**的 `join`
+    （`process.platform === 'win32' ? win32.join : posix.join`），而
+    `process.platform === 'win32'` 时它恰好等于数据的 `win32.join`，于是
+    `hostPath !== dataPath` **恒为假**，兜底分支被整个短路。同一个调用
+    `(dir, exists, 'win32')` 因此在 Windows 上只试一种拼法、在 macOS 上试两种。
+  - 改法：兜底显式取**另一种**拼法（`platform === 'win32' ? posix.join :
+    win32.join`），答案只由参数决定。测试侧补一条反向用例（数据 POSIX、喂 win32
+    形状的目录）——两个方向一起断言，这个分岔在**任意宿主**上都会红。
+  - 变异验证：把兜底改回宿主 `join`，正向断言当场打红（1 failed / 28 passed）；
+    恢复后 29 passed。
+- **Windows 11 真机全量**（Node 24.22.1）：`typecheck` 通过、`build` 通过、
+  **2829 例中 2828 通过**。唯一失败是 `tests/issue12-region-hiding.spec.ts` 的
+  轮询 flake，已在**未修改的 `d5183b2` 上同样复现**（2690/2691），与本 PR 无关。
+- **Windows 上真实 SDK 链路跑通**：发现链命中
+  `%LOCALAPPDATA%\Programs\WorkBuddy\resources\app.asar.unpacked\native\turing-sdk`，
+  `probe` 返回 `ready`（`win32-x64`，napi 10），`tokens.refresh()` 取回 `v3:` 前缀
+  token、长度 1210、耗时 **418 ms**。macOS 上那条 `dispatch_sync` 主队列死锁在
+  Windows 上不复现——Windows 的原生 binding 不走 dispatch 主队列。
+
 ## 5.16.0 (2026-10-31)
 
 > **Windows 上凭据库的明文 token 之前对同机低权限进程可读。** issue #183。
