@@ -14,8 +14,14 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { bundledSdkBundleId, createTuringSdk, maskToken } from '../src/turing-sdk.ts'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  TURING_KEEP_ALIVE_TIMING,
+  bundledSdkBundleId,
+  createTuringSdk,
+  maskToken,
+  nextAutoRefreshDelayMs,
+} from '../src/turing-sdk.ts'
 
 /** 假 worker：读同目录的 `state.json`，每次调用把 `calls` 加一。 */
 const FAKE_WORKER = `'use strict'
@@ -231,5 +237,122 @@ describe('token source', () => {
     // 用户点那个按钮，就是要求"现在再试一次"。
     await sdk.tokens.refresh()
     expect(await readCalls()).toBeGreaterThan(afterFirst)
+  })
+})
+
+/**
+ * 自动预热。
+ *
+ * 这条需求来自使用现场：每次重启后「SDK」分区都显示"已加载、没取过"，因为
+ * `current()` 只在**请求要发出去**时才被调用，而一个空闲的进程从来不发请求。
+ * 于是"SDK 正常工作"和"SDK 根本没跑"在界面上长得一模一样。
+ *
+ * 调度本身是纯函数，先把它钉死；再看真实链路是否真的会自己动手。
+ */
+describe('nextAutoRefreshDelayMs', () => {
+  const ttlMs = 600_000
+
+  it('wakes just before the token expires, not on the expiry tick', () => {
+    expect(nextAutoRefreshDelayMs({ nowMs: 0, ttlMs, fetchedAtMs: 0 }))
+      .toBe(ttlMs - TURING_KEEP_ALIVE_TIMING.leadMs)
+  })
+
+  it('never schedules a zero-delay spin', () => {
+    const at = ttlMs - 1
+    expect(nextAutoRefreshDelayMs({ nowMs: at, ttlMs, fetchedAtMs: 0 }))
+      .toBe(TURING_KEEP_ALIVE_TIMING.minDelayMs)
+  })
+
+  it('retries a minute later when the last refresh failed', () => {
+    // 取到了但随后失败（例如手动刷新失败）：不能等到下次到期才发现。
+    expect(nextAutoRefreshDelayMs({ nowMs: 10, ttlMs, fetchedAtMs: 0, lastFailureAtMs: 5 }))
+      .toBe(TURING_KEEP_ALIVE_TIMING.retryMs)
+  })
+
+  it('does not poll something this machine does not have', () => {
+    // SDK 不会在运行期凭空出现；五分钟问一次足够，每分钟问一次只是脏日志。
+    expect(nextAutoRefreshDelayMs({ nowMs: 0, ttlMs, sdkState: 'missing' }))
+      .toBe(TURING_KEEP_ALIVE_TIMING.unavailableMs)
+    expect(nextAutoRefreshDelayMs({ nowMs: 0, ttlMs, sdkState: 'error' }))
+      .toBe(TURING_KEEP_ALIVE_TIMING.unavailableMs)
+    // 没结论时按"可能取得到"处理：启动那一下必须真的去试。
+    expect(nextAutoRefreshDelayMs({ nowMs: 0, ttlMs, sdkState: 'ready' }))
+      .toBe(TURING_KEEP_ALIVE_TIMING.retryMs)
+    expect(nextAutoRefreshDelayMs({ nowMs: 0, ttlMs }))
+      .toBe(TURING_KEEP_ALIVE_TIMING.retryMs)
+  })
+})
+
+describe('自动预热（auto refresh）', () => {
+  it('fetches as soon as it starts — no request needed', async () => {
+    const sdk = make()
+    // 这就是用户看到的那一格：启动后、任何请求之前，状态必须是 idle。
+    expect(sdk.tokens.readout().state).toBe('idle')
+    sdk.startAutoRefresh()
+    await vi.waitFor(() => {
+      expect(sdk.tokens.readout().state).toBe('ok')
+    }, { timeout: 10_000 })
+    sdk.stopAutoRefresh()
+    // probe + token 各一次子进程：证明它是真的去取了，而不是把 idle 改了个名字。
+    expect(await readCalls()).toBeGreaterThanOrEqual(2)
+  })
+
+  it('refreshes itself when the token expires', async () => {
+    // 用真实时钟 + 压缩过的 TTL：这条测的正是"到期后没人问也会换新"。
+    const sdk = createTuringSdk({
+      dir: sdkDir,
+      worker,
+      ttlMs: 250,
+      keepAliveTiming: { leadMs: 0, minDelayMs: 40, retryMs: 40 },
+    })
+    sdk.startAutoRefresh()
+    try {
+      await vi.waitFor(() => {
+        expect(sdk.tokens.readout().state).toBe('ok')
+      }, { timeout: 10_000 })
+      const first = sdk.tokens.readout().fetchedAtMs
+      const callsAtFirst = await readCalls()
+      await vi.waitFor(async () => {
+        expect(await readCalls()).toBeGreaterThan(callsAtFirst)
+      }, { timeout: 10_000 })
+      // 不只是"又跑了一次"，而是这一枚 token 确实被换成了新的。
+      expect(sdk.tokens.readout().fetchedAtMs).toBeGreaterThan(first ?? 0)
+    } finally {
+      sdk.stopAutoRefresh()
+    }
+  })
+
+  it('stops when told to', async () => {
+    const sdk = createTuringSdk({
+      dir: sdkDir,
+      worker,
+      ttlMs: 200,
+      keepAliveTiming: { leadMs: 0, minDelayMs: 30, retryMs: 30 },
+    })
+    sdk.startAutoRefresh()
+    await vi.waitFor(() => {
+      expect(sdk.tokens.readout().state).toBe('ok')
+    }, { timeout: 10_000 })
+    sdk.stopAutoRefresh()
+    const calls = await readCalls()
+    await new Promise(resolve => setTimeout(resolve, 500))
+    // 插件卸载后还留着一条定时链，就是一个永远关不掉的子进程工厂。
+    expect(await readCalls()).toBe(calls)
+  })
+
+  it('is idempotent: starting twice keeps one chain', async () => {
+    const sdk = make()
+    sdk.startAutoRefresh()
+    sdk.startAutoRefresh()
+    await vi.waitFor(() => {
+      expect(sdk.tokens.readout().state).toBe('ok')
+    }, { timeout: 10_000 })
+    const calls = await readCalls()
+    await new Promise(resolve => setTimeout(resolve, 300))
+    // 第二次 start 不是"再取一次"：它看到同一个 inFlight（或一个还算新鲜的
+    // token）就什么都不做。真要出问题的是定时器——两条链会让间隔悄悄减半，
+    // 那要跑十分钟才看得出来，所以这里只钉"不会立刻重复取数"。
+    expect(await readCalls()).toBe(calls)
+    sdk.stopAutoRefresh()
   })
 })

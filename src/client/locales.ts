@@ -486,7 +486,7 @@ export const en = {
   // with actions the user performs while nothing is broken (verify the link,
   // look at the value), whereas Diagnostics is read-only by contract.
   'row.panelSdk': 'SDK',
-  'sdk.hint': 'The real device token this machine signs through the bundled SDK. Every account sends this one value in the Real tier; the Virtual tier never touches it.',
+  'sdk.hint': 'The real device token this machine signs through the bundled SDK. Every account sends this one value in the Real tier; the Virtual tier never sends it (the token is still kept warm so this page always shows the current one).',
   'sdk.loading': 'Asking the SDK…',
   'sdk.unavailable': 'This Host build has no SDK route — real device parameters are not available here. The Virtual tier still works.',
   'sdk.state': 'Connection',
@@ -1101,7 +1101,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.deviceDialogSaving': '保存中…',
   'row.deviceInvalid': '需要 36 个十六进制字符（0-9a-f）',
   'row.panelSdk': 'SDK',
-  'sdk.hint': '这台机器通过内置 SDK 签发的真实设备 token。「真实值」档下所有账号都发这一个值；「虚拟值」档完全不碰它。',
+  'sdk.hint': '这台机器通过内置 SDK 签发的真实设备 token。「真实值」档下所有账号都发这一个值；「虚拟值」档不发送它（仍会后台预热，所以这一页随时能看到当前值）。',
   'sdk.loading': '正在询问 SDK…',
   'sdk.unavailable': '这个 Host 版本没有 SDK 路由——这里拿不到真实设备参数。「虚拟值」档不受影响。',
   'sdk.state': '连接状态',

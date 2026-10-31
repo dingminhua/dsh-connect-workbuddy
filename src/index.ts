@@ -1294,10 +1294,18 @@ export function apply(ctx: Context, config: Config): void {
    */
   const deviceProfiles = createDeviceProfileLookup()
   /**
-   * 真实设备参数的取链（P3）。构造时不碰 SDK：`info()` 与 `current()` 都是懒的，
-   * 所以一个用「虚拟值」档的机器永远不会起那个子进程。
+   * 真实设备参数的取链（P3）。
+   *
+   * **启动即预热**：`startAutoRefresh()` 立刻取一次，此后在 10 分钟 TTL 到期前自动
+   * 换新。此前只有请求路径会调 `current()`，于是空闲进程的「SDK」分区永远停在
+   * "已加载、没取过"——那与"SDK 坏了"在界面上长得一样，而这正是用户反馈的现象。
+   *
+   * 代价是一次子进程 + 一次取数，之后每 10 分钟一次；`stopAutoRefresh()` 挂在
+   * `ctx.effect` 的清理上，插件卸载时定时器随之消失。
    */
   const turing = createTuringSdk({ productVersion: APP_VERSION })
+  turing.startAutoRefresh()
+  ctx.effect(() => () => { turing.stopAutoRefresh() })
   const client = new WorkBuddyUpstreamClient(
     message => {
       ctx.logger.warn(`dsh-connect-workbuddy: ${message}`)

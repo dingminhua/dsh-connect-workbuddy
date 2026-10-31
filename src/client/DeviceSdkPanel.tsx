@@ -17,7 +17,7 @@
  * @module dsh-connect-workbuddy/client/DeviceSdkPanel
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { fetchDeviceSdk, refreshDeviceSdk, revealDeviceSdk } from './device-sdk.ts'
 import type { DeviceSdkReport } from './device-sdk.ts'
@@ -79,6 +79,31 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
   }, [path])
 
   useEffect(() => { void load(false) }, [load])
+
+  /**
+   * 「已加载、没取过」不该停在屏幕上。
+   *
+   * 启动时的后台预热要起一个子进程再等一次网络（约几百毫秒），而这一页是在用户
+   * 点开标签时挂载的——两者偶尔会撞在一起，那一瞬间读到的就是 idle。这里做有限次
+   * 复查（最多 5 次、每次 1.2 秒）：预热一落地，这一行自己变成"可用"，而不是要用户
+   * 手动点一次「重新获取」。上限是必须的——预热真的失败时，无限轮询只是一台一直
+   * 发 GET 的机器。
+   */
+  const idlePolls = useRef(0)
+  useEffect(() => {
+    if (path === '') return
+    if (report?.sdk.state !== 'ready' || report.token.state !== 'idle') return
+    if (idlePolls.current >= 5) return
+    idlePolls.current += 1
+    // 静默复查：只更新快照，不动 `busy` / `value` / `error`——后台的一次 GET 不该
+    // 让「重新获取」按钮闪成"取数中"，也不该把用户已经展开的完整值收起来。
+    const timer = window.setTimeout(() => {
+      void fetchDeviceSdk(path).then(next => {
+        if (next !== undefined) setReport(next)
+      }).catch(() => { /* 一次静默复查失败不打扰用户：上面那行仍然显示原因 */ })
+    }, 1200)
+    return () => window.clearTimeout(timer)
+  }, [path, report])
 
   if (path === '') return null
   if (loading) return <p className="dsm-workbuddy-panel-note">{t('sdk.loading')}</p>

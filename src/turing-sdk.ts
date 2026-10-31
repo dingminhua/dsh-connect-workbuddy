@@ -22,6 +22,14 @@
  * 刷新周期）。**不落盘**：多一份 secret 文件换来的只是省掉一次 100 ms 的取数，
  * 不划算——这与 P2 的文件源是两种东西，那个读的是别人写的文件。
  *
+ * ## 谁来决定"什么时候取"
+ *
+ * 请求路径只在**要发请求**时调 {@link TuringTokenSource.current}，所以一个空闲
+ * 进程一辈子不会刷新 token——面板上永远是"已加载、没取过"，而用户无法把这句话
+ * 与"SDK 坏了"区分开。插件 apply 时调 {@link TuringSdk.startAutoRefresh}：立刻
+ * 取一次，此后在 TTL 到期前自动换新；失败按 {@link TuringKeepAliveTiming.retryMs}
+ * 重试，本机没有 SDK 则按 {@link TuringKeepAliveTiming.unavailableMs} 慢查。
+ *
  * ## 从不打印 token
  *
  * 这个模块的任何日志、任何返回给浏览器的状态里都只有掩码与长度。完整值只经
@@ -69,6 +77,66 @@ const PROBE_CACHE_MS = 60_000
  * 就是要求现在再试一次。
  */
 const RETRY_BACKOFF_MS = 30_000
+
+/**
+ * 后台预热提前多久换新。
+ *
+ * 不在"刚好过期"那一刻换：定时器可能被系统挂起、被打断，晚个几百毫秒就够让一条
+ * 请求带着刚过期的值出去。提前 15 秒，代价是每 10 分钟多一次 100 ms 的取数。
+ */
+const KEEP_ALIVE_LEAD_MS = 15_000
+
+/** 预热失败后的重试间隔。比请求路径的 30 秒退避松一点：这里没有人在等。 */
+const KEEP_ALIVE_RETRY_MS = 60_000
+
+/** SDK 根本不可用（没内置副本、平台不支持、加载失败）时的复查间隔。 */
+const KEEP_ALIVE_UNAVAILABLE_MS = 5 * 60_000
+
+/** 下一次预热的延迟下限，防止把定时器排成 0 ms 的自旋。 */
+const KEEP_ALIVE_MIN_DELAY_MS = 5_000
+
+/** 一次预热的四个时间参数。合并成一个对象，纯粹是为了让测试能把十分钟压成几百毫秒。 */
+export interface TuringKeepAliveTiming {
+  /** 提前多久换新。 */
+  leadMs: number
+  /** 取数失败后的重试间隔。 */
+  retryMs: number
+  /** SDK 不在这台机器上时的复查间隔。 */
+  unavailableMs: number
+  /** 任何情况下的延迟下限。 */
+  minDelayMs: number
+}
+
+/** 生产用法；测试可以整体或部分覆盖（见 `createTuringSdk` 的 `keepAliveTiming`）。 */
+export const TURING_KEEP_ALIVE_TIMING: TuringKeepAliveTiming = {
+  leadMs: KEEP_ALIVE_LEAD_MS,
+  retryMs: KEEP_ALIVE_RETRY_MS,
+  unavailableMs: KEEP_ALIVE_UNAVAILABLE_MS,
+  minDelayMs: KEEP_ALIVE_MIN_DELAY_MS,
+}
+
+/** 决定下一次自动预热的延迟（毫秒）。导出来是为了能直接测调度，而不必真等十分钟。 */
+export function nextAutoRefreshDelayMs(input: {
+  nowMs: number
+  ttlMs: number
+  /** 当前这枚 token 的取数时间；没有 token 时省略。 */
+  fetchedAtMs?: number
+  /** 最近一次**失败**的时刻。 */
+  lastFailureAtMs?: number
+  /** 最近一次 probe 的结论，用来区分"暂时取不到"和"这台机器没有 SDK"。 */
+  sdkState?: TuringSdkInfo['state']
+}, timing: TuringKeepAliveTiming = TURING_KEEP_ALIVE_TIMING): number {
+  const { nowMs, ttlMs, fetchedAtMs, lastFailureAtMs, sdkState } = input
+  if (fetchedAtMs !== undefined) {
+    // 取到了但随后又失败过（例如手动刷新失败）：一分钟后再试一次，别等到下次到期。
+    if (lastFailureAtMs !== undefined && lastFailureAtMs >= fetchedAtMs) return timing.retryMs
+    const remainMs = ttlMs - timing.leadMs - (nowMs - fetchedAtMs)
+    return Math.max(remainMs, timing.minDelayMs)
+  }
+  // 还没有 token：SDK 不在这台机器上就慢一点问——每 60 秒做一次没有结果的 probe
+  // 只是让日志变脏，而且 SDK 不会在运行期凭空出现。
+  return sdkState !== undefined && sdkState !== 'ready' ? timing.unavailableMs : timing.retryMs
+}
 
 /** 内置副本的目录名，按 `platform-arch` 分。目前只有 Windows。 */
 export function bundledSdkBundleId(platform: string = process.platform, arch: string = process.arch): string {
@@ -241,6 +309,14 @@ export interface TuringTokenSource {
 export interface TuringSdk {
   info(): Promise<TuringSdkInfo>
   tokens: TuringTokenSource
+  /**
+   * 启动后台预热：立刻取一次，此后在 TTL 到期前自动换新。
+   *
+   * 幂等。插件 apply 时调一次即可；不调也不会坏，只是回到"没人问就不取"的旧行为。
+   */
+  startAutoRefresh(): void
+  /** 停掉预热（插件卸载 / 测试收尾）。之后仍可再 start。 */
+  stopAutoRefresh(): void
 }
 
 /**
@@ -306,10 +382,16 @@ export function createTuringSdk(options: {
    * 逐条验证——否则它们只能靠线上观察。
    */
   worker?: string
+  /**
+   * 预热的时间参数。**只为测试存在**：把十分钟的 TTL 压成几百毫秒，才能验证
+   * "到期会自动换新"这件事，而不是靠线上等一周。
+   */
+  keepAliveTiming?: Partial<TuringKeepAliveTiming>
 } = {}): TuringSdk {
   const now = options.now ?? (() => Date.now())
   const worker = options.worker ?? workerPath()
   const ttlMs = options.ttlMs ?? TURING_TOKEN_TTL_MS
+  const keepAliveTiming: TuringKeepAliveTiming = { ...TURING_KEEP_ALIVE_TIMING, ...options.keepAliveTiming }
   const bundle = bundledSdkBundleId()
   const configuredDir = options.dir ?? process.env[TURING_SDK_DIR_ENV]
   const dir = configuredDir !== undefined && configuredDir.trim() !== ''
@@ -326,6 +408,11 @@ export function createTuringSdk(options: {
   /** 最近一次失败的时刻；退避窗口由它算。 */
   let lastFailureAtMs: number | undefined
   let inFlight: Promise<string | undefined> | undefined
+  /** 后台预热的定时器；`undefined` 表示当前没有排下一轮。 */
+  let keepAliveTimer: ReturnType<typeof setTimeout> | undefined
+  let keepAliveActive = false
+  /** 最近一次 probe 的结论，用来决定"没有 token"时多久再问一次。 */
+  let lastSdkState: TuringSdkInfo['state'] | undefined
 
   const runtimeLabel = process.versions.electron === undefined
     ? process.version.replace(/^v/u, '')
@@ -404,6 +491,7 @@ export function createTuringSdk(options: {
   async function fetchOnce(): Promise<string | undefined> {
     lastAttemptMs = now()
     const info = await probe()
+    lastSdkState = info.state
     if (info.state !== 'ready') {
       lastFailure = info.reason ?? `sdk is ${info.state}`
       lastFailureAtMs = lastAttemptMs
@@ -441,8 +529,78 @@ export function createTuringSdk(options: {
     return undefined
   }
 
+  /**
+   * 预热一次：到期前换新，其余情况什么都不做。
+   *
+   * 与 {@link current} 的分工是这条需求的核心。`current()` 只在**请求要发出去**时
+   * 被调用，所以一个空闲的进程永远不会刷新 token——面板看到的永远是"已加载、
+   * 没取过"，而用户无法分辨那是"SDK 没工作"还是"还没轮到它工作"。预热在启动时
+   * 与每次到期前跑，让"现在这枚 token 是什么"随时可以回答。
+   *
+   * 幂等：不算到期就返回，失败退避窗口内也返回，已有请求在飞就等它。
+   */
+  async function warm(): Promise<void> {
+    const at = now()
+    const failedSinceFetch = cached !== undefined
+      && lastFailureAtMs !== undefined
+      && lastFailureAtMs >= cached.fetchedAtMs
+    const fresh = cached !== undefined && at - cached.fetchedAtMs < ttlMs - keepAliveTiming.leadMs
+    if (fresh && !failedSinceFetch) return
+    // 退避窗口内不重复起子进程：预热每分钟来一次，没必要一遍遍撞同一堵墙。
+    if (lastFailureAtMs !== undefined && at - lastFailureAtMs < RETRY_BACKOFF_MS) return
+    if (inFlight !== undefined) {
+      await inFlight
+      return
+    }
+    inFlight = fetchOnce().finally(() => { inFlight = undefined })
+    await inFlight
+  }
+
+  function nextDelayMs(): number {
+    return nextAutoRefreshDelayMs({
+      nowMs: now(),
+      ttlMs,
+      ...cached === undefined ? {} : { fetchedAtMs: cached.fetchedAtMs },
+      ...lastFailureAtMs === undefined ? {} : { lastFailureAtMs },
+      ...lastSdkState === undefined ? {} : { sdkState: lastSdkState },
+    }, keepAliveTiming)
+  }
+
+  /**
+   * 一轮预热：取一次，然后按 {@link nextDelayMs} 排下一轮。
+   *
+   * 单链而不是 `setInterval`：间隔不是常数（成功是"到 TTL 前 15 秒"，失败是 60 秒，
+   * SDK 不在这台机器上是 5 分钟），而且每一轮都要按**当下**的时间重算，否则系统
+   * 休眠回来后会把积压的 tick 一次放出来。
+   */
+  async function tick(): Promise<void> {
+    if (!keepAliveActive) return
+    try {
+      await warm()
+    } catch {
+      // warm 自己不抛；这里只是不让一次意外把整条定时链断掉。
+    }
+    if (!keepAliveActive) return
+    keepAliveTimer = setTimeout(() => { void tick() }, nextDelayMs())
+    // 后台预热不该把宿主进程钉在运行状态（Node 语义；测试里的假定时器没有它）。
+    keepAliveTimer.unref?.()
+  }
+
   return {
     info: probe,
+    startAutoRefresh(): void {
+      if (keepAliveActive) return
+      keepAliveActive = true
+      // 立即一次，不等定时器：重启后打开面板不该是"已加载但没取过"。
+      void tick()
+    },
+    stopAutoRefresh(): void {
+      keepAliveActive = false
+      if (keepAliveTimer !== undefined) {
+        clearTimeout(keepAliveTimer)
+        keepAliveTimer = undefined
+      }
+    },
     tokens: {
       current,
       readout,

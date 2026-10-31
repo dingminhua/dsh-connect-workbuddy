@@ -42,6 +42,17 @@ const isolatedEnv = {
   LOCALAPPDATA: join(isolatedHome, 'AppData', 'Local'),
   APPDATA: join(isolatedHome, 'AppData', 'Roaming'),
   XDG_CONFIG_HOME: join(isolatedHome, '.config'),
+  /**
+   * 内置 SDK 就在仓库里（`native/turing-sdk/win32-x64`），而插件启动时会
+   * **自动预热**一次真实设备 token。不隔离的话，每加载一次插件就是一次子进程
+   * 加一次联网取数——测试不该发网络请求，那些进程还会把 CPU 垫高，让时序断言
+   * （`tests/tps.spec.ts` 那类）偶发失败。
+   *
+   * 指到一个不存在的目录：探针立刻答 `missing` 且**不起进程**，预热只是排一次
+   * 五分钟后的复查。SDK 的真实链路由 `tests/turing-sdk.spec.ts` 用临时目录 +
+   * 假 worker 专门覆盖，那里才是它该被验证的地方。
+   */
+  WORKBUDDY_TURING_SDK_DIR: join(isolatedHome, 'no-bundled-sdk'),
 }
 
 /**
