@@ -236,6 +236,90 @@ describe('discoverInstalledSdkDir', () => {
   })
 })
 
+/**
+ * 作者意见 #1：卡片上填的目录必须**下一次观察就生效**，不用重装或重启。
+ *
+ * 这条缝的全部价值在于"它是函数而不是字符串"——所以每条用例都改一次那个函数
+ * 的返回值，再看 `info().path` 有没有跟着走。
+ */
+describe('createTuringSdk — a directory the user can change (作者意见 #1)', () => {
+  const sdkShape = (base: string): string[] => [
+    `${base}\\build\\Release\\turing_sdk.node`,
+  ]
+
+  it('picks up a newly typed directory without rebuilding the handle', async () => {
+    let typed = ''
+    const sdk = createTuringSdk({
+      worker,
+      now: () => clock,
+      platform: 'win32',
+      arch: 'x64',
+      env: {},
+      exists: path => sdkShape('D:\\typed').includes(path),
+      dirSource: async () => typed,
+    })
+    // 还没填：发现链在注入的 exists 下什么也找不到 → missing。
+    expect((await sdk.info()).state).toBe('missing')
+
+    // 用户填了目录并保存 —— 句柄没变，只是那个函数开始返回新值。
+    typed = 'D:\\typed'
+    const after = await sdk.info()
+    expect(after.state).toBe('ready')
+    expect(after.path).toBe('D:\\typed')
+
+    // 又清空了：回到发现链（这里仍然找不到）→ missing，而不是继续用旧目录。
+    typed = ''
+    expect((await sdk.info()).state).toBe('missing')
+  })
+
+  it('does not serve a cached probe result for a different directory', async () => {
+    // probe 缓存按**解析结果**判有效，不是按时间：否则填了新目录还要等 10 秒
+    // 才看见变化，而用户会以为保存失败了。
+    let typed = 'D:\\one'
+    const sdk = createTuringSdk({
+      worker,
+      now: () => clock,
+      platform: 'win32',
+      arch: 'x64',
+      env: {},
+      exists: path => [...sdkShape('D:\\one'), ...sdkShape('D:\\two')].includes(path),
+      dirSource: async () => typed,
+    })
+    expect((await sdk.info()).path).toBe('D:\\one')
+    typed = 'D:\\two'
+    expect((await sdk.info()).path).toBe('D:\\two')
+  })
+
+  it('lets WORKBUDDY_TURING_SDK_DIR win over what the card holds', async () => {
+    // 环境变量是排障旁路（doctor 只能读它），所以它压过卡片。反过来会让一个
+    // 排障时设的变量在下一次点保存后静默失效。
+    const sdk = createTuringSdk({
+      worker,
+      now: () => clock,
+      platform: 'win32',
+      arch: 'x64',
+      env: { WORKBUDDY_TURING_SDK_DIR: 'E:\\from-env' },
+      exists: path => [...sdkShape('E:\\from-env'), ...sdkShape('D:\\typed')].includes(path),
+      dirSource: async () => 'D:\\typed',
+    })
+    expect((await sdk.info()).path).toBe('E:\\from-env')
+  })
+
+  it('still prefers an explicit dir over the card — that seam is for tests', async () => {
+    const sdk = createTuringSdk({
+      dir: 'D:\\explicit',
+      worker,
+      now: () => clock,
+      platform: 'win32',
+      arch: 'x64',
+      env: {},
+      exists: path => [...sdkShape('D:\\explicit'), ...sdkShape('D:\\typed')].includes(path),
+      dirSource: async () => 'D:\\typed',
+    })
+    expect((await sdk.info()).path).toBe('D:\\explicit')
+  })
+})
+
 describe('probe', () => {
   it('reports missing without spawning anything when the bundle is absent', async () => {
     const sdk = createTuringSdk({ dir: join(root, 'nope'), worker, now: () => clock })

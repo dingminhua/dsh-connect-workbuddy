@@ -33,10 +33,19 @@ export interface WorkBuddyDeviceSettings {
    * 于是弹窗不能声称"留空会得到某个值"。
    */
   derived?: Record<string, WorkBuddyDeviceDerived>
+  /** 手填的 SDK 目录；空串 = 走自动发现链。 */
+  sdkDir: string
+  /** 真实值档取不到 token 时退回虚拟值（默认开）。 */
+  sdkFallbackToVirtual: boolean
 }
 
-/** 取不到设置时的答案：虚拟档、无覆盖。与 Host 的默认值一致。 */
-export const EMPTY_DEVICE_SETTINGS: WorkBuddyDeviceSettings = { mode: 'virtual', accounts: {} }
+/** 取不到设置时的答案：虚拟档、无覆盖、回退开、无手填目录。与 Host 一致。 */
+export const EMPTY_DEVICE_SETTINGS: WorkBuddyDeviceSettings = {
+  mode: 'virtual',
+  accounts: {},
+  sdkDir: '',
+  sdkFallbackToVirtual: true,
+}
 
 /** 与 Host 侧同一条规则：36 个小写十六进制字符。 */
 const DEVICE_ID_PATTERN = /^[0-9a-f]{36}$/u
@@ -59,7 +68,8 @@ export function randomDeviceId(): string {
 }
 
 /**
- * Normalize one Host answer.
+ * Normalize one Host answer. Shared by the GET and the POST: two copies of this
+ * coercion is how the two answers start disagreeing.
  *
  * 派生值逐条校验形状：它是画在输入框正下方的 36 位串，混进一个 undefined 会
  * 直接渲染成 "undefined"，比不显示更糟。Host 与本页面同源，这里不做安全意义上的
@@ -81,6 +91,9 @@ function normalizeSettings(body: Partial<WorkBuddyDeviceSettings>): WorkBuddyDev
     mode: body.mode === 'real' ? 'real' : 'virtual',
     accounts,
     ...body.derived === undefined ? {} : { derived },
+    sdkDir: typeof body.sdkDir === 'string' ? body.sdkDir : '',
+    // 缺字段 = 回退开：与 Host 的默认值一致，也与「这个 Host 还不认识这一项」一致。
+    sdkFallbackToVirtual: body.sdkFallbackToVirtual !== false,
   }
 }
 
@@ -128,4 +141,19 @@ export function putDeviceProfile(
   values: { machineId?: string, sessionId?: string },
 ): Promise<WorkBuddyDeviceSettings> {
   return post(path, { kind: 'account', accountId, ...values })
+}
+
+/**
+ * Save the SDK directory and/or the fallback switch (作者意见 #1 / #2).
+ *
+ * `undefined` leaves a field alone, exactly like {@link putDeviceProfile}: the
+ * panel has two independent controls, and saving one must not write the other
+ * back to a stale value. `sdkDir: ''` clears the override and returns to
+ * automatic discovery — a different intent from "leave it alone".
+ */
+export function putDeviceSdk(
+  path: string,
+  values: { sdkDir?: string, sdkFallbackToVirtual?: boolean },
+): Promise<WorkBuddyDeviceSettings> {
+  return post(path, { kind: 'sdk', ...values })
 }

@@ -99,8 +99,15 @@ type Action = 'doctor' | 'logout' | 'status'
  * tier it is one header and derived devices do not exist. Without it a consumer
  * reading `onWire: ['X-Device-Token']` cannot tell "real tier, working" from
  * "virtual tier with a file token".
+ *
+ * 9 → 10: `deviceIdentity.tierSent` / `deviceIdentity.fallbackToVirtual` (作者
+ * 意见 #2). Once the real tier may fall back to the virtual device, `tier` alone
+ * is no longer a description of the wire — it is the INTENT. Both fields appear
+ * only when they diverge, so a consumer that only knows version 9 keeps working
+ * for every machine that never turned the switch on, and a machine that did
+ * becomes legible instead of self-contradictory.
  */
-const JSON_SCHEMA_VERSION = 9
+const JSON_SCHEMA_VERSION = 10
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -137,11 +144,22 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
   const onWire = device.onWire.length === 0
     ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached'
     : device.onWire.join(', ')
-  const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} headers, ${device.tier} values): ${onWire}`
+  /**
+   * 档位这一句要能读出**分岔**（作者意见 #2）。
+   *
+   * 退回生效时用户设的是 real、线上发的是 virtual。只印 `device.tier` 会让这一行
+   * 与后头的头名清单互相打脸（"real values: X-Machine-ID, X-Session-ID" 读起来像
+   * bug）。所以分岔时就把它明写出来，并说出为什么——退回是用户自己开的开关。
+   */
+  const tierWords = device.tierSent === undefined
+    ? `${device.tier} values`
+    : `${device.tier} requested, ${device.tierSent} values (fell back: no real device token)`
+  const head = `Device identity on the wire (${DEFAULT_WIRE_PROFILE} headers, ${tierWords}): ${onWire}`
   const salt = `${device.salt.state}${device.salt.reason === undefined ? '' : `: ${device.salt.reason}`} — ${device.salt.path}`
   // 真实值档下"派生设备"这一行不是事实：所有账号共用这台真机，一对算出来的 id
   // 既不会发出去，也不该出现在报告里。这一行换成一个明确的说明，而不是留空。
-  const derived = device.tier === 'real'
+  // 退回时**例外**：那一档实际发的是派生对，所以照样要印。
+  const derived = device.tierSent === 'real'
     ? 'Derived devices: not used in the real tier — every account shares this machine\'s real device'
     : accounts === 0
       ? `Derived devices: no signed-in account to derive from; salt ${salt}`
@@ -150,8 +168,9 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
         : `Derived devices: ${accounts} account(s) → ${device.derived.distinct} distinct, `
           + `sample machine=${device.derived.sample.machineId} session=${device.derived.sample.sessionId}; salt ${salt}`
   // 真 token（P2 的文件源）只在虚拟值档有意义；真实值档由 SDK 供数，那一行会
-  // 写着"这里没查"却其实根本不该看，容易误导，所以按档位换文案。
-  const token = device.tier === 'real'
+  // 写着"这里没查"却其实根本不该看，容易误导，所以按档位换文案。退回时同样例外：
+  // 那一档此刻会真的去读文件源（`upstream.ts` 的退回分支），所以照常印。
+  const token = device.tierSent === 'real'
     ? `Device token file: not consulted in the real tier (the SDK is the source there)`
     : device.token === undefined
       ? `Device token: not inspected here — set ${WORKBUDDY_DEVICE_TOKEN_FILE_ENV} to the same file the plugin reads`
@@ -364,8 +383,14 @@ async function doctor(jsonOutput: boolean): Promise<number> {
    * 真的处于真实值档时才去取一枚 token——那正是"SDK 现在能不能工作"的答案，
    * 而它恰好是排障时最想知道的。
    */
-  const deviceTier = (await readDeviceSettings()).mode
-  const turing = createTuringSdk({ productVersion: APP_VERSION })
+  const deviceSettings = await readDeviceSettings()
+  const deviceTier = deviceSettings.mode
+  const turing = createTuringSdk({
+    productVersion: APP_VERSION,
+    // 卡片上填的目录（作者意见 #1）：doctor 与插件读同一份设置，所以排障时
+    // 两边看到的目录不会一个有一个没有。
+    dirSource: async () => (await readDeviceSettings()).sdkDir,
+  })
   const turingInfo = await turing.info()
   const turingToken = deviceTier === 'real' ? await turing.tokens.current() : undefined
   const turingReadout = turing.tokens.readout()
@@ -374,6 +399,7 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     sdk: turingInfo,
     token: turingReadout,
     ...turingToken === undefined ? {} : { value: turingToken },
+    fallbackToVirtual: deviceSettings.sdkFallbackToVirtual,
   })
   const wireIdentity: WorkBuddyWireIdentity = deviceTier === 'real'
     ? { deviceTier: 'real', ...turingToken === undefined ? {} : { deviceReal: turingToken } }

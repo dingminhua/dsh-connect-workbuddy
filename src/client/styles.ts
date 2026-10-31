@@ -937,6 +937,15 @@ export const WORKBUDDY_CARD_CSS = `
   background:var(--dsw-alias-bg-l1,transparent);
   border:1px solid var(--dsw-alias-border-l2,#3a3d45);
 }
+
+/* SDK 目录输入行（作者意见 #1）：输入框吃掉剩余宽度，按钮不换行。
+   与 .dsm-workbuddy-device-input 同一套外观，只改布局——单独一条而不是复用
+   弹窗那条，是因为这里旁边还有 1~2 个按钮，而弹窗里是上下堆叠。 */
+.dsm-workbuddy-sdk-dir-row{display:flex;align-items:center;gap:8px;margin:2px 0 4px}
+.dsm-workbuddy-sdk-dir-input{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+/* 回退开关：勾选框交回平台（accent-color），方框尺寸/圆角/勾形不由我们画。 */
+.dsm-workbuddy-sdk-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer}
+.dsm-workbuddy-sdk-switch input{accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-device-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-device-input-bad{border-color:var(--dsw-alias-label-error,#e5534b)}
 .dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;margin:4px 0 0}

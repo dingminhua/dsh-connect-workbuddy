@@ -57,6 +57,16 @@ export interface WorkBuddyDeviceReport {
    */
   tier: 'virtual' | 'real'
   /**
+   * 线上**实际**用的那一档；只在它与 {@link tier} 不同时出现。
+   *
+   * 目前唯一的分岔是「真实值档取不到真 token 且开了回退」（作者意见 #2）：此时
+   * `tier` 仍是用户选的 `real`，而 `tierSent` 是 `virtual`。只报 `tier` 会让
+   * 报告说"发的是真实设备"、`onWire` 却说"发的是派生对"，两个字段互相打脸。
+   */
+  tierSent?: 'virtual' | 'real'
+  /** 回退是否生效。只在生效时出现，与 {@link tierSent} 同时出现。 */
+  fallbackToVirtual?: boolean
+  /**
    * 设备头名，**按当前代码实际会发的那一组算出来**。空数组 = 一个都不发。
    * 它不是断言，是测量。
    */
@@ -136,9 +146,28 @@ export function describeDeviceState(
     token: TuringTokenReadout
     /** 完整 token，只用来让头名清单算得出来；**绝不进报告**。 */
     value?: string
+    /**
+     * 真实值档取不到 token 时是否退回虚拟值（作者意见 #2）。
+     *
+     * 报告必须**照退出站的事实**：退回时这一档实际发的是派生对，所以
+     * `tierSent` 答 `virtual`、`onWire` 按虚拟值算。把 `tier`（用户的意愿）与
+     * `tierSent`（线上实际）分成两个字段，是因为两者分岔时那正是唯一值得看的
+     * 信息——只报一个，用户就无法判断"我设的真实值到底生效了没有"。
+     */
+    fallbackToVirtual?: boolean
   },
 ): WorkBuddyDeviceReport {
   const tier: 'virtual' | 'real' = real?.tier ?? 'virtual'
+  /**
+   * 退回是否发生：真实值档 + 没有真 token + 开关开。
+   *
+   * 与 `upstream.ts` 的 `wireIdentity` 用**同一条判据**。两处各写一遍是这次改动
+   * 里唯一无法消除的重复（那个函数在请求路径上，不能 import 这个纯函数模块的
+   * 调用方；反过来会让 `device-state` 变成请求路径的依赖）。因此这条判据被写得
+   * 尽量小，且两边各有一条用例钉住同一种组合。
+   */
+  const fellBack = tier === 'real' && real?.value === undefined && real?.fallbackToVirtual === true
+  const tierSent: 'virtual' | 'real' = fellBack ? 'virtual' : tier
   const salt: WorkBuddyDeviceReport['salt'] = {
     path: saltReadout.path,
     state: saltReadout.state,
@@ -154,7 +183,11 @@ export function describeDeviceState(
       }
   // 头名要与真实请求一致：档位、盐、token 都取刚刚那几份读数。少传一个，报告就会
   // 答成"那个头没发"，而实际上发了——那正是这个模块最不该犯的错。
-  const identity: WorkBuddyWireIdentity = tier === 'real'
+  //
+  // 退回时按 `virtual` 算：那一档实际发的就是派生对（`upstream.ts` 的
+  // `deviceTier: 'virtual'`），所以这里也必须走那条分支，否则报告会说"发的是真
+  // token"而线上发的是派生 id。
+  const identity: WorkBuddyWireIdentity = tierSent === 'real'
     ? {
         deviceTier: 'real',
         ...real?.value === undefined ? {} : { deviceReal: real.value },
@@ -187,14 +220,19 @@ export function describeDeviceState(
   const uids = [...new Set(credentials.map(credential => credential.uid).filter(uid => uid !== ''))]
   const base: WorkBuddyDeviceReport = {
     tier,
+    // 只有分岔时才出现：`tierSent === tier` 是常态，多一个恒等的字段只会让读者
+    // 以为两者永远可能不同。
+    ...fellBack ? { tierSent } : {},
+    ...fellBack ? { fallbackToVirtual: true } : {},
     onWire,
     salt,
     ...token === undefined ? {} : { token },
     ...sdk === undefined ? {} : { sdk },
   }
   // 真实值档不派生：所有账号共用这一台真机，算出来的一对 id 既不会发出去，
-  // 也不该在报告里出现——那只会让读者以为它跟请求有关。
-  if (tier === 'real') return base
+  // 也不该在报告里出现——那只会让读者以为它跟请求有关。退回时**例外**：那一档
+  // 实际发的是派生对，所以派生块必须出现，否则报告与 `onWire` 自相矛盾。
+  if (tierSent === 'real') return base
   if (uids.length === 0 || saltReadout.state !== 'ok') return base
 
   const machineIds = uids.map(uid => deriveDeviceId(uid, 'machine', saltReadout.salt))

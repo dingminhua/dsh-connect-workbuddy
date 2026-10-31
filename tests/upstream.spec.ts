@@ -1493,7 +1493,14 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
       reveal: async () => 'v3:slow',
     }
     const client = new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) }, {
-      deviceProfiles: { forUid: async () => undefined, mode: async () => 'real' },
+      deviceProfiles: {
+        forUid: async () => undefined,
+        mode: async () => 'real',
+        // 回退默认关：这条用例断言的是 P3 原行为——取不到真 token 就一个设备头
+        // 都不发。回退打开是另一条用例。
+        fallbackToVirtual: async () => false,
+        sdkDir: async () => '',
+      },
       realDevice: tokenSource,
     })
     const answer = client.probeChat(credential(), '{}')

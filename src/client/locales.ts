@@ -517,6 +517,15 @@ export const en = {
   'sdk.ageJustNow': 'just now',
   'sdk.ageMinutes': '{count}m ago',
   'sdk.ageHours': '{count}h {rest}m ago',
+  'sdk.dirLabel': 'SDK directory',
+  'sdk.dirPlaceholder': 'Empty = find the installed desktop app automatically',
+  'sdk.dirSave': 'Save',
+  'sdk.dirSaving': 'Saving…',
+  'sdk.dirSaved': 'Saved.',
+  'sdk.dirClear': 'Clear',
+  'sdk.dirHint': 'Point this at the desktop app\'s native/turing-sdk folder, not the folder holding WorkBuddy.exe. Saving re-probes immediately; a wrong path turns the state above into \"not found\" with that path shown, never a silent fall back to discovery. WORKBUDDY_TURING_SDK_DIR still wins.',
+  'sdk.fallbackLabel': 'Fall back to the virtual device when no real one is available',
+  'sdk.fallbackHint': 'On: when the SDK is unavailable (no desktop app, wrong directory, no token) the plugin sends the salt-derived virtual device pair instead, and the tier shown changes to “Virtual” with it — it never claims to be real. Off: no device header is sent at all, which is what the Real tier did before this switch.',
   // The image tool is the ONE capability where the model spends on its own
   // (no per-call approval in the host). Opt-in for that reason, so the copy says
   // what it costs instead of only naming it — and it names BOTH gateways, since
@@ -1132,6 +1141,17 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'sdk.ageJustNow': '刚刚',
   'sdk.ageMinutes': '{count} 分钟前',
   'sdk.ageHours': '{count} 小时 {rest} 分前',
+  // 设置项（作者意见 #1 / #2）。目录这一条的每一项都要回答「留空会怎样」——
+  // 一个空输入框最容易被读成「必须填」。
+  'sdk.dirLabel': 'SDK 目录',
+  'sdk.dirPlaceholder': '留空 = 自动查找本机安装的桌面端',
+  'sdk.dirSave': '保存',
+  'sdk.dirSaving': '保存中…',
+  'sdk.dirSaved': '已保存。',
+  'sdk.dirClear': '清除',
+  'sdk.dirHint': '填的是桌面端里 native/turing-sdk 那一层目录，不是 WorkBuddy.exe 所在目录。保存后会立刻重新检测；填错时上面的状态会变成「未找到」并带上这个路径，不会静默回退到自动查找。环境变量 WORKBUDDY_TURING_SDK_DIR 优先级更高。',
+  'sdk.fallbackLabel': '取不到真实设备时退回虚拟值',
+  'sdk.fallbackHint': '开启时：SDK 不可用（没装桌面端、目录填错、token 取不到）就改发按本机盐派生的虚拟设备对，档位显示也会跟着变成「虚拟值」——不静默冒充。关闭时：一个设备头都不发，那是「真实值」档原本的行为。',
   // 生图工具是本插件里唯一「由模型自己决定花钱」的能力（宿主没有逐次确认的
   // 机制），所以默认关闭，文案也必须把单价说出来，而不是只给它一个名字。
   // 单价按区分：国内区约 5.71、国际区约 0.03 积分/张（2026-10-25 实测；目录

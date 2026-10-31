@@ -164,6 +164,54 @@ describe('describeDeviceState — the real tier (P3)', () => {
     expect(JSON.stringify(real)).not.toContain('v3:real')
     expect(real.sdk?.token.length).toBe(1174)
   })
+
+  // 作者意见 #2：取不到真 token 时退回虚拟值。报告必须答**实际发出的**那一档，
+  // 否则 `tier` 说 real、`onWire` 说派生对，两个字段互相打脸。
+  describe('falling back to the virtual device', () => {
+    const noToken = (): TuringTokenReadout => ({ state: 'unavailable', masked: '', length: 0, reason: 'sdk load-failed' })
+
+    it('sends the derived pair and says so when the switch is on', () => {
+      const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+        tier: 'real', sdk: sdkInfo(), token: noToken(), fallbackToVirtual: true,
+      })
+      // 用户的意愿仍是 real……
+      expect(report.tier).toBe('real')
+      // ……但实际发的是虚拟值，且报告把这件事写出来。
+      expect(report.tierSent).toBe('virtual')
+      expect(report.fallbackToVirtual).toBe(true)
+      expect(report.onWire).toEqual(['X-Machine-ID', 'X-Session-ID'])
+      // 派生块必须出现：那一档实际发的是派生对。
+      expect(report.derived?.accounts).toBe(1)
+    })
+
+    it('sends nothing when the switch is off, and keeps the report honest', () => {
+      const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+        tier: 'real', sdk: sdkInfo(), token: noToken(), fallbackToVirtual: false,
+      })
+      expect(report.onWire).toEqual([])
+      expect(report.tierSent).toBeUndefined()
+      expect(report.fallbackToVirtual).toBeUndefined()
+      expect(report.derived).toBeUndefined()
+    })
+
+    it('does not fall back while a real token is available', () => {
+      // 开关开着但 token 好好的：不该退回。退回只在"取不到"时发生。
+      const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+        tier: 'real', sdk: sdkInfo(), token: tokenOk(), value: 'v3:real', fallbackToVirtual: true,
+      })
+      expect(report.tierSent).toBeUndefined()
+      expect(report.onWire).toEqual(['X-Device-Token'])
+    })
+
+    it('is unreachable in the virtual tier — that tier has nothing to fall back from', () => {
+      const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+        tier: 'virtual', sdk: sdkInfo(), token: noToken(), fallbackToVirtual: true,
+      })
+      expect(report.tierSent).toBeUndefined()
+      expect(report.fallbackToVirtual).toBeUndefined()
+      expect(report.onWire).toEqual(['X-Machine-ID', 'X-Session-ID'])
+    })
+  })
 })
 
 describe('describeDeviceState — the states it must keep distinct', () => {

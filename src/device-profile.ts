@@ -71,11 +71,40 @@ export interface WorkBuddyDeviceSettings {
    * 前者是"本机没有设备盐"，后者是"这些账号没有 uid"。
    */
   derived?: Readonly<Record<string, WorkBuddyDeviceDerived>>
+  /**
+   * 用户在「SDK」分区手填的 SDK 目录；空串 = 走自动发现链。
+   *
+   * 优先级：`WORKBUDDY_TURING_SDK_DIR` > 这一项 > 自动发现。环境变量压过它，因为
+   * 那个变量是「配置项够不着的场景」的旁路（`doctor` 与插件读同一个值），反过来
+   * 会让一个排障时设的变量在下一次点「保存」后静默失效，而那正是排障的人最不希望
+   * 发生的事。
+   */
+  sdkDir: string
+  /**
+   * 真实值档取不到 token 时是否退回虚拟值。**默认开**（作者意见 #2）。
+   *
+   * 这个默认值与 P3 原先的取舍相反，而原先那个取舍有理由：静默退回会让界面写着
+   * 「真实值」、线上跑着虚拟值。所以退回必须**说出来**——`wireIdentity` 退回时把
+   * 档位降成 `virtual`，卡片与 `doctor` 因此都照实显示"现在发的是虚拟值"。
+   * 用户要的是「有总比没有好」，不是「别告诉我」。
+   */
+  sdkFallbackToVirtual: boolean
 }
 
-/** 文件不存在、不可读、版本不认识时的答案：虚拟档、无覆盖。 */
+/**
+ * 文件不存在、不可读、版本不认识时的答案：虚拟档、无覆盖、回退开、无手填目录。
+ *
+ * 回退默认**开**，所以一个 5.16.0 时代写下的文件（没有这个字段）升级后立刻拿到
+ * 作者希望的默认行为，不需要用户去点一次。
+ */
 function emptyDocument(): StoredDocument {
-  return { version: DEVICE_PROFILE_VERSION, mode: 'virtual', accounts: {} }
+  return {
+    version: DEVICE_PROFILE_VERSION,
+    mode: 'virtual',
+    accounts: {},
+    sdkDir: '',
+    sdkFallbackToVirtual: true,
+  }
 }
 
 /** 落盘形状。`uid` 只在磁盘上存在，用于把浏览器发来的 accountId 映射回请求。 */
@@ -90,6 +119,10 @@ interface StoredDocument {
   version: number
   mode: WorkBuddyDeviceMode
   accounts: Record<string, StoredAccount>
+  /** 手填的 SDK 目录；空串 = 自动发现。 */
+  sdkDir: string
+  /** 真实值档取不到 token 时退回虚拟值。 */
+  sdkFallbackToVirtual: boolean
 }
 
 /**
@@ -168,6 +201,13 @@ async function readStored(dir?: string, nowMs: number = Date.now(), fresh = fals
     version: DEVICE_PROFILE_VERSION,
     mode: isDeviceMode(record['mode']) ? record['mode'] : 'virtual',
     accounts,
+    // 手填目录原样保留（只去首尾空白）：它是一条路径，不是身份，坏路径的代价是
+    // 「探不到 SDK」，而 `probe` 本来就要为"探不到"给出 `missing`/`error` 两种答案。
+    // 在这里把非法路径丢掉，会让用户填错之后看到"自动发现的结果"，从而以为保存失败了。
+    sdkDir: typeof record['sdkDir'] === 'string' ? record['sdkDir'].trim() : '',
+    // 只有显式 `false` 才关：缺字段意味着「这个文件是回退功能上线前写的」，那时
+    // 的行为是无回退，但作者要求「默认开启」——所以缺字段取 true，不是取 false。
+    sdkFallbackToVirtual: record['sdkFallbackToVirtual'] !== false,
   }
   return remember(document)
 }
@@ -182,7 +222,12 @@ function toSettings(document: StoredDocument): WorkBuddyDeviceSettings {
     }
     if (profile.machineId !== undefined || profile.sessionId !== undefined) accounts[id] = profile
   }
-  return { mode: document.mode, accounts }
+  return {
+    mode: document.mode,
+    accounts,
+    sdkDir: document.sdkDir,
+    sdkFallbackToVirtual: document.sdkFallbackToVirtual,
+  }
 }
 
 /** Read the settings the card renders. Never throws. */
@@ -265,6 +310,35 @@ export async function setDeviceMode(
 }
 
 /**
+ * Save the two SDK settings the card edits (作者意见 #1 与 #2).
+ *
+ * 两项都是**可选**参数，`undefined` 表示"不要动这一项"——与
+ * {@link saveDeviceProfile} 同一条约定：卡片上有两个独立控件，其中一个的保存
+ * 不该把另一个刚改的值写回旧值。
+ *
+ * `sdkDir` 只做去空白，不做存在性校验：一个路径填错的正确反馈是「探不到 SDK」
+ * （`probe` 会答 `missing` 或 `error` 并带上那个路径），而不是在这里拒绝保存——
+ * 后者会让用户面对一个"保存没反应"的输入框，而他刚刚明明看见文件在那儿。
+ */
+export async function saveDeviceSdkSettings(
+  values: { sdkDir?: string, sdkFallbackToVirtual?: boolean },
+  options: { dir?: string } = {},
+): Promise<WorkBuddyDeviceSettings> {
+  return withFileLock(deviceProfilePath(options.dir), async () => {
+    const document = await readStored(options.dir, Date.now(), true)
+    const next: StoredDocument = {
+      ...document,
+      ...typeof values.sdkDir === 'string' ? { sdkDir: values.sdkDir.trim() } : {},
+      ...typeof values.sdkFallbackToVirtual === 'boolean'
+        ? { sdkFallbackToVirtual: values.sdkFallbackToVirtual }
+        : {},
+    }
+    await writeStored(next, options.dir)
+    return toSettings(next)
+  })
+}
+
+/**
  * Save (or clear) one account's overrides.
  *
  * `machineId` / `sessionId` 为 `''` 表示"清掉这一项、回到派生值"；为 `undefined`
@@ -318,6 +392,8 @@ export interface WorkBuddyDeviceSettingsPort {
     accountId: string,
     values: { machineId?: string, sessionId?: string },
   ): Promise<WorkBuddyDeviceSettings>
+  /** 保存 SDK 目录与回退开关（作者意见 #1 / #2）。`undefined` = 不动这一项。 */
+  saveSdk(values: { sdkDir?: string, sdkFallbackToVirtual?: boolean }): Promise<WorkBuddyDeviceSettings>
 }
 
 /**
@@ -334,6 +410,16 @@ export interface WorkBuddyDeviceProfileLookup {
    * 设备），但仍然要能读出来——构头时必须先知道自己在哪一档。
    */
   mode(): Promise<WorkBuddyDeviceMode>
+  /**
+   * 真实值档取不到 token 时是否退回虚拟值（作者意见 #2）。
+   *
+   * 与 {@link mode} 分开读而不是并进一个对象：请求路径上两者都要，而它们的失效
+   * 时机相同（同一份 5 秒缓存）。分开的返回值让"档位"与"回退"在调用点各有一个
+   * 名字，`wireIdentity` 里那条分叉才读得出来。
+   */
+  fallbackToVirtual(): Promise<boolean>
+  /** 手填的 SDK 目录；空串 = 走自动发现链。 */
+  sdkDir(): Promise<string>
 }
 
 /** Build the lookup; `ttlMs` exists so an externally edited file is still picked up. */
@@ -357,6 +443,12 @@ export function createDeviceProfileLookup(options: { dir?: string } = {}): WorkB
     },
     async mode(): Promise<WorkBuddyDeviceMode> {
       return (await readStored(options.dir)).mode
+    },
+    async fallbackToVirtual(): Promise<boolean> {
+      return (await readStored(options.dir)).sdkFallbackToVirtual
+    },
+    async sdkDir(): Promise<string> {
+      return (await readStored(options.dir)).sdkDir
     },
   }
 }

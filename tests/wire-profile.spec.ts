@@ -246,9 +246,14 @@ describe('P3 — the real tier', () => {
     refresh: async () => ({ state: 'ok', masked: '', length: 0 }),
     reveal: async () => token,
   })
-  const realMode = (mode: 'real' | 'virtual'): WorkBuddyDeviceProfileLookup => ({
+  const realMode = (mode: 'real' | 'virtual', fallback = false): WorkBuddyDeviceProfileLookup => ({
     forUid: async () => ({ machineId: 'c'.repeat(36), sessionId: 'd'.repeat(36) }),
     mode: async () => mode,
+    // 回退默认关：这个 helper 让每条用例显式说明自己在测哪一档，不该被默认回退
+    // 悄悄改写掉「真实值档取不到 token 就零设备头」那条断言。要测回退的用例
+    // 自己传 `true`。
+    fallbackToVirtual: async () => fallback,
+    sdkDir: async () => '',
   })
 
   it('sends the real token and NOT the derived pair', async () => {
@@ -304,6 +309,45 @@ describe('P3 — the real tier', () => {
     expect(seen['X-Device-Token']).toBeUndefined()
     expect(seen['X-Machine-ID']).toBeUndefined()
     expect(seen['X-Product']).toBe('SaaS')
+  })
+
+  /**
+   * 作者意见 #2：取不到真实设备时退回虚拟值（默认开）。
+   *
+   * 这一组与上面「零设备头」是同一场景的两个开关状态，所以两条必须并存：
+   * 一条钉住"关掉时确实什么都不发"，一条钉住"打开时确实发派生对"。
+   */
+  describe('falling back to the virtual device', () => {
+    it('sends the derived pair when the SDK has no token and the switch is on', async () => {
+      const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+        deviceProfiles: realMode('real', true),
+        realDevice: tokenSource(undefined),
+      })
+      expect(seen['X-Device-Token']).toBeUndefined()
+      // 派生对必须出现：那一档此刻实际发的就是虚拟值。
+      expect(seen['X-Machine-ID']).toBeDefined()
+      expect(seen['X-Session-ID']).toBeDefined()
+    })
+
+    it('does NOT reuse the per-account overrides while falling back', async () => {
+      // 这一跳是"真实值档塌回虚拟值"，不是"用户切到了虚拟值档"。把齿轮里那对
+      // 覆盖值混进来，等于让一次降级顺手改变这台机器对外声称的身份。
+      const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+        deviceProfiles: realMode('real', true),
+        realDevice: tokenSource(undefined),
+      })
+      expect(seen['X-Machine-ID']).not.toBe('c'.repeat(36))
+      expect(seen['X-Session-ID']).not.toBe('d'.repeat(36))
+    })
+
+    it('keeps sending the real token when there is one, switch or no switch', async () => {
+      const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+        deviceProfiles: realMode('real', true),
+        realDevice: tokenSource('v3:real'),
+      })
+      expect(seen['X-Device-Token']).toBe('v3:real')
+      expect(seen['X-Machine-ID']).toBeUndefined()
+    })
   })
 })
 

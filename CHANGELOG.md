@@ -32,6 +32,62 @@
   - 预热是单链定时器（间隔按当时的时间重算，不是固定 `setInterval`），插件卸载时
     `stopAutoRefresh()` 清掉，不会留下一个永远关不掉的子进程工厂。
   - 失败仍走请求路径的 30 秒退避：一轮对话十几条并发请求不会变成十几个子进程。
+- **「SDK」分区可以直接填 SDK 目录**（评审意见 #1，@susulqx）。
+  - 之前只有环境变量 `WORKBUDDY_TURING_SDK_DIR` 一条旁路：自动发现链不命中时
+    （装在非默认盘、或另一份副本），用户能做的只有改环境变量再重启。
+  - 现在卡片 `GET`/`POST /device-profiles`（`kind: 'sdk'`）保存
+    `sdkDir` 与 `sdkFallbackToVirtual`，落在
+    `$DSH_HOME/.workbuddy-device-profiles.json`。**留空 = 回到自动发现**，不是
+    "路径为空"；填错时状态行会答 `missing`/`error` 并带上那个路径，而不是静默
+    回退成自动发现的结果（后者会让人以为保存失败，然后反复保存）。
+  - **保存后立刻生效，不用重启**：`createTuringSdk` 的目录从构造期常量改成
+    每次 `probe` 现问一次（`dirSource`），probe 缓存也按**解析结果**判有效——
+    否则填了新目录要等 10 秒的缓存过期，而那 10 秒里用户看到的还是旧目录。
+  - 优先级：显式 `dir`（测试）→ `WORKBUDDY_TURING_SDK_DIR` → 卡片手填 →
+    自动发现。环境变量压过卡片，因为它是排障旁路（`doctor` 只能读环境变量），
+    反过来会让一个排障时设的变量在下一次点保存后静默失效。
+  - 路径只去首尾空白，**不**规范化分隔符与大小写：那是用户从资源管理器复制来的
+    路径，改了之后"我填的和看到的不一样"会让人怀疑没存上。
+
+- **取不到真实设备时退回虚拟值，默认开**（评审意见 #2，@susulqx）。
+  - 之前「真实值」档在 SDK 不可用时**一个设备头都不发**（P3 的取舍：静默退回会
+    让界面写着"真实值"、线上跑着虚拟值）。这个取舍有道理，但风控严的时候
+    "有总比没有好"也是合理的诉求，所以改成**用户可选，默认开**。
+  - 退回时档位**降成 `virtual`**，不是保留 `real` 再补一对派生 id：`deviceTier`
+    既决定发哪些头，也决定界面与 `doctor` 怎么称呼"现在发的是什么"。保留 `real`
+    会让报告与出站字节相反，而报告正是用户判断"到底退没退"的唯一依据。
+  - 退回**不读**逐账号覆盖值：这一跳是"真实值档塌回虚拟值"，不是"用户切到了虚拟
+    值档"。把齿轮里那对覆盖值混进来，等于让一次降级顺手改变这台机器对外声称的
+    身份，而用户并没有要求这件事。
+  - `doctor` 的 `--json` 因此增 `deviceIdentity.tierSent` 与
+    `deviceIdentity.fallbackToVirtual`（schemaVersion 9 → 10），**只在分岔时
+    出现**——`tierSent === tier` 是常态，多一个恒等字段只会让人以为两者永远可能
+    不同。人类可读那一行读作
+    `real requested, virtual values (fell back: no real device token)`，并照常印出
+    派生设备与文件源那一行（退回时它们真的被用上了）。
+
+### 测试
+
+- 新增 **17** 例（2846 总例，较上一条净增 17）：
+  - `tests/device-profile.spec.ts` +9：留空 = 自动发现、`undefined` 不动这一项、
+    两个控件互不覆盖、坏路径保留不静默回退、缺字段 = 回退开（5.16.0 的文件升级
+    即生效）、只有显式 `false` 才关、保存目录不动档位与覆盖值、lookup 暴露两项。
+  - `tests/turing-sdk.spec.ts` +4：新填的目录**下一次 `info()` 就命中**、probe
+    缓存不跨目录复用、`WORKBUDDY_TURING_SDK_DIR` 压过卡片、显式 `dir` 压过两者。
+  - `tests/wire-profile.spec.ts` +3：开关开时发派生对、**不复用**逐账号覆盖值、
+    有真 token 时照旧发真 token（开关无关）。
+  - `tests/device-state.spec.ts` +4：退回时 `tier` 保留 `real` 而 `tierSent` 是
+    `virtual` 且 `onWire` 是派生对、开关关时零设备头、有 token 时退回不发生、
+    虚拟值档里这条分支不可达。
+- **Windows 11 真机端到端**：把 `mode: real` + 一个不存在的 `sdkDir` 写进设置文件，
+  `doctor` 输出 `Device SDK: missing (... — Z:\nope\turing-sdk)` 且首行为
+  `real requested, virtual values (fell back: no real device token)`；把
+  `sdkFallbackToVirtual` 改回 `false`，首行变回 `real values: X-Device-Token`
+  （P3 原行为）。两条都在真机上跑过，不是纸面推演。
+- **全仓** 2846 例通过（169 文件），类型检查通过，build 通过。
+  `tests/issue12-region-hiding.spec.ts` 那条轮询 flake 依旧失败——已在未修改的
+  `d5183b2` 上同样复现，与本套改动无关（详见 5.16.0 那一条记录）。
+
 - **设备身份取证面（P0）**：新增 `src/device-id.ts`（36 位十六进制 id，
   `sha256(namespace + salt + purpose + uid)`，命名空间与用途进哈希、不进线上）、
   `src/device-salt.ts`（本机盐，`$DSH_HOME/.workbuddy-device.json`，首建后只读——

@@ -9,6 +9,7 @@ import {
   deviceProfilePath,
   readDeviceSettings,
   saveDeviceProfile,
+  saveDeviceSdkSettings,
   setDeviceMode,
 } from '../src/device-profile.ts'
 
@@ -34,19 +35,40 @@ const file = () => join(dir, DEVICE_PROFILE_FILE_NAME)
 describe('readDeviceSettings', () => {
   it('answers virtual + empty without creating a file', async () => {
     // A read must never leave state behind: the panel polls this on every open.
-    expect(await readDeviceSettings({ dir })).toEqual({ mode: 'virtual', accounts: {} })
+    expect(await readDeviceSettings({ dir })).toEqual({
+      mode: 'virtual',
+      accounts: {},
+      sdkDir: '',
+      // 回退默认**开**（作者意见 #2）：一个没有这个字段的文件（5.16.0 时代写的）
+      // 升级后立刻拿到新行为，不需要用户去点一次。
+      sdkFallbackToVirtual: true,
+    })
     await expect(stat(file())).rejects.toThrow()
   })
 
   it('treats a corrupt document as "no settings" instead of throwing', async () => {
     // Hand-edited files happen; a thrown error here would blank the whole card.
     await writeFile(file(), '{ not json', 'utf8')
-    expect(await readDeviceSettings({ dir })).toEqual({ mode: 'virtual', accounts: {} })
+    expect(await readDeviceSettings({ dir })).toEqual({
+      mode: 'virtual',
+      accounts: {},
+      sdkDir: '',
+      // 回退默认**开**（作者意见 #2）：一个没有这个字段的文件（5.16.0 时代写的）
+      // 升级后立刻拿到新行为，不需要用户去点一次。
+      sdkFallbackToVirtual: true,
+    })
   })
 
   it('ignores a document from an unknown version', async () => {
     await writeFile(file(), JSON.stringify({ version: 99, mode: 'real', accounts: {} }), 'utf8')
-    expect(await readDeviceSettings({ dir })).toEqual({ mode: 'virtual', accounts: {} })
+    expect(await readDeviceSettings({ dir })).toEqual({
+      mode: 'virtual',
+      accounts: {},
+      sdkDir: '',
+      // 回退默认**开**（作者意见 #2）：一个没有这个字段的文件（5.16.0 时代写的）
+      // 升级后立刻拿到新行为，不需要用户去点一次。
+      sdkFallbackToVirtual: true,
+    })
   })
 
   it('drops malformed ids but keeps the rest of the record', async () => {
@@ -217,5 +239,81 @@ describe('describeDerivedDevices', () => {
   it('never leaks the salt into the answer', async () => {
     const derived = await describeDerivedDevices([{ accountId: 'a1', uid: 'uid-1' }], { salt: SALT })
     expect(JSON.stringify(derived)).not.toContain(SALT)
+  })
+})
+
+/**
+ * 作者意见 #1 与 #2：卡片上可填 SDK 目录、可关掉回退。
+ *
+ * 这一组断言的重点全在**约定**上，而不是"能不能存"：留空 = 自动发现（不是"路径
+ * 为空"）、`undefined` = 不动这一项（两个控件互不覆盖）、回退缺字段 = 开（老文件
+ * 升级后立刻拿到新默认）。
+ */
+describe('the SDK settings (作者意见 #1 / #2)', () => {
+  it('defaults to automatic discovery and a fallback that is ON', async () => {
+    const settings = await readDeviceSettings({ dir })
+    expect(settings.sdkDir).toBe('')
+    expect(settings.sdkFallbackToVirtual).toBe(true)
+  })
+
+  it('round-trips a typed directory', async () => {
+    const saved = await saveDeviceSdkSettings({ sdkDir: '  E:\\WorkBuddy\\sdk  ' }, { dir })
+    // 去空白，但**不**规范化分隔符或大小写：那是一条路径，用户从资源管理器复制来
+    // 的就该原样保存；改了之后"我填的和看到的不一样"会让人怀疑没存上。
+    expect(saved.sdkDir).toBe('E:\\WorkBuddy\\sdk')
+    expect((await readDeviceSettings({ dir })).sdkDir).toBe('E:\\WorkBuddy\\sdk')
+  })
+
+  it('keeps an unusable path instead of silently reverting to discovery', async () => {
+    // 路径填错时的正确反馈是"探不到 SDK 并显示这个路径"，不是悄悄回退——后者会让
+    // 用户以为保存失败了，然后反复保存。
+    await saveDeviceSdkSettings({ sdkDir: 'Z:\\nope\\turing-sdk' }, { dir })
+    expect((await readDeviceSettings({ dir })).sdkDir).toBe('Z:\\nope\\turing-sdk')
+  })
+
+  it('clears back to discovery on an empty string — not the same as leaving it alone', async () => {
+    await saveDeviceSdkSettings({ sdkDir: 'E:\\sdk' }, { dir })
+    const cleared = await saveDeviceSdkSettings({ sdkDir: '' }, { dir })
+    expect(cleared.sdkDir).toBe('')
+    // `undefined` 不动这一项。
+    await saveDeviceSdkSettings({ sdkDir: 'E:\\sdk' }, { dir })
+    const untouched = await saveDeviceSdkSettings({ sdkFallbackToVirtual: false }, { dir })
+    expect(untouched.sdkDir).toBe('E:\\sdk')
+    expect(untouched.sdkFallbackToVirtual).toBe(false)
+  })
+
+  it('does not let one control write the other one back', async () => {
+    // 面板上两个独立控件：保存开关不能顺手把刚改的目录覆盖回旧值。
+    await saveDeviceSdkSettings({ sdkDir: 'E:\\a' }, { dir })
+    await saveDeviceSdkSettings({ sdkFallbackToVirtual: false }, { dir })
+    const settings = await readDeviceSettings({ dir })
+    expect(settings.sdkDir).toBe('E:\\a')
+    expect(settings.sdkFallbackToVirtual).toBe(false)
+  })
+
+  it('treats a missing fallback field as ON — a 5.16.0 file upgrades into the new default', async () => {
+    await writeFile(file(), JSON.stringify({ version: 1, mode: 'virtual', accounts: {} }), 'utf8')
+    expect((await readDeviceSettings({ dir })).sdkFallbackToVirtual).toBe(true)
+  })
+
+  it('only an explicit false turns the fallback off', async () => {
+    await writeFile(file(), JSON.stringify({ version: 1, mode: 'virtual', accounts: {}, sdkFallbackToVirtual: false }), 'utf8')
+    expect((await readDeviceSettings({ dir })).sdkFallbackToVirtual).toBe(false)
+  })
+
+  it('does not touch the tier or the account overrides', async () => {
+    // 保存目录与保存档位是两条独立的意图：一个不该顺手改另一个。
+    await saveDeviceProfile(ACCOUNT, { uid: UID, machineId: MACHINE }, { dir })
+    await setDeviceMode('real', { dir })
+    const settings = await saveDeviceSdkSettings({ sdkDir: 'E:\\sdk' }, { dir })
+    expect(settings.mode).toBe('real')
+    expect(settings.accounts[ACCOUNT]).toEqual({ machineId: MACHINE })
+  })
+
+  it('exposes both through the request-path lookup', async () => {
+    await saveDeviceSdkSettings({ sdkDir: 'E:\\sdk', sdkFallbackToVirtual: false }, { dir })
+    const lookup = createDeviceProfileLookup({ dir })
+    expect(await lookup.sdkDir()).toBe('E:\\sdk')
+    expect(await lookup.fallbackToVirtual()).toBe(false)
   })
 })

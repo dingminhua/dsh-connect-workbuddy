@@ -486,7 +486,7 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 |---|---|---|
 | `WORKBUDDY_DEVICE_TOKEN_FILE` | 未设 | 「虚拟值」档外部 `X-Device-Token` 的文件源：指向别的工具维护的 token 文件（裸值或 `{"token":…}` 信封都吃），5 分钟重读、4 KB 上限；token 字节不进日志与 `doctor`。与卡片配置 `deviceToken.file` 同义，配置为空时读它 |
 | `WORKBUDDY_HEADER_TRACE` | 未设 | 设 `1` 后 `doctor` 多打一节：每条请求路径**将要发出的头名清单**（只有名字，永远没有值）——排查"这一档到底发了什么"用 |
-| `WORKBUDDY_TURING_SDK_DIR` | 未设 | 「真实值」档的 Turing Shield SDK 目录。不设置时插件按桌面端安装形状**自动发现**（`/Applications`、`%LOCALAPPDATA%`、卸载注册表等）；装了桌面端却仍报「未找到」时，用它显式指路。发现不到 = 真实值档不发任何设备头（不退回虚拟值） |
+| `WORKBUDDY_TURING_SDK_DIR` | 未设 | 「真实值」档的 Turing Shield SDK 目录。不设置时插件按桌面端安装形状**自动发现**（`/Applications`、`%LOCALAPPDATA%`、卸载注册表等）；装了桌面端却仍报「未找到」时，用它显式指路。**卡片「SDK」分区也能直接填**（不用改环境变量、保存即生效），本变量优先级更高。取不到真实设备时的行为见下一行 |
 | `WORKBUDDY_TURING_CHANNEL_ID` | `109144` | SDK 的渠道号，与桌面端 `product.json` 一致 |
 | `WORKBUDDY_TURING_PRODUCT_NAME` | `WorkBuddy` | SDK 初始化自称的产品名 |
 | `WORKBUDDY_TURING_PRODUCT_VERSION` | 插件版本 | SDK 初始化自称的产品版本 |

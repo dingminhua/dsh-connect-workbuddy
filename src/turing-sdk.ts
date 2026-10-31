@@ -537,6 +537,16 @@ export function createTuringSdk(options: {
    * "到期会自动换新"这件事，而不是靠线上等一周。
    */
   keepAliveTiming?: Partial<TuringKeepAliveTiming>
+  /**
+   * 卡片上填的 SDK 目录来源（作者意见 #1）。
+   *
+   * 一个**函数**而不是一个字符串：设置会在用户点保存时改变，而 SDK 句柄是插件
+   * 挂载时建的、活到卸载。传字符串就只能重启才生效，而那正是这条意见要消掉的
+   * 麻烦。每次 `probe` 调一次，所以保存后的第一次观察就能看到新目录。
+   *
+   * 排不到 `dir` / 环境变量前面：那两者是调用方与排障的显式选择。
+   */
+  dirSource?: () => Promise<string>
 } = {}): TuringSdk {
   const now = options.now ?? (() => Date.now())
   const worker = options.worker ?? workerPath()
@@ -547,26 +557,38 @@ export function createTuringSdk(options: {
   const env = options.env ?? process.env
   const exists = options.exists ?? existsSync
   const bundle = bundledSdkBundleId(platform, arch)
-  // SDK 目录：显式 `dir` → 环境变量 → 本机安装的桌面端 → 没有（空串，下面
-  // probe 据此答 `missing`）。发现链读注入的 platform：CI 上它不是 win32，
-  // 这正是注册表读取被挡在 `platform === 'win32'` 后面的原因。
-  const configuredDir = options.dir ?? env[TURING_SDK_DIR_ENV]
-  const dir = configuredDir !== undefined && configuredDir.trim() !== ''
-    ? configuredDir.trim()
-    : discoverInstalledSdkDir({
-        platform,
-        home: options.home,
-        env,
-        exists,
-        readRegistryAppPath: options.readRegistryAppPath,
-      }) ?? ''
+  /**
+   * SDK 目录的**解析器**，不是一个常量（作者意见 #1）。
+   *
+   * 卡片上填一个目录、点保存，下一步就该看见 `ready`——所以目录必须在每次
+   * `probe` 时重新问一次，而不是在 `createTuringSdk` 时钉死。构造期钉死会让
+   * "填了但没生效"成为唯一的可能结果，而用户没有任何办法判断是路径错了还是需要
+   * 重启（后者在这条链路上根本不存在）。
+   *
+   * 优先级：显式 `dir`（测试）→ `WORKBUDDY_TURING_SDK_DIR`（排障旁路）→ 卡片上
+   * 手填的值（{@link TuringSdkOptions.dirSource}）→ 自动发现 → 空串（`missing`）。
+   * 环境变量压过设置的理由写在 `device-profile.ts` 的 `sdkDir` 上。
+   */
+  const resolveDir = async (): Promise<string> => {
+    const configured = options.dir ?? env[TURING_SDK_DIR_ENV]
+    if (configured !== undefined && configured.trim() !== '') return configured.trim()
+    const fromCard = options.dirSource === undefined ? '' : (await options.dirSource()).trim()
+    if (fromCard !== '') return fromCard
+    return discoverInstalledSdkDir({
+      platform,
+      home: options.home,
+      env,
+      exists,
+      readRegistryAppPath: options.readRegistryAppPath,
+    }) ?? ''
+  }
   const channelId = options.channelId ?? env[TURING_CHANNEL_ID_ENV] ?? '109144'
   const productName = options.productName ?? env[TURING_PRODUCT_NAME_ENV] ?? 'WorkBuddy'
   const productVersion = options.productVersion ?? env[TURING_PRODUCT_VERSION_ENV] ?? '5.8.3'
   const keychainStorage = options.keychainStorage
     ?? /^(?:1|true)$/u.test(String(env[TURING_KEYCHAIN_STORAGE_ENV] ?? '').trim())
 
-  let probeCache: { at: number, info: TuringSdkInfo } | undefined
+  let probeCache: { at: number, path: string, info: TuringSdkInfo } | undefined
   let cached: { token: string, fetchedAtMs: number } | undefined
   let lastAttemptMs: number | undefined
   let lastFailure: string | undefined
@@ -600,7 +622,12 @@ export function createTuringSdk(options: {
 
   async function probe(): Promise<TuringSdkInfo> {
     const at = now()
-    if (probeCache !== undefined && at - probeCache.at < PROBE_CACHE_MS) return probeCache.info
+    // 目录可能是用户刚在卡片上改的，所以先解析再命中缓存——缓存按**解析结果**
+    // 判有效，否则"填了一个新目录"会在 10 秒的 probe 缓存里答成旧目录的状态。
+    const dir = await resolveDir()
+    if (probeCache !== undefined && probeCache.path === dir && at - probeCache.at < PROBE_CACHE_MS) {
+      return probeCache.info
+    }
     let info: TuringSdkInfo
     // 门与发现链用**同一个**数据平台拼路径（`platform`）：dir 要么来自发现链
     // （win32 形状），要么是调用方给的宿主原生路径。混用宿主 join 会让注入
@@ -624,7 +651,7 @@ export function createTuringSdk(options: {
         ...supported ? {} : { reason: answer.loadError ?? answer.message ?? answer.reason ?? 'sdk reported unsupported' },
       }
     }
-    probeCache = { at, info }
+    probeCache = { at, path: dir, info }
     return info
   }
 
@@ -667,7 +694,9 @@ export function createTuringSdk(options: {
       lastFailureAtMs = lastAttemptMs
       return undefined
     }
-    const answer = await runWorker('token', { dir, worker, channelId, productName, productVersion, keychainStorage })
+    // 目录取 probe 刚刚解析出的那一个，不重新解析：两次解析之间用户可能又改了一次
+    // 设置，那样 token 会从 A 目录取、状态却按 B 目录报告。
+    const answer = await runWorker('token', { dir: info.path, worker, channelId, productName, productVersion, keychainStorage })
     const token = typeof answer.token === 'string' ? answer.token.trim() : ''
     if (answer.ok !== true || token === '') {
       lastFailure = answer.message ?? answer.reason ?? 'sdk returned no token'

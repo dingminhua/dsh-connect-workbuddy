@@ -2339,7 +2339,34 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           }
           return
         }
-        json(res, 400, { error: "kind must be 'mode' or 'account'" })
+        /**
+         * `kind: 'sdk'` — 手填 SDK 目录与回退开关（作者意见 #1 / #2）。
+         *
+         * 两项都**不做值校验**，只做类型校验：目录填错时的正确反馈是 `probe` 答
+         * `missing`/`error` 并带上那个路径（用户立刻看见"我填的这个不存在"），而
+         * 不是这里 400——后者只会让输入框看起来没保存。路径的合法性由文件系统回答，
+         * 不由字符串正则回答。
+         */
+        if (body['kind'] === 'sdk') {
+          const values: { sdkDir?: string, sdkFallbackToVirtual?: boolean } = {}
+          if (body['sdkDir'] !== undefined) {
+            if (typeof body['sdkDir'] !== 'string') return json(res, 400, { error: 'sdkDir must be a string' })
+            values.sdkDir = body['sdkDir']
+          }
+          if (body['sdkFallbackToVirtual'] !== undefined) {
+            if (typeof body['sdkFallbackToVirtual'] !== 'boolean') {
+              return json(res, 400, { error: 'sdkFallbackToVirtual must be a boolean' })
+            }
+            values.sdkFallbackToVirtual = body['sdkFallbackToVirtual']
+          }
+          try {
+            json(res, 200, await port.saveSdk(values))
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
+          }
+          return
+        }
+        json(res, 400, { error: "kind must be 'mode', 'account' or 'sdk'" })
       },
     })
     /**

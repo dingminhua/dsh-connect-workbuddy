@@ -46,7 +46,14 @@ import {
   type HostSettingsService,
 } from './catalog-write.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
-import { createDeviceProfileLookup, describeDerivedDevices, readDeviceSettings, saveDeviceProfile, setDeviceMode } from './device-profile.ts'
+import {
+  createDeviceProfileLookup,
+  describeDerivedDevices,
+  readDeviceSettings,
+  saveDeviceProfile,
+  saveDeviceSdkSettings,
+  setDeviceMode,
+} from './device-profile.ts'
 import type { WorkBuddyDeviceSettings } from './device-profile.ts'
 import { createDeviceSdkPort, createTuringSdk } from './turing-sdk.ts'
 import { WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
@@ -1302,8 +1309,15 @@ export function apply(ctx: Context, config: Config): void {
    *
    * 代价是一次子进程 + 一次取数，之后每 10 分钟一次；`stopAutoRefresh()` 挂在
    * `ctx.effect` 的清理上，插件卸载时定时器随之消失。
+   *
+   * `dirSource` 让卡片上填的目录**下一次观察就生效**（作者意见 #1）：句柄活到
+   * 卸载，而设置随时会变，所以目录每次 `probe` 现问一次。`deviceProfiles` 读盘有
+   * 5 秒缓存，保存会立即失效它。
    */
-  const turing = createTuringSdk({ productVersion: APP_VERSION })
+  const turing = createTuringSdk({
+    productVersion: APP_VERSION,
+    dirSource: () => deviceProfiles.sdkDir(),
+  })
   turing.startAutoRefresh()
   ctx.effect(() => () => { turing.stopAutoRefresh() })
   const client = new WorkBuddyUpstreamClient(
@@ -2446,6 +2460,7 @@ export function apply(ctx: Context, config: Config): void {
         // 只是没有 uid，于是它不会影响任何请求，直到该账号重新出现并再次保存。
         return withDerived(await saveDeviceProfile(accountId, values))
       },
+      saveSdk: values => saveDeviceSdkSettings(values),
     },
     /**
      * 真实设备参数（本机安装的桌面端 SDK）的状态与取值。

@@ -4080,11 +4080,36 @@ export class WorkBuddyUpstreamClient {
     if (tier === 'real') {
       // 真实值档**不读** `deviceToken.file`，也不读逐账号覆盖值：这一档的语义是
       // "所有账号共用这台机器真实的设备"，混进按号派生的 id 正是审计 §5.3 要避免
-      // 的组合。取不到 token 时只返回底座 —— 于是这一档下一个设备头都不发。那不
-      // 是退化，是"SDK 不可用"时唯一诚实的答案：拿虚拟值顶上会让界面写着"真实值"、
-      // 线上跑着虚拟值。
+      // 的组合。
       const real = this.realDevice === undefined ? undefined : await this.realDevice.current()
-      return { ...base, deviceTier: 'real', ...real === undefined ? {} : { deviceReal: real } }
+      if (real !== undefined) return { ...base, deviceTier: 'real', deviceReal: real }
+      /**
+       * 取不到真实 token。两条路，由用户在卡片上选（作者意见 #2）。
+       *
+       * **不退回（默认关时会走到这里，也是 P3 原来的行为）**：一个设备头都不发。
+       * 那是"SDK 不可用"时唯一不会说谎的答案——拿虚拟值顶上而界面写着「真实值」
+       * 会让线上与界面对不上。
+       *
+       * **退回**（默认开）：落到下面的虚拟值通道，但**档位降成 `virtual`**，不是
+       * 保留 `real` 再补一对派生 id。这一点是刻意的：`deviceTier` 既决定发哪些头，
+       * 也决定界面与 `doctor` 怎么称呼"现在发的是什么"。保留 `real` 会让报告与
+       * 出站字节相反，而报告正是用户用来判断"到底退没退"的唯一依据。
+       *
+       * 退回的那个瞬间不会静默：`readout()` 里 token 状态是 `unavailable` 并带
+       * 原因，卡片与 `doctor` 都照实显示"现在发的是虚拟值，因为 SDK 取不到 token"。
+       */
+      if (this.deviceProfiles === undefined || !await this.deviceProfiles.fallbackToVirtual()) {
+        return { ...base, deviceTier: 'real' }
+      }
+      // 落到虚拟值通道，但**不带**逐账号覆盖值：这一跳是"真实值档塌回虚拟值"，
+      // 不是"用户切到了虚拟值档"。把每账号的覆盖值混进来，等于让一次降级顺便
+      // 改变这台机器对外声称的身份——而用户并没有要求这件事。
+      const fallbackToken = this.deviceTokens === undefined ? undefined : await this.deviceTokens.current()
+      return {
+        ...base,
+        deviceTier: 'virtual',
+        ...fallbackToken === undefined ? {} : { deviceToken: fallbackToken },
+      }
     }
     const token = this.deviceTokens === undefined ? undefined : await this.deviceTokens.current()
     const profile = this.deviceProfiles === undefined ? undefined : await this.deviceProfiles.forUid(credential.uid)

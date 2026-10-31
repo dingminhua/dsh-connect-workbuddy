@@ -3682,7 +3682,13 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                 aria-labelledby="dsm-workbuddy-tab-sdk"
                 hidden={!signedIn || panel !== 'sdk'}
               >
-                {panel === 'sdk' ? <DeviceSdkPanel t={t} path={WORKBUDDY_DEVICE_SDK_PATH} /> : null}
+                {panel === 'sdk'
+                  ? <DeviceSdkPanel
+                      t={t}
+                      path={WORKBUDDY_DEVICE_SDK_PATH}
+                      settingsPath={WORKBUDDY_DEVICE_PROFILE_PATH}
+                    />
+                  : null}
               </div>
               {status.status === 'signed-out' && loading
                 // NOT the signed-out branch: nothing has answered yet. Showing
