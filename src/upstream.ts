@@ -1534,18 +1534,36 @@ function originReferer(credential: WorkBuddyCredential): string {
   return regionOf(credential.domain) === 'global' ? globalBase(credential.domain) : CN_BILLING_BASE
 }
 
-/** Headers every upstream request shares. */
-function commonHeaders(
-  credential: WorkBuddyCredential,
-  identity: WorkBuddyWireIdentity = {},
-): Record<string, string> {
-  const headers: Record<string, string> = {
+/**
+ * 5.16.0 的公共头，**不含 P1 增补**。
+ *
+ * 只给 {@link refreshHeaders} 用，而且是有意的：refresh 是整条链路里唯一
+ * "失败就等于掉登录"的一跳，它的字节不该因为一次身份统一而变化。B 的
+ * `RefreshHeaders` 确实也走 `CommonHeaders`（因此带 `X-CodeBuddy-Request`），
+ * 但那是 B 一直在跑的形状；本插件没有在 refresh 上验过任何新头，
+ * "别人这么发" 不等于 "我们可以这么改"。
+ */
+function legacyCommonHeaders(credential: WorkBuddyCredential): Record<string, string> {
+  return {
     'Accept': 'application/json, text/plain, */*',
     'X-Requested-With': 'XMLHttpRequest',
     'Origin': originReferer(credential),
     'Referer': `${originReferer(credential)}/`,
     'User-Agent': CLIENT_UA,
   }
+}
+
+/**
+ * 客户端调用（chat 家族）的公共头 = {@link legacyCommonHeaders} + P1 增补。
+ *
+ * 目前只有 chat 一条路径用它（`chatStream` 与 `probeChat`，两者是同一个合同）。
+ * 元数据读与维护跳走 `legacyCommonHeaders`，见那条注释里的边界说明。
+ */
+function commonHeaders(
+  credential: WorkBuddyCredential,
+  identity: WorkBuddyWireIdentity = {},
+): Record<string, string> {
+  const headers = legacyCommonHeaders(credential)
   if (profileOf(identity) === 'balanced') {
     // 风控闸门头：官方客户端的每个请求都带（B 的 D1）。`conservative` 下不发，
     // 因为那一档的契约是"逐字节等于 5.16.0"。
@@ -1849,13 +1867,15 @@ function chatHeaders(
   return headers
 }
 
-/** Refresh-endpoint headers; X-Refresh-Token appears here and nowhere else. */
-function refreshHeaders(
-  credential: WorkBuddyCredential,
-  identity: WorkBuddyWireIdentity = {},
-): Record<string, string> {
+/**
+ * Refresh-endpoint headers; X-Refresh-Token appears here and nowhere else.
+ *
+ * **签名里刻意没有 `identity`**：这条路径不参与 P1 的身份统一，多一个用不到的
+ * 参数只会让下一个人以为它本该用上。见 {@link legacyCommonHeaders}。
+ */
+function refreshHeaders(credential: WorkBuddyCredential): Record<string, string> {
   const headers: Record<string, string> = {
-    ...commonHeaders(credential, identity),
+    ...legacyCommonHeaders(credential),
     'X-Refresh-Token': credential.refreshToken,
     // 这个取值 A（`converter.py:307`）与 B（`headers.go:410`）都是 `plugin`，
     // 本插件用的是 `workbuddy`。两者在当前网关上都被接受（刷新一直是好的），
@@ -1927,10 +1947,24 @@ function billingHeaders(
  * 探针当时没带，带了只是多一个可能被网关拒掉的变量，没有收益。
  *
  * 2026-10-31（P1）：`X-Product` 由 `SaaS` 改为 `WorkBuddy`，并补上
- * `X-Agent-Purpose` / `X-IDE-*` 与设备头，与 chat / billing 同一份自称（见
- * {@link attributionHeaders}）。`Origin` / `Referer` 的缺席是**上表实测的一部分**，
- * 仍然不动——"统一"改的是身份，不是把当时特意排除的变量加回来。`conservative`
- * 档下这一行还原成 `X-Product: SaaS` 且不带归属头与设备头。
+ * `X-Agent-Purpose` / `X-IDE-*` 与设备对，与 chat / billing 同一份自称（见
+ * {@link attributionHeaders}）。这里遵守的是一条明确的界线：
+ *
+ *   - **身份类头**（`X-Product` / `X-IDE-*` / `X-Agent-Purpose` / 设备对）跟着
+ *     统一走。不统一的代价是新的 D2：同一个 host 上 chat 说自己是 WorkBuddy、
+ *     生图说自己是 SaaS，而这个矛盾恰恰是这次要消掉的东西。
+ *   - **网络环境类头**（`Origin` / `Referer`）保持上表的实测形态。它们回答的是
+ *     "这条请求从哪来"，与"谁在说话"不是一个判据，当时特意排除就先不请回来。
+ *
+ * 代价说清楚：这毕竟是在一条逐字节测过的路径上加了几个头。若生图那道闸哪天
+ * 开始拒，第一个该试的是把 `wireProfile` 切到 `conservative` —— 那一档会把这
+ * 一行连同所有新增头一起还原成 5.16.0。
+ *
+ * 增量的边界是"**自我描述**"：`X-Product` / `X-IDE-*` / `X-Agent-Purpose` /
+ * 设备对 / `X-Root-Request-ID` 进，`X-CodeBuddy-Request` 与 `Accept-Language`
+ * **不进**。后两个不是身份而是传输层标记：若闸门真的要求 `X-CodeBuddy-Request`，
+ * 生图（从来没发过它）今天就该失败，而它一直是 200；语言同理，生图输出不是
+ * 语言相关的东西。没有收益的变量不加——这条正是上面那段实测留下的规则。
  *
  * 复用 {@link conversationHeaders}：官方 CLI 的 ImageService 也是每次现生成
  * 一组会话 UUID。但这里**传 `'image'`，且刻意不跟 `usageIdentity` 开关走**：
@@ -1999,7 +2033,7 @@ export function describeRequestHeaderNames(
     case 'image':
       return Object.keys(imageHeaders(credential, identity))
     case 'refresh':
-      return Object.keys(refreshHeaders(credential, identity))
+      return Object.keys(refreshHeaders(credential))
     case 'billing':
       return Object.keys(billingHeaders(credential, identity))
   }
@@ -4055,7 +4089,7 @@ export class WorkBuddyUpstreamClient {
   async refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome> {
     const response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
       method: 'POST',
-      headers: refreshHeaders(credential, await this.ready),
+      headers: refreshHeaders(credential),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
     const envelope = await readEnvelope(response)
@@ -4114,10 +4148,12 @@ export class WorkBuddyUpstreamClient {
           'Accept': 'application/json',
           ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
           ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
-          // 归属头统一走 attributionHeaders：`conservative` 下它恰好还原
-          // 5.16.0 的 `X-Product: SaaS`（那一档连这个值都不改），`balanced`
-          // 下补上 Name / Type / Purpose 三头，与 chat/billing 同一份自称。
-          ...attributionHeaders(await this.ready),
+          // 这一处**刻意不统一**。`/v3/config` 不是"客户端在替用户做事"，而是
+          // 读一份产品配置：它的字节是 2026-10-21 逐条实测过的（UA 选通道，
+          // 其余头固定），而 P0.5 的收益是在 chat 上量的。给一次元数据读加上
+          // 归属头，只会多几个能被比对的落点，换不来任何东西——与
+          // `fetchModelBusy`（`:4188` 起）同一条规则。
+          'X-Product': 'SaaS',
           'X-Requested-With': 'XMLHttpRequest',
           'Connection': 'close',
           'User-Agent': PRODUCT_UA,
@@ -4185,11 +4221,10 @@ export class WorkBuddyUpstreamClient {
       const response = await fetch(`${chatBase(credential)}${MODEL_BUSY_PATH}`, {
         method: 'POST',
         headers: {
-          // 只带 commonHeaders（含 P1 的 `X-CodeBuddy-Request` / `Accept-Language`），
-          // 刻意**不**带归属头与设备头：这是一个身份无关的元数据读（`:439` 起实测
-          // 三个 CN 入口在两种 UA 下逐字节相同）。把合成设备 id 撒到每一条刷新读上，
-          // 只是多几个能被比对的落点，换不来任何东西。
-          ...commonHeaders(credential),
+          // 元数据读，**保持 5.16.0**：`legacyCommonHeaders` 而不是
+          // `commonHeaders`。理由与 `/v3/config` 同一条（见 `:4147` 的注释）——
+          // 这类调用不替用户做事，加身份头只增加落点、不带来收益。
+          ...legacyCommonHeaders(credential),
           'Authorization': `Bearer ${credential.accessToken}`,
           'Content-Type': 'application/json',
         },

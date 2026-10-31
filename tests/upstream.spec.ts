@@ -835,10 +835,9 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     // The CLI user agent returns a 35-model roster without this model; only the
     // app channel's document carries the account's real chat list.
     expect(seen['User-Agent']).toBe('WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0')
-    // P1 把这处从 `SaaS` 统一成 `WorkBuddy`：同一个客户端不该在读目录时叫
-    // "某种 SaaS 租户"、在聊天时叫 "WorkBuddy"（见 src/upstream.ts 的
-    // attributionHeaders）。
-    expect(seen['X-Product']).toBe('WorkBuddy')
+    // P1 统一的是**客户端**身份（chat / image / billing），不包含这条元数据读：
+    // `/v3/config` 的字节是逐条实测过的，改动它只增加变量、不带来收益。
+    expect(seen['X-Product']).toBe('SaaS')
     expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
     expect(models[0]?.creditMultiplier).toBe(0)
   })

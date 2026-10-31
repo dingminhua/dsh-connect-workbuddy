@@ -157,15 +157,18 @@ describe('balanced — one client identity everywhere', () => {
     expect(seen['X-Machine-ID']).toMatch(/^[0-9a-f]{36}$/)
   })
 
-  it('keeps refresh on common headers only, with its own token', async () => {
-    // refresh is a maintenance hop: it carries X-Refresh-Token and no Bearer,
-    // and it deliberately does NOT carry the attribution/device family — that
-    // is the one place where the two reference implementations agree on staying
-    // thin, and the one call that must never fail for a cosmetic reason.
+  it('leaves refresh on the 5.16.0 bytes, with its own token', async () => {
+    // refresh 是整条链路里唯一"失败就等于掉登录"的一跳，所以它不参与 P1 的
+    // 身份统一：没有归属头、没有设备头，**连 CodeBuddy-Request / Accept-Language
+    // 也不加**（B 会加，但那是 B 一直在跑的形状；本插件没有在 refresh 上验过
+    // 任何新头）。这条断言就是"统一"的边界——凡是维护类/元数据类的一跳，
+    // 字节保持原样。
     const seen = await headersOf('refresh', { profile: 'balanced', deviceSalt: SALT })
     expect(seen['X-Refresh-Token']).toBe('refresh-token-fixture')
     expect(seen['Authorization']).toBeUndefined()
-    expect(seen['X-CodeBuddy-Request']).toBe('1')
+    expect(seen['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
+    expect(seen['X-CodeBuddy-Request']).toBeUndefined()
+    expect(seen['Accept-Language']).toBeUndefined()
     expect(seen['X-Product']).toBeUndefined()
     expect(seen['X-Machine-ID']).toBeUndefined()
   })
