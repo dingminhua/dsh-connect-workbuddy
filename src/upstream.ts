@@ -545,6 +545,11 @@ const ERROR_BODY_LIMIT = 4096
  * with nothing in the UI to say which one it was. Ten seconds is comfortably
  * above a working gateway's first byte and far below a user's patience; the
  * budget covers the response only, never the one-line body that follows.
+ *
+ * It also does not cover THIS MACHINE's identity work. Since P3 the header build
+ * may spawn the device-token subprocess (budget 20 s), and starting the clock
+ * before that would turn a healthy gateway into "unreachable" on a cold start —
+ * see the note in `probeChat` for why that matters to the pool.
  */
 const PROBE_TIMEOUT_MS = 10_000
 
@@ -4111,9 +4116,19 @@ export class WorkBuddyUpstreamClient {
     // excludes what does not answer. Bounding the real request as well would be a
     // second, far more expensive detector for the same fact.
     try {
+      // 身份先算，再判是否已被取消。顺序反过来的话，取消发生在 `await` 期间的
+      // 那次请求仍会被发出去（只是带着一个已 abort 的 signal），白打一次上游、
+      // 白起一个 SDK 子进程——而调用方早已挂断。
+      const headers = {
+        ...chatHeaders(credential, await this.wireIdentity(credential)),
+        'Authorization': `Bearer ${credential.accessToken}`,
+      }
+      if (signal?.aborted === true) {
+        return { ok: false, status: 0, kind: 'server', message: 'cancelled before send' }
+      }
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, await this.wireIdentity(credential)), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers,
         body: bodyJson,
         ...signal === undefined ? {} : { signal },
       })
@@ -4170,12 +4185,27 @@ export class WorkBuddyUpstreamClient {
    * model on the same clock as a dead endpoint, and the whole point of the
    * period is to answer "did the upstream answer at all". A probe asks for a
    * single token, so the body that follows is one SSE line.
+   *
+   * It likewise does not cover building the headers. That step became slow in P3
+   * (the device-token path is a subprocess with a 20 s budget), and starting the
+   * clock first made a healthy gateway answer `status 0` on a cold start — which
+   * the pool reads as "unreachable" and acts on by benching the account. Hence
+   * the deliberate order below: resolve identity, THEN arm the timer.
    */
   async probeChat(
     credential: WorkBuddyCredential,
     bodyJson: string,
     signal?: AbortSignal,
   ): Promise<WorkBuddyProbeAnswer> {
+    const headers = {
+      ...chatHeaders(credential, await this.wireIdentity(credential)),
+      'Authorization': `Bearer ${credential.accessToken}`,
+    }
+    // 调用方在准备阶段就挂断了：一次都不发。真发出去也只是带着已 abort 的
+    // signal 出去，白白消耗一次上游调用与一个子进程。
+    if (signal?.aborted === true) {
+      return { ok: false, status: 0, retryAfter: null, body: 'cancelled before send' }
+    }
     let response: Response
     const ceiling = new AbortController()
     const timer = setTimeout(() => {
@@ -4184,7 +4214,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, await this.wireIdentity(credential)), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers,
         body: bodyJson,
         signal: signal === undefined ? ceiling.signal : AbortSignal.any([signal, ceiling.signal]),
       })

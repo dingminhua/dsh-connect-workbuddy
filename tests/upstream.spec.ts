@@ -1463,12 +1463,44 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
         reject(new Error('no response within 10000ms'))
       })
     })))
-    const answer = new WorkBuddyUpstreamClient().probeChat(credential(), '{}')
+    // 身份先解析、再起表 —— 所以这里把盐喂进去，让那一段只剩微任务。若让它去读
+    // 本机盐文件，真实 I/O 会吃掉假时钟的刻度，9999/10000 这条边界就测不准了。
+    const answer = new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) }).probeChat(credential(), '{}')
     await vi.advanceTimersByTimeAsync(9_999)
     await vi.advanceTimersByTimeAsync(1)
     // status 0 is the transport-failure convention the shim already maps to
     // `server`, so this reads as "the upstream is unreachable" — not as a
     // statement about the account.
+    await expect(answer).resolves.toMatchObject({ ok: false, status: 0 })
+  })
+
+  it('starts its clock after the identity work, not before', async () => {
+    // P3 回归：真实值档取 token 是一次子进程调用（预算 20 s），而 probe 的预算只有
+    // 10 s。若定时器先起跑，一次冷启动就会把健康的网关报成 status 0 —— 账号池据此
+    // 把账号移出轮换。这条用例把两段分开计时：先花 11 s 拿 token，请求必须已经发出。
+    vi.useFakeTimers()
+    const fetchSpy = vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => { reject(new Error('aborted')) })
+    }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const tokenSource = {
+      current: async (): Promise<string | undefined> => {
+        await new Promise(resolve => setTimeout(resolve, 11_000))
+        return 'v3:slow'
+      },
+      refresh: async () => ({ state: 'ok' as const, masked: 'v3:***', length: 6 }),
+      readout: () => ({ state: 'ok' as const, masked: 'v3:***', length: 6 }),
+      reveal: async () => 'v3:slow',
+    }
+    const client = new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) }, {
+      deviceProfiles: { forUid: async () => undefined, mode: async () => 'real' },
+      realDevice: tokenSource,
+    })
+    const answer = client.probeChat(credential(), '{}')
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    // 请求发出之后才开始自己的 10 s：再走满才超时。
+    await vi.advanceTimersByTimeAsync(10_000)
     await expect(answer).resolves.toMatchObject({ ok: false, status: 0 })
   })
 
@@ -1479,7 +1511,9 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
     // so it is cleared the moment headers land.
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn(async () => new Response('data: [DONE]\n\n', { status: 200 })))
-    const client = new WorkBuddyUpstreamClient()
+    // 盐显式给出，理由同上一条：让身份解析只剩微任务，假时钟才不会被真实文件 I/O
+    // 卡住（这条测的是"响应到达后表要停"，与身份无关）。
+    const client = new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) })
     const answer = await client.probeChat(credential(), '{}')
     expect(answer.ok).toBe(true)
     // Well past the ceiling — if the timer were still armed, this read would
@@ -1710,10 +1744,29 @@ describe('WorkBuddyUpstreamClient.chatStream', () => {
     vi.stubGlobal('fetch', vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
       init.signal?.addEventListener('abort', () => { reject(new Error('aborted')) })
     })))
-    const answer = new WorkBuddyUpstreamClient().chatStream(credential(), '{}', caller.signal)
+    // 盐显式给出：这一条要测的是"请求已发出后被挂断"，而不是"挂断发生在准备
+    // 阶段"（后者由下面那条 cancelled-before-send 覆盖）。让身份解析只剩微任务，
+    // fetch 才确定在 abort 之前被调用。
+    const answer = new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) })
+      .chatStream(credential(), '{}', caller.signal)
     await vi.advanceTimersByTimeAsync(1_000)
     caller.abort()
     await expect(answer).resolves.toMatchObject({ ok: false, status: 0, kind: 'server' })
+  })
+
+  it('does not send at all when the caller is already gone before the headers exist', async () => {
+    // 准备阶段（P3 起可能是 20 s 的 token 子进程）里被挂断：一次都不发。
+    // 否则这次请求仍会打到上游、仍会起一个子进程，而用户早已关掉面板。
+    vi.useFakeTimers()
+    const caller = new AbortController()
+    const fetchSpy = vi.fn(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+    caller.abort()
+    const answer = await new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) })
+      .chatStream(credential(), '{}', caller.signal)
+    expect(answer).toMatchObject({ ok: false, status: 0, kind: 'server' })
+    expect(String((answer as { message: string }).message)).toContain('cancelled before send')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('warns through the injected logger when a 11140 body decodes to nothing', async () => {
