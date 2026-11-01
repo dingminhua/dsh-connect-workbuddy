@@ -51,8 +51,32 @@ import {
 /** 工具名。宿主禁止 `run_code`，这个名字与其它 connect 插件的命名习惯一致。 */
 export const WORKBUDDY_VIDEO_TOOL_NAME = 'workbuddy_draw_video'
 
-/** 工具单次执行的上限：提交 + 轮询（最多 ~10 分钟）+ 下载，留足余量。 */
-const VIDEO_TOOL_TIMEOUT_MS = 600_000
+/**
+ * 工具单次执行的上限：提交 + 轮询 + 下载。
+ *
+ * ## 为什么必须比宿主的 600 秒**明显小**（issue #187 的第三种现象）
+ *
+ * 这个值原本正好是 `600_000`，与宿主自己给工具调用的上限**完全相等**。两者同时到
+ * 期，而宿主的计时器先落地：调用被宿主直接掐断，用户看到的是裸的
+ * `tool call timed out after 600000ms`——没有 `taskId`、没有 `POLL_TIMEOUT`、没有
+ * 任何结构化错误，日志里也找不到是提交卡住还是轮询卡住。
+ *
+ * 内部超时短于宿主上限，插件就能**先**抛 `POLL_TIMEOUT`，把 task id 带出去。那个
+ * id 是这个故障里唯一能拿去问上游的东西，丢掉它等于把可排障的失败变成不可排障的。
+ *
+ * 570s 而不是更短：正常任务实测几十秒到几分钟，砍太狠会把慢但成功的任务判死。
+ */
+export const VIDEO_TOOL_TIMEOUT_MS = 570_000
+/**
+ * 轮询自身上限，同样要短于工具上限。
+ *
+ * 留 30s 给"抛错 + 下载"，这样即使轮询吃满，工具层也还有时间把 `POLL_TIMEOUT`
+ * 连同 task id 返回，而不是让两个 deadline 撞在一起。
+ *
+ * 导出只为让测试钉住"它确实更短"——这是 issue #187 第三种现象的修复本身，
+ * 不是实现细节。
+ */
+export const VIDEO_POLL_BUDGET_MS = 540_000
 /** 媒体模型目录的缓存时长：目录变化很慢，不必每次都重新读一遍。 */
 export const VIDEO_MODEL_TTL_MS = 5 * 60_000
 /** 下载远程输入图（图生视频时）的上限，不含生视频本身。 */
@@ -185,14 +209,27 @@ function isBillableFailure(error: unknown, sent: boolean): boolean {
 }
 
 /**
- * 把任意形态的输入图规整成上游唯一接受的形态：data URL 或 http(s) URL。
+ * 把任意形态的输入图规整成 data URL。
  *
- * 图生视频的 `image_url` 字段只接受上游可访问的 URL。本地文件路径必须
- * 读进来、编码成 data URL 再发，否则上游读到的是空响应，返回
- * "Input ImageUrl data is invalid (too short)"。与 `image-tool.ts` 的
- * `resolveImageInput` 同一套逻辑：data URL 校验后直传，http(s) 校验可达性
- * 后直传，裸 base64 / 本地路径 / file:// 读文件编成 data URL。不做缩放
- * 或格式转换——用户给什么就传什么。
+ * ## 为什么 http(s) 也要下载下来（issue #187）
+ *
+ * 这里以前只发一个 `HEAD` 做可达性校验，然后把 URL **原样**交给上游。两个问题：
+ *
+ * 1. **`HEAD` 会被 COS 拒绝。** 插件自己出图返回的是腾讯 COS 签名 URL
+ *    （`ai-corpus-backup-*.cos.ap-beijing.myqcloud.com`），签名只覆盖 `GET`。
+ *    对它发 `HEAD` 拿到 **403**，于是用户在"用上一张成功的图做首帧"这条最自然的
+ *    路径上卡死——而那个 URL 用 `curl` 明明取得到。报错因此指向了错误的对象：
+ *    用户以为是自己的图有问题。
+ * 2. **上游不接受外链。** 即使 HEAD 通过，图生视频的 `image_url` 与图生图的
+ *    `image` 是同一条规则（PR #145 记录过："image 必须是 data URI，传 COS 原始
+ *    URL → invoke model error"）。原样传 URL 只是把失败推迟到上游，并且那时已经
+ *    建了 task、扣了积分。
+ *
+ * 所以这里与 `image-tool.ts` 的 `resolveImageInput` 完全对齐：**下载并编码成
+ * data URL**。这也顺带让签名过期、上游改域名的场景在本地就报出可读的错，而不是
+ * 变成一个花了钱才发现的 `TASK_FAILED`。
+ *
+ * 仍然不做缩放或格式转换——用户给什么就传什么，只改承载形式。
  */
 async function resolveVideoImageInput(value: string, signal?: AbortSignal): Promise<string> {
   const text = value.trim()
@@ -211,28 +248,34 @@ async function resolveVideoImageInput(value: string, signal?: AbortSignal): Prom
     return text
   }
 
-  // 2. http(s) URL：只做可达性校验，不下载内容；真正的下载由上游完成
+  // 2. http(s) URL：真的下载下来，编码成 data URL 再发（见上面的函数注释）
   if (/^https?:\/\//i.test(text)) {
+    let response: Response
     try {
-      const response = await fetch(text, {
-        method: 'HEAD',
+      response = await fetch(text, {
+        // `GET` 而不是 `HEAD`：COS 签名只覆盖 GET，对签名 URL 发 HEAD 会拿到
+        // 403（issue #187 的第二种现象）。既然无论如何都要下载，就不再单独
+        // 打一次 HEAD——那是两次往返换一个"存在"的布尔，还换来了假 403。
         signal: signal ?? AbortSignal.timeout(VIDEO_INPUT_TIMEOUT_MS),
       })
-      if (!response.ok) {
-        throw new WorkBuddyVideoError(
-          `workbuddy video: 输入图 URL 不可达（HTTP ${response.status}）: ${text}`,
-          'INVALID_ARGS',
-        )
-      }
     } catch (error: unknown) {
-      if (error instanceof WorkBuddyVideoError) throw error
       throw new WorkBuddyVideoError(
-        `workbuddy video: 校验输入图 URL 失败（${text}）：`
+        `workbuddy video: 下载输入图失败（${text}）：`
         + (error instanceof Error ? error.message : String(error)),
         'INVALID_ARGS',
       )
     }
-    return text
+    if (!response.ok) {
+      throw new WorkBuddyVideoError(
+        `workbuddy video: 下载输入图失败（HTTP ${response.status}）：${text}`,
+        'INVALID_ARGS',
+      )
+    }
+    // 内容类型来自响应头；`encodeVideoInputImage` 在缺失时会去嗅探魔数。
+    return encodeVideoInputImage(
+      new Uint8Array(await response.arrayBuffer()),
+      response.headers.get('content-type') ?? text,
+    )
   }
 
   // 3. 裸 base64：编码成 data URL
