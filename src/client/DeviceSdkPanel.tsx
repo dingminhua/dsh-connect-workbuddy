@@ -331,6 +331,15 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
         ? <p className="dsm-workbuddy-device-error">{token.reason}</p>
         : null}
 
+      {/* macOS 的平台限制（作者意见 #3「mac 上好像工作不正常」）：
+          这一台机器上取不到 token 是**结构性的**，不是等待或配置能解决的问题。
+          把它写成"再看看"，用户会一直重试；写清楚之后，同一行下面的
+          「真实值档在这里一个头都不发」才是可预期的行为。只在 darwin 且确实
+          取不到时出现——能取到的地方多一句话都是噪音。 */}
+      {sdk?.platform === 'darwin' && token?.state === 'unavailable'
+        ? <p className="dsm-workbuddy-panel-note">{t('sdk.macTokenLimit')}</p>
+        : null}
+
       {/* 真实值块：默认一行星号。`value` 只在用户点开之后才有内容，关掉即丢弃。 */}
       <div className="dsm-workbuddy-device-field">
         <span className="dsm-workbuddy-device-field-label">{t('sdk.valueLabel')}</span>
