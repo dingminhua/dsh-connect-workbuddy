@@ -457,6 +457,7 @@ export const en = {
   // app installed on this machine. The hint names
   // the consequence (the gear is off) rather than only the mechanism, because a
   // greyed-out gear with no sentence next to it reads as a broken control.
+  'row.deviceModeOffHint': 'Device identity is off — switch it on in the SDK tab before these values are sent again.',
   'row.deviceModeTitle': 'Device identity',
   'row.deviceModeVirtual': 'Virtual',
   'row.deviceModeReal': 'Real',
@@ -490,10 +491,15 @@ export const en = {
   'sdk.hint': 'The real device token this machine signs through the installed WorkBuddy desktop SDK. Every account sends this one value in the Real tier; the Virtual tier never sends it (the token is still kept warm so this page always shows the current one).',
   'sdk.loading': 'Asking the SDK…',
   'sdk.unavailable': 'This Host build has no SDK route — real device parameters are not available here. The Virtual tier still works.',
+  'sdk.enabledLabel': 'Device identity',
+  'sdk.enabledHint': 'Switched off: no X-Machine-ID / X-Session-ID / X-Device-Token goes out with any request, the background token refresh stops, and doctor does not probe the SDK. The tier and per-account values are kept.',
+  'sdk.disabledNote': 'Device identity is off — nothing is sent. Switch it back on to send again.',
   'sdk.state': 'Connection',
   'sdk.statusReady': 'Working',
   'sdk.statusStale': 'Reachable, but the last fetch failed — serving the previous token',
-  'sdk.statusNoToken': 'SDK loaded, no token yet — open 「Refresh」',
+  // 这句不再许诺「点一下就修好」：macOS 上桌面端绑定会把取 token 派到主队列，
+  // 而插件不是那个进程，点多少次都一样——原文案是那个死循环的帮凶。
+  'sdk.statusNoToken': 'SDK loaded, this machine has not produced a token yet',
   'sdk.statusMissing': 'No installed WorkBuddy desktop SDK found on this machine',
   'sdk.statusUnsupported': 'The SDK refused this platform',
   'sdk.statusError': 'The SDK could not be loaded',
@@ -1084,6 +1090,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 设备头档位与逐账号齿轮。中文这几句的要点与英文一致：**「真实值」= 所有账号
   // 共用这台机器真实的设备**，所以齿轮关掉——一台真机不可能有两个 id。只写"不可
   // 编辑"而不写原因，用户会当成控件坏了。
+  'row.deviceModeOffHint': '设备身份已在「SDK」页关闭——去那里打开后才会再发送这些参数。',
   'row.deviceModeTitle': '设备头',
   'row.deviceModeVirtual': '虚拟值',
   'row.deviceModeReal': '真实值',
@@ -1114,10 +1121,13 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'sdk.hint': '这台机器通过本机安装的桌面端 SDK 签发的真实设备 token。「真实值」档下所有账号都发这一个值；「虚拟值」档不发送它（仍会后台预热，所以这一页随时能看到当前值）。',
   'sdk.loading': '正在询问 SDK…',
   'sdk.unavailable': '这个 Host 版本没有 SDK 路由——这里拿不到真实设备参数。「虚拟值」档不受影响。',
+  'sdk.enabledLabel': '设备身份',
+  'sdk.enabledHint': '关掉之后：任何请求都不带 X-Machine-ID / X-Session-ID / X-Device-Token，后台停止取 token，doctor 也不探测 SDK。档位与每账号覆盖都还留着。',
+  'sdk.disabledNote': '设备身份已关闭——什么都不会发出去。重新打开即恢复。',
   'sdk.state': '连接状态',
   'sdk.statusReady': '正常',
   'sdk.statusStale': '能连上，但最近一次取数失败——仍在使用上一枚 token',
-  'sdk.statusNoToken': 'SDK 已加载，还没取到 token——点「重新获取」',
+  'sdk.statusNoToken': 'SDK 已加载，本机还没取到 token',
   'sdk.statusMissing': '未在本机找到已安装的 WorkBuddy 桌面端 SDK',
   'sdk.statusUnsupported': 'SDK 拒绝了这个平台',
   'sdk.statusError': 'SDK 加载失败',

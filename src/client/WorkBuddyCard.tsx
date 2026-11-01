@@ -3162,6 +3162,7 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                       // 不该出现一个点不动的开关。
                       {...deviceSettings === undefined ? {} : {
                         deviceMode: deviceSettings.mode,
+                        deviceEnabled: deviceSettings.enabled,
                         deviceProfiles: deviceSettings.accounts,
                         // 派生值随每次响应刷新：切档/保存后弹窗里显示的那一对必须
                         // 与下一条请求真正发出的一致，不能停在打开页面时那份快照。
@@ -3687,6 +3688,11 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                       t={t}
                       path={WORKBUDDY_DEVICE_SDK_PATH}
                       settingsPath={WORKBUDDY_DEVICE_PROFILE_PATH}
+                      // 开关在 SDK 页上改；池子那一排的档位要跟着立刻变灰或回来，
+                      // 否则用户关完切回去看还在，会以为没生效。
+                      onEnabledChange={enabled => {
+                        setDeviceSettings(current => current === undefined ? current : { ...current, enabled })
+                      }}
                     />
                   : null}
               </div>

@@ -1499,6 +1499,7 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
         // 回退默认关：这条用例断言的是 P3 原行为——取不到真 token 就一个设备头
         // 都不发。回退打开是另一条用例。
         fallbackToVirtual: async () => false,
+        enabled: async () => true,
         sdkDir: async () => '',
       },
       realDevice: tokenSource,

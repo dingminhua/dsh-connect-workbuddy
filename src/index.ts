@@ -52,6 +52,7 @@ import {
   readDeviceSettings,
   saveDeviceProfile,
   saveDeviceSdkSettings,
+  setDeviceEnabled,
   setDeviceMode,
 } from './device-profile.ts'
 import type { WorkBuddyDeviceSettings } from './device-profile.ts'
@@ -1317,6 +1318,9 @@ export function apply(ctx: Context, config: Config): void {
   const turing = createTuringSdk({
     productVersion: APP_VERSION,
     dirSource: () => deviceProfiles.sdkDir(),
+    // 总开关关掉时预热不再起子进程（每轮 tick 现读，5 秒缓存）。请求路径的门
+    // 在 `upstream.ts` 的 `wireIdentity` 上，两边读同一个 lookup，不会分叉。
+    enabled: () => deviceProfiles.enabled(),
   })
   turing.startAutoRefresh()
   ctx.effect(() => () => { turing.stopAutoRefresh() })
@@ -2449,6 +2453,7 @@ export function apply(ctx: Context, config: Config): void {
     deviceSettings: {
       read: async () => withDerived(await readDeviceSettings()),
       setMode: async mode => withDerived(await setDeviceMode(mode)),
+      setEnabled: async enabled => withDerived(await setDeviceEnabled(enabled)),
       saveAccount: async (accountId, values) => {
         for (const region of REGION_KEYS) {
           const credential = await stacks[region].store.credentialFor(accountId)

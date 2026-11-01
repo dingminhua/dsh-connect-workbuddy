@@ -4075,6 +4075,19 @@ export class WorkBuddyUpstreamClient {
   private async wireIdentity(credential: WorkBuddyCredential): Promise<WorkBuddyWireIdentity> {
     const base = await this.baseIdentity
     if (profileOf(base) !== 'balanced') return base
+    /**
+     * 总开关（作者意见：这个功能整体该有个开关）。关 ⇒ 把盐从身份里剥掉，
+     * 于是 `deviceHeaders` 的虚拟值分支派生不出任何东西——一个设备头都不发，
+     * 与档位、token、逐账号覆盖值无关。这里**不**给 `deviceTier` 赋值：那一档
+     * 说的是"这条线用哪种方式工作"，开关说的是"这条线不存在"；两个语义挤在
+     * 一个字段上，界面就没法区分"关了"和"开着但没配好"。
+     */
+    if (this.deviceProfiles !== undefined && !await this.deviceProfiles.enabled()) {
+      // 盐与静态 token 都要剥掉：后者来自 `identity.deviceToken`，不经过档位判断，
+      // 只剥盐会让"关了"仍然带着一个 token 出去。
+      const { deviceSalt: _disabled, deviceToken: _disabledToken, ...withoutDevices } = base
+      return withoutDevices
+    }
     // 档位是每台机器的选择，与账号无关：一次读（5 s 缓存）后分两条互斥路径。
     const tier = this.deviceProfiles === undefined ? 'virtual' : await this.deviceProfiles.mode()
     if (tier === 'real') {

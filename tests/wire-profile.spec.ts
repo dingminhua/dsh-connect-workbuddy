@@ -253,6 +253,7 @@ describe('P3 — the real tier', () => {
     // 悄悄改写掉「真实值档取不到 token 就零设备头」那条断言。要测回退的用例
     // 自己传 `true`。
     fallbackToVirtual: async () => fallback,
+    enabled: async () => true,
     sdkDir: async () => '',
   })
 
@@ -385,5 +386,67 @@ describe('conservative — the 5.16.0 bytes, exactly', () => {
     expect(seen['X-CodeBuddy-Request']).toBeUndefined()
     expect(seen['X-Product']).toBeUndefined()
     expect(seen['Authorization']).toBe('Bearer access-token-fixture')
+  })
+})
+
+/**
+ * 总开关（用户意见）：关掉之后，请求路径上一个设备头都不该出现。
+ *
+ * 这一组钉的是"关"这件事的**上线证据**，而不是设置文件里的那个布尔：`onWire`
+ * 与 `X-Machine-ID` 的存在与否，是唯一能证明功能真的消失的地方。判据与
+ * `device-state.ts` 的 `enabled: false` 分支是同一条——两处各留一条用例。
+ */
+describe('the device-identity master switch (用户意见)', () => {
+  const switched = (enabled: boolean, mode: 'virtual' | 'real' = 'virtual'): WorkBuddyDeviceProfileLookup => ({
+    forUid: async () => ({ machineId: 'c'.repeat(36), sessionId: 'd'.repeat(36) }),
+    mode: async () => mode,
+    fallbackToVirtual: async () => true,
+    enabled: async () => enabled,
+    sdkDir: async () => '',
+  })
+  const tokenSource = (token: string | undefined): TuringTokenSource => ({
+    current: async () => token,
+    readout: () => ({ state: token === undefined ? 'unavailable' : 'ok', masked: '', length: token?.length ?? 0 }),
+    refresh: async () => ({ state: 'ok', masked: '', length: 0 }),
+    reveal: async () => token,
+  })
+
+  it('drops the derived pair even though the salt and an override are both present', async () => {
+    // 盐在、覆盖值也在——只有开关关着。这正是"关掉"与"没配好"最容易混淆的组合。
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+      deviceProfiles: switched(false),
+    })
+    expect(seen['X-Machine-ID']).toBeUndefined()
+    expect(seen['X-Session-ID']).toBeUndefined()
+  })
+
+  it('drops the file token too', async () => {
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT, deviceToken: 'v3:file' }, {}, {
+      deviceProfiles: switched(false),
+    })
+    expect(seen['X-Device-Token']).toBeUndefined()
+    expect(seen['X-Machine-ID']).toBeUndefined()
+  })
+
+  it('beats the real tier — off means off, not "off unless you asked for real"', async () => {
+    // 关着的时候连真 token 也不发：开关是"这条线存不存在"，档位是"它走哪条路"。
+    const seen = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, {
+      deviceProfiles: switched(false, 'real'),
+      realDevice: tokenSource('v3:real'),
+    })
+    expect(seen['X-Device-Token']).toBeUndefined()
+  })
+
+  it('turns off the device headers only — the P1 identity headers still apply', async () => {
+    // 关的是**设备身份**这一层，不是 P1 那套身份统一。所以这里要看到两个方向：
+    // 三个设备头都不在，而 X-Product/X-IDE-Type 仍然是 balanced 的取值。
+    const off = await headersOf('chat', { profile: 'balanced', deviceSalt: SALT }, {}, { deviceProfiles: switched(false) })
+    const conservative = await headersOf('chat', { profile: 'conservative', deviceSalt: SALT })
+    for (const name of ['X-Device-Token', 'X-Machine-ID', 'X-Session-ID']) {
+      expect(off[name]).toBeUndefined()
+      expect(conservative[name]).toBeUndefined()
+    }
+    expect(off['X-Product']).toBe('WorkBuddy')
+    expect(off['X-IDE-Type']).toBe('WorkBuddy')
   })
 })

@@ -29,13 +29,23 @@ afterEach(() => {
  * 每个用例换一个目录不是洁癖：`readDeviceSettings` 有 5 秒读缓存（按路径键），
  * 同一个 home 里连写三次会读到上一用例的 `mode`——这正是本文件第一版失败的原因。
  */
-async function writeDeviceSettings(mode: 'virtual' | 'real', sdkFallbackToVirtual: boolean): Promise<void> {
+async function writeDeviceSettings(
+  mode: 'virtual' | 'real',
+  sdkFallbackToVirtual: boolean,
+  enabled?: boolean,
+): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'doctor-device-'))
   homes.push(home)
   process.env['DSH_HOME'] = home
   await writeFile(
     join(home, '.workbuddy-device-profiles.json'),
-    `${JSON.stringify({ version: DEVICE_PROFILE_VERSION, mode, accounts: {}, sdkFallbackToVirtual }, null, 2)}\n`,
+    `${JSON.stringify({
+      version: DEVICE_PROFILE_VERSION,
+      ...enabled === undefined ? {} : { enabled },
+      mode,
+      accounts: {},
+      sdkFallbackToVirtual,
+    }, null, 2)}\n`,
     'utf8',
   )
 }
@@ -91,5 +101,34 @@ describe('doctor --json 的档位分岔（schemaVersion 10 的承诺）', () => 
     expect(device['tier']).toBe('virtual')
     expect(device['tierSent']).toBeUndefined()
     expect(device['fallbackToVirtual']).toBeUndefined()
+  })
+})
+
+/**
+ * 总开关（用户意见）：`--json` 里那个 `enabled: false` 是唯一的证据。
+ *
+ * `onWire: []` 单独存在时读不出原因——本版本之前它已经有两个别的含义
+ * （盐不可用、真实值档取不到 token）。开关关掉是第三个，所以必须有一个字段
+ * 把它和"坏了"分开；这也让 schemaVersion 从 10 走到 11。
+ */
+describe('doctor --json 的总开关（schemaVersion 11）', () => {
+  it('关掉之后：enabled: false、onWire 空、SDK 不出现（没探测）', async () => {
+    await writeDeviceSettings('virtual', true, false)
+    const device = (await doctorJson())['deviceIdentity'] as Record<string, unknown>
+    expect(device['enabled']).toBe(false)
+    expect(device['onWire']).toEqual([])
+    // 关着的时候 doctor 连 probe 都不起，报告里也就不该有一个 sdk 读数。
+    expect(device['sdk']).toBeUndefined()
+    // 档位照实报：它是"重新打开之后会走哪条路"，不是"现在在走哪条路"。
+    expect(device['tier']).toBe('virtual')
+  })
+
+  it('开着的时间不出现这个字段——恒等值只是噪音', async () => {
+    await writeDeviceSettings('virtual', true, true)
+    const device = (await doctorJson())['deviceIdentity'] as Record<string, unknown>
+    // 隔离环境里没有账号，`onWire` 本来就是空的——所以这条用例只看字段在不在，
+    // 不看头名清单（那由 device-state / wire-profile 的用例负责）。
+    expect(Object.hasOwn(device, 'enabled')).toBe(false)
+    expect(device['onWire']).toEqual([])
   })
 })

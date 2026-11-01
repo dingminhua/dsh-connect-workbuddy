@@ -10,6 +10,7 @@ import {
   readDeviceSettings,
   saveDeviceProfile,
   saveDeviceSdkSettings,
+  setDeviceEnabled,
   setDeviceMode,
 } from '../src/device-profile.ts'
 
@@ -36,6 +37,8 @@ describe('readDeviceSettings', () => {
   it('answers virtual + empty without creating a file', async () => {
     // A read must never leave state behind: the panel polls this on every open.
     expect(await readDeviceSettings({ dir })).toEqual({
+      // 总开关默认**开**（用户意见）：没有这个字段的文件升级后行为不变。
+      enabled: true,
       mode: 'virtual',
       accounts: {},
       sdkDir: '',
@@ -50,6 +53,8 @@ describe('readDeviceSettings', () => {
     // Hand-edited files happen; a thrown error here would blank the whole card.
     await writeFile(file(), '{ not json', 'utf8')
     expect(await readDeviceSettings({ dir })).toEqual({
+      // 总开关默认**开**（用户意见）：没有这个字段的文件升级后行为不变。
+      enabled: true,
       mode: 'virtual',
       accounts: {},
       sdkDir: '',
@@ -62,6 +67,8 @@ describe('readDeviceSettings', () => {
   it('ignores a document from an unknown version', async () => {
     await writeFile(file(), JSON.stringify({ version: 99, mode: 'real', accounts: {} }), 'utf8')
     expect(await readDeviceSettings({ dir })).toEqual({
+      // 总开关默认**开**（用户意见）：没有这个字段的文件升级后行为不变。
+      enabled: true,
       mode: 'virtual',
       accounts: {},
       sdkDir: '',
@@ -315,5 +322,69 @@ describe('the SDK settings (作者意见 #1 / #2)', () => {
     const lookup = createDeviceProfileLookup({ dir })
     expect(await lookup.sdkDir()).toBe('E:\\sdk')
     expect(await lookup.fallbackToVirtual()).toBe(false)
+  })
+})
+
+/**
+ * 总开关（用户意见）：这个功能整体要能关掉。
+ *
+ * 与档位分开存的理由在 `device-profile.ts` 的注释里：关掉再打开必须回到原来
+ * 那一档，一个 enum 做不到。这里钉住三件事——默认开、只有 false 才算关、
+ * 开关不碰档位与覆盖值。
+ */
+describe('the master switch (用户意见)', () => {
+  it('defaults to ON without a file', async () => {
+    expect((await readDeviceSettings({ dir })).enabled).toBe(true)
+    await expect(stat(file())).rejects.toThrow()
+  })
+
+  it('treats a missing field as ON — a 5.17.0 file upgrades into the same behaviour', async () => {
+    await writeFile(file(), JSON.stringify({ version: 1, mode: 'virtual', accounts: {} }), 'utf8')
+    expect((await readDeviceSettings({ dir })).enabled).toBe(true)
+  })
+
+  it('only an explicit false turns it off', async () => {
+    await writeFile(file(), JSON.stringify({ version: 1, mode: 'virtual', accounts: {}, enabled: false }), 'utf8')
+    expect((await readDeviceSettings({ dir })).enabled).toBe(false)
+  })
+
+  it('accepts only a real boolean — the string "false" is not off', async () => {
+    // 手改 JSON 时很容易把布尔写成字符串。`!== false` 这条判据让 "false" 落回
+    // 默认（开），而不是把一个字符串当成关闭——后者会让功能无声消失。
+    await writeFile(file(), JSON.stringify({ version: 1, mode: 'virtual', accounts: {}, enabled: 'false' }), 'utf8')
+    expect((await readDeviceSettings({ dir })).enabled).toBe(true)
+  })
+
+  it('round-trips through setDeviceEnabled', async () => {
+    expect((await setDeviceEnabled(false, { dir })).enabled).toBe(false)
+    expect((await readDeviceSettings({ dir })).enabled).toBe(false)
+    expect((await setDeviceEnabled(true, { dir })).enabled).toBe(true)
+    expect((await readDeviceSettings({ dir })).enabled).toBe(true)
+  })
+
+  it('keeps the tier and the per-account overrides across an off/on cycle', async () => {
+    // 关掉不该是"恢复出厂设置"：用户选的真实值档与手工填的 id 都还留着。
+    await setDeviceMode('real', { dir })
+    await saveDeviceProfile(ACCOUNT, { uid: UID, machineId: MACHINE }, { dir })
+    await saveDeviceSdkSettings({ sdkDir: 'E:\\sdk' }, { dir })
+
+    const off = await setDeviceEnabled(false, { dir })
+    expect(off).toMatchObject({
+      enabled: false,
+      mode: 'real',
+      sdkDir: 'E:\\sdk',
+      accounts: { [ACCOUNT]: { machineId: MACHINE } },
+    })
+
+    const on = await setDeviceEnabled(true, { dir })
+    expect(on).toMatchObject({ enabled: true, mode: 'real' })
+    expect((await readDeviceSettings({ dir })).accounts[ACCOUNT]).toEqual({ machineId: MACHINE })
+  })
+
+  it('reports the switch through the lookup the plugin reads', async () => {
+    const lookup = createDeviceProfileLookup({ dir })
+    expect(await lookup.enabled()).toBe(true)
+    await setDeviceEnabled(false, { dir })
+    expect(await lookup.enabled()).toBe(false)
   })
 })

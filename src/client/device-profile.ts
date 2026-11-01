@@ -26,6 +26,13 @@ export interface WorkBuddyDeviceDerived {
 
 /** What the Host answers on `GET /device-profile`. */
 export interface WorkBuddyDeviceSettings {
+  /**
+   * 设备身份总开关（用户意见）。关 = 一个设备头都不发、后台不刷新、`doctor`
+   * 不探测；档位与每账号覆盖仍然记着，重新打开时不会丢。
+   *
+   * 缺字段 = 开：与 Host 的默认值一致，也与「这个 Host 还不认识这一项」一致。
+   */
+  enabled: boolean
   mode: WorkBuddyDeviceMode
   accounts: Record<string, WorkBuddyDeviceProfile>
   /**
@@ -39,8 +46,9 @@ export interface WorkBuddyDeviceSettings {
   sdkFallbackToVirtual: boolean
 }
 
-/** 取不到设置时的答案：虚拟档、无覆盖、回退开、无手填目录。与 Host 一致。 */
+/** 取不到设置时的答案：开着、虚拟档、无覆盖、回退开、无手填目录。与 Host 一致。 */
 export const EMPTY_DEVICE_SETTINGS: WorkBuddyDeviceSettings = {
+  enabled: true,
   mode: 'virtual',
   accounts: {},
   sdkDir: '',
@@ -88,6 +96,8 @@ function normalizeSettings(body: Partial<WorkBuddyDeviceSettings>): WorkBuddyDev
     }
   }
   return {
+    // 缺字段 = 开：旧 Host 不认识这一项，而"不认识"不该被理解成"关掉了"。
+    enabled: body.enabled !== false,
     mode: body.mode === 'real' ? 'real' : 'virtual',
     accounts,
     ...body.derived === undefined ? {} : { derived },
@@ -122,6 +132,15 @@ async function post(path: string, body: unknown): Promise<WorkBuddyDeviceSetting
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return normalizeSettings(await response.json() as Partial<WorkBuddyDeviceSettings>)
+}
+
+/**
+ * Switch the whole feature on or off (用户意见).
+ *
+ * 与档位分开写：关掉再打开要回到原来那一档，一个 enum 做不到这件事。
+ */
+export function putDeviceEnabled(path: string, enabled: boolean): Promise<WorkBuddyDeviceSettings> {
+  return post(path, { kind: 'enabled', enabled })
 }
 
 /** Switch the tier. 「真实值」is remembered but changes no outbound byte until P3. */

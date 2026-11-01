@@ -229,6 +229,11 @@ export interface AccountPoolProps {
    * id，比不显示危险得多。
    */
   deviceDerived?: Readonly<Record<string, WorkBuddyDeviceDerived>>
+  /**
+   * 设备身份总开关（用户意见）。`false` 时这一排改成一个说明：档位不再生效，
+   * 齿轮也失去意义，但控件不能凭空消失——那会让人以为自己点坏了。
+   */
+  deviceEnabled?: boolean
   onDeviceModeChange?: (mode: WorkBuddyDeviceMode) => void | Promise<unknown>
   /**
    * 保存一个账号的覆盖值。`''` 表示清空该项（回到派生值）。
@@ -297,7 +302,7 @@ function formatClock(value: number): string {
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
   const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
-  const { deviceMode, deviceProfiles, deviceDerived, onDeviceModeChange, onSaveDeviceProfile } = props
+  const { deviceMode, deviceProfiles, deviceDerived, deviceEnabled, onDeviceModeChange, onSaveDeviceProfile } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -1452,22 +1457,28 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
         ? null
         : h('div', { className: 'dsm-workbuddy-device-mode' },
             h('span', { className: 'dsm-workbuddy-device-mode-title' }, t('row.deviceModeTitle')),
-            h('span', {
-              className: 'dsm-workbuddy-device-mode-seg',
-              role: 'group',
-              'aria-label': t('row.deviceModeTitle'),
-            },
-              ...(['virtual', 'real'] as const).map(mode => h('button', {
-                key: mode,
-                type: 'button',
-                className: `dsm-workbuddy-device-seg-btn${deviceMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
-                'aria-pressed': deviceMode === mode,
-                disabled: deviceModeBusy,
-                onClick: () => { void changeDeviceMode(mode) },
-              }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))),
-            ),
-            h('span', { className: 'dsm-workbuddy-hint' },
-              deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
+            // 关着时留着这一行、只换成一句话：控件凭空消失会被读成"我点坏了"，
+            // 而档位此刻确实不生效——两件事要说在一处。
+            deviceEnabled === false
+              ? h('span', { className: 'dsm-workbuddy-hint' }, t('row.deviceModeOffHint'))
+              : h('span', {
+                  className: 'dsm-workbuddy-device-mode-seg',
+                  role: 'group',
+                  'aria-label': t('row.deviceModeTitle'),
+                },
+                  ...(['virtual', 'real'] as const).map(mode => h('button', {
+                    key: mode,
+                    type: 'button',
+                    className: `dsm-workbuddy-device-seg-btn${deviceMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
+                    'aria-pressed': deviceMode === mode,
+                    disabled: deviceModeBusy,
+                    onClick: () => { void changeDeviceMode(mode) },
+                  }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))),
+                ),
+            deviceEnabled === false
+              ? null
+              : h('span', { className: 'dsm-workbuddy-hint' },
+                  deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
           ),
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
@@ -1520,7 +1531,9 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               onRemove: () => { void runRowRemove(account.accountId, account.accountName) },
               // 齿轮只在 Host 真的能保存时才出现；「真实值」档下置灰但仍可点，
               // 点了弹出"为什么"。两条路都通向一次说明，而不是一个死按钮。
-              ...onSaveDeviceProfile === undefined ? {} : {
+              // 总开关关着时齿轮整个不出现：档位都不生效，一行点击即报错的齿轮
+              // 只会让人再点一次。
+              ...onSaveDeviceProfile === undefined || deviceEnabled === false ? {} : {
                 onEditDevice: () => {
                   if (deviceMode === 'real') {
                     setDeviceBlockedOpen(true)

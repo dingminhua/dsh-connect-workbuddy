@@ -114,6 +114,17 @@ const KEEP_ALIVE_RETRY_MS = 60_000
 /** SDK 根本不可用（没内置副本、平台不支持、加载失败）时的复查间隔。 */
 const KEEP_ALIVE_UNAVAILABLE_MS = 5 * 60_000
 
+/**
+ * 连续取数失败几次后，把预热节奏降到 {@link KEEP_ALIVE_UNAVAILABLE_MS}。
+ *
+ * 存在的理由是本机实测过的 macOS 状态：probe 是 `ready`（binding 加载并应答），
+ * 但 token 永远超时——桌面端 binding 在取风险消息时 `dispatch_sync` 到主队列，
+ * 纯 libuv 进程没人排空它（证据见 `native/turing-sdk/README.md`）。这种"ready
+ * 但必然失败"的机器按 60 秒撞一堵永远不掉的墙，就是用户看到的"工作不正常"。
+ * 两次失败说明不是偶发抖动，降到 5 分钟一查；手动「重新获取」不受此限制。
+ */
+const KEEP_ALIVE_FAILURE_STRIKES = 2
+
 /** 下一次预热的延迟下限，防止把定时器排成 0 ms 的自旋。 */
 const KEEP_ALIVE_MIN_DELAY_MS = 5_000
 
@@ -127,6 +138,8 @@ export interface TuringKeepAliveTiming {
   unavailableMs: number
   /** 任何情况下的延迟下限。 */
   minDelayMs: number
+  /** "ready 但连续取不到 token" 几次后降到 `unavailableMs`。 */
+  failureStrikes: number
 }
 
 /** 生产用法；测试可以整体或部分覆盖（见 `createTuringSdk` 的 `keepAliveTiming`）。 */
@@ -135,6 +148,7 @@ export const TURING_KEEP_ALIVE_TIMING: TuringKeepAliveTiming = {
   retryMs: KEEP_ALIVE_RETRY_MS,
   unavailableMs: KEEP_ALIVE_UNAVAILABLE_MS,
   minDelayMs: KEEP_ALIVE_MIN_DELAY_MS,
+  failureStrikes: KEEP_ALIVE_FAILURE_STRIKES,
 }
 
 /** 决定下一次自动预热的延迟（毫秒）。导出来是为了能直接测调度，而不必真等十分钟。 */
@@ -147,8 +161,13 @@ export function nextAutoRefreshDelayMs(input: {
   lastFailureAtMs?: number
   /** 最近一次 probe 的结论，用来区分"暂时取不到"和"这台机器没有 SDK"。 */
   sdkState?: TuringSdkInfo['state']
+  /**
+   * 连续取数失败的次数（成功清零）。`sdkState==='ready'` 却连着失败到这个数，
+   * 说明撞的是平台性死墙（macOS 主队列），按 `unavailableMs` 的节奏复查。
+   */
+  fetchFailureCount?: number
 }, timing: TuringKeepAliveTiming = TURING_KEEP_ALIVE_TIMING): number {
-  const { nowMs, ttlMs, fetchedAtMs, lastFailureAtMs, sdkState } = input
+  const { nowMs, ttlMs, fetchedAtMs, lastFailureAtMs, sdkState, fetchFailureCount } = input
   if (fetchedAtMs !== undefined) {
     // 取到了但随后又失败过（例如手动刷新失败）：一分钟后再试一次，别等到下次到期。
     if (lastFailureAtMs !== undefined && lastFailureAtMs >= fetchedAtMs) return timing.retryMs
@@ -157,7 +176,11 @@ export function nextAutoRefreshDelayMs(input: {
   }
   // 还没有 token：SDK 不在这台机器上就慢一点问——每 60 秒做一次没有结果的 probe
   // 只是让日志变脏，而且 SDK 不会在运行期凭空出现。
-  return sdkState !== undefined && sdkState !== 'ready' ? timing.unavailableMs : timing.retryMs
+  if (sdkState !== undefined && sdkState !== 'ready') return timing.unavailableMs
+  // ready 但连续失败够多次：同样是慢下来。这条分支是给 macOS 的——那里 probe
+  // 永远 ready、token 永远超时，60 秒一次的重试等于没有退避。
+  if (fetchFailureCount !== undefined && fetchFailureCount >= timing.failureStrikes) return timing.unavailableMs
+  return timing.retryMs
 }
 
 /** 内置副本的目录名，按 `platform-arch` 分。目前只有 Windows。 */
@@ -552,6 +575,13 @@ export function createTuringSdk(options: {
    * 排不到 `dir` / 环境变量前面：那两者是调用方与排障的显式选择。
    */
   dirSource?: () => Promise<string>
+  /**
+   * 总开关的读取缝（作者意见：功能整体该有个开关）。关 ⇒ 预热整条链不再取数
+   * ——不发子进程，也不 probe。与 `dirSource` 同样是**函数**：设置在运行期会
+   * 变，句柄不会。每轮 tick 读一次；生产接线传的是 `device-profile` 的 lookup，
+   * 它自带 5 秒读盘缓存，所以这个检查约等于免费。
+   */
+  enabled?: () => Promise<boolean>
 } = {}): TuringSdk {
   const now = options.now ?? (() => Date.now())
   const worker = options.worker ?? workerPath()
@@ -605,6 +635,8 @@ export function createTuringSdk(options: {
   let keepAliveActive = false
   /** 最近一次 probe 的结论，用来决定"没有 token"时多久再问一次。 */
   let lastSdkState: TuringSdkInfo['state'] | undefined
+  /** 连续取数失败次数（成功清零）；喂给 `nextAutoRefreshDelayMs` 的 strikes。 */
+  let fetchFailureCount = 0
 
   const runtimeLabel = process.versions.electron === undefined
     ? process.version.replace(/^v/u, '')
@@ -706,11 +738,15 @@ export function createTuringSdk(options: {
     if (answer.ok !== true || token === '') {
       lastFailure = answer.message ?? answer.reason ?? 'sdk returned no token'
       lastFailureAtMs = lastAttemptMs
+      // probe 说 ready、token 却拿不到——这才是要计数的失败形态（macOS 的主队列
+      // 死锁正是它）。probe 本身不 ready 时调度已经走 unavailableMs，不重复计。
+      fetchFailureCount += 1
       return undefined
     }
     cached = { token, fetchedAtMs: now() }
     lastFailure = undefined
     lastFailureAtMs = undefined
+    fetchFailureCount = 0
     return token
   }
 
@@ -767,6 +803,7 @@ export function createTuringSdk(options: {
       ...cached === undefined ? {} : { fetchedAtMs: cached.fetchedAtMs },
       ...lastFailureAtMs === undefined ? {} : { lastFailureAtMs },
       ...lastSdkState === undefined ? {} : { sdkState: lastSdkState },
+      fetchFailureCount,
     }, keepAliveTiming)
   }
 
@@ -780,7 +817,10 @@ export function createTuringSdk(options: {
   async function tick(): Promise<void> {
     if (!keepAliveActive) return
     try {
-      await warm()
+      // 总开关关着：这一轮不取数（一个子进程都不起），但链继续按 60 秒排——
+      // 用户随时可能在卡片上重新打开，读一次带缓存的开关比重启插件便宜得多。
+      const on = options.enabled === undefined || await options.enabled()
+      if (on) await warm()
     } catch {
       // warm 自己不抛；这里只是不让一次意外把整条定时链断掉。
     }

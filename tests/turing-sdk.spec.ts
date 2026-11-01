@@ -509,6 +509,22 @@ describe('nextAutoRefreshDelayMs', () => {
     expect(nextAutoRefreshDelayMs({ nowMs: 0, ttlMs }))
       .toBe(TURING_KEEP_ALIVE_TIMING.retryMs)
   })
+
+  it('backs off a ready SDK that keeps failing to produce a token', () => {
+    // macOS 的真实形态：probe 永远 ready，token 永远超时（主队列没人排空）。
+    // 头几次失败仍按 60 秒重试——可能是偶发抖动；到 strikes 次数就说明撞的是
+    // 平台性死墙，降到和"这台机器没有 SDK"一样的 5 分钟节奏。
+    expect(nextAutoRefreshDelayMs({
+      nowMs: 0, ttlMs, sdkState: 'ready', fetchFailureCount: TURING_KEEP_ALIVE_TIMING.failureStrikes - 1,
+    })).toBe(TURING_KEEP_ALIVE_TIMING.retryMs)
+    expect(nextAutoRefreshDelayMs({
+      nowMs: 0, ttlMs, sdkState: 'ready', fetchFailureCount: TURING_KEEP_ALIVE_TIMING.failureStrikes,
+    })).toBe(TURING_KEEP_ALIVE_TIMING.unavailableMs)
+    // 有了 token 之后这条分支不再参与：fetchedAtMs 的路径自己管自己。
+    expect(nextAutoRefreshDelayMs({
+      nowMs: 0, ttlMs, fetchedAtMs: 0, sdkState: 'ready', fetchFailureCount: 99,
+    })).toBe(ttlMs - TURING_KEEP_ALIVE_TIMING.leadMs)
+  })
 })
 
 describe('自动预热（auto refresh）', () => {

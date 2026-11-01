@@ -106,8 +106,14 @@ type Action = 'doctor' | 'logout' | 'status'
  * only when they diverge, so a consumer that only knows version 9 keeps working
  * for every machine that never turned the switch on, and a machine that did
  * becomes legible instead of self-contradictory.
+ * 10 → 11: `deviceIdentity.enabled` and the master switch behind it (用户意见).
+ * Off means one header set fewer than any tier describes: `onWire` is empty
+ * regardless of `tier`, `sdk` disappears (an off feature does not probe), and the
+ * derived block is gone. `enabled: false` is what tells a consumer that the empty
+ * `onWire` is the user's choice rather than a tier that failed to produce
+ * identity — the two look identical in every earlier version.
  */
-const JSON_SCHEMA_VERSION = 10
+const JSON_SCHEMA_VERSION = 11
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -141,6 +147,19 @@ function describeAge(ms: number): string {
  * than silently assumed, so the discrepancy is at least visible.
  */
 function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): string[] {
+  /**
+   * 关着时只印一行（用户要的总开关）。
+   *
+   * 下面那些行——头名、派生、token 文件、SDK——讲的都是"这一档会怎么工作"。
+   * 功能关掉时它们全部不成立，逐行改文案只会让一屏字都在说"其实没发"。留一句
+   * 说明 + 关掉时**本来会**用的档位，读者才知道自己关掉的是什么。
+   */
+  if (device.enabled === false) {
+    return [
+      `Device identity: off — no device header is attached`
+        + ` (tier ${device.tier} would be used if switched back on; salt ${device.salt.state})`,
+    ]
+  }
   const onWire = device.onWire.length === 0
     ? 'none — no X-Device-Token / X-Machine-ID / X-Session-ID is attached'
     : device.onWire.join(', ')
@@ -365,7 +384,20 @@ async function doctor(jsonOutput: boolean): Promise<number> {
   const deviceCredentials = (await Promise.all(
     (await anyStore.accounts()).map(async account => anyStore.credentialFor(account.id)),
   )).filter((credential): credential is WorkBuddyCredential => credential !== undefined)
-  const deviceSalt = deviceCredentials.length === 0 ? await readDeviceSalt() : await ensureDeviceSalt()
+  const deviceSettings = await readDeviceSettings()
+  const deviceTier = deviceSettings.mode
+  /**
+   * 总开关（作者意见）：关着就**什么也不做**——不探测 SDK、不读 token 文件、
+   * 不生成盐。一个关掉的功能还在后台起进程、写文件，是这份输出最不该出现的
+   * 样子：报告写着"关着"、机器却在跑。用户读到的只有报告，矛盾要消在源头。
+   *
+   * 盐只读不建：报告里那一行仍要说清"本机有没有盐"，那是关掉之后重新打开时
+   * 还要不要重新识别这台机器的前提。
+   */
+  const deviceEnabled = deviceSettings.enabled
+  const deviceSalt = deviceEnabled && deviceCredentials.length > 0
+    ? await ensureDeviceSalt()
+    : await readDeviceSalt()
   /**
    * 外部设备 token（P2）。
    *
@@ -374,7 +406,9 @@ async function doctor(jsonOutput: boolean): Promise<number> {
    * 明确写"这里没查"，而不是假装"没有 token"。
    */
   const deviceTokenFile = (process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV] ?? '').trim()
-  const deviceToken = deviceTokenFile === '' ? undefined : await readDeviceTokenFile(deviceTokenFile)
+  const deviceToken = !deviceEnabled || deviceTokenFile === ''
+    ? undefined
+    : await readDeviceTokenFile(deviceTokenFile)
   /**
    * 真实值档（P3）。
    *
@@ -383,25 +417,30 @@ async function doctor(jsonOutput: boolean): Promise<number> {
    * 真的处于真实值档时才去取一枚 token——那正是"SDK 现在能不能工作"的答案，
    * 而它恰好是排障时最想知道的。
    */
-  const deviceSettings = await readDeviceSettings()
-  const deviceTier = deviceSettings.mode
-  const turing = createTuringSdk({
-    productVersion: APP_VERSION,
-    // 卡片上填的目录（作者意见 #1）：doctor 与插件读同一份设置，所以排障时
-    // 两边看到的目录不会一个有一个没有。
-    dirSource: async () => (await readDeviceSettings()).sdkDir,
-  })
-  const turingInfo = await turing.info()
-  const turingToken = deviceTier === 'real' ? await turing.tokens.current() : undefined
-  const turingReadout = turing.tokens.readout()
+  const turing = deviceEnabled
+    ? createTuringSdk({
+        productVersion: APP_VERSION,
+        // 卡片上填的目录（作者意见 #1）：doctor 与插件读同一份设置，所以排障时
+        // 两边看到的目录不会一个有一个没有。
+        dirSource: async () => (await readDeviceSettings()).sdkDir,
+      })
+    : undefined
+  const turingInfo = turing === undefined ? undefined : await turing.info()
+  const turingToken = turing !== undefined && deviceTier === 'real' ? await turing.tokens.current() : undefined
+  const turingReadout = turing?.tokens.readout()
   const device = describeDeviceState(deviceCredentials, deviceSalt, deviceToken, {
     tier: deviceTier,
-    sdk: turingInfo,
-    token: turingReadout,
+    enabled: deviceEnabled,
+    ...turingInfo === undefined ? {} : { sdk: turingInfo },
+    ...turingReadout === undefined ? {} : { token: turingReadout },
     ...turingToken === undefined ? {} : { value: turingToken },
     fallbackToVirtual: deviceSettings.sdkFallbackToVirtual,
   })
-  const wireIdentity: WorkBuddyWireIdentity = deviceTier === 'real'
+  const wireIdentity: WorkBuddyWireIdentity = !deviceEnabled
+    // 关着：请求路径一个设备头都不加（`upstream.ts` 的 `wireIdentity` 同样在
+    // 这里短路）。头名清单因此是空的——与报告里的 `onWire: []` 是同一个事实。
+    ? {}
+    : deviceTier === 'real'
     ? { deviceTier: 'real', ...turingToken === undefined ? {} : { deviceReal: turingToken } }
     : {
         ...deviceSalt.state === 'ok' ? { deviceSalt: deviceSalt.salt } : {},
@@ -498,6 +537,8 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       // 人类可读行在 152 行直接读 tierSent，这两个字段是给 --json 消费者的同一事实。
       ...device.tierSent === undefined ? {} : { tierSent: device.tierSent },
       ...device.fallbackToVirtual === undefined ? {} : { fallbackToVirtual: device.fallbackToVirtual },
+      // 关着时唯一能证明"这不是档位没配好"的字段（见 JSON_SCHEMA_VERSION 的 10 → 11）。
+      ...device.enabled === false ? { enabled: false } : {},
       onWire: device.onWire,
       salt: device.salt,
       ...device.token === undefined ? {} : { token: device.token },

@@ -60,6 +60,20 @@ export interface WorkBuddyDeviceDerived {
 
 /** What the card and the resolver both read. */
 export interface WorkBuddyDeviceSettings {
+  /**
+   * 设备身份功能的总开关。**默认开**。
+   *
+   * 关掉之后这一族功能整体停摆：不发任何设备头（`X-Device-Token` /
+   * `X-Machine-ID` / `X-Session-ID` 一个都不发）、后台预热不再起子进程、
+   * `doctor` 不再探测 SDK。它比档位（{@link mode}）高一级：档位选"发哪种身份"，
+   * 开关决定"要不要有"。之所以要独立于 `wireProfile: conservative`——那个配置
+   * 回退的是**全部** P1 头（归属、语言、请求 id），而有人只想关设备身份、
+   * 其余对齐保持不变。
+   *
+   * 缺字段按开处理：与 `sdkFallbackToVirtual` 同一条宽容规则——旧文件写下时
+   * 这项还不存在，那时的行为就是"功能在跑"。
+   */
+  enabled: boolean
   mode: WorkBuddyDeviceMode
   /** accountId（sha256 前 24 位）→ 覆盖值。**不含 uid**：这份文档会发给浏览器。 */
   accounts: Readonly<Record<string, WorkBuddyDeviceProfile>>
@@ -100,6 +114,7 @@ export interface WorkBuddyDeviceSettings {
 function emptyDocument(): StoredDocument {
   return {
     version: DEVICE_PROFILE_VERSION,
+    enabled: true,
     mode: 'virtual',
     accounts: {},
     sdkDir: '',
@@ -117,6 +132,8 @@ interface StoredAccount {
 
 interface StoredDocument {
   version: number
+  /** 总开关；见 `WorkBuddyDeviceSettings.enabled`。缺字段 = 开。 */
+  enabled: boolean
   mode: WorkBuddyDeviceMode
   accounts: Record<string, StoredAccount>
   /** 手填的 SDK 目录；空串 = 自动发现。 */
@@ -199,6 +216,8 @@ async function readStored(dir?: string, nowMs: number = Date.now(), fresh = fals
   }
   const document: StoredDocument = {
     version: DEVICE_PROFILE_VERSION,
+    // 只有显式 `false` 才关：缺字段 = 开，理由与 `sdkFallbackToVirtual` 相同。
+    enabled: record['enabled'] !== false,
     mode: isDeviceMode(record['mode']) ? record['mode'] : 'virtual',
     accounts,
     // 手填目录原样保留（只去首尾空白）：它是一条路径，不是身份，坏路径的代价是
@@ -223,6 +242,7 @@ function toSettings(document: StoredDocument): WorkBuddyDeviceSettings {
     if (profile.machineId !== undefined || profile.sessionId !== undefined) accounts[id] = profile
   }
   return {
+    enabled: document.enabled,
     mode: document.mode,
     accounts,
     sdkDir: document.sdkDir,
@@ -310,6 +330,25 @@ export async function setDeviceMode(
 }
 
 /**
+ * 总开关（作者意见：这个功能整体该有个开关）。
+ *
+ * 与 {@link setDeviceMode} 分开而不是合并成一个"三态档位"：关掉的语义是"这条
+ * 功能线不存在"，而 `virtual`/`real` 的语义是"这条线用哪种方式工作"。合成一个
+ * 枚举后，重新打开时用户之前选的档位就丢了——那是两件事，就该有两个字段。
+ */
+export async function setDeviceEnabled(
+  enabled: boolean,
+  options: { dir?: string } = {},
+): Promise<WorkBuddyDeviceSettings> {
+  return withFileLock(deviceProfilePath(options.dir), async () => {
+    const document = await readStored(options.dir, Date.now(), true)
+    const next: StoredDocument = { ...document, enabled }
+    await writeStored(next, options.dir)
+    return toSettings(next)
+  })
+}
+
+/**
  * Save the two SDK settings the card edits (作者意见 #1 与 #2).
  *
  * 两项都是**可选**参数，`undefined` 表示"不要动这一项"——与
@@ -388,6 +427,8 @@ export async function saveDeviceProfile(
 export interface WorkBuddyDeviceSettingsPort {
   read(): Promise<WorkBuddyDeviceSettings>
   setMode(mode: WorkBuddyDeviceMode): Promise<WorkBuddyDeviceSettings>
+  /** 总开关（作者意见：功能整体该有个开关）。 */
+  setEnabled(enabled: boolean): Promise<WorkBuddyDeviceSettings>
   saveAccount(
     accountId: string,
     values: { machineId?: string, sessionId?: string },
@@ -420,6 +461,14 @@ export interface WorkBuddyDeviceProfileLookup {
   fallbackToVirtual(): Promise<boolean>
   /** 手填的 SDK 目录；空串 = 走自动发现链。 */
   sdkDir(): Promise<string>
+  /**
+   * 总开关。关 ⇒ 请求路径一个设备头都不发，预热也不该再跑。
+   *
+   * 放在 lookup 上而不是只放 settings 端口上：请求路径（`wireIdentity`）和
+   * 插件生命周期（`index.ts` 的预热门控）读的是同一份 5 秒缓存，两边看到的
+   * 开关状态因此不会分叉。
+   */
+  enabled(): Promise<boolean>
 }
 
 /** Build the lookup; `ttlMs` exists so an externally edited file is still picked up. */
@@ -449,6 +498,9 @@ export function createDeviceProfileLookup(options: { dir?: string } = {}): WorkB
     },
     async sdkDir(): Promise<string> {
       return (await readStored(options.dir)).sdkDir
+    },
+    async enabled(): Promise<boolean> {
+      return (await readStored(options.dir)).enabled
     },
   }
 }

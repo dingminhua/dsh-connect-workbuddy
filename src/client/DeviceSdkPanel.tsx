@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { fetchDeviceSdk, refreshDeviceSdk, revealDeviceSdk } from './device-sdk.ts'
 import type { DeviceSdkReport } from './device-sdk.ts'
-import { fetchDeviceSettings, putDeviceSdk } from './device-profile.ts'
+import { fetchDeviceSettings, putDeviceEnabled, putDeviceSdk } from './device-profile.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import type { Translate } from './searched-paths.ts'
 
@@ -37,6 +37,13 @@ export interface DeviceSdkPanelProps {
    * 那半仍然该渲染。
    */
   settingsPath: string
+  /**
+   * 总开关保存之后回调一次（用户意见）。
+   *
+   * 卡片另一头的「虚拟值 / 真实值」行也要跟着消失或出现，否则关掉之后那一排
+   * 齿轮还在，用户会以为自己关的只是这一页。
+   */
+  onEnabledChange?: (enabled: boolean) => void
 }
 
 /** How one row reads: the label on the left, the value on the right. */
@@ -61,7 +68,7 @@ function describeAge(t: Translate, ageMs: number): string {
 }
 
 export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null {
-  const { t, path, settingsPath } = props
+  const { t, path, settingsPath, onEnabledChange } = props
   const [report, setReport] = useState<DeviceSdkReport | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -76,6 +83,14 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
    * 控件"处理：一个初值为空串的输入框看起来像"用户清空过目录"，而那与实际状态
    * （走自动发现）相反。
    */
+  /**
+   * 总开关（用户意见）。
+   *
+   * 与目录一起从设置路由读：关着的时候这一页只剩一个开关和一句说明，状态行、
+   * token、目录全部不渲染——它们讲的是"开着的时候会怎样"。
+   */
+  const [enabled, setEnabled] = useState<boolean | undefined>(undefined)
+  const [savingEnabled, setSavingEnabled] = useState(false)
   const [sdkDir, setSdkDir] = useState<string | undefined>(undefined)
   const [fallback, setFallback] = useState<boolean | undefined>(undefined)
   const [draftDir, setDraftDir] = useState('')
@@ -109,6 +124,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     try {
       const settings = await fetchDeviceSettings(settingsPath)
       if (settings === undefined) return
+      setEnabled(settings.enabled)
       setSdkDir(settings.sdkDir)
       setFallback(settings.sdkFallbackToVirtual)
       setDraftDir(settings.sdkDir)
@@ -117,7 +133,14 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     }
   }, [settingsPath])
 
-  useEffect(() => { void load(false) }, [load])
+  /**
+   * 关着就不去问 SDK 状态：那一次 GET 会让 Host 起一个 probe 子进程——一个关掉的
+   * 功能还在后台起进程，正是这一次要消掉的东西。打开时这一个依赖变化会重新拉。
+   */
+  useEffect(() => {
+    if (enabled === false) return
+    void load(false)
+  }, [load, enabled])
   useEffect(() => { void loadSettings() }, [loadSettings])
 
   /**
@@ -131,7 +154,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
    */
   const idlePolls = useRef(0)
   useEffect(() => {
-    if (path === '') return
+    if (path === '' || enabled === false) return
     if (report?.sdk.state !== 'ready' || report.token.state !== 'idle') return
     if (idlePolls.current >= 5) return
     idlePolls.current += 1
@@ -143,14 +166,16 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
       }).catch(() => { /* 一次静默复查失败不打扰用户：上面那行仍然显示原因 */ })
     }, 1200)
     return () => window.clearTimeout(timer)
-  }, [path, report])
+  }, [path, report, enabled])
 
   if (path === '') return null
-  if (loading) return <p className="dsm-workbuddy-panel-note">{t('sdk.loading')}</p>
+  // 关着的时候 `load()` 根本没跑过，`loading` 永远停在 true——照旧返回"正在询问"
+  // 会让一个关掉的功能一直显示在忙。
+  if (loading && enabled !== false) return <p className="dsm-workbuddy-panel-note">{t('sdk.loading')}</p>
   // Host 没有这条路由（老版本，或构建时裁掉了 native/）：给一句话，而不是一块
   // 空白面板——空白会被读成"我点坏了"。标签页本身保留，因为"这个 Host 没有 SDK"
   // 也是用户需要知道的事实。
-  if (report === undefined && error === undefined) {
+  if (enabled !== false && report === undefined && error === undefined) {
     return <p className="dsm-workbuddy-panel-note">{t('sdk.unavailable')}</p>
   }
 
@@ -217,6 +242,21 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     }
   }
 
+  const saveEnabled = async (next: boolean): Promise<void> => {
+    if (settingsPath === '') return
+    setSavingEnabled(true)
+    setError(undefined)
+    try {
+      const saved = await putDeviceEnabled(settingsPath, next)
+      setEnabled(saved.enabled)
+      onEnabledChange?.(saved.enabled)
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSavingEnabled(false)
+    }
+  }
+
   const sdk = report?.sdk
   const token = report?.token
   const stateKey: WorkBuddySettingsKey = sdk?.state === 'ready'
@@ -224,8 +264,44 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     : sdk?.state === 'missing' ? 'sdk.statusMissing' : sdk?.state === 'unsupported' ? 'sdk.statusUnsupported' : 'sdk.statusError'
   const stateOk = sdk?.state === 'ready' && token?.state === 'ok'
 
+  /**
+   * 总开关。放在这一页最前面：它是"这一页讲的东西到底存不存在"的前提，其余每一
+   * 行都只在开着时才成立。设置路由缺席（老 Host）时不渲染——一个写不回去的开关
+   * 比没有开关更坏。
+   */
+  const switchBlock = settingsPath === '' || enabled === undefined
+    ? null
+    : (
+        <>
+          <div className="dsm-workbuddy-device-random-row">
+            <label className="dsm-workbuddy-sdk-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={enabled}
+                disabled={savingEnabled}
+                onChange={event => { void saveEnabled(event.target.checked) }}
+              />
+              <span>{t('sdk.enabledLabel')}</span>
+            </label>
+          </div>
+          <p className="dsm-workbuddy-hint">{t('sdk.enabledHint')}</p>
+        </>
+      )
+
+  if (enabled === false) {
+    return (
+      <>
+        {switchBlock}
+        <p className="dsm-workbuddy-panel-note">{t('sdk.disabledNote')}</p>
+        {error === undefined ? null : <p className="dsm-workbuddy-device-error">{error}</p>}
+      </>
+    )
+  }
+
   return (
     <>
+      {switchBlock}
       <p className="dsm-workbuddy-panel-note">{t('sdk.hint')}</p>
       <div className="dsm-workbuddy-diag">
         <Row label={t('sdk.state')}>

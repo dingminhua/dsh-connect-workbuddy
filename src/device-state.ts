@@ -57,6 +57,13 @@ export interface WorkBuddyDeviceReport {
    */
   tier: 'virtual' | 'real'
   /**
+   * 总开关关着时出现（省略 = 开）。
+   *
+   * 只有 `false` 这一种取值，与 {@link tierSent} 同一个理由：恒等的字段是噪音。
+   * 看到它就知道 `onWire: []` 是用户自己关的，而不是"配了却没发出去"。
+   */
+  enabled?: boolean
+  /**
    * 线上**实际**用的那一档；只在它与 {@link tier} 不同时出现。
    *
    * 目前唯一的分岔是「真实值档取不到真 token 且开了回退」（作者意见 #2）：此时
@@ -142,8 +149,16 @@ export function describeDeviceState(
    */
   real?: {
     tier: 'virtual' | 'real'
-    sdk: TuringSdkInfo
-    token: TuringTokenReadout
+    /**
+     * 总开关（作者意见：这个功能整体该有个开关）。省略 = 开。
+     *
+     * 关时 `doctor` **不探测 SDK**（不起那个子进程），所以那一档的 `sdk`/`token`
+     * 读数压根不存在——两者因此是可选的。报告里 `enabled: false` 只在关时出现：
+     * 与 `tierSent` 同一个原则，恒等的字段是噪音，分岔的字段才是取证。
+     */
+    enabled?: boolean
+    sdk?: TuringSdkInfo
+    token?: TuringTokenReadout
     /** 完整 token，只用来让头名清单算得出来；**绝不进报告**。 */
     value?: string
     /**
@@ -158,6 +173,7 @@ export function describeDeviceState(
   },
 ): WorkBuddyDeviceReport {
   const tier: 'virtual' | 'real' = real?.tier ?? 'virtual'
+  const enabled = real?.enabled ?? true
   /**
    * 退回是否发生：真实值档 + 没有真 token + 开关开。
    *
@@ -187,7 +203,11 @@ export function describeDeviceState(
   // 退回时按 `virtual` 算：那一档实际发的就是派生对（`upstream.ts` 的
   // `deviceTier: 'virtual'`），所以这里也必须走那条分支，否则报告会说"发的是真
   // token"而线上发的是派生 id。
-  const identity: WorkBuddyWireIdentity = tierSent === 'real'
+  const identity: WorkBuddyWireIdentity = !enabled
+    // 总开关关着：线上什么都不会发，所以这里必须构造一个"什么身份都没有"的
+    // identity——照抄 salt/token 会让报告说"发派生对"而线上其实一个头都不发。
+    ? {}
+    : tierSent === 'real'
     ? {
         deviceTier: 'real',
         ...real?.value === undefined ? {} : { deviceReal: real.value },
@@ -202,7 +222,7 @@ export function describeDeviceState(
     : describeRequestHeaderNames('chat', probe, identity)
       .filter(name => WORKBUDDY_DEVICE_HEADER_NAMES.includes(name))
 
-  const sdk: WorkBuddyDeviceReport['sdk'] = real === undefined
+  const sdk: WorkBuddyDeviceReport['sdk'] = real === undefined || real.sdk === undefined || real.token === undefined
     ? undefined
     : {
         state: real.sdk.state,
@@ -220,6 +240,9 @@ export function describeDeviceState(
   const uids = [...new Set(credentials.map(credential => credential.uid).filter(uid => uid !== ''))]
   const base: WorkBuddyDeviceReport = {
     tier,
+    // 只有关时才出现（同上：恒等字段是噪音）。读的人看到 `enabled: false` 就
+    // 知道 `onWire: []` 是"用户关的"，而不是"配了却没发出去"。
+    ...enabled ? {} : { enabled: false },
     // 只有分岔时才出现：`tierSent === tier` 是常态，多一个恒等的字段只会让读者
     // 以为两者永远可能不同。
     ...fellBack ? { tierSent } : {},
@@ -233,6 +256,8 @@ export function describeDeviceState(
   // 也不该在报告里出现——那只会让读者以为它跟请求有关。退回时**例外**：那一档
   // 实际发的是派生对，所以派生块必须出现，否则报告与 `onWire` 自相矛盾。
   if (tierSent === 'real') return base
+  // 总开关关着时同样不派生：那一对 id 根本不会上线，列出来只会误导。
+  if (!enabled) return base
   if (uids.length === 0 || saltReadout.state !== 'ok') return base
 
   const machineIds = uids.map(uid => deriveDeviceId(uid, 'machine', saltReadout.salt))

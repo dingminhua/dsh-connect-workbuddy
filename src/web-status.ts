@@ -2312,6 +2312,18 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           }
           return
         }
+        // `kind: 'enabled'` — 总开关（作者意见：这个功能整体该有个开关）。
+        if (body['kind'] === 'enabled') {
+          if (typeof body['enabled'] !== 'boolean') {
+            return json(res, 400, { error: 'enabled must be a boolean' })
+          }
+          try {
+            json(res, 200, await port.setEnabled(body['enabled']))
+          } catch (error: unknown) {
+            json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
+          }
+          return
+        }
         if (body['kind'] === 'account') {
           const accountId = typeof body['accountId'] === 'string' ? body['accountId'] : ''
           // The id becomes a key in the device-settings file; reject a malformed
@@ -2366,7 +2378,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           }
           return
         }
-        json(res, 400, { error: "kind must be 'mode', 'account' or 'sdk'" })
+        json(res, 400, { error: "kind must be 'mode', 'enabled', 'account' or 'sdk'" })
       },
     })
     /**

@@ -235,3 +235,62 @@ describe('describeDeviceState — the states it must keep distinct', () => {
     expect('reason' in report.salt).toBe(false)
   })
 })
+
+/**
+ * 总开关（用户意见）：这个功能整体要能关掉。
+ *
+ * 关着时报告只多做一件事——把「为什么线上什么都没有」说清楚。`onWire: []`
+ * 在旧版本里只可能是"盐坏了"或"真实值档取不到 token"，这里出现第三种原因，
+ * 所以必须有 `enabled: false` 把它区分出来。
+ */
+describe('describeDeviceState — the master switch (用户意见)', () => {
+  const sdkInfo = (): TuringSdkInfo => ({
+    state: 'ready',
+    bundle: 'darwin-arm64',
+    path: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/native/turing-sdk',
+    platform: 'darwin',
+    arch: 'arm64',
+    runtime: '22.22.2',
+  })
+  const tokenOk = (): TuringTokenReadout => ({ state: 'ok', masked: 'v3:****', length: 1174, fetchedAtMs: 1_000 })
+
+  it('sends nothing and says so, in the virtual tier', () => {
+    const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+      tier: 'virtual', enabled: false,
+    })
+    expect(report.enabled).toBe(false)
+    expect(report.onWire).toEqual([])
+    // 派生块也一起消失：那一对 id 根本不会上线，列出来只会让人以为它在发。
+    expect(report.derived).toBeUndefined()
+    // 盐的状态仍然照实报：它是"重新打开之后还要不要重新识别这台机器"的前提。
+    expect(report.salt.state).toBe('ok')
+  })
+
+  it('sends nothing in the real tier either, and reports no SDK block (off = not probed)', () => {
+    // doctor 关着时连 probe 都不起，于是传给这里的只有档位与开关本身。
+    const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+      tier: 'real', enabled: false,
+    })
+    expect(report.enabled).toBe(false)
+    expect(report.onWire).toEqual([])
+    expect(report.sdk).toBeUndefined()
+    expect(report.derived).toBeUndefined()
+  })
+
+  it('still reports a token readout it was given — the data, not the probe, is what is missing', () => {
+    // 读数是可选的（关着时没有），但给了就该照实显示：报告的责任是说出它知道
+    // 的事实，而不是替调用方猜"这一步该不该看"。
+    const report = describeDeviceState([credentialOf('u-1')], saltOk(), undefined, {
+      tier: 'real', enabled: false, sdk: sdkInfo(), token: tokenOk(),
+    })
+    expect(report.sdk?.state).toBe('ready')
+    expect(report.sdk?.token.length).toBe(1174)
+    expect(report.onWire).toEqual([])
+  })
+
+  it('omits the field entirely when the switch is on — only the off state is worth a field', () => {
+    const report = describeDeviceState([credentialOf('u-1')], saltOk())
+    expect(report.enabled).toBeUndefined()
+    expect(report.onWire).toEqual(['X-Machine-ID', 'X-Session-ID'])
+  })
+})

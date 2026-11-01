@@ -14,7 +14,12 @@
  */
 
 export const WORKBUDDY_CARD_CSS = `
-.dsm-plugin-card{border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
+.dsm-plugin-card{
+  /* 等宽字体的唯一来源。之前同一条栈在 8 处各写一遍，其中两处还少了 Consolas
+     ——同一屏里的路径、id、token 因此会在不同平台落到不同字面，行高也对不齐。
+     需要等宽的地方一律用上面这个变量（var(--dsm-mono)）。 */
+  --dsm-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
 .dsm-plugin-card:hover{border-color:var(--dsw-alias-label-dimmed,#777)}
 .dsm-plugin-card-open{background:var(--dsw-alias-bg-layer-2,#25262b);border-color:var(--dsw-alias-label-dimmed,#777)}
 .dsm-plugin-card-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:transparent;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
@@ -119,7 +124,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-diag-row+.dsm-workbuddy-diag-row{border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24))}
 .dsm-workbuddy-diag-label{flex:none;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 .dsm-workbuddy-diag-value{min-width:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px;line-height:18px;text-align:right;overflow-wrap:anywhere}
-.dsm-workbuddy-diag-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.dsm-workbuddy-diag-mono{font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace)}
 .dsm-workbuddy-diag-bad{color:var(--dsw-alias-label-caution,#e8b34b)}
 .dsm-workbuddy-diag-hint{margin:10px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* PREFERENCE LINES: a checkbox on a line that commits on the click, packed from
@@ -189,7 +194,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-media-list{margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}
 .dsm-workbuddy-media-row{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;min-width:0}
 .dsm-workbuddy-media-name{color:var(--dsw-alias-label-secondary,#b8bcc4);font-size:12px}
-.dsm-workbuddy-media-id{color:var(--dsw-alias-label-tertiary,#8b8f98);font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.dsm-workbuddy-media-id{color:var(--dsw-alias-label-tertiary,#8b8f98);font-size:11px;font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);overflow-wrap:anywhere}
 .dsm-workbuddy-media-tags{display:inline-flex;flex-wrap:wrap;gap:4px}
 .dsm-workbuddy-media-tag{border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:0 6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8b8f98)}
 /* The per-mode video-model picker. It reuses .dsm-workbuddy-media-row so the
@@ -267,7 +272,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-searched-hint{margin:6px 0 4px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-searched-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}
 .dsm-workbuddy-searched-list li{display:flex;flex-direction:column;gap:1px;min-width:0}
-.dsm-workbuddy-searched-list code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#b8b8b8);word-break:break-all}
+.dsm-workbuddy-searched-list code{font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#b8b8b8);word-break:break-all}
 .dsm-workbuddy-searched-reason{color:var(--dsw-alias-label-tertiary,#999);font-size:11px}
 .dsm-workbuddy-searched-reason-encrypted{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-workbuddy-searched-reason-wrong-region{color:var(--dsw-alias-brand-primary,#5686fe)}
@@ -748,7 +753,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-log-body{max-height:186px;overflow-y:auto}
 .dsm-workbuddy-pool-log-row{display:flex;gap:10px;padding:7px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:12px;line-height:18px}
 .dsm-workbuddy-pool-log-row:first-child{border-top:0}
-.dsm-workbuddy-pool-log-time{flex:none;color:var(--dsw-alias-label-tertiary,#999);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.dsm-workbuddy-pool-log-time{flex:none;color:var(--dsw-alias-label-tertiary,#999);font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace)}
 .dsm-workbuddy-pool-log-text{min-width:0;overflow-wrap:anywhere}
 .dsm-workbuddy-pool-log-ok{color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-workbuddy-pool-log-warn{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
@@ -797,7 +802,7 @@ export const WORKBUDDY_CARD_CSS = `
 /* Secondary text inside the transfer DIALOG (not a bar): the privacy note
    shown when credentials leave the machine. Kept independent of the bar
    classes so the dialog does not depend on the bar's layout to be readable. */
-.dsm-workbuddy-hint{color:var(--dsw-alias-label-tertiary,#999)}
+.dsm-workbuddy-hint{color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* The transfer dialog is deliberately a block: it holds a scrollable account
    list and per-entry checkboxes, which cannot live in a one-row bar. */
 .dsm-workbuddy-transfer-dialog{margin-top:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-secondary,transparent)}
@@ -928,10 +933,10 @@ export const WORKBUDDY_CARD_CSS = `
 }
 .dsm-workbuddy-device-title{margin:0 0 8px;font-size:13px;font-weight:600}
 .dsm-workbuddy-device-field{display:flex;flex-direction:column;gap:4px;margin:10px 0}
-.dsm-workbuddy-device-field-label{font-size:12px;color:var(--dsw-alias-label-secondary,#b8bcc4)}
+.dsm-workbuddy-device-field-label{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#b8bcc4)}
 .dsm-workbuddy-device-input{
   font:inherit;font-size:12px;line-height:20px;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);
   padding:4px 8px;border-radius:6px;
   color:var(--dsw-alias-label-primary,#e8e9ed);
   background:var(--dsw-alias-bg-l1,transparent);
@@ -942,13 +947,13 @@ export const WORKBUDDY_CARD_CSS = `
    与 .dsm-workbuddy-device-input 同一套外观，只改布局——单独一条而不是复用
    弹窗那条，是因为这里旁边还有 1~2 个按钮，而弹窗里是上下堆叠。 */
 .dsm-workbuddy-sdk-dir-row{display:flex;align-items:center;gap:8px;margin:2px 0 4px}
-.dsm-workbuddy-sdk-dir-input{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.dsm-workbuddy-sdk-dir-input{flex:1 1 auto;min-width:0;font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace)}
 /* 回退开关：勾选框交回平台（accent-color），方框尺寸/圆角/勾形不由我们画。 */
-.dsm-workbuddy-sdk-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer}
+.dsm-workbuddy-sdk-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer}
 .dsm-workbuddy-sdk-switch input{accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-device-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-device-input-bad{border-color:var(--dsw-alias-label-error,#e5534b)}
-.dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;margin:4px 0 0}
+.dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;line-height:18px;margin:4px 0 0}
 .dsm-workbuddy-device-random-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 12px}
 /* P3 的占位行：虚线边框 + 降低对比度，读起来是"位置已经留好，还没接线"。
    标题用 label-primary 而不是 label-dimmed：它是这一段的主语（"真实设备
@@ -965,16 +970,16 @@ export const WORKBUDDY_CARD_CSS = `
    选中整串 36 位 id，比再放一个复制按钮少一次交互，也不用管剪贴板权限）。 */
 .dsm-workbuddy-device-derived{
   display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;
-  font-size:11px;line-height:16px;
+  font-size:12px;line-height:18px;
   color:var(--dsw-alias-label-secondary,#b8bcc4);
 }
 .dsm-workbuddy-device-derived code{
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:11px;line-height:16px;
+  font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);
+  font-size:12px;line-height:18px;
   color:var(--dsw-alias-label-primary,#e8e9ed);
   word-break:break-all;user-select:all;
 }
-.dsm-workbuddy-device-derived-missing{color:var(--dsw-alias-label-secondary,#b8bcc4);font-size:11px}
+.dsm-workbuddy-device-derived-missing{color:var(--dsw-alias-label-secondary,#b8bcc4);font-size:12px;line-height:18px}
 .dsm-workbuddy-device-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 
 /* ---- 「SDK」分区：连接状态与真实取值 --------------------------------------
@@ -988,8 +993,8 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-sdk-dot-ok{background:var(--dsw-alias-label-success,#3fb950)}
 .dsm-workbuddy-sdk-value{
   display:block;max-height:96px;overflow:auto;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:11px;line-height:16px;
+  font-family:var(--dsm-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);
+  font-size:12px;line-height:18px;
   word-break:break-all;white-space:pre-wrap;
   padding:4px 8px;border-radius:6px;
   color:var(--dsw-alias-label-primary,#e8e9ed);
