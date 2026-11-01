@@ -71,6 +71,12 @@ README「Known Limitations and Deferred Work」逐字写着——
 > rc.5 起 `conversation.chat.reasoning.body` 的 `rawText` / `text` 语义分离，以及
 > 「渲染 `text` 时不得重复做显示处理」这条约定。同一个文件还以**条件断言**表达它：
 > 源码一旦碰到那个槽，就必须读 `rawText`。
+>
+> `sidebar.panellist` / `main` 这两个座位是 **opt-in** 的（`Config.sidebarPanel`，默认
+> `false`，PR #188）：它们占的是**所有已安装 bundle 共用的全局座位**，所以默认不注册，
+> 只有在用户从「能力」栏打开开关后才出现。开关关了就直接把注册**注销**——不能靠组件
+> 返回 `null`，因为侧边栏的导航行是用**槽位条目元数据**（`options.label` + `renderSlot`）
+> 拼出来的，返回 `null` 只会得到一颗空白的、仍然可点的按钮。
 
 ---
 

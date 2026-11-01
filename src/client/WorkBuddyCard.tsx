@@ -62,7 +62,8 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
+import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { OAuthSignIn } from './OAuthSignIn.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
@@ -698,6 +699,14 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [cliBridgeOn, setCliBridgeOn] = useState<boolean | undefined>(undefined)
   const [cliBridgeBusy, setCliBridgeBusy] = useState(false)
+  /**
+   * The OPTIONAL sidebar-row switch (PR #188).
+   *
+   * `undefined` until the first Host answer arrives, so the box renders the
+   * committed value instead of guessing — the same rule as `cliBridgeOn`.
+   */
+  const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
+  const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
   /**
    * The quick-adjust pins of the CLI route (model, effort, region order) made
    * by THIS card instance.
@@ -1341,6 +1350,44 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setCliBridgeBusy(false)
+    }
+  }
+
+  /**
+   * Whether the OPTIONAL sidebar row is switched on (PR #188).
+   *
+   * Read Host-first, mirror-second, for the same measured reason as
+   * `cliBridgeSwitchedOn`: the browser's settings mirror is stale for this
+   * namespace on the affected 0.1.7 deployments. `=== true` on both — absent is
+   * not consent, and this switch claims a global sidebar seat.
+   */
+  const sidebarPanelSwitchedOn = (): boolean => {
+    if (sidebarPanelOn !== undefined) return sidebarPanelOn
+    const fromHost = (statusByRegion[activeRegion] as { sidebarPanelEnabled?: unknown } | undefined)?.sidebarPanelEnabled
+    if (typeof fromHost === 'boolean') return fromHost
+    return sidebarPanelEnabledOf(settingsScope?.getSnapshot().value)
+  }
+
+  /**
+   * Flip the sidebar-row switch.
+   *
+   * Published to the entry's opt-in store on success, because the row is built
+   * from slot ENTRY METADATA and therefore cannot decide its own visibility —
+   * see `panel-switch.ts`. Publishing only AFTER the write is verified keeps the
+   * two from disagreeing: the row never appears for a value the Host refused.
+   */
+  const toggleSidebarPanel = async (enabled: boolean): Promise<void> => {
+    if (settingsScope === undefined) return
+    setSidebarPanelBusy(true)
+    try {
+      await writeSidebarPanelEnabled(settingsScope, enabled)
+      if (mounted.current) setSidebarPanelOn(enabled)
+      setSidebarPanelWanted(enabled)
+      await refreshUsage(activeRegion)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setSidebarPanelBusy(false)
     }
   }
 
@@ -2553,6 +2600,34 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   )
 
   /**
+   * The sidebar-row switch (PR #188).
+   *
+   * Its own class for the reason the CLI box has one: the credit-switch suite's
+   * "exactly one switch" selector (`.dsm-workbuddy-pref-check`) must keep
+   * resolving to the credit box alone.
+   *
+   * NOT gated on the active tab's provider: the row is a property of the whole
+   * plugin, not of one region, and a signed-out card can still turn it on.
+   */
+  const sidebarPanelPreference = (
+    <label className="dsm-workbuddy-pref" title={t('row.sidebarPanelHint')}>
+      <input
+        type="checkbox"
+        className="dsm-workbuddy-sidebar-panel-check"
+        checked={sidebarPanelSwitchedOn()}
+        disabled={!canWrite || saving || poolBusy || sidebarPanelBusy}
+        onChange={(event: { target: { checked: boolean } }) => {
+          void toggleSidebarPanel(event.target.checked)
+        }}
+      />
+      <span className="dsm-workbuddy-pref-copy">
+        <span className="dsm-workbuddy-pref-label">{t('row.sidebarPanelLabel')}</span>
+        <span className="dsm-workbuddy-pref-hint">{t('row.sidebarPanelHint')}</span>
+      </span>
+    </label>
+  )
+
+  /**
    * The two quick-adjust pins of the CLI route, rendered under its switch the
    * way the seat picker sits under its switch: indented, and only while the
    * switch is ON — the pickers configure the route the switch turned on, and
@@ -3508,6 +3583,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 {creditPreferences}
                 {upstreamSwitches}
                 {channelRejectContinuePreference}
+                {sidebarPanelPreference}
               </div>
               {/* DIAGNOSTICS — the third section, and the one that earns its tab
                   by holding nothing the other two already say: the facts a bug

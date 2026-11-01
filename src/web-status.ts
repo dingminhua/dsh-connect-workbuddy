@@ -222,6 +222,19 @@ export interface WorkBuddyStatusRouteOptions {
    */
   cliBridgeEnabled?(): boolean
   /**
+   * Whether the OPTIONAL DSH sidebar panel is switched on (PR #188).
+   *
+   * GLOBAL rather than per region — one nav row and one page, no region axis —
+   * so it takes no argument. Optional, and absent reads as OFF, matching the
+   * schema's `default(false)`: the row claims a `sidebar.panellist` seat and a
+   * `main` page that every installed bundle shares, and an upgrade must never
+   * re-arrange a sidebar nobody asked to change. Carried on the Host's answer
+   * for the same measured reason as `cliBridgeEnabled`: the browser's settings
+   * mirror is stale for this namespace on the affected 0.1.7 deployments, and a
+   * stale `true` here would draw a row the Host does not honour.
+   */
+  sidebarPanelEnabled?(): boolean
+  /**
    * The model the OPTIONAL CodeBuddy CLI route runs on, or `''` for "the CLI's
    * own default".
    *
@@ -650,6 +663,10 @@ const UPSTREAM_SWITCH_FIELDS: ReadonlySet<string> = new Set([
   // 字段，卡片只改 `enabled` 时也要把用户调过的上限与文本一起带上，否则一次
   // 布尔写会把它们擦回默认值（同 `sessionTitle` 的处置）。
   'channelRejectContinue',
+  // PR #188 的可选侧边栏面板。一个顶层布尔，自己一条路径，没有需要保留的兄弟
+  // 字段；把它加进来是因为它决定一个 GLOBAL 座位（`sidebar.panellist` 行 +
+  // `main` 页）存不存在，而这个决定只有用户能下。
+  'sidebarPanel',
 ])
 
 /** A non-null, non-array object: the only shape the slot merge applies to. */
@@ -1065,6 +1082,10 @@ export async function workBuddyWebStatus(
   // region at a time, so the switch has to be present on whichever tab is open.
   // `=== true` for the same reason as `imageToolEnabled`: absent is not consent.
   const cliBridgeEnabled = deps.cliBridgeEnabled?.() === true
+  // GLOBAL like `cliBridgeEnabled`, and `=== true` for the same reason: the row
+  // claims a sidebar seat every bundle shares, so an absent answer (an older
+  // Host that cannot answer) must never read as "the user asked for this".
+  const sidebarPanelEnabled = deps.sidebarPanelEnabled?.() === true
   // The route's three quick-adjust pins. Absent reads as `''` (the CLI's own
   // default), never as a made-up value: an older Host without the deps simply
   // cannot answer, and the card's pickers then fall back to the settings
@@ -1092,7 +1113,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, sidebarPanelEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
   }
   let credential
   try {
@@ -1128,6 +1149,7 @@ export async function workBuddyWebStatus(
       videoToolEnabled,
       preferredVideoModels,
       cliBridgeEnabled,
+      sidebarPanelEnabled,
       cliBridgeModel,
       cliBridgeEffort,
       cliBridgeRegionOrder,
@@ -1162,6 +1184,7 @@ export async function workBuddyWebStatus(
     videoToolEnabled,
     preferredVideoModels,
     cliBridgeEnabled,
+    sidebarPanelEnabled,
     cliBridgeModel,
     cliBridgeEffort,
     cliBridgeRegionOrder,
@@ -1988,7 +2011,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           // the CLI route off must not look like it reset them.
           if (field !== 'regions' && field !== 'accounts' && field !== 'cliBridge'
             && !(typeof field === 'string' && UPSTREAM_SWITCH_FIELDS.has(field))) {
-            return json(res, 400, { error: 'field must be regions, accounts, cliBridge, usageIdentity, keepPromptLast, extraInjectedPrefixes, sessionTitle, dropForeignThinking or channelRejectContinue' })
+            return json(res, 400, { error: 'field must be regions, accounts, cliBridge, usageIdentity, keepPromptLast, extraInjectedPrefixes, sessionTitle, dropForeignThinking, channelRejectContinue or sidebarPanel' })
           }
           const rows = settings.describe()
           const row = rows.find((r: any) => String(r.ns).includes('workbuddy'))

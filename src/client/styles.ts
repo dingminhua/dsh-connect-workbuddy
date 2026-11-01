@@ -151,7 +151,7 @@ export const WORKBUDDY_CARD_CSS = `
    CONTRAST colour, so a ticked box painted itself as a heavy black pill — the
    loudest object in a section made of plain 13px text. */
 .dsm-workbuddy-pref input{flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-workbuddy-pref-check,.dsm-workbuddy-image-tool-check,.dsm-workbuddy-video-tool-check,.dsm-workbuddy-cli-bridge-check,.dsm-workbuddy-upstream-check,.dsm-workbuddy-channel-continue-check{inline-size:15px;block-size:15px;margin:3px 0 0}
+.dsm-workbuddy-pref-check,.dsm-workbuddy-image-tool-check,.dsm-workbuddy-video-tool-check,.dsm-workbuddy-cli-bridge-check,.dsm-workbuddy-sidebar-panel-check,.dsm-workbuddy-upstream-check,.dsm-workbuddy-channel-continue-check{inline-size:15px;block-size:15px;margin:3px 0 0}
 /* The upstream-identity switches are their own group, so they get a divider
    above them instead of relying on spacing alone: they change the request the
    whole plugin sends, not a per-region display choice, and reading them as the
