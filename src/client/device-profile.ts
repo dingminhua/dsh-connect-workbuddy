@@ -45,6 +45,12 @@ export interface WorkBuddyDeviceSettings {
   sdkDir: string
   /** 真实值档取不到 token 时退回虚拟值（默认开）。 */
   sdkFallbackToVirtual: boolean
+  /**
+   * Host 的平台（`process.platform`）。**不是设置**：不进文件、不可改，只是让
+   * 卡片能在挑档位的地方说明"本平台的真实值档能用到什么程度"——macOS 上 SDK
+   * 取不到 token，这一档发不出任何设备头。缺字段 = 旧 Host，按未知处理。
+   */
+  platform?: string
 }
 
 /** 取不到设置时的答案：**关着**、虚拟档、无覆盖、回退开、无手填目录。与 Host 一致。 */
@@ -106,6 +112,7 @@ function normalizeSettings(body: Partial<WorkBuddyDeviceSettings>): WorkBuddyDev
     sdkDir: typeof body.sdkDir === 'string' ? body.sdkDir : '',
     // 缺字段 = 回退开：与 Host 的默认值一致，也与「这个 Host 还不认识这一项」一致。
     sdkFallbackToVirtual: body.sdkFallbackToVirtual !== false,
+    ...typeof body.platform === 'string' && body.platform !== '' ? { platform: body.platform } : {},
   }
 }
 

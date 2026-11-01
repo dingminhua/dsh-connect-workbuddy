@@ -304,6 +304,18 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
       {switchBlock}
       <p className="dsm-workbuddy-panel-note">{t('sdk.hint')}</p>
       <div className="dsm-workbuddy-diag">
+        {/* 平台是这一屏的第一件事：同一个面板在 macOS 与 Windows 上的能力不同，
+            先说平台，再说状态——否则用户会拿 Windows 截图对照 mac，把"取不到
+            token"当成坏了。 */}
+        <Row label={t('sdk.platform')}>
+          {sdk === undefined
+            ? t('sdk.unknown')
+            : sdk.platform === 'darwin'
+              ? t('sdk.platformMac')
+              : sdk.platform === 'win32'
+                ? t('sdk.platformWindows')
+                : t('sdk.platformOther', { platform: sdk.platform })}
+        </Row>
         <Row label={t('sdk.state')}>
           <span className={`dsm-workbuddy-sdk-dot${stateOk ? ' dsm-workbuddy-sdk-dot-ok' : ''}`} aria-hidden="true" />
           {t(stateKey)}
@@ -336,7 +348,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
           把它写成"再看看"，用户会一直重试；写清楚之后，同一行下面的
           「真实值档在这里一个头都不发」才是可预期的行为。只在 darwin 且确实
           取不到时出现——能取到的地方多一句话都是噪音。 */}
-      {sdk?.platform === 'darwin' && token?.state === 'unavailable'
+      {sdk?.platform === 'darwin' && token?.state !== 'ok'
         ? <p className="dsm-workbuddy-panel-note">{t('sdk.macTokenLimit')}</p>
         : null}
 

@@ -2284,9 +2284,20 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         if (port === undefined) {
           return json(res, 503, { reason: 'device-settings-unavailable', error: 'device settings unavailable' })
         }
+        /**
+         * 平台随每一条响应走，但它**不是设置**：它不进文件、用户改不了，重建
+         * 设置对象时也不会被带上。卡片需要它来把「macOS 上这个功能受限」放在
+         * 用户挑档位的那一行——那句话如果只写在 SDK 面板里，就只有在取 token
+         * 失败过一次之后才会被看到。
+         */
+        const withPlatform = (value: unknown): unknown => (
+          typeof value === 'object' && value !== null && !Array.isArray(value)
+            ? { ...(value as Record<string, unknown>), platform: process.platform }
+            : value
+        )
         if (req.method === 'GET') {
           try {
-            json(res, 200, await port.read())
+            json(res, 200, withPlatform(await port.read()))
           } catch (error: unknown) {
             json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
           }
@@ -2306,7 +2317,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             return json(res, 400, { error: 'mode must be virtual or real' })
           }
           try {
-            json(res, 200, await port.setMode(body['mode']))
+            json(res, 200, withPlatform(await port.setMode(body['mode'])))
           } catch (error: unknown) {
             json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
           }
@@ -2318,7 +2329,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             return json(res, 400, { error: 'enabled must be a boolean' })
           }
           try {
-            json(res, 200, await port.setEnabled(body['enabled']))
+            json(res, 200, withPlatform(await port.setEnabled(body['enabled'])))
           } catch (error: unknown) {
             json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
           }
@@ -2345,7 +2356,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             values[key] = raw
           }
           try {
-            json(res, 200, await port.saveAccount(accountId, values))
+            json(res, 200, withPlatform(await port.saveAccount(accountId, values)))
           } catch (error: unknown) {
             json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
           }
@@ -2372,7 +2383,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             values.sdkFallbackToVirtual = body['sdkFallbackToVirtual']
           }
           try {
-            json(res, 200, await port.saveSdk(values))
+            json(res, 200, withPlatform(await port.saveSdk(values)))
           } catch (error: unknown) {
             json(res, 500, { reason: 'device-settings-failed', error: safeMessage(error) })
           }

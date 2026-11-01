@@ -92,3 +92,29 @@ describe('derived values from the Host', () => {
     expect(settings.derived?.['a1']?.machineId).toBe(MACHINE)
   })
 })
+
+/**
+ * 平台不是设置：它只是让卡片能在挑档位的地方说「macOS 上真实值档取不到
+ * token」。一个 Host 没带这个字段（旧版本）时，卡片必须退化成不解释，而
+ * 不是把 undefined 渲染成平台名。
+ */
+describe('platform passthrough', () => {
+  const stubAnswer = (body: unknown): void => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })))
+  }
+
+  it('keeps the platform the Host reports', async () => {
+    stubAnswer({ enabled: true, mode: 'real', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true, platform: 'darwin' })
+    const settings = await fetchDeviceSettings('/device-profile')
+    expect(settings?.platform).toBe('darwin')
+  })
+
+  it('leaves platform undefined when the Host does not send one', async () => {
+    stubAnswer({ enabled: true, mode: 'virtual', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true })
+    const settings = await fetchDeviceSettings('/device-profile')
+    expect(settings?.platform).toBeUndefined()
+  })
+})

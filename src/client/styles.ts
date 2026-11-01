@@ -462,6 +462,9 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-actions-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsm-workbuddy-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* 平台限制（macOS 取不到 token）与"暂时失败"不是同一类信息：它不会自己好，
+   所以用告警色而不是普通的次要文本色。 */
+.dsm-workbuddy-hint-warn{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-workbuddy-pool-warn{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-warn-primary,#f59e0b);background:rgba(245,158,11,.09);border:1px solid rgba(245,158,11,.3)}
 /* Ghost members (issue #60): the warning plus one removable chip per id. The
    chips are what make the warning actionable — a ghost has no row in the table

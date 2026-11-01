@@ -205,7 +205,14 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
         + `; token ${device.sdk.token.state}`
         + `${device.sdk.token.length === 0 ? '' : ` (${device.sdk.token.length} chars)`}`
         + `${device.sdk.token.ageMs === undefined ? '' : `, fetched ${describeAge(device.sdk.token.ageMs)} ago`}`
-        + `${device.sdk.token.reason === undefined ? '' : ` (${device.sdk.token.reason})`}`]
+        + `${device.sdk.token.reason === undefined ? '' : ` (${device.sdk.token.reason})`}`
+        // 平台能力差别写在"这台机器能做到什么"的同一行里：macOS 取不到 token
+        // 是结构性的，用户看到一行 ready 却永远没有 token 只会以为坏了。
+        + (device.sdk.platform === 'darwin'
+          ? '; macOS: this platform cannot produce a device token (the SDK needs the app main queue — see docs/WINDOWS.md), so the Real tier sends no X-Device-Token here'
+          : device.sdk.platform === 'win32'
+            ? ''
+            : `; ${device.sdk.platform}: the SDK does not support this platform`)]
   return [head, token, ...sdk, derived]
 }
 

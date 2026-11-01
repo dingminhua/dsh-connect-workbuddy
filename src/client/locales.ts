@@ -458,6 +458,7 @@ export const en = {
   // the consequence (the gear is off) rather than only the mechanism, because a
   // greyed-out gear with no sentence next to it reads as a broken control.
   'row.deviceModeOffHint': 'Device identity is off — switch it on in the SDK tab before these values are sent again.',
+  'row.deviceModePlatformMac': 'macOS limit: the SDK cannot produce a device token on this platform, so the Real tier sends no device header at all. Virtual is unaffected, and stays on for these accounts.',
   'row.deviceModeTitle': 'Device identity',
   'row.deviceModeVirtual': 'Virtual',
   'row.deviceModeReal': 'Real',
@@ -494,6 +495,10 @@ export const en = {
   'sdk.enabledLabel': 'Device identity',
   'sdk.enabledHint': 'Switched off: no X-Machine-ID / X-Session-ID / X-Device-Token goes out with any request, the background token refresh stops, and doctor does not probe the SDK. The tier and per-account values are kept.',
   'sdk.disabledNote': 'Device identity is off — nothing is sent. Switch it back on to send again.',
+  'sdk.platform': 'Platform',
+  'sdk.platformMac': 'macOS — status check only; this platform cannot produce a device token',
+  'sdk.platformWindows': 'Windows — status check and token fetch both work',
+  'sdk.platformOther': '{platform} — not supported',
   'sdk.macTokenLimit': 'macOS: this desktop SDK produces the token on the main queue. The plugin runs the SDK in a separate process that has no such queue, so a token cannot be produced on this machine — the probe above still answers, and the Real tier sends nothing here (it falls back to Virtual when that switch is on). Platform limit, not a configuration problem.',
   'sdk.state': 'Connection',
   'sdk.statusReady': 'Working',
@@ -1092,6 +1097,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 共用这台机器真实的设备**，所以齿轮关掉——一台真机不可能有两个 id。只写"不可
   // 编辑"而不写原因，用户会当成控件坏了。
   'row.deviceModeOffHint': '设备身份已在「SDK」页关闭——去那里打开后才会再发送这些参数。',
+  'row.deviceModePlatformMac': 'macOS 上功能受限：本平台取不到 SDK 的 token，「真实值」档一个设备头都发不出去；「虚拟值」不受影响。',
   'row.deviceModeTitle': '设备头',
   'row.deviceModeVirtual': '虚拟值',
   'row.deviceModeReal': '真实值',
@@ -1125,6 +1131,10 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'sdk.enabledLabel': '设备身份',
   'sdk.enabledHint': '关掉之后：任何请求都不带 X-Machine-ID / X-Session-ID / X-Device-Token，后台停止取 token，doctor 也不探测 SDK。档位与每账号覆盖都还留着。',
   'sdk.disabledNote': '设备身份已关闭——什么都不会发出去。重新打开即恢复。',
+  'sdk.platform': '平台',
+  'sdk.platformMac': 'macOS——只能探活；本平台取不到设备 token',
+  'sdk.platformWindows': 'Windows——探活与取 token 都可用',
+  'sdk.platformOther': '{platform}——不支持',
   'sdk.macTokenLimit': 'macOS：桌面端 SDK 的取数要在主队列上跑，而插件是在独立进程里加载它的，没有那条队列——所以这台机器取不到 token。上面的探活仍会回答；真实值档在这里一个设备头都不发（回退开关开着时退回虚拟值）。这是平台的限制，不是配置问题。',
   'sdk.state': '连接状态',
   'sdk.statusReady': '正常',

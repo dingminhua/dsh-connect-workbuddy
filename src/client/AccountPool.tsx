@@ -234,6 +234,8 @@ export interface AccountPoolProps {
    * 齿轮也失去意义，但控件不能凭空消失——那会让人以为自己点坏了。
    */
   deviceEnabled?: boolean
+  /** Host 平台：macOS 上「真实值」档取不到 token，档位那一行要当场说明。 */
+  devicePlatform?: string
   onDeviceModeChange?: (mode: WorkBuddyDeviceMode) => void | Promise<unknown>
   /**
    * 保存一个账号的覆盖值。`''` 表示清空该项（回到派生值）。
@@ -302,7 +304,7 @@ function formatClock(value: number): string {
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
   const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
-  const { deviceMode, deviceProfiles, deviceDerived, deviceEnabled, onDeviceModeChange, onSaveDeviceProfile } = props
+  const { deviceMode, deviceEnabled, devicePlatform, deviceProfiles, deviceDerived, onDeviceModeChange, onSaveDeviceProfile } = props
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -1479,6 +1481,12 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               ? null
               : h('span', { className: 'dsm-workbuddy-hint' },
                   deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
+            // 平台限制写在档位下面，而不是等用户选完「真实值」、再去 SDK 面板看
+            // 一次失败才知道。虚拟值档在 macOS 上完全正常，所以这句只说真实值
+            // 档做不到什么。
+            deviceEnabled === false || devicePlatform !== 'darwin'
+              ? null
+              : h('span', { className: 'dsm-workbuddy-hint dsm-workbuddy-hint-warn' }, t('row.deviceModePlatformMac')),
           ),
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },

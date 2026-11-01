@@ -119,6 +119,10 @@ export interface WorkBuddyDeviceReport {
     state: TuringSdkInfo['state']
     bundle: string
     path: string
+    /** 这个 SDK 是在哪个平台上被找到的（`process.platform`）。macOS 上取不到
+     *  token 是平台限制，报告里没有这一项，读者就只能靠"我记得跑在哪台机器上"
+     *  去解释那一行 ready。 */
+    platform: string
     reason?: string
     token: {
       state: TuringTokenReadout['state']
@@ -230,6 +234,9 @@ export function describeDeviceState(
         state: real.sdk.state,
         bundle: real.sdk.bundle,
         path: real.sdk.path,
+        // 平台限制（macOS 取不到 token）必须随读数一起走：`ready` 加上一个永远
+        // 空的 token 在两台不同平台上读起来是完全不同的两件事。
+        platform: real.sdk.platform,
         ...real.sdk.reason === undefined ? {} : { reason: real.sdk.reason },
         token: {
           state: real.token.state,
