@@ -310,7 +310,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行就�
 
 | 方面 | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| 凭据默认目录 | `%LOCALAPPDATA%` / `%APPDATA%` 优先，未设时回落 `<home>\AppData`（重定向配置文件仍可解析） | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth` | `$XDG_CONFIG_HOME` 优先，未设时回落 `~/.config` |
+| 凭据默认目录 | `%LOCALAPPDATA%` / `%APPDATA%` 优先，未设时回落 `<home>\AppData`（重定向配置文件仍可解析） | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth` | `$XDG_CONFIG_HOME`（缺省 `~/.config`）**先**，其后追加 `$XDG_DATA_HOME`（缺省 `~/.local/share`）（issue #190） |
 | 桌面 App 可执行文件 | `%LOCALAPPDATA%\Programs\WorkBuddy`、`%LOCALAPPDATA%\WorkBuddy`、两个 `Program Files`（按 `WorkBuddy.exe` 定位） | 读 bundle 的 `Info.plist` 取 `CFBundleExecutable`（真实值 **`Electron`**，不是按 App 名猜）；含国际版 `WorkBuddy AI.app` 与 `/Applications` 下的子目录 | 不适用（加密凭据场景下 Linux 无对应 App；用 `WORKBUDDY_AUTH_FILE` 指定凭据） |
 | 进程心跳的时间戳来源 | PowerShell `Get-Process` 的 `StartTime`（POSIX 无 `ps -lstart` 等价物） | `ps -o lstart=` | `ps -o lstart=` |
 | 子进程的窗口 | **必须 `windowsHide`**：宿主本身没有控制台（GUI 进程），漏设会让每次探测都在屏幕上闪一个可见的黑框 | 不适用（该选项仅 Windows 生效） | 不适用 |
@@ -345,15 +345,20 @@ tar xzf codebuddy-cred.tgz -C "${XDG_CONFIG_HOME:-$HOME/.config}"
 dsh plugin --profile web exec dsh-connect-workbuddy status
 ```
 
-> ⚠️ **Linux 上没有 `~/.local/share` 这条路。** 插件的候选目录由 `src/auth.ts` 的 `defaultDesktopAuthDirs()` 决定，**Linux 只读 `$XDG_CONFIG_HOME`（缺省 `~/.config`）**：
+> **Linux 会依次看两套 XDG 目录**（issue #190 修正了这里原先的说法）。插件的候选目录由 `src/auth.ts` 的 `defaultDesktopAuthDirs()` 决定：
 >
-> | 平台 | 插件实际读取的凭据目录 |
+> | 平台 | 插件实际读取的凭据目录（按探测顺序） |
 > | --- | --- |
 > | macOS | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth` |
-> | Linux | `${XDG_CONFIG_HOME:-~/.config}/CodeBuddyExtension/Data/Public/auth` |
+> | Linux | ① `${XDG_CONFIG_HOME:-~/.config}/CodeBuddyExtension/Data/Public/auth`　② `${XDG_DATA_HOME:-~/.local/share}/CodeBuddyExtension/Data/Public/auth` |
 > | Windows | `%LOCALAPPDATA%` 与 `%APPDATA%` 下的 `CodeBuddyExtension\Data\Public\auth` |
+> | HarmonyOS | `${WORKBUDDY_USER_HOME:-/storage/Users/currentUser}/.local/share/CodeBuddyExtension/Data/Public/auth` |
 >
-> 所以**只把凭据解到 `~/.local/share` 是不会被读到的**——要么解到上面列出的目录，要么用 `WORKBUDDY_AUTH_FILE` 直接指向那份 auth 文件（显式指定时该目录下的同级备份文件仍会一并扫描，账号切换照常可用）。
+> 这里原先写着"Linux 上没有 `~/.local/share` 这条路"——那是**当时的实现**，不是平台事实。`Data/Public/auth` 是数据，按 XDG 惯例本就在 `$XDG_DATA_HOME` 下，issue #190 的报告机器实测也在那里。
+>
+> ⚠️ **但 `~/.config` 仍然排在前面。** 顺序决定"不设 `WORKBUDDY_AUTH_FILE` 时用哪一个"，而 `~/.config` 是上线以来的行为；Linux 候选从未经真机逐项验证，把新目录提到前面会改变老用户的解析结果而没有证据支撑。这次只做加法。
+>
+> 仍然可以完全不依赖这些默认值：用 `WORKBUDDY_AUTH_FILE` 直接指向那份 auth 文件（显式指定时该目录下的同级备份文件仍会一并扫描，账号切换照常可用）。
 
 > 🔐 **加密凭据（WorkBuddy 5.6.0 起）不能靠搬运解决。** 新版桌面端把 auth 文件里的 token 字段加密了，密钥由 App 的原生绑定在**运行时现取**、不落盘。因此一台没有 App 的服务器上，即使把加密后的 auth 文件拷过去也**读不出来**（插件会如实报告未登录，而不会退化成读出一个残缺 token）。可行的做法是**从一台仍在运行 5.6.0 之前版本、或凭据未加密的机器上搬运**，或者在该服务器上安装 App 以取得密钥。
 >
@@ -492,6 +497,7 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 | `WORKBUDDY_TURING_PRODUCT_VERSION` | 插件版本 | SDK 初始化自称的产品版本 |
 | `WORKBUDDY_TURING_KEYCHAIN_STORAGE` | 未设（=关） | 设 `1` 允许 SDK 启用其自身的设备缓存存储；默认关闭——插件不把自己的设备状态写进用户机器的钥匙串 |
 | `WORKBUDDY_DEVICE_SDK_ENABLED` | 未设（=关） | SDK 总开关的**旁路**，供 `doctor` 这种读不到插件配置的独立进程使用：`1` / `true` = 开。卡片里的同名开关（`deviceSdkEnabled`，**默认关**）是常规入口；两者同义，插件永远显式传值，所以不会打架。关着时不发现 SDK、不起子进程、不预热。排障时想看「这个 SDK 到底能不能用」，用 `WORKBUDDY_DEVICE_SDK_ENABLED=1 node lib/bin.js doctor` 临时打开 |
+| `WORKBUDDY_USER_HOME` | 未设（=`/storage/Users/currentUser`） | **仅 HarmonyOS**：用户可见的家目录根。鸿蒙上 `os.homedir()` 返回的是应用沙箱（`/data/storage/el2/base/haps/entry/files`），不能用来拼凭据路径，所以由这条变量或系统固定挂载点决定（issue #190） |
 
 > **为什么这三条命令能在「什么都没装」的机器上跑（issue #47）**
 >

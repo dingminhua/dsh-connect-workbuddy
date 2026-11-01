@@ -28,7 +28,7 @@
 import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, posix } from 'node:path'
 // Host-first with a local fallback: a static peer import here is a load-time
 // crash in the standalone CLI, because tsdown shares this module with
 // `bin.ts`'s chunk. See `src/host-peers.ts` and issue #47.
@@ -650,6 +650,26 @@ interface VaultDocument {
 }
 
 /**
+ * 平台名，**比 `NodeJS.Platform` 宽**。
+ *
+ * DSHM（端侧形态）内嵌的 Node 在鸿蒙上把 `process.platform` 报成
+ * `'openharmony'`，而 @types/node 的 `NodeJS.Platform` 里没有这个字面量
+ * （issue #190）。用 `| (string & {})` 而不是 `| string`：前者保留联合类型的
+ * 自动补全，同时允许这些运行时才出现的值。
+ */
+type DesktopAuthPlatform = NodeJS.Platform | (string & {})
+
+/**
+ * 鸿蒙上用户可见的家目录。
+ *
+ * `os.homedir()` 在鸿蒙上返回的是**应用沙箱**
+ * (`/data/storage/el2/base/haps/entry/files`)，不是用户目录，所以不能像
+ * linux 那样由 `home` 派生。真实凭据落在 `/storage/Users/currentUser` 下，
+ * 这个挂载点由系统规定，不随应用变化。
+ */
+const OPENHARMONY_USER_HOME = '/storage/Users/currentUser'
+
+/**
  * Platform-default directories holding the WorkBuddy desktop app's auth file.
  *
  * Windows and Linux prefer the OS-issued env location and fall back to the
@@ -657,11 +677,14 @@ interface VaultDocument {
  * folder backup, enterprise policy) still resolves. macOS has no equivalent
  * env variable; the single Application Support path is used as-is.
  *
+ * 鸿蒙（issue #190）没有 `homedir()` 可用——它返回应用沙箱，所以那条分支用
+ * 系统固定挂载点。Linux 会同时看 XDG 的 data 与 config 两套目录。
+ *
  * `platform`, `home`, and `env` are injectable so the platform branches are
  * testable on any host without touching a real machine.
  */
 export function defaultDesktopAuthDirs(
-  platform: NodeJS.Platform = process.platform,
+  platform: DesktopAuthPlatform = process.platform,
   home: string = homedir(),
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
@@ -676,9 +699,49 @@ export function defaultDesktopAuthDirs(
       join(roaming, 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
     ]
   }
+  /**
+   * 鸿蒙（issue #190）。
+   *
+   * 走 XDG 的 `~/.local/share` 形状，但 `~` **不能**用 `homedir()`——那是
+   * 沙箱路径。用系统固定挂载点，并允许 `WORKBUDDY_USER_HOME` 覆盖（未来的
+   * 多用户或不同发行版挂法）。
+   *
+   * 没有这个分支时落到 `return []`，卡片连一个候选路径都扫不到，账号池恒为 0，
+   * 而 `doctor` 只会说"no platform default; set WORKBUDDY_AUTH_FILE"——
+   * 把一个本该自动完成的事推给用户。
+   */
+  if (platform === 'openharmony') {
+    const root = nonEmptyEnv(env['WORKBUDDY_USER_HOME']) ?? OPENHARMONY_USER_HOME
+    // `posix.join`，不是宿主的 `join`：这些是**数据**规定的分隔符（鸿蒙是
+    // POSIX 路径），用宿主 join 会在 Windows 上产出
+    // `/storage/Users/currentUser.localshare...` 这种永不存在的混分隔符，
+    // 而单元测试也会变成"只在 POSIX 上绿"。同 `turing-sdk.ts` 与 `at-rest.ts`
+    // 里踩过的那个坑（docs/WINDOWS.md）。
+    return [posix.join(root, '.local', 'share', 'CodeBuddyExtension', 'Data', 'Public', 'auth')]
+  }
   if (platform === 'linux') {
+    /**
+     * Linux 同时看 XDG 的**两套**目录（issue #190 附带发现）。
+     *
+     * `Data/Public/auth` 是**数据**，按 XDG 惯例该在 `$XDG_DATA_HOME`
+     * （缺省 `~/.local/share`）下；而这里原先只读 `$XDG_CONFIG_HOME`
+     * （缺省 `~/.config`）。issue #190 的报告机器与鸿蒙实测都指向
+     * `.local/share`，所以两套都给。
+     *
+     * ⚠️ **`.config` 仍然排在前面**，也就是探测顺序与改动前完全一致。
+     * 理由：README §平台支持写明"其余候选仍未经真机逐项验证"，Linux 从来没有
+     * 真机证据；把 data 提到前面会改变"没设 WORKBUDDY_AUTH_FILE 时用哪一个"
+     * 这个已经上线的行为，而换来的收益尚无证据。这里只做**加法**：多一个候选，
+     * 不动已有的顺序，老用户的行为一个字节都不变。
+     *
+     * 两个目录都不存在时与以前一致：扫不到，回落 `WORKBUDDY_AUTH_FILE`。
+     */
     const config = nonEmptyEnv(env['XDG_CONFIG_HOME']) ?? join(home, '.config')
-    return [join(config, 'CodeBuddyExtension', 'Data', 'Public', 'auth')]
+    const data = nonEmptyEnv(env['XDG_DATA_HOME']) ?? join(home, '.local', 'share')
+    return [
+      join(config, 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join(data, 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ]
   }
   return []
 }

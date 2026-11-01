@@ -2,6 +2,65 @@
 
 ## 未发布
 
+### 修复（issue #190：HarmonyOS 上完全检测不到桌面账号）
+
+`defaultDesktopAuthDirs()` 只有 darwin / win32 / linux 三个分支，其余平台落到
+`return []`。DSHM（端侧形态）内嵌的 Node 在鸿蒙上把 `process.platform` 报成
+`"openharmony"`，于是候选列表为空 → 卡片一个路径都扫不到 → 账号池恒为 0、模型
+不出现；`doctor` 只会说 `no platform default; set WORKBUDDY_AUTH_FILE`，把一个
+本该自动完成的事推给用户。而该平台是 DSHM 的主平台，这不是"支持不善"，是核心
+功能完全不可用。
+
+- **新增 `openharmony` 分支**：`/storage/Users/currentUser/.local/share/CodeBuddyExtension/Data/Public/auth`。
+  - 不能用 `os.homedir()`：鸿蒙上它返回**应用沙箱**
+    （`/data/storage/el2/base/haps/entry/files`），不是用户目录。所以用系统固定
+    挂载点，并允许 `WORKBUDDY_USER_HOME` 覆盖。
+  - 用 `posix.join` 而不是宿主的 `join`：这些是**数据**规定的分隔符。用宿主 join
+    会在 Windows 上产出 `/storage/Users/currentUser\\.local\\share\\...` 这种永不
+    存在的混分隔符，而单元测试也会退化成"只在 POSIX 上绿"。这个坑 `turing-sdk.ts`
+    与 `at-rest.ts` 都踩过（docs/WINDOWS.md 的铁律）。
+  - `NodeJS.Platform` 里没有 `'openharmony'` 这个字面量，所以参数类型放宽成
+    `NodeJS.Platform | (string & {})`——保留联合类型的补全，同时允许运行时才出现的值。
+- **Linux 追加 `$XDG_DATA_HOME` 候选**（issue #190 的附带发现）：
+  `Data/Public/auth` 是**数据**，按 XDG 惯例本就在 `$XDG_DATA_HOME`（缺省
+  `~/.local/share`）下，而原先只读 `$XDG_CONFIG_HOME`（缺省 `~/.config`）。
+  - ⚠️ **只做加法：`~/.config` 仍排在前面。** 顺序决定"不设 `WORKBUDDY_AUTH_FILE`
+    时用哪一个"，而 `~/.config` 是上线以来的行为；README §平台支持明确写着 Linux
+    候选**从未经真机逐项验证**，把新目录提到前面会改变老用户的解析结果而没有证据
+    支撑。
+- **README 那段话是错的，一并改正**：原文写着"Linux 上没有 `~/.local/share` 这条路"——
+  那是**当时的实现**，不是平台事实。现在表格按探测顺序列出两套目录，并补上
+  HarmonyOS 一行与 `WORKBUDDY_USER_HOME` 的说明。
+
+### 说明（issue #189：子智能体请求被 11128 拦截）
+
+**不需要改代码**，报告者用的是 5.12.1。
+
+- 该现象的两条救援阶梯（前缀中性头 `forceNeutralHead`、按句改词
+  `rewriteChannelFingerprintPhrases`）在当前版本都覆盖 `assistant` 角色
+  （`scansOpening` 返回 `system || assistant`），子智能体的套话属于被扫描范围。
+- 按句改词是 **5.13.1 引入、5.14.0 补全**的；README §平台支持已经写明
+  「国内区的渠道校验 400 请确保插件 ≥ 5.14.0」，并记录了 5.12.x 只有「中性头 +
+  零宽扰动」三级救援、在同一份 body 上实测**全部 400**。
+- 所以这一条的正确处理是**升级**，不是改代码。但"我读代码觉得没问题"不算证据，
+  所以新增 `tests/issue189-subagent-channel-gate.spec.ts`（7 例）把它变成可执行的
+  断言：子智能体套话会被中性头挪开、会被按句改词改写、`user` 消息不被碰、
+  改词幂等、以及**最后一次救援会给无指纹消息也加中性头**（那是它"不认识指纹"
+  的代价，也是它能覆盖未知条目的原因）。
+
+### 测试（两条 issue 的回归）
+
+- issue #190：新增 7 例（鸿蒙固定路径、`WORKBUDDY_USER_HOME` 覆盖、空白串当未设置、
+  未知平台仍返回空；Linux 两套 XDG 目录的顺序与回落）。改写了 3 条既有的 Linux
+  断言——它们断言的是"只有一个候选"，而契约现在是"旧的在前、新的是追加"。
+- issue #189：新增 7 例，见上。**变异验证两次**：把 `scansOpening` 里的 `assistant`
+  去掉 → 打红 3 例；让 `rewriteChannelFingerprintPhrases` 失效 → 打红 1 例。
+  其中一条断言我改了三轮才对：先按"零宽打断"写（那套机制 2026-10-29 已被网关堵死，
+  现在是按句改词），又拿整个 body 做全等比较（`prepareChatBody` 还会补 `stream: true`，
+  与指纹无关）。两次失败都是**测试写错了对象**，不是实现有问题，过程记在这里免得
+  下次重犯。
+
+
 ### 修复（issue #187：生视频三个各自独立的失败）
 
 issue 报了三种互不相干的现象。前两个是**真 bugs**，第三个是**超时值撞车**；报告里
