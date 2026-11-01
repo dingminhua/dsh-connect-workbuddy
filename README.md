@@ -478,6 +478,20 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 
 `status` 与 `doctor` 支持 `--json` 输出机器可读格式。
 
+### 设备身份相关的环境变量
+
+出站身份档位（`wireProfile`）与设备头档位（`deviceTier`）都是**卡片配置项**，不是环境变量。下面这些是给"配置项够不着的场景"留的旁路：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WORKBUDDY_DEVICE_TOKEN_FILE` | 未设 | 「虚拟值」档外部 `X-Device-Token` 的文件源：指向别的工具维护的 token 文件（裸值或 `{"token":…}` 信封都吃），5 分钟重读、4 KB 上限；token 字节不进日志与 `doctor`。与卡片配置 `deviceToken.file` 同义，配置为空时读它 |
+| `WORKBUDDY_HEADER_TRACE` | 未设 | 设 `1` 后 `doctor` 多打一节：每条请求路径**将要发出的头名清单**（只有名字，永远没有值）——排查"这一档到底发了什么"用 |
+| `WORKBUDDY_TURING_SDK_DIR` | 未设 | 「真实值」档的 Turing Shield SDK 目录。不设置时插件按桌面端安装形状**自动发现**（`/Applications`、`%LOCALAPPDATA%`、卸载注册表等）；装了桌面端却仍报「未找到」时，用它显式指路。**卡片「SDK」分区也能直接填**（不用改环境变量、保存即生效），本变量优先级更高。取不到真实设备时的行为见下一行 |
+| `WORKBUDDY_TURING_CHANNEL_ID` | `109144` | SDK 的渠道号，与桌面端 `product.json` 一致 |
+| `WORKBUDDY_TURING_PRODUCT_NAME` | `WorkBuddy` | SDK 初始化自称的产品名 |
+| `WORKBUDDY_TURING_PRODUCT_VERSION` | 插件版本 | SDK 初始化自称的产品版本 |
+| `WORKBUDDY_TURING_KEYCHAIN_STORAGE` | 未设（=关） | 设 `1` 允许 SDK 启用其自身的设备缓存存储；默认关闭——插件不把自己的设备状态写进用户机器的钥匙串 |
+
 > **为什么这三条命令能在「什么都没装」的机器上跑（issue #47）**
 >
 > 该插件把 `@deepseek-ai/dsh-atomic-write`、`@deepseek-ai/dsh-home-paths` 等一整套 DSH 包声明为 **peer**：由宿主提供，插件不自己带一份。这在**已启动的 DSH 进程内**工作正常（宿主有运行期拦截层负责按宿主安装位置解析这些名字），但 `dsh plugin … exec` 不是那种环境——它就是在 profile 目录里跑一次 `pnpm exec`，子进程用**普通 Node 解析规则**，而 profile 是按 `autoInstallPeers: false` 建的，peer 根本不会装进去。于是这两个包解析不到。
@@ -509,6 +523,37 @@ pnpm run check   # typecheck + test + build
 ```sh
 dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
 ```
+
+#### `link:` 安装必须先构建，否则 DSH 会拒绝加载
+
+`lib/` 是构建产物且被 gitignore，而 `link:` 安装**不执行包的生命周期脚本**（`prepare` 不会跑）。
+于是从一份没构建过的源码检出安装时，`package.json` 里声明的 `main` / `exports` 指向的文件并不存在，
+DSH 的插件市场据此判定：
+
+```
+声明的入口产物缺失(源码检出或构建被拦),下次启动会失败
+```
+
+这个判定来自 `dshmarket` 的 `entryArtifactExists()`——它只读安装目录里的 `main` 与 `exports`，
+文件在不在就是全部依据。所以：
+
+```sh
+pnpm install        # prepare 会构建一次（lib/ 出现）
+# 或只构建
+pnpm run build
+```
+
+改完源码也要再 `pnpm run build` 一次（或重跑 `pnpm install`），然后重启 DSH Desktop。
+`pnpm install` 之后仍报同样的话，先跑这一条自查——它打印每个被声明的产物在不在，
+并区分「从没构建过」和「manifest 与构建不一致」两种原因：
+
+```sh
+pnpm run verify:entries                                   # 当前仓库
+node scripts/verify-entry-artifacts.mjs <已安装的目录>      # 具体某个安装副本
+```
+
+> 从 npm 安装（`dsh plugin add dsh-connect-workbuddy`）不需要这一步：发布包里 `lib/` 已经在，
+> `prepack` 也只负责把它重新生成一遍。
 
 ### 写脚本调用 `chatStream()` 时注意：它返回的是**信封**，不是可迭代流
 

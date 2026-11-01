@@ -1,5 +1,181 @@
 # Changelog
 
+## 未发布
+
+### 修复
+
+- **暗色主题下「虚拟值 / 真实值」的选中项是一格空白**：选中态原来用
+  `background: 品牌色 + color: #fff`，而暗色主题里 `--dsw-alias-brand-primary` 本身就是浅色，
+  白字落上去等于同色叠同色。现在改成「前景色做底、底色做字」这一对（`label-primary` /
+  `bg-base`），亮色是深底浅字、暗色是浅底深字，按定义互为反色，不再依赖某个具体色值。
+  悬停样式同时排除选中项——它的选择器权重更高，不排除会把选中态冲掉。
+- **弹窗里「真实设备 Token」几乎看不见**：标题从 `label-dimmed` 改为 `label-primary` + 600，
+  说明文字从 tertiary 提到 secondary。虚线边框已经表达了"占位"，不需要再靠文字颜色降级。
+- **留空时的派生值现在显示出来**：设备参数弹窗在两个空输入框下面各自列出**真正会发出去的**
+  `X-Machine-ID` / `X-Session-ID`（等宽、可整段选中）。派生输入是 uid（与构头同一份），
+  因此同一台机器上不同账号必然不同、同一账号跨重启必然相同。算不出来时分开两种原因：
+  本机没有设备盐、与这个账号没有 uid——用户能做的事不一样。
+- **`lib/` 不再可能"声明了但不存在"**：`pnpm install` 现在通过 `prepare` 构建一次；`build`
+  结束时会核对 `main` / `types` / `bin` / `exports` / `dsh.bundle.patch` 声明的每个文件是否
+  真的生成，并新增 `pnpm run verify:entries`（可对任意已安装目录运行）。
+  - 触发这次修复的现象：从源码检出 `link:` 安装后，DSH 报「声明的入口产物缺失(源码检出或
+    构建被拦),下次启动会失败」。`lib/` 是 gitignore 的构建产物，而 `link:` 安装**不执行**
+    包的 `prepare`，此前仓库里也只有 `prepack`（只在打包时跑），所以 `pnpm install` 之后
+    源码目录里依然没有入口文件。DSH 的判定本身是对的，缺的是构建这一步。
+
+### 变更
+
+- **SDK token 改为后台自动获取**：插件启动即取一次，此后在 10 分钟 TTL 到期前 15 秒
+  自动换新；取数失败 60 秒后重试，本机没有 SDK 则 5 分钟复查一次。此前只有请求路径
+  会取 token，于是一个空闲进程的「SDK」分区永远停在"已加载、没取过"——那与"SDK 坏了"
+  在界面上长得一模一样，也是重启后看不到 token 的原因。
+  - 预热是单链定时器（间隔按当时的时间重算，不是固定 `setInterval`），插件卸载时
+    `stopAutoRefresh()` 清掉，不会留下一个永远关不掉的子进程工厂。
+  - 失败仍走请求路径的 30 秒退避：一轮对话十几条并发请求不会变成十几个子进程。
+- **「SDK」分区可以直接填 SDK 目录**（评审意见 #1，@susulqx）。
+  - 之前只有环境变量 `WORKBUDDY_TURING_SDK_DIR` 一条旁路：自动发现链不命中时
+    （装在非默认盘、或另一份副本），用户能做的只有改环境变量再重启。
+  - 现在卡片 `GET`/`POST /device-profiles`（`kind: 'sdk'`）保存
+    `sdkDir` 与 `sdkFallbackToVirtual`，落在
+    `$DSH_HOME/.workbuddy-device-profiles.json`。**留空 = 回到自动发现**，不是
+    "路径为空"；填错时状态行会答 `missing`/`error` 并带上那个路径，而不是静默
+    回退成自动发现的结果（后者会让人以为保存失败，然后反复保存）。
+  - **保存后立刻生效，不用重启**：`createTuringSdk` 的目录从构造期常量改成
+    每次 `probe` 现问一次（`dirSource`），probe 缓存也按**解析结果**判有效——
+    否则填了新目录要等 10 秒的缓存过期，而那 10 秒里用户看到的还是旧目录。
+  - 优先级：显式 `dir`（测试）→ `WORKBUDDY_TURING_SDK_DIR` → 卡片手填 →
+    自动发现。环境变量压过卡片，因为它是排障旁路（`doctor` 只能读环境变量），
+    反过来会让一个排障时设的变量在下一次点保存后静默失效。
+  - 路径只去首尾空白，**不**规范化分隔符与大小写：那是用户从资源管理器复制来的
+    路径，改了之后"我填的和看到的不一样"会让人怀疑没存上。
+
+- **取不到真实设备时退回虚拟值，默认开**（评审意见 #2，@susulqx）。
+  - 之前「真实值」档在 SDK 不可用时**一个设备头都不发**（P3 的取舍：静默退回会
+    让界面写着"真实值"、线上跑着虚拟值）。这个取舍有道理，但风控严的时候
+    "有总比没有好"也是合理的诉求，所以改成**用户可选，默认开**。
+  - 退回时档位**降成 `virtual`**，不是保留 `real` 再补一对派生 id：`deviceTier`
+    既决定发哪些头，也决定界面与 `doctor` 怎么称呼"现在发的是什么"。保留 `real`
+    会让报告与出站字节相反，而报告正是用户判断"到底退没退"的唯一依据。
+  - 退回**不读**逐账号覆盖值：这一跳是"真实值档塌回虚拟值"，不是"用户切到了虚拟
+    值档"。把齿轮里那对覆盖值混进来，等于让一次降级顺手改变这台机器对外声称的
+    身份，而用户并没有要求这件事。
+  - `doctor` 的 `--json` 因此增 `deviceIdentity.tierSent` 与
+    `deviceIdentity.fallbackToVirtual`（schemaVersion 9 → 10），**只在分岔时
+    出现**——`tierSent === tier` 是常态，多一个恒等字段只会让人以为两者永远可能
+    不同。人类可读那一行读作
+    `real requested, virtual values (fell back: no real device token)`，并照常印出
+    派生设备与文件源那一行（退回时它们真的被用上了）。
+
+### 测试
+
+- 新增 **17** 例（2879 总例，较本套改动前净增 17）：
+  - `tests/device-profile.spec.ts` +9：留空 = 自动发现、`undefined` 不动这一项、
+    两个控件互不覆盖、坏路径保留不静默回退、缺字段 = 回退开（5.16.0 的文件升级
+    即生效）、只有显式 `false` 才关、保存目录不动档位与覆盖值、lookup 暴露两项。
+  - `tests/turing-sdk.spec.ts` +4：新填的目录**下一次 `info()` 就命中**、probe
+    缓存不跨目录复用、`WORKBUDDY_TURING_SDK_DIR` 压过卡片、显式 `dir` 压过两者。
+  - `tests/wire-profile.spec.ts` +3：开关开时发派生对、**不复用**逐账号覆盖值、
+    有真 token 时照旧发真 token（开关无关）。
+  - `tests/device-state.spec.ts` +4：退回时 `tier` 保留 `real` 而 `tierSent` 是
+    `virtual` 且 `onWire` 是派生对、开关关时零设备头、有 token 时退回不发生、
+    虚拟值档里这条分支不可达。
+- **Windows 11 真机端到端**：把 `mode: real` + 一个不存在的 `sdkDir` 写进设置文件，
+  `doctor` 输出 `Device SDK: missing (... — Z:\nope\turing-sdk)` 且首行为
+  `real requested, virtual values (fell back: no real device token)`；把
+  `sdkFallbackToVirtual` 改回 `false`，首行变回 `real values: X-Device-Token`
+  （P3 原行为）。两条都在真机上跑过，不是纸面推演。
+- **全仓** 2879 例中 2878 通过（171 文件），类型检查通过，build 通过。
+  `tests/issue12-region-hiding.spec.ts` 那条轮询 flake 依旧失败——已在未修改的
+  `d5183b2` 上同样复现，与本套改动无关（详见 5.16.0 那一条记录）。
+
+- **设备身份取证面（P0）**：新增 `src/device-id.ts`（36 位十六进制 id，
+  `sha256(namespace + salt + purpose + uid)`，命名空间与用途进哈希、不进线上）、
+  `src/device-salt.ts`（本机盐，`$DSH_HOME/.workbuddy-device.json`，首建后只读——
+  文件缺失与不可读分开处理，**不可读永不重键**：重键等于给同一台机器换身份）、
+  `src/device-state.ts`（`onWire` 为算出的实际发出头）。`doctor` 增 `deviceIdentity`
+  块（schemaVersion 6 → 7）。
+- **出站身份统一到 `WorkBuddy`（P1）**：chat 的 `X-Product: SaaS`、`X-IDE-Type: CLI`
+  与 billing 的裸 HTTP 形态统一为 `X-Product` / `X-IDE-Type` / `X-Agent-Purpose:
+  conversation` + billing 补齐 `User-Agent: WorkBuddy/<ver>` / `Origin` / `Referer` /
+  `X-Requested-With` / `X-CodeBuddy-Request`，`Accept-Language` 按区 `zh-CN` /
+  `en-US`，并加 `X-Root-Request-ID`（与 `X-Conversation-Request-ID` 同值）。
+  元数据读（`/v3/config`、`/v2/chat/busy`）与 refresh 一跳**字节不动**。
+  配置项 `wireProfile: conservative` 逐字节还原 5.16.0（含 `X-Product: SaaS`），
+  默认 `balanced`（schemaVersion 7，字段级见 `doctor`）。
+- **外部 deviceToken 文件源（P2）**：`WORKBUDDY_DEVICE_TOKEN_FILE` 指向别的工具
+  （A / B 面板）维护的 token 文件，5 分钟重读、4 KB 上限，裸值与 `{"token":…}`
+  信封都吃；token 字节绝不进日志与 `doctor`（schemaVersion 7 → 8，
+  `deviceIdentity.token`）。
+- **设备头档位 UI（P2.5）**：卡片设备头档位「虚拟值 / 真实值」切换与逐账号齿轮
+  （覆盖 `X-Machine-ID` / `X-Session-ID`），落盘
+  `$DSH_HOME/.workbuddy-device-profiles.json`（`0600`、锁内合并写）。路由
+  `GET`/`POST /plugins/dsh-connect-workbuddy/device-profile`（loopback-only）。
+- **真实设备参数（P3）**：新增「真实值」档，卡片新增「SDK」分区。
+  - **档位互斥落在档位上**：`虚拟值` 发派生的 `X-Machine-ID` / `X-Session-ID`（可逐账号
+    覆盖），`真实值` **只发** `X-Device-Token`，派生对整条路径不存在。此前的过渡形态
+    （真 token + 派生对同时发）不再是可达的组合——真 token 内含设备信息，旁边挂一对
+    按 uid 算出来的 id 等于自证不一致。
+  - **真实值档下所有账号共用这台机器的真实设备**，因此每行的齿轮关闭，点击时说明原因。
+    取不到 token 时**一个设备头都不发**，不退回派生对：界面写着「真实值」而线上跑着
+    虚拟值，正是分档要消灭的那种不一致。
+  - **SDK 用本机已安装的桌面端，不随包分发**：插件包**不再**包含 Turing Shield
+    的二进制（`.node` 里的 pdb 路径证明它是桌面端仓库的构建产物；重新分发闭源
+    厂商二进制需要回答"从哪来、什么版本、依不依得着 EULA"，这些答案属于桌面端
+    发行方，不属于我们）。目录解析：`WORKBUDDY_TURING_SDK_DIR` 显式指定优先，
+    否则按桌面端安装形状自动发现（Windows 默认布局 + 卸载注册表，macOS
+    `/Applications` 与 `~/Applications` 的 bundle；见
+    `native/turing-sdk/README.md`）。**子进程**调用（`worker.cjs`）：原生模块的
+    加载失败与不可取消的死等只该是"这一条命令失败"，不该是插件进程失败。
+    子进程只拿白名单环境变量，不整份继承。
+  - **macOS 现状如实记录**：probe 能过（真机验证），token 取不到——SDK 向
+    dispatch 主队列 `dispatch_sync`，纯 libuv 进程永不排空它（`sample` 栈实测，
+    见 `native/turing-sdk/README.md`）。mac 上表现为 `ready` 但 token 不可用，
+    真实值档按上面的规则降级。修它需要排空主队列的伴生原生模块，不在本次范围。
+  - token 10 分钟重取、失败时 24 h 内旧值可用并标 `stale`、**不落盘**；完整值只在用户
+    点「显示 / 复制」时经 `POST ?action=reveal` 给一次，其余输出只有掩码与长度。
+  - 卡片新增「SDK」分区（与「模型 / 能力 / 诊断」同一行）：连接状态、SDK 目录与运行时、
+    最近取到时间与当前档位、`X-Device-Token` 的掩码 + 长度，附「显示 / 复制 / 重新获取」。
+    路由 `GET`/`POST /plugins/dsh-connect-workbuddy/device-sdk`（loopback-only）。
+  - `doctor` 增 `deviceIdentity.tier` 与 `deviceIdentity.sdk`（schemaVersion 8 → 9；
+    相对 5.16.0 的 schemaVersion 6，本套变更合起来是 **6 → 9**）。
+
+### 测试
+
+- **修掉 `refreshes itself when the token expires` 的竞态**（在作者的 `26be06e`
+  上 4/4 复现，不是本套改动引入的）。
+  - 症状：该用例间歇性红，报
+    `AssertionError: expected 1793477227956 to be greater than 1793477227956`。
+  - 根因：假 worker 在**启动时**就把 `calls` 加一，而 `cached.fetchedAtMs` 要等
+    子进程**退出**、父进程收下答案才更新——两者之间有几十毫秒的窗口。旧写法先
+    `waitFor` 到 `calls` 变大、再**立刻**比较时间戳，正好落在这个窗口里，于是
+    约一半的跑法拿到的是上一个值。
+  - 改法：`waitFor` 的条件换成"时间戳确实前进了"，断言的仍然是同一件事，只是不再
+    假设两个计数器同步；跑完再确认 `calls` 也变大了（证明不是把时间戳改了个名字）。
+  - 变异验证：把断言换回旧写法，连跑 4 次红 3 次；换成新写法连跑 6 次全绿。
+
+- **`hasTuringSdkBinding` 的兜底不再随宿主平台分岔**（Windows 腿上发现的真分岔）。
+  - 症状：`tests/turing-sdk.spec.ts` 的 "exposes the binding gate as a
+    platform-aware helper" 在 **Windows 腿确定性失败**、在 macOS 腿上绿。macOS 上
+    跑过整套的评审看不到它，所以它一路绿到了这里。
+  - 根因在被测代码，不在测试：兜底拼法取的是**宿主**的 `join`
+    （`process.platform === 'win32' ? win32.join : posix.join`），而
+    `process.platform === 'win32'` 时它恰好等于数据的 `win32.join`，于是
+    `hostPath !== dataPath` **恒为假**，兜底分支被整个短路。同一个调用
+    `(dir, exists, 'win32')` 因此在 Windows 上只试一种拼法、在 macOS 上试两种。
+  - 改法：兜底显式取**另一种**拼法（`platform === 'win32' ? posix.join :
+    win32.join`），答案只由参数决定。测试侧补一条反向用例（数据 POSIX、喂 win32
+    形状的目录）——两个方向一起断言，这个分岔在**任意宿主**上都会红。
+  - 变异验证：把兜底改回宿主 `join`，正向断言当场打红（1 failed / 28 passed）；
+    恢复后 29 passed。
+- **Windows 11 真机全量**（Node 24.22.1）：`typecheck` 通过、`build` 通过、
+  **2829 例中 2828 通过**。唯一失败是 `tests/issue12-region-hiding.spec.ts` 的
+  轮询 flake，已在**未修改的 `d5183b2` 上同样复现**（2690/2691），与本 PR 无关。
+- **Windows 上真实 SDK 链路跑通**：发现链命中
+  `%LOCALAPPDATA%\Programs\WorkBuddy\resources\app.asar.unpacked\native\turing-sdk`，
+  `probe` 返回 `ready`（`win32-x64`，napi 10），`tokens.refresh()` 取回 `v3:` 前缀
+  token、长度 1210、耗时 **418 ms**。macOS 上那条 `dispatch_sync` 主队列死锁在
+  Windows 上不复现——Windows 的原生 binding 不走 dispatch 主队列。
+
 ## 5.16.0 (2026-10-31)
 
 > **Windows 上凭据库的明文 token 之前对同机低权限进程可读。** issue #183。

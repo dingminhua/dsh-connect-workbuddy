@@ -265,7 +265,20 @@ describe('card class names are styled', () => {
    * component that only renders inside a dialog is hard to reach, while a
    * missing rule is exactly the failure this guards.
    */
-  const components = ['OAuthSignIn.tsx', 'AccountTransfer.tsx', 'BusyOverlay.tsx', 'WorkBuddyCard.tsx', 'AccountPool.tsx'] as const
+  // DeviceProfileDialog / DeviceSdkPanel are here because they were NOT, and that
+  // is exactly how P2.5/P3 shipped 25 selectors into the wrong template literal:
+  // the guard only ever looked at these five files, so the two new components'
+  // classes went unchecked while `AccountPool`'s three happened to be caught.
+  // A component rendered by the card belongs in this list.
+  const components = [
+    'OAuthSignIn.tsx',
+    'AccountTransfer.tsx',
+    'BusyOverlay.tsx',
+    'WorkBuddyCard.tsx',
+    'AccountPool.tsx',
+    'DeviceProfileDialog.tsx',
+    'DeviceSdkPanel.tsx',
+  ] as const
 
   it('keeps the row action buttons on one line', () => {
     // Reported with a screenshot: the row's two action buttons broke into one

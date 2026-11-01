@@ -39,6 +39,7 @@
   },
   "files": [
     "lib",
+    "native",
     "icons",
     "locale",
     "docs/assets",
@@ -52,8 +53,10 @@
     "LICENSE"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "prepack": "npm run build",
-    "build": "tsdown",
+    "build": "tsdown && node scripts/verify-entry-artifacts.mjs",
+    "verify:entries": "node scripts/verify-entry-artifacts.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build"
