@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchDeviceSettings, isDeviceId, putDeviceMode, randomDeviceId } from '../src/client/device-profile.ts'
+import {
+  fetchDeviceSettings,
+  isDeviceId,
+  putDeviceMode,
+  randomDeviceId,
+  realTierAvailable,
+} from '../src/client/device-profile.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -116,5 +122,22 @@ describe('platform passthrough', () => {
     stubAnswer({ enabled: true, mode: 'virtual', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true })
     const settings = await fetchDeviceSettings('/device-profile')
     expect(settings?.platform).toBeUndefined()
+  })
+})
+
+/**
+ * 卡片与 Host 必须对"这台机器有没有真实值档"给出同一个答案：Host 决定发不发，
+ * 卡片决定画不画那个选项。两处一旦分叉，用户就会看到一个能点、点了却没效果的档。
+ */
+describe('realTierAvailable', () => {
+  it('agrees with the Host rule: only win32', () => {
+    expect(realTierAvailable('win32')).toBe(true)
+    expect(realTierAvailable('darwin')).toBe(false)
+    expect(realTierAvailable('linux')).toBe(false)
+  })
+
+  it('treats a Host that does not report a platform as capable', () => {
+    // 旧 Host 不送 platform：宁可在它上面多画一个档，也不要把功能藏掉。
+    expect(realTierAvailable(undefined)).toBe(true)
   })
 })

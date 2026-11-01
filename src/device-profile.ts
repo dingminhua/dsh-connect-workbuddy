@@ -30,8 +30,33 @@ import { deriveDeviceId, isDeviceId } from './device-id.ts'
 import { readDeviceSalt } from './device-salt.ts'
 import { resolveDshHome, withFileLock, writeFileAtomic } from './host-peers.ts'
 
-/** 设备头档位。「真实值」目前只是占位，不改变出站字节（P3）。 */
+/** 设备头档位。「真实值」= 用本机桌面端的 SDK 现场签发的设备 token。 */
 export type WorkBuddyDeviceMode = 'virtual' | 'real'
+
+/**
+ * 这台机器上有没有「真实值」档。
+ *
+ * 只有 Windows 有：SDK 的 `fetchDeviceToken` 要在桌面端的主队列上跑，而插件是在
+ * 独立子进程里加载它的——macOS 上探活成功、取数必然超时，Linux 连绑定都没有。
+ * 所以「真实值」在别的平台不是"设了但没生效"，而是**这台机器上不存在这一档**：
+ * 卡片不画那个选项，请求路径也不按它走。判断只此一处，免得三处各写一遍。
+ */
+export function realTierAvailable(platform: string = process.platform): boolean {
+  return platform === 'win32'
+}
+
+/**
+ * 本机**实际生效**的档位：`real` 只在有真实值档的平台上成立，其余一律按虚拟值走。
+ *
+ * 读的时候做归一，而不是写的时候改写文件：磁盘上那个 `real` 是用户在那台机器上
+ * 的选择，不该因为换了一个平台就被悄悄抹掉——但在这台机器上它确实等于虚拟值。
+ */
+export function effectiveDeviceMode(
+  mode: WorkBuddyDeviceMode,
+  platform: string = process.platform,
+): WorkBuddyDeviceMode {
+  return mode === 'real' && realTierAvailable(platform) ? 'real' : 'virtual'
+}
 
 /** 本 build 能读的文件版本；读到别的版本按"没有设置"处理。 */
 export const DEVICE_PROFILE_VERSION = 1
@@ -475,8 +500,12 @@ export interface WorkBuddyDeviceProfileLookup {
   enabled(): Promise<boolean>
 }
 
-/** Build the lookup; `ttlMs` exists so an externally edited file is still picked up. */
-export function createDeviceProfileLookup(options: { dir?: string } = {}): WorkBuddyDeviceProfileLookup {
+/**
+ * Build the lookup. `dir` pins the file (tests), `platform` pins which tier exists
+ * (tests): both exist so the request path can be exercised on any host.
+ */
+export function createDeviceProfileLookup(options: { dir?: string, platform?: string } = {}): WorkBuddyDeviceProfileLookup {
+  const platform = options.platform ?? process.platform
   const byUid = (document: StoredDocument): Map<string, WorkBuddyDeviceProfile> => {
     const map = new Map<string, WorkBuddyDeviceProfile>()
     for (const account of Object.values(document.accounts)) {
@@ -494,8 +523,13 @@ export function createDeviceProfileLookup(options: { dir?: string } = {}): WorkB
       if (uid === '') return undefined
       return byUid(await readStored(options.dir)).get(uid)
     },
+    /**
+     * **实际生效**的档位，不是文件里那个字：`real` 在 macOS / Linux 上不存在
+     * （SDK 取不到 token），读出来一律是 `virtual`——把归一放在这里，请求路径
+     * 就不会出现"设了 real、线上却不发"的分叉。
+     */
     async mode(): Promise<WorkBuddyDeviceMode> {
-      return (await readStored(options.dir)).mode
+      return effectiveDeviceMode((await readStored(options.dir)).mode, platform)
     },
     async fallbackToVirtual(): Promise<boolean> {
       return (await readStored(options.dir)).sdkFallbackToVirtual

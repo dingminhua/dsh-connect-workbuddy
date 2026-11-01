@@ -458,7 +458,7 @@ export const en = {
   // the consequence (the gear is off) rather than only the mechanism, because a
   // greyed-out gear with no sentence next to it reads as a broken control.
   'row.deviceModeOffHint': 'Device identity is off — switch it on in the SDK tab before these values are sent again.',
-  'row.deviceModePlatformMac': 'macOS limit: the SDK cannot produce a device token on this platform, so the Real tier sends no device header at all. Virtual is unaffected, and stays on for these accounts.',
+  'row.deviceModePlatformMac': '{platform} has no Real tier: the SDK produces its token on the desktop app main queue, which the plugin child process does not have — so only Virtual is offered here.',
   'row.deviceModeTitle': 'Device identity',
   'row.deviceModeVirtual': 'Virtual',
   'row.deviceModeReal': 'Real',
@@ -1097,7 +1097,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 共用这台机器真实的设备**，所以齿轮关掉——一台真机不可能有两个 id。只写"不可
   // 编辑"而不写原因，用户会当成控件坏了。
   'row.deviceModeOffHint': '设备身份已在「SDK」页关闭——去那里打开后才会再发送这些参数。',
-  'row.deviceModePlatformMac': 'macOS 上功能受限：本平台取不到 SDK 的 token，「真实值」档一个设备头都发不出去；「虚拟值」不受影响。',
+  'row.deviceModePlatformMac': '本平台（{platform}）没有「真实值」档：SDK 要把 token 取在桌面端的主队列上，而插件是在独立子进程里加载它的，没有那条队列——所以这里只有「虚拟值」。',
   'row.deviceModeTitle': '设备头',
   'row.deviceModeVirtual': '虚拟值',
   'row.deviceModeReal': '真实值',

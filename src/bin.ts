@@ -36,7 +36,7 @@ import { describeDeviceState } from './device-state.ts'
 import type { WorkBuddyDeviceReport } from './device-state.ts'
 import { ensureDeviceSalt, readDeviceSalt } from './device-salt.ts'
 import { readDeviceTokenFile, WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
-import { readDeviceSettings } from './device-profile.ts'
+import { effectiveDeviceMode, readDeviceSettings } from './device-profile.ts'
 import { createTuringSdk } from './turing-sdk.ts'
 import { WorkBuddyUpstreamClient, APP_VERSION, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
 import type { WorkBuddyRegion, WorkBuddyWireIdentity } from './upstream.ts'
@@ -392,7 +392,18 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     (await anyStore.accounts()).map(async account => anyStore.credentialFor(account.id)),
   )).filter((credential): credential is WorkBuddyCredential => credential !== undefined)
   const deviceSettings = await readDeviceSettings()
-  const deviceTier = deviceSettings.mode
+  /**
+   * 本机实际生效的档位。macOS / Linux 上没有真实值档（SDK 取不到 token），文件里
+   * 的 `real` 在这里归一成 `virtual`——报告必须说线上发生的事，而不是磁盘上的意愿。
+   */
+  const deviceTier = effectiveDeviceMode(deviceSettings.mode)
+  /**
+   * 文件里写的那一档（用户的意愿）与线上实际那一档（`deviceTier`）分开报。
+   * macOS / Linux 上两者必然分岔：`real` 存在设置里，但本机没有真实值档，
+   * 实际按虚拟值发送——报告里 `tier` 保留意愿、`tierSent` 说事实，正是这两个
+   * 字段存在的理由。
+   */
+  const deviceTierStored = deviceSettings.mode
   /**
    * 总开关（作者意见）：关着就**什么也不做**——不探测 SDK、不读 token 文件、
    * 不生成盐。一个关掉的功能还在后台起进程、写文件，是这份输出最不该出现的
@@ -436,12 +447,14 @@ async function doctor(jsonOutput: boolean): Promise<number> {
   const turingToken = turing !== undefined && deviceTier === 'real' ? await turing.tokens.current() : undefined
   const turingReadout = turing?.tokens.readout()
   const device = describeDeviceState(deviceCredentials, deviceSalt, deviceToken, {
-    tier: deviceTier,
+    tier: deviceTierStored,
     enabled: deviceEnabled,
     ...turingInfo === undefined ? {} : { sdk: turingInfo },
     ...turingReadout === undefined ? {} : { token: turingReadout },
     ...turingToken === undefined ? {} : { value: turingToken },
-    fallbackToVirtual: deviceSettings.sdkFallbackToVirtual,
+    // 本机没有真实值档时，"退回虚拟值"不是开关的结果，而是唯一可能：报告里必须
+    // 说它退回了，否则 `tier: real` + `onWire: [派生对]` 读起来像个矛盾。
+    fallbackToVirtual: deviceTier === 'real' || !deviceEnabled ? deviceSettings.sdkFallbackToVirtual : true,
   })
   const wireIdentity: WorkBuddyWireIdentity = !deviceEnabled
     // 关着：请求路径一个设备头都不加（`upstream.ts` 的 `wireIdentity` 同样在
@@ -621,6 +634,12 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
       `Encrypted-credential support: ${report.atRestDecryption.available ? 'available' : 'unavailable'} (${report.atRestDecryption.appExecutable}${report.atRestDecryption.appExecutableSource === undefined ? '' : `, via ${report.atRestDecryption.appExecutableSource}`})`,
       ...describeDeviceLines(device, deviceCredentials.length),
+      // 文件里写着 real、这台机器上却没有真实值档（macOS / Linux）时，报告里的
+      // tier 已经是归一后的虚拟值——不补这一句，"我明明设了真实值"就成了唯一
+      // 能读出来的解释。
+      ...deviceTier === deviceTierStored
+        ? []
+        : [`Device identity tier: ${deviceTierStored} is stored, but this platform has no Real tier (the SDK needs the Windows desktop app) — sending Virtual values instead`],
       ...tracedHeaders === undefined
         ? []
         : tracedHeaders.map(({ kind, names }) => `Headers (${kind}, ${names.length}): ${names.join(', ')}`),

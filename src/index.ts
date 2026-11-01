@@ -49,6 +49,7 @@ import { createAccountUsabilityProbe } from './credential-recovery.ts'
 import {
   createDeviceProfileLookup,
   describeDerivedDevices,
+  effectiveDeviceMode,
   readDeviceSettings,
   saveDeviceProfile,
   saveDeviceSdkSettings,
@@ -2475,7 +2476,9 @@ export function apply(ctx: Context, config: Config): void {
      */
     deviceSdk: createDeviceSdkPort({
       sdk: turing,
-      mode: async () => (await readDeviceSettings()).mode,
+      // 面板显示的是**本机实际生效**的档位：文件里写着 real、这台机器上却只有
+      // 虚拟值（macOS / Linux）时，面板要说虚拟值，否则它和线上发出的头对不上。
+      mode: async () => effectiveDeviceMode((await readDeviceSettings()).mode),
     }),
     /**
      * Why each of the region's accounts cannot serve right now, for the composer

@@ -43,6 +43,7 @@ import type {
   WorkBuddyWebRegion,
 } from '../status-paths.ts'
 import { exclusionText } from './exclusion-text.ts'
+import { realTierAvailable } from './device-profile.ts'
 import { availabilityLine, formatShortClock, outcomeOk, outcomeText, stateColor } from './account-state.ts'
 import { formatCredits } from './credit-format.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
@@ -305,6 +306,10 @@ function formatClock(value: number): string {
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
   const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
   const { deviceMode, deviceEnabled, devicePlatform, deviceProfiles, deviceDerived, onDeviceModeChange, onSaveDeviceProfile } = props
+  // macOS / Linux 上没有真实值档（SDK 取不到 token），所以那个选项不画。文件里
+  // 留着 `real`（换机器时还有意义）也不影响这里：本机显示与实际发送都按虚拟值。
+  const realTier = realTierAvailable(devicePlatform)
+  const shownMode = realTier ? deviceMode : 'virtual'
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -1468,25 +1473,27 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
                   role: 'group',
                   'aria-label': t('row.deviceModeTitle'),
                 },
-                  ...(['virtual', 'real'] as const).map(mode => h('button', {
-                    key: mode,
-                    type: 'button',
-                    className: `dsm-workbuddy-device-seg-btn${deviceMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
-                    'aria-pressed': deviceMode === mode,
-                    disabled: deviceModeBusy,
-                    onClick: () => { void changeDeviceMode(mode) },
-                  }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))),
+                  ...(['virtual', 'real'] as const)
+                    .filter(mode => mode === 'virtual' || realTier)
+                    .map(mode => h('button', {
+                      key: mode,
+                      type: 'button',
+                      className: `dsm-workbuddy-device-seg-btn${shownMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
+                      'aria-pressed': shownMode === mode,
+                      disabled: deviceModeBusy,
+                      onClick: () => { void changeDeviceMode(mode) },
+                    }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))),
                 ),
             deviceEnabled === false
               ? null
               : h('span', { className: 'dsm-workbuddy-hint' },
-                  deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
-            // 平台限制写在档位下面，而不是等用户选完「真实值」、再去 SDK 面板看
-            // 一次失败才知道。虚拟值档在 macOS 上完全正常，所以这句只说真实值
-            // 档做不到什么。
-            deviceEnabled === false || devicePlatform !== 'darwin'
+                  shownMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
+            // 没有真实值档时那一档**不画**，但"为什么少了一个"必须当场有答案：
+            // 凭空消失的控件比置灰的控件更需要一句解释。
+            deviceEnabled === false || realTier
               ? null
-              : h('span', { className: 'dsm-workbuddy-hint dsm-workbuddy-hint-warn' }, t('row.deviceModePlatformMac')),
+              : h('span', { className: 'dsm-workbuddy-hint dsm-workbuddy-hint-warn' },
+                  t('row.deviceModePlatformMac', { platform: devicePlatform ?? 'this platform' })),
           ),
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
@@ -1543,7 +1550,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               // 只会让人再点一次。
               ...onSaveDeviceProfile === undefined || deviceEnabled === false ? {} : {
                 onEditDevice: () => {
-                  if (deviceMode === 'real') {
+                  if (shownMode === 'real') {
                     setDeviceBlockedOpen(true)
                     return
                   }
@@ -1551,7 +1558,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
                   setDeviceEditing({ accountId: account.accountId, name: account.accountName })
                 },
               },
-              deviceGearBlocked: deviceMode === 'real',
+              deviceGearBlocked: shownMode === 'real',
               // Per-campaign claim, passed through as a factory: the button is
               // rendered only for benefits that are actually claimable, and the
               // row supplies the campaign so one route serves both kinds.

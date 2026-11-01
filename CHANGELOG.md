@@ -43,6 +43,19 @@
 
 ### 变更
 
+- **macOS / Linux 上不再提供「真实值」这一档**（作者意见）：那一档要桌面端的 SDK 在主队列上取 token，
+  非 Windows 平台上结构上取不到，留着它只会让人选一个注定不生效的档。现在：
+  - 账号表上方的档位行只画「虚拟值」，旁边一句说明为什么少了一个（`{platform} 没有「真实值」档…`）。
+  - 设置文件里的 `real` **不被改写**（那是用户在那台机器上的选择，换平台仍有意义），但读的时候归一成
+    `virtual`：请求路径、卡片显示、`doctor` 全部按虚拟值走，三者不会再各说各话。
+  - `doctor` 多一行说明这种分岔：`Device identity tier: real is stored, but this platform has no Real
+    tier … sending Virtual values instead`；`--json` 里仍是 `tier: real` + `tierSent: virtual`——
+    「意愿」与「线上事实」本来就该分开报。
+  - 平台能力判断只写一处（`realTierAvailable` / `effectiveDeviceMode`），卡片侧用同一条规则
+    （`client/device-profile.ts` 的同名函数，缺 `platform` 时按"有"处理，旧 Host 上不隐藏功能）。
+
+### 变更
+
 - **「SDK」分区的排版统一**：等宽字体收敛成卡片根上的一个 `--dsm-mono` 变量（此前同一条字体栈
   在 8 处各写一遍、其中两处漏了 `Consolas`，同一屏里的路径与 token 会在不同平台落到不同字面）。
   token 值、目录、派生 id 统一到 12px/18px，与面板其余文字同一基线；开关与说明文字也回到 12px/18px。

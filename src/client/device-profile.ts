@@ -62,6 +62,16 @@ export const EMPTY_DEVICE_SETTINGS: WorkBuddyDeviceSettings = {
   sdkFallbackToVirtual: true,
 }
 
+/**
+ * 这台机器上有没有「真实值」档——与 Host 的 `realTierAvailable` 同一条规则。
+ *
+ * 缺 `platform`（旧 Host 不会送这一项）时按"有"处理：在旧 Host 上把功能藏起来，
+ * 比多画一个用不了的档更糟。
+ */
+export function realTierAvailable(platform?: string): boolean {
+  return platform === undefined || platform === 'win32'
+}
+
 /** 与 Host 侧同一条规则：36 个小写十六进制字符。 */
 const DEVICE_ID_PATTERN = /^[0-9a-f]{36}$/u
 

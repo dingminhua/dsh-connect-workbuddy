@@ -84,14 +84,25 @@ describe('doctor --json 的档位分岔（schemaVersion 10 的承诺）', () => 
     expect(device['fallbackToVirtual']).toBe(true)
   })
 
-  it('开关关：不退回，也就没有分岔字段', async () => {
+  it('真实值档 + 关掉退回：Windows 上不发设备头，无真实值档的平台退回虚拟值', async () => {
     await writeDeviceSettings('real', false)
     const report = await doctorJson()
     const device = report['deviceIdentity'] as Record<string, unknown>
+    // 设置里写的是 real，报告里的 `tier` 保留这个意愿——两种平台的差别只在
+    // "这台机器兑不兑现得了它"。
     expect(device['tier']).toBe('real')
-    expect(device['tierSent']).toBeUndefined()
-    expect(device['fallbackToVirtual']).toBeUndefined()
-    // 关掉退回的真实值档取不到 token：一个设备头都不发（P3 原始语义）。
+    /**
+     * 只有 Windows 有真实值档（SDK 要桌面端的主队列，见 `realTierAvailable`）。
+     * 在 macOS / Linux 上，设置里那个 `real` 无法兑现，请求路径一律按虚拟值走，
+     * 所以这里必然出现分岔字段——而"退回"不是用户把开关关掉的结果，是平台缺少
+     * 这一档的结果。这台机器跑什么平台由 `process.platform` 决定，不是断言"测试
+     * 跑在哪台机器上"，而是断言"这条平台规则在两种平台上各自成立"。
+     */
+    const hasRealTier = process.platform === 'win32'
+    expect(device['tierSent']).toBe(hasRealTier ? undefined : 'virtual')
+    expect(device['fallbackToVirtual']).toBe(hasRealTier ? undefined : true)
+    // 两种情形下都没有设备头：Windows 是"真实值档取不到 token 且不退回"，
+    // 隔离环境里也没有账号可供派生。
     expect(device['onWire']).toEqual([])
   })
 

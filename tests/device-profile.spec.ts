@@ -7,7 +7,9 @@ import {
   createDeviceProfileLookup,
   describeDerivedDevices,
   deviceProfilePath,
+  effectiveDeviceMode,
   readDeviceSettings,
+  realTierAvailable,
   saveDeviceProfile,
   saveDeviceSdkSettings,
   setDeviceEnabled,
@@ -389,5 +391,39 @@ describe('the master switch (用户意见)', () => {
     expect(await lookup.enabled()).toBe(false)
     await setDeviceEnabled(true, { dir })
     expect(await lookup.enabled()).toBe(true)
+  })
+})
+
+/**
+ * 真实值档只在 Windows 上存在（SDK 的 `fetchDeviceToken` 要在桌面端主队列上跑，
+ * 插件在独立子进程里加载它，macOS 上必然超时）。所以"设置里写着 real"与"这台
+ * 机器兑现得了 real"是两件事：前者是文件内容，后者是平台能力。
+ */
+describe('realTierAvailable / effectiveDeviceMode', () => {
+  it('only Windows has the Real tier', () => {
+    expect(realTierAvailable('win32')).toBe(true)
+    expect(realTierAvailable('darwin')).toBe(false)
+    expect(realTierAvailable('linux')).toBe(false)
+  })
+
+  it('coerces a stored real tier to virtual where the tier does not exist', () => {
+    // 两个方向都要钉：在 Windows 上归一不能把 real 抹掉，在别处必须抹掉。
+    expect(effectiveDeviceMode('real', 'win32')).toBe('real')
+    expect(effectiveDeviceMode('real', 'darwin')).toBe('virtual')
+    expect(effectiveDeviceMode('real', 'linux')).toBe('virtual')
+    expect(effectiveDeviceMode('virtual', 'win32')).toBe('virtual')
+  })
+
+  it('the lookup the request path reads reports the effective tier', async () => {
+    await setDeviceMode('real', { dir })
+
+    // 设置里仍是 real——文件是用户的意愿，不因为跑在哪台机器上被改写。
+    expect((await readDeviceSettings({ dir })).mode).toBe('real')
+
+    // 但请求路径在 macOS 上拿到的是 virtual：`wireIdentity` 用它决定发什么。
+    const onMac = createDeviceProfileLookup({ dir, platform: 'darwin' })
+    expect(await onMac.mode()).toBe('virtual')
+    const onWindows = createDeviceProfileLookup({ dir, platform: 'win32' })
+    expect(await onWindows.mode()).toBe('real')
   })
 })
