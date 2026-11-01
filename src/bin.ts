@@ -494,6 +494,10 @@ async function doctor(jsonOutput: boolean): Promise<number> {
      */
     deviceIdentity: {
       tier: device.tier,
+      // 只在分岔时出现（tierSent === tier 是常态），与 device-state 的约定一致：
+      // 人类可读行在 152 行直接读 tierSent，这两个字段是给 --json 消费者的同一事实。
+      ...device.tierSent === undefined ? {} : { tierSent: device.tierSent },
+      ...device.fallbackToVirtual === undefined ? {} : { fallbackToVirtual: device.fallbackToVirtual },
       onWire: device.onWire,
       salt: device.salt,
       ...device.token === undefined ? {} : { token: device.token },
