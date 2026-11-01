@@ -338,6 +338,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
           {sdk === undefined || sdk.runtime === '' ? t('sdk.unknown') : sdk.runtime}
         </Row>
         </>}
+        {tierAbsent ? null : <>
         <Row label={t('sdk.fetched')}>
           {token?.fetchedAtMs === undefined
             ? t('sdk.never')
@@ -346,12 +347,13 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
         <Row label={t('sdk.tier')}>
           {report?.tier === 'real' ? t('sdk.tierReal') : t('sdk.tierVirtual')}
         </Row>
+        </>}
       </div>
 
       {sdk !== undefined && sdk.reason !== undefined
         ? <p className="dsm-workbuddy-device-error">{sdk.reason}</p>
         : null}
-      {token !== undefined && token.reason !== undefined
+      {token !== undefined && token.reason !== undefined && !tierAbsent
         ? <p className="dsm-workbuddy-device-error">{token.reason}</p>
         : null}
 
@@ -360,9 +362,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
           把它写成"再看看"，用户会一直重试；写清楚之后，同一行下面的
           「真实值档在这里一个头都不发」才是可预期的行为。只在 darwin 且确实
           取不到时出现——能取到的地方多一句话都是噪音。 */}
-      {tierAbsent
-        ? <p className="dsm-workbuddy-panel-note">{t('sdk.noTierNote', { platform: sdk?.platform ?? 'this platform' })}</p>
-        : null}
+      {/* 没有这一档时上面那句已经说完了；再补一段只会把"不支持"讲两遍。 */}
 
       {/* 真实值块：默认一行星号。`value` 只在用户点开之后才有内容，关掉即丢弃。 */}
       {tierAbsent ? null : <>
