@@ -1,6 +1,41 @@
 # Changelog
 
-## 未发布
+## 5.18.0 (2026-11-02)
+
+### 新增（issue #188：侧边栏面板，可选、默认关闭）
+
+给插件加一个可选的侧边栏入口：`sidebar.panellist` 一行导航 + `main` 整页，点开就是
+同一张卡片的**全页版**（左上有「返回会话」，点它回对话）。卡片以四栏挤在设置页里时，
+账号表格、模型目录与诊断原文都只有半屏宽；整页版把同一批东西摊到整栏。
+
+- **默认关闭**（`Config.sidebarPanel`，缺省 `false`）。这是本仓库既有的规矩——CLI
+  路由、生图、视频、渠道门续发，每一个都默认关；而这一行占的是**所有已安装 bundle
+  共用的全局座位**，更不该由一次升级替用户决定。开关在卡片「能力」栏，勾上即出现、
+  取消即消失，**没有保存按钮**（与这一栏其它授权类开关一致）。
+- **关掉时注销注册，而不是渲染 `null`。** `ui-sidebar` 的导航行是用槽位**条目元数据**
+  拼的（`usePanels` → `PanelRow`，label 取 `options.label`、图标取 `renderSlot(...)`），
+  组件返回 `null` 只会得到一颗**空白但仍可点**的按钮。所以决策点不能放在组件里，只能
+  放在 `apply`；`src/client/panel-switch.ts` 是卡片与入口之间的接缝（模块级 store +
+  订阅），`syncPanelRegistration` 在 `src/client/index.tsx` 里负责「先注销、再按需注册」。
+  - 顺序不能反：ledger 是**按 key 去重**的槽位，同一 key 重复注册会抛
+    `already has an entry for key …`。因为每处注册都各自包了 try/catch，那个异常只会被
+    记一行日志，然后该 key **一个条目都没有**——比"没生效"更糟，是"什么都没了"。
+- **首屏种子读宿主，不读设置镜像。** 这个命名空间的浏览器镜像在部分 0.1.7 上是陈的，
+  而 `whileServed` 只在命名空间**边缘**触发、不在**值变化**时触发——一份陈的 `false`
+  会让这一行整个会话都不出现，且**没有任何事件**会来纠正它。种子因此读宿主自己的答案
+  （usage 文档里的 `sidebarPanelEnabled`），与其它 Host 承载的开关同一个口径。
+- **读取失败不是要显示的错。** OFF 是合法答案、也是默认答案，状态路由不可达的插件
+  本来就该没有这一行；用户在这件事上什么也做不了，所以不弹提示、不写日志。
+- **落地校验两处都写**：`__save` 的封闭白名单加入 `sidebarPanel`（`UPSTREAM_SWITCH_FIELDS`），
+  写入先走宿主端点、再写设置 scope，两处都校验后才 `setSidebarPanelWanted()`——
+  「界面上出现了、磁盘上没有」会让下一次启动把它收回去，那种反复最难查。
+- **开着面板时关掉，中间栏自己回对话**：`ui-layout` 的 `retainMainPanels` 会丢掉
+  `main` 键已不存在的 `activePanelId`，所以不需要插件自己去导航。
+- 测试：新增 `tests/sidebar-panel-optin.spec.tsx`（14 例）与
+  `tests/sidebar-panel-page.spec.tsx`（4 例）。Mac 真机验证清单见
+  [`docs/MAC-VERIFY-PR188.md`](docs/MAC-VERIFY-PR188.md)，本轮实测结果见
+  [`docs/MAC-VERIFY-PR188-REPORT.md`](docs/MAC-VERIFY-PR188-REPORT.md)（不随包发布）；
+  验证截图在 [`docs/pr188-mac-shots/`](docs/pr188-mac-shots/)。
 
 ### 修复（issue #190：HarmonyOS 上完全检测不到桌面账号）
 
@@ -34,19 +69,29 @@
 
 ### 说明（issue #189：子智能体请求被 11128 拦截）
 
-**不需要改代码**，报告者用的是 5.12.1。
+**不需要改代码**，报告者用的是 5.12.1。本轮在**活的 CN 网关**上做了对照（模型 `hy3`，
+倍率 0.00，不花积分），结论比"读代码觉得没问题"结实：
 
-- 该现象的两条救援阶梯（前缀中性头 `forceNeutralHead`、按句改词
-  `rewriteChannelFingerprintPhrases`）在当前版本都覆盖 `assistant` 角色
-  （`scansOpening` 返回 `system || assistant`），子智能体的套话属于被扫描范围。
-- 按句改词是 **5.13.1 引入、5.14.0 补全**的；README §平台支持已经写明
-  「国内区的渠道校验 400 请确保插件 ≥ 5.14.0」，并记录了 5.12.x 只有「中性头 +
-  零宽扰动」三级救援、在同一份 body 上实测**全部 400**。
-- 所以这一条的正确处理是**升级**，不是改代码。但"我读代码觉得没问题"不算证据，
-  所以新增 `tests/issue189-subagent-channel-gate.spec.ts`（7 例）把它变成可执行的
-  断言：子智能体套话会被中性头挪开、会被按句改词改写、`user` 消息不被碰、
-  改词幂等、以及**最后一次救援会给无指纹消息也加中性头**（那是它"不认识指纹"
-  的代价，也是它能覆盖未知条目的原因）。
+- 同一份「DSH 身份句 + 中段 `@`-路径段落 + 子智能体套话」的 body：
+  **原样 400 / 5.12.1 的 `prepareChatBody` 400 / 5.18.0 的 `prepareChatBody` 200**。
+  逐个救援等级也打了一遍：中性头 400、零宽扰动 400、密集零宽扰动 400——5.12.1 那三级
+  在同一份 body 上**全部无效**，与 README 的记录一致。
+- **被拦的不是「来自子智能体」那几句。** 逐条单独发：`This is a message from a subagent.`
+  与 `The background subagent finished.` 原样就是 **200**，只有
+  `You are an AI agent powered by DeepSeek Harness.` 是 400。它是一段**任意位置出现的
+  子串匹配**，子智能体的 system prompt 继承了宿主提示词，所以**看起来**像被"套话"拦了。
+  报告者推测的"把这几句加进已知指纹名单"因此改的是不存在的条目——已在回复草稿里说明。
+- 角色边界复测：身份句放 `tool` 或 `user` 消息里原样 200，放 `system` / `assistant`
+  （字符串或 parts 数组）400，与 `scansOpening()` 的既有结论一致，没有回退。
+- 所以这一条的正确处理是**升级**，不是改代码；真正的修复是 5.13.1 的按句改词
+  （5.14.0 补上 Web GUI 段落的第二句）。回归断言仍在
+  `tests/issue189-subagent-channel-gate.spec.ts`（7 例）：子智能体套话会被中性头挪开、
+  会被按句改词改写、`user` 消息不被碰、改词幂等、以及**最后一次救援会给无指纹消息也加
+  中性头**（那是它"不认识指纹"的代价，也是它能覆盖未知条目的原因）。
+- 面向报告者的回复草稿见 [`docs/ISSUE-189-REPLY.md`](docs/ISSUE-189-REPLY.md)（不随包发布）。
+- **没做到的**：没有把 `@a9i5k4/dsh-auto-memory` 真装起来跑它的后台子智能体（它的
+  `onnxruntime-node` / `sharp` 在一次性 profile 里被 pnpm 拦了构建脚本）。复现的是
+  **请求体形状**，不是那个插件的运行时。
 
 ### 测试（两条 issue 的回归）
 
