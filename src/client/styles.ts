@@ -878,6 +878,135 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-page-desc{margin:0;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-page-body .dsm-workbuddy-usage{padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
 .dsm-workbuddy-panel-icon{display:block;border-radius:4px;flex:none}
+/* ---- 设备头档位与逐账号参数弹窗 ------------------------------------------
+   档位那一行贴着账号表：它同时决定"这台机器对外声称自己是谁"和"每行的齿轮能
+   不能用"，埋进「更多设置」会让齿轮看起来时好时坏。
+   弹窗用 fixed 遮罩而不是行内展开：每行已经有两个按钮和一段探针文本，再展开
+   两块输入框会把表格挤成表单；而且这些值必须显式确认，误点不该直接生效。 */
+.dsm-workbuddy-device-mode{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  margin:10px 0 2px;
+}
+.dsm-workbuddy-device-mode-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#e8e9ed)}
+.dsm-workbuddy-device-mode-seg{
+  display:inline-flex;border:1px solid var(--dsw-alias-border-l2,#3a3d45);
+  border-radius:999px;overflow:hidden;
+}
+/* 分段控件：两个按钮共享一条边框，选中态用底色而不是描边——描边会让"选中"
+   与"聚焦"看起来一样，键盘操作时分不清光标在哪。 */
+.dsm-workbuddy-device-seg-btn{
+  appearance:none;border:0;background:transparent;cursor:pointer;
+  padding:2px 10px;font:inherit;font-size:12px;line-height:20px;
+  color:var(--dsw-alias-label-secondary,#b8bcc4);
+}
+/* 悬停必须排除选中项：btn:hover 的选择器权重比 .seg-on 高，不排除的话鼠标
+   一划过去，选中的那一格就会被换成半透明底，看起来像"选中被取消了"。 */
+.dsm-workbuddy-device-seg-btn:hover:not(:disabled):not(.dsm-workbuddy-device-seg-on){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
+.dsm-workbuddy-device-seg-btn:disabled{opacity:.55;cursor:default}
+/* 选中态用"前景色做底、底色做字"这一对，而不是品牌色底 + 白字。
+   原因写在截图里：暗色主题下 --dsw-alias-brand-primary 本身就是一枚浅色，
+   白字落上去等于整格消失（用户看到的是一个空白胶囊）。把两者绑成反相关系后，
+   亮色主题是深底浅字、暗色主题是浅底深字，任何主题都不可能出现同色叠同色——
+   因为这两个变量按定义就互为背景与文字。 */
+.dsm-workbuddy-device-seg-on{
+  background:var(--dsw-alias-label-primary,#ededed);
+  color:var(--dsw-alias-bg-base,#181818);
+  font-weight:600;
+}
+/* 兜底：万一宿主没注入 bg-base，回落值也得跟着主题走，否则亮色主题下会变成
+   "深底 + 深字"。变量在的时候这一段不生效。 */
+@media (prefers-color-scheme: light){
+  .dsm-workbuddy-device-seg-on{background:var(--dsw-alias-label-primary,#202020);color:var(--dsw-alias-bg-base,#fff)}
+}
+/* 齿轮：置灰只表达"现在用不了"，仍然可点——点了会说明原因。 */
+.dsm-workbuddy-device-gear{line-height:1;padding:0 6px}
+.dsm-workbuddy-device-gear-off{opacity:.45}
+.dsm-workbuddy-device-backdrop{
+  position:fixed;inset:0;z-index:70;
+  display:flex;align-items:center;justify-content:center;
+  padding:16px;
+  background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.32));
+  backdrop-filter:var(--dsw-mask-blur);
+}
+.dsm-workbuddy-device-dialog{
+  width:min(460px,100%);max-height:calc(100vh - 32px);overflow:auto;
+  padding:16px;
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;
+  background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-l1,#1b1d23));
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  box-shadow:0 12px 40px rgba(0,0,0,.35);
+}
+.dsm-workbuddy-device-title{margin:0 0 8px;font-size:13px;font-weight:600}
+.dsm-workbuddy-device-field{display:flex;flex-direction:column;gap:4px;margin:10px 0}
+.dsm-workbuddy-device-field-label{font-size:12px;color:var(--dsw-alias-label-secondary,#b8bcc4)}
+.dsm-workbuddy-device-input{
+  font:inherit;font-size:12px;line-height:20px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  padding:4px 8px;border-radius:6px;
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  background:var(--dsw-alias-bg-l1,transparent);
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);
+}
+
+/* SDK 目录输入行（作者意见 #1）：输入框吃掉剩余宽度，按钮不换行。
+   与 .dsm-workbuddy-device-input 同一套外观，只改布局——单独一条而不是复用
+   弹窗那条，是因为这里旁边还有 1~2 个按钮，而弹窗里是上下堆叠。 */
+.dsm-workbuddy-sdk-dir-row{display:flex;align-items:center;gap:8px;margin:2px 0 4px}
+.dsm-workbuddy-sdk-dir-input{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+/* 回退开关：勾选框交回平台（accent-color），方框尺寸/圆角/勾形不由我们画。 */
+.dsm-workbuddy-sdk-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer}
+.dsm-workbuddy-sdk-switch input{accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-workbuddy-device-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-workbuddy-device-input-bad{border-color:var(--dsw-alias-label-error,#e5534b)}
+.dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;margin:4px 0 0}
+.dsm-workbuddy-device-random-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 12px}
+/* P3 的占位行：虚线边框 + 降低对比度，读起来是"位置已经留好，还没接线"。
+   标题用 label-primary 而不是 label-dimmed：它是这一段的主语（"真实设备
+   Token"），dimmed 在亮色主题下几乎和背景同色，在暗色主题下又只剩一层灰雾。
+   虚线边框已经表达了"占位"，不需要再靠文字颜色降级。 */
+.dsm-workbuddy-device-p3{
+  display:flex;flex-direction:column;gap:2px;margin:0 0 12px;padding:8px 10px;
+  border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;
+}
+.dsm-workbuddy-device-p3-label{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#e8e9ed)}
+.dsm-workbuddy-device-p3 .dsm-workbuddy-hint{color:var(--dsw-alias-label-secondary,#b8bcc4)}
+/* 自动派生值：只在对应输入框为空时出现，所以它承担的是"你留空会发生什么"这个
+   答案，必须能被复制走。等宽 + 可整段选中最省事（user-select:all 一次点击就
+   选中整串 36 位 id，比再放一个复制按钮少一次交互，也不用管剪贴板权限）。 */
+.dsm-workbuddy-device-derived{
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;
+  font-size:11px;line-height:16px;
+  color:var(--dsw-alias-label-secondary,#b8bcc4);
+}
+.dsm-workbuddy-device-derived code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11px;line-height:16px;
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  word-break:break-all;user-select:all;
+}
+.dsm-workbuddy-device-derived-missing{color:var(--dsw-alias-label-secondary,#b8bcc4);font-size:11px}
+.dsm-workbuddy-device-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+
+/* ---- 「SDK」分区：连接状态与真实取值 --------------------------------------
+   状态点用 6px 圆点而不是图标：这一行已经有文字说清楚状态，圆点只负责"一眼"。
+   token 块必须能换行——真实 token 一千多字符，不换行会把面板撑出一条横向滚动，
+   而横向滚动条会让"复制"按钮跑出视口。 */
+.dsm-workbuddy-sdk-dot{
+  display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;
+  background:var(--dsw-alias-label-error,#e5534b);vertical-align:middle;
+}
+.dsm-workbuddy-sdk-dot-ok{background:var(--dsw-alias-label-success,#3fb950)}
+.dsm-workbuddy-sdk-value{
+  display:block;max-height:96px;overflow:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11px;line-height:16px;
+  word-break:break-all;white-space:pre-wrap;
+  padding:4px 8px;border-radius:6px;
+  color:var(--dsw-alias-label-primary,#e8e9ed);
+  background:var(--dsw-alias-bg-l1,transparent);
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);
+}
+
 `
 /**
  * Composer credit readout styles, injected by the readout component itself.

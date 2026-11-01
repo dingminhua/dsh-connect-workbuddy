@@ -46,6 +46,17 @@ import {
   type HostSettingsService,
 } from './catalog-write.ts'
 import { createAccountUsabilityProbe } from './credential-recovery.ts'
+import {
+  createDeviceProfileLookup,
+  describeDerivedDevices,
+  readDeviceSettings,
+  saveDeviceProfile,
+  saveDeviceSdkSettings,
+  setDeviceMode,
+} from './device-profile.ts'
+import type { WorkBuddyDeviceSettings } from './device-profile.ts'
+import { createDeviceSdkPort, createTuringSdk } from './turing-sdk.ts'
+import { WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
 import { BENEFIT_CACHE_MS, claimableBenefits, type WorkBuddyBenefitView } from './benefits.ts'
 import {
   createWorkBuddyAdapter,
@@ -108,7 +119,7 @@ import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import { createFileRosterSeenStore } from './roster-seen-store.ts'
 import type { RosterSeenStore } from './roster-seen-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
-import { WorkBuddyUpstreamClient, knownRegionOf, regionOf } from './upstream.ts'
+import { WorkBuddyUpstreamClient, APP_VERSION, knownRegionOf, regionOf } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { attachBusyLevels } from './busy.ts'
 import type { WorkBuddyBusyLevel } from './busy.ts'
@@ -618,13 +629,52 @@ export interface Config {
    */
   channelPerturbation?: 'off' | 'failure' | 'always'
   /**
+   * 出站身份档位（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P1）。
+   *
+   * `balanced`（默认）让每一条出站请求说同一种话：`X-Product` / `X-IDE-Name` /
+   * `X-IDE-Type` 同值 `WorkBuddy`，加 `X-Agent-Purpose`、`X-CodeBuddy-Request`、
+   * `Accept-Language`、`X-Root-Request-ID`，以及按账号派生的一对
+   * `X-Machine-ID` / `X-Session-ID`；billing 域补齐 UA / Origin / Referer。
+   *
+   * `conservative` 逐字节还原 5.16.0：**连 `X-Product: SaaS` 这个改名前的值也还原**，
+   * 因为"回退了但没完全回退"会造出第三个从未上线过的形状，排查时最误导人。
+   *
+   * 为什么默认已经是 `balanced`：P0.5 的对照实验（2026-10-31）证实这组头有效。
+   * 留这一档不是为了默认值，是为了让"某台机器上某个账号忽然不行了"能先换档排除，
+   * 而不必先回滚一个版本。
+   */
+  wireProfile?: 'conservative' | 'balanced'
+  /**
+   * 外部设备 token（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P2）。
+   *
+   * 只收**文件**，不收内联字符串：token 是分钟级过期的，写在配置里的值十分钟后
+   * 就是死值，只能靠人改配置——那条路只在一次性排障里成立。文件可以由 A 自己的
+   * `.turing_token_cache.json`、一个 cron 或任何脚本刷新，插件按 `ttlMs` 重读。
+   *
+   * 文件支持两种形状：裸 token，或 A 的 `{"token":"v3:…","ts":…}` 信封。上限
+   * 4 KB（A 实测 1210 字符，B 的 1 KB 上限会把它误杀成"没配"）。
+   *
+   * 读不到时**不发送该头**并记一条 warn，绝不回退成临时造一个 token。只在
+   * `wireProfile: 'balanced'` 下生效——`conservative` 的契约是逐字节等于 5.16.0。
+   */
+  deviceToken?: {
+    /**
+     * token 文件的绝对路径（支持 `~`）。空 = 不启用。
+     *
+     * 指向 A 的缓存文件即可直接复用它的设备身份，不需要额外脚本。
+     */
+    file?: string
+    /** 重读周期，默认 5 分钟。token 本身约 10 分钟过期。 */
+    ttlMs?: number
+  }
+  /**
    * Adopt the official client's usage-page identity on chat requests (issue #132).
    *
-   * Adds `X-IDE-Name: WorkBuddy` (which is what fills the upstream's 使用端
-   * column) and sends the conversation-identity triple in the 32-hex UUIDv7
-   * shape the official client uses. Off by default: the reporter measured it at
-   * HTTP 200, this plugin has not reproduced that against the live gateway, and a
-   * display-only change should not be the reason an account starts failing.
+   * 2026-10-31（P1）：`X-IDE-*` 从这里搬到了 {@link Config.wireProfile} 的
+   * `balanced` 档（它属于"客户端是谁"，而那一层现在整体统一）。这条开关**现在
+   * 只管 id 的格式**：把会话身份三连换成官方客户端用的 32 位十六进制 UUIDv7，并
+   * 补一个镜像消息 id 的 `X-Request-ID`。Off by default：它是 reporter 测的、
+   * 本插件未复现的显示对齐，不该成为某个账号开始失败的理由。
    */
   usageIdentity?: boolean
   /**
@@ -1019,8 +1069,20 @@ export const Config: z<Config> = z.object({
   usageIdentity: asVolatile(
     z.boolean()
       .default(false)
-      .description("Make the upstream's usage page record these calls like the official client's: " + "add the X-IDE-* identity headers (which fill the 使用端 column) and send the conversation " + "ids as 32-hex UUIDv7. Off by default — it is a display alignment measured by a reporter, not by " + "this plugin, and the chat channel identity (User-Agent) and request body never change."),
+      .description("Send the chat conversation ids in the official client's 32-hex UUIDv7 shape and add a mirroring X-Request-ID. Off by default — it is a display alignment measured by a reporter, not by this plugin, and the chat channel identity (User-Agent) and request body never change."),
   ) as unknown as z<boolean>,
+  wireProfile: asVolatile(
+    z.union([z.const('conservative'), z.const('balanced')])
+      .default('balanced')
+      .description('Outbound identity profile. "balanced" (default) makes every request claim the same client (WorkBuddy product/IDE/agent headers, X-CodeBuddy-Request, Accept-Language, X-Root-Request-ID, and a per-account X-Machine-ID/X-Session-ID pair) and gives the billing routes a User-Agent plus Origin/Referer. "conservative" restores the 5.16.0 bytes exactly, including X-Product: SaaS.'),
+  ) as unknown as z<'conservative' | 'balanced'>,
+  deviceToken: asVolatile(
+    z.object({
+      file: z.string().default(''),
+      ttlMs: z.number().step(1).min(1000).default(300_000),
+    }).default({})
+      .description('Optional X-Device-Token supplied by a file, re-read every ttlMs (default 5 min; the token itself expires in about 10). Accepts a bare token or an {"token":…} JSON envelope, so pointing it at workbuddy2openapi\'s .turing_token_cache.json works as-is. Empty file = off. Only used by wireProfile "balanced"; a token that cannot be read is skipped with a warning, never invented.'),
+  ) as unknown as z<{ file: string, ttlMs: number }>,
   keepPromptLast: asVolatile(
     z.boolean()
       .default(false)
@@ -1253,11 +1315,66 @@ export function apply(ctx: Context, config: Config): void {
   // A fallback is worth a line in the log: it means the card's roster may no
   // longer match the app's prices, which is a user-visible difference rather
   // than a purely internal degradation.
+  /**
+   * 每账号的设备覆盖值（设置里齿轮改的那份）。
+   *
+   * 读盘缓存在 `device-profile.ts` 里是**模块级**的，所以这里、路由、以及客户端
+   * 看到的永远是同一份；`saveDeviceProfile` 写完后会立即失效它，改完下一条请求
+   * 就生效，不需要重启。
+   */
+  const deviceProfiles = createDeviceProfileLookup()
+  /**
+   * 真实设备参数的取链（P3）。
+   *
+   * **启动即预热**：`startAutoRefresh()` 立刻取一次，此后在 10 分钟 TTL 到期前自动
+   * 换新。此前只有请求路径会调 `current()`，于是空闲进程的「SDK」分区永远停在
+   * "已加载、没取过"——那与"SDK 坏了"在界面上长得一样，而这正是用户反馈的现象。
+   *
+   * 代价是一次子进程 + 一次取数，之后每 10 分钟一次；`stopAutoRefresh()` 挂在
+   * `ctx.effect` 的清理上，插件卸载时定时器随之消失。
+   *
+   * `dirSource` 让卡片上填的目录**下一次观察就生效**（作者意见 #1）：句柄活到
+   * 卸载，而设置随时会变，所以目录每次 `probe` 现问一次。`deviceProfiles` 读盘有
+   * 5 秒缓存，保存会立即失效它。
+   */
+  const turing = createTuringSdk({
+    productVersion: APP_VERSION,
+    dirSource: () => deviceProfiles.sdkDir(),
+  })
+  turing.startAutoRefresh()
+  ctx.effect(() => () => { turing.stopAutoRefresh() })
   const client = new WorkBuddyUpstreamClient(
     message => {
       ctx.logger.warn(`dsh-connect-workbuddy: ${message}`)
     },
-    { usageIdentity: unwrapVolatile(config.usageIdentity) === true },
+    {
+      usageIdentity: unwrapVolatile(config.usageIdentity) === true,
+      // 未配置时由 upstream 的 DEFAULT_WIRE_PROFILE 决定（`balanced`），这里
+      // 不重复写一份默认值——两处默认值是它们开始分叉的方式。
+      ...unwrapVolatile(config.wireProfile) === undefined
+        ? {}
+        : { profile: unwrapVolatile(config.wireProfile) },
+    },
+    (() => {
+      // 设备 token 的文件源（P2）。空路径 = 不启用；读取器在客户端内部按 TTL
+      // 重读，所以这里只传配置，不在这里读盘。
+      //
+      // 配置为空时回落到 `WORKBUDDY_DEVICE_TOKEN_FILE`——同一个值、两个读者
+      // （插件读配置，`doctor` 只能读环境变量），因此不会出现两处不一致。
+      const token = unwrapVolatile(config.deviceToken)
+      const configured = typeof token?.file === 'string' ? token.file.trim() : ''
+      const file = configured !== '' ? configured : (process.env[WORKBUDDY_DEVICE_TOKEN_FILE_ENV] ?? '').trim()
+      return {
+        deviceTokenFile: file,
+        ...typeof token?.ttlMs === 'number' ? { deviceTokenTtlMs: token.ttlMs } : {},
+        // 每账号覆盖值（设置里齿轮保存的那些）。请求路径按 uid 查，读盘有 5 秒
+        // 缓存；保存会立刻失效那次缓存，所以改完下一条请求就生效。
+        deviceProfiles,
+        // 真实值档的 token 源。档位由 `deviceProfiles.mode()` 决定：真实值档只
+        // 认这一个源，虚拟值档完全不碰它（见 `wireIdentity`）。
+        realDevice: turing.tokens,
+      }
+    })(),
   )
 
   /**
@@ -2286,7 +2403,45 @@ export function apply(ctx: Context, config: Config): void {
   // Same-origin routes backing the Plugin-configuration card. `webServer`
   // can mount after this row, so wait reactively for it instead of sampling
   // ctx.get() once during apply (which silently loses all routes on Desktop).
-  ctx.inject(['webServer'], (webCtx) => registerWorkBuddyStatusRoute(webCtx, {
+  ctx.inject(['webServer'], (webCtx) => {
+    /**
+     * 池子里每个账号的 uid，用来算"留空时会发出什么"。
+     *
+     * 按 accountId 去重：同一个账号可能同时出现在两个区域的凭据目录里（用户
+     * 两边都登录过），而它的设备身份只该有一个。`credentialFor` 每账号一次
+     * 文件读，只在这条路由被打开/保存时发生，不在请求热路径上。
+     */
+    const deviceAccounts = async (): Promise<{ accountId: string, uid: string }[]> => {
+      const entries: { accountId: string, uid: string }[] = []
+      const seen = new Set<string>()
+      for (const region of REGION_KEYS) {
+        for (const account of await stacks[region].store.accounts()) {
+          if (seen.has(account.id)) continue
+          const credential = await stacks[region].store.credentialFor(account.id)
+          if (credential === undefined || credential.uid === '') continue
+          seen.add(account.id)
+          entries.push({ accountId: account.id, uid: credential.uid })
+        }
+      }
+      return entries
+    }
+    /**
+     * 给设置补上派生值。读、切档、保存三条路都走它，三个响应因此永远同形。
+     *
+     * 派生值算不出来（本机没有设备盐）时整块缺席，而不是回一个空对象：缺席是
+     * "这次没算"，空对象是"算过，一个都没有"，弹窗对这两种情况要说不同的话。
+     */
+    const withDerived = async (settings: WorkBuddyDeviceSettings): Promise<WorkBuddyDeviceSettings> => {
+      // 派生值只是"给用户看"的附加物：列举账号时的一次 IO 失败不该让整条设置
+      // 路由 500——那会让档位开关和齿轮一起打不开，而它们本来是可以用的。
+      try {
+        const derived = await describeDerivedDevices(await deviceAccounts())
+        return derived === undefined ? settings : { ...settings, derived }
+      } catch {
+        return settings
+      }
+    }
+    return registerWorkBuddyStatusRoute(webCtx, {
     store: region => stacks[region].store,
     client,
     // Verifies whether some OTHER local account is still accepted upstream, so
@@ -2304,6 +2459,42 @@ export function apply(ctx: Context, config: Config): void {
      * document.
      */
     cliLive: () => cliRuntime?.live.snapshot() ?? { turns: [], serverTime: Date.now() },
+    /**
+     * 设备头设置（「虚拟值 / 真实值」+ 每账号覆盖参数）。
+     *
+     * uid 由 Host 自己解：卡片只认识 accountId，而构头时需要 uid——让浏览器把
+     * uid 传上来，等于把账号在网关侧的身份交给前端，没有必要。
+     *
+     * 每次响应都带一份 `derived`：**留空时真正会发出去的那一对 id**。弹窗把它
+     * 显示在空输入框下面，于是"自动派生"不再是句承诺，而是一个能核对的值。
+     * 派生用 uid（与 `deviceHeaders()` 同一份输入），所以界面上的值等于线上的值。
+     */
+    deviceSettings: {
+      read: async () => withDerived(await readDeviceSettings()),
+      setMode: async mode => withDerived(await setDeviceMode(mode)),
+      saveAccount: async (accountId, values) => {
+        for (const region of REGION_KEYS) {
+          const credential = await stacks[region].store.credentialFor(accountId)
+          if (credential !== undefined) {
+            return withDerived(await saveDeviceProfile(accountId, { ...values, uid: credential.uid }))
+          }
+        }
+        // 账号在本机已经不存在（凭据被清掉、或来自另一个 profile）：值照写，
+        // 只是没有 uid，于是它不会影响任何请求，直到该账号重新出现并再次保存。
+        return withDerived(await saveDeviceProfile(accountId, values))
+      },
+      saveSdk: values => saveDeviceSdkSettings(values),
+    },
+    /**
+     * 真实设备参数（本机安装的桌面端 SDK）的状态与取值。
+     *
+     * `mode` 现读而不是缓存：切档与面板是同一屏的两件事，中间隔一次 5 秒缓存就会
+     * 出现"已经切到真实值、面板还说虚拟值"的一屏。
+     */
+    deviceSdk: createDeviceSdkPort({
+      sdk: turing,
+      mode: async () => (await readDeviceSettings()).mode,
+    }),
     /**
      * Why each of the region's accounts cannot serve right now, for the composer
      * panel's table.
@@ -2980,7 +3171,8 @@ export function apply(ctx: Context, config: Config): void {
         return { imported, skipped }
       },
     },
-  }))
+    })
+  })
 
   /**
    * The region's nearest monthly quota refresh, or undefined when unknown.
