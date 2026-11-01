@@ -201,18 +201,18 @@ function describeDeviceLines(device: WorkBuddyDeviceReport, accounts: number): s
     ? []
     // path 为空串是"没发现本机装有桌面端 SDK"，直接打出来是一行 `(win32-x64 — )`
     // 的悬空破折号——换成一句人话。
-    : [`Device SDK: ${device.sdk.state}${device.sdk.reason === undefined ? '' : `: ${device.sdk.reason}`} (${device.sdk.bundle} — ${device.sdk.path === '' ? 'no installed SDK found' : device.sdk.path})`
+    // 没有这一档的平台不加载 SDK：此时 bundle/path 两个字段只是噪音（路径为空，
+    // 平白多一句 "no installed SDK found"），只把状态与原因留下。
+    : [`Device SDK: ${device.sdk.state}${device.sdk.reason === undefined ? '' : `: ${device.sdk.reason}`}${
+        device.sdk.state === 'unsupported'
+          ? ''
+          : ` (${device.sdk.bundle} — ${device.sdk.path === '' ? 'no installed SDK found' : device.sdk.path})`}`
         + `; token ${device.sdk.token.state}`
         + `${device.sdk.token.length === 0 ? '' : ` (${device.sdk.token.length} chars)`}`
         + `${device.sdk.token.ageMs === undefined ? '' : `, fetched ${describeAge(device.sdk.token.ageMs)} ago`}`
-        + `${device.sdk.token.reason === undefined ? '' : ` (${device.sdk.token.reason})`}`
-        // 平台能力差别写在"这台机器能做到什么"的同一行里：macOS 取不到 token
-        // 是结构性的，用户看到一行 ready 却永远没有 token 只会以为坏了。
-        + (device.sdk.platform === 'darwin'
-          ? '; macOS: this platform cannot produce a device token (the SDK needs the app main queue — see docs/WINDOWS.md), so the Real tier sends no X-Device-Token here'
-          : device.sdk.platform === 'win32'
-            ? ''
-            : `; ${device.sdk.platform}: the SDK does not support this platform`)]
+        // 没有真实值档的平台不会加载 SDK：`state` 已经是 `unsupported` 且自带一句
+        // 原因（见 `turing-sdk` 的 `tierAvailable`），这里不再重复一遍平台说明。
+        + `${device.sdk.token.reason === undefined ? '' : ` (${device.sdk.token.reason})`}`]
   return [head, token, ...sdk, derived]
 }
 

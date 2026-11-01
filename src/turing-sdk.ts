@@ -57,6 +57,7 @@ import {
   windowsRegistryAppExecutable,
   workbuddyAppExecutableCandidates,
 } from './at-rest.ts'
+import { realTierAvailable } from './device-profile.ts'
 import type { WorkBuddyDeviceMode } from './device-profile.ts'
 
 /** 允许指向别的 SDK 副本（自建、或桌面端安装目录）。 */
@@ -593,6 +594,15 @@ export function createTuringSdk(options: {
   const exists = options.exists ?? existsSync
   const bundle = bundledSdkBundleId(platform, arch)
   /**
+   * 本平台有没有「真实值」档。
+   *
+   * 没有就**什么都不做**：不解析目录、不起子进程、不留缓存。SDK 的唯一产物是
+   * 设备 token，而取数要桌面端的主队列——在签发不了的地方把它加载起来，界面会
+   * 显示一个"已连接"，然后永远没有 token。用户看到的是"连上了却拿不到"，那比
+   * 不连更糟：它让人以为再等等就好了。
+   */
+  const tierAvailable = realTierAvailable(platform)
+  /**
    * SDK 目录的**解析器**，不是一个常量（作者意见 #1）。
    *
    * 卡片上填一个目录、点保存，下一步就该看见 `ready`——所以目录必须在每次
@@ -659,6 +669,19 @@ export function createTuringSdk(options: {
 
   async function probe(): Promise<TuringSdkInfo> {
     const at = now()
+    if (!tierAvailable) {
+      const info: TuringSdkInfo = {
+        state: 'unsupported',
+        bundle,
+        path: '',
+        platform,
+        arch,
+        runtime: runtimeLabel,
+        reason: `no Real tier on ${platform}: the SDK's only output is a device token, and fetching it needs the desktop app's main queue — see docs/WINDOWS.md`,
+      }
+      probeCache = { at, path: '', info }
+      return info
+    }
     // 目录可能是用户刚在卡片上改的，所以先解析再命中缓存——缓存按**解析结果**
     // 判有效，否则"填了一个新目录"会在 10 秒的 probe 缓存里答成旧目录的状态。
     const dir = await resolveDir()
@@ -694,6 +717,14 @@ export function createTuringSdk(options: {
 
   function readout(): TuringTokenReadout {
     const at = now()
+    if (!tierAvailable) {
+      return {
+        state: 'unavailable',
+        masked: '',
+        length: 0,
+        reason: `no Real tier on ${platform}: nothing is fetched here, and no device token can be produced`,
+      }
+    }
     if (cached === undefined) {
       return {
         state: 'idle',
@@ -752,6 +783,7 @@ export function createTuringSdk(options: {
 
   async function current(): Promise<string | undefined> {
     const at = now()
+    if (!tierAvailable) return undefined
     if (cached !== undefined && at - cached.fetchedAtMs <= ttlMs) return cached.token
     // 退避：刚失败过就先别再造一个子进程。一轮对话十几条请求同时到，没有这一步，
     // 一次 SDK 故障会变成十几个子进程 + 十几个超时。
@@ -781,6 +813,7 @@ export function createTuringSdk(options: {
    */
   async function warm(): Promise<void> {
     const at = now()
+    if (!tierAvailable) return
     const failedSinceFetch = cached !== undefined
       && lastFailureAtMs !== undefined
       && lastFailureAtMs >= cached.fetchedAtMs

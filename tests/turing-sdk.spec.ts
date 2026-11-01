@@ -322,7 +322,9 @@ describe('createTuringSdk — a directory the user can change (作者意见 #1)'
 
 describe('probe', () => {
   it('reports missing without spawning anything when the bundle is absent', async () => {
-    const sdk = createTuringSdk({ dir: join(root, 'nope'), worker, now: () => clock })
+    const sdk = createTuringSdk({
+      dir: join(root, 'nope'), worker, now: () => clock, platform: 'win32', arch: 'x64',
+    })
     const info = await sdk.info()
     expect(info.state).toBe('missing')
     expect(info.reason).toContain('no installed WorkBuddy desktop SDK detected')
@@ -333,11 +335,48 @@ describe('probe', () => {
   it('reports missing when there is no dir at all (discovery found nothing)', async () => {
     // `env: {}` 不是笔误：不传就会读真实 process.env，而这台机器上**可能**真的
     // 装着桌面端——那条安装链属于发现测试，不属于兜底行为测试。
-    const sdk = createTuringSdk({ worker, now: () => clock, env: {}, home: root, platform: 'linux' })
+    // 平台必须是**有真实值档**的（win32）：这条路测的是"没有可用的 SDK"，
+    // 而不是"这个平台没有这一档"（后者见下面的 unsupported 用例）。注册表探测
+    // 注入成空，免得在 macOS/Linux 上真的去起 reg.exe。
+    const sdk = createTuringSdk({
+      worker,
+      now: () => clock,
+      env: {},
+      home: root,
+      platform: 'win32',
+      arch: 'x64',
+      readRegistryAppPath: () => undefined,
+    })
     const info = await sdk.info()
     expect(info.state).toBe('missing')
     expect(info.path).toBe('')
     expect(info.reason).toContain('WORKBUDDY_TURING_SDK_DIR')
+    expect(await readCalls()).toBe(0)
+  })
+
+  /**
+   * 没有「真实值」档的平台（macOS / Linux）：SDK 的唯一产出是设备 token，而签发
+   * 需要桌面端主队列——加载它只会得到一个"已连接"然后永远没有 token。所以这一档
+   * 在这里**根本不加载**：不解析目录、不起子进程、不给 token。
+   */
+  it('does not load the SDK on a platform without a Real tier', async () => {
+    const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, platform: 'darwin', arch: 'arm64' })
+    const info = await sdk.info()
+    expect(info.state).toBe('unsupported')
+    expect(info.path).toBe('')
+    expect(info.platform).toBe('darwin')
+    expect(info.reason).toContain('no Real tier')
+    // 目录里有真的 binding，但这一档不该被加载。
+    expect(await readCalls()).toBe(0)
+  })
+
+  it('reports no token instead of spawning on such a platform', async () => {
+    const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, platform: 'darwin', arch: 'arm64' })
+    expect(await sdk.tokens.current()).toBeUndefined()
+    const readout = sdk.tokens.readout()
+    expect(readout.state).toBe('unavailable')
+    expect(readout.masked).toBe('')
+    expect(readout.reason).toContain('no Real tier')
     expect(await readCalls()).toBe(0)
   })
 
@@ -546,6 +585,8 @@ describe('自动预热（auto refresh）', () => {
     const sdk = createTuringSdk({
       dir: sdkDir,
       worker,
+      platform: 'win32',
+      arch: 'x64',
       ttlMs: 250,
       keepAliveTiming: { leadMs: 0, minDelayMs: 40, retryMs: 40 },
     })
@@ -581,6 +622,8 @@ describe('自动预热（auto refresh）', () => {
     const sdk = createTuringSdk({
       dir: sdkDir,
       worker,
+      platform: 'win32',
+      arch: 'x64',
       ttlMs: 200,
       keepAliveTiming: { leadMs: 0, minDelayMs: 30, retryMs: 30 },
     })

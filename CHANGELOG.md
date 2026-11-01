@@ -38,7 +38,8 @@
   - 账号表上方的档位行在 macOS 上多一句静态说明：真实值档一个设备头都不发、虚拟值档不受影响。
     这句话跟着 `GET /device-profile` 响应里的 `platform` 字段走（平台**不是设置**，不落盘、不可改），
     所以用户不必先失败一次才知道。
-  - `doctor` 的 `Device SDK:` 行在 darwin 上补一句同样的限制；`README` 的平台对比表新增「设备身份」
+  - `doctor` 的 `Device SDK:` 行在 darwin / Linux 上报 `unsupported` 并给出原因（不再打印
+    bundle 与路径——那两栏描述的是一个不会被加载的东西）；`README` 的平台对比表新增「设备身份」
     一行，把两档在三个平台上的可用情况逐格写清。
 
 ### 变更
@@ -54,7 +55,16 @@
   - 平台能力判断只写一处（`realTierAvailable` / `effectiveDeviceMode`），卡片侧用同一条规则
     （`client/device-profile.ts` 的同名函数，缺 `platform` 时按"有"处理，旧 Host 上不隐藏功能）。
 
-### 变更
+- **没有「真实值」档的平台不再加载 SDK**（用户意见：「连接了 SDK 却拿不到 token，那为什么还连」）：
+  那一档不存在时，加载 SDK 的唯一效果是面板上多一个绿点、然后永远没有 token——一个"连上了但没用"
+  的状态比一句说明更让人困惑。现在 `turing-sdk.ts` 在 `realTierAvailable(platform)` 为假时**什么都不做**：
+  不解析目录、不起子进程、不写探活缓存，`info()` 直接给 `state: 'unsupported'` 与原因，`tokens.current()`
+  返回 `undefined`、`readout()` 给 `unavailable`。面板随之只留「为什么」：平台行、状态行、档位行与那句
+  说明，token 值、「显示 / 复制 / 重新获取」、SDK 目录输入、回退开关**都不画**——它们在拿不到 token 的
+  机器上没有任何可操作的余地。总开关仍在（它管「虚拟值」档）。`tests/turing-sdk.spec.ts` 钉住
+  「目录里有真 binding 也不加载、一次子进程都不起」。
+
+### 排版
 
 - **「SDK」分区的排版统一**：等宽字体收敛成卡片根上的一个 `--dsm-mono` 变量（此前同一条字体栈
   在 8 处各写一遍、其中两处漏了 `Consolas`，同一屏里的路径与 token 会在不同平台落到不同字面）。

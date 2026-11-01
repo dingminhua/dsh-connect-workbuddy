@@ -263,6 +263,12 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     ? (token?.state === 'ok' ? 'sdk.statusReady' : token?.state === 'stale' ? 'sdk.statusStale' : 'sdk.statusNoToken')
     : sdk?.state === 'missing' ? 'sdk.statusMissing' : sdk?.state === 'unsupported' ? 'sdk.statusUnsupported' : 'sdk.statusError'
   const stateOk = sdk?.state === 'ready' && token?.state === 'ok'
+  /**
+   * 本平台没有「真实值」档（macOS / Linux）。这一页在那种机器上只剩"为什么"：
+   * 不加载 SDK、没有 token 可取，所以 token 区、目录输入、回退开关全部不画——
+   * 一个连上了却永远拿不到 token 的面板，比一句说明更让人困惑。
+   */
+  const tierAbsent = sdk?.state === 'unsupported'
 
   /**
    * 总开关。放在这一页最前面：它是"这一页讲的东西到底存不存在"的前提，其余每一
@@ -302,7 +308,9 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
   return (
     <>
       {switchBlock}
-      <p className="dsm-workbuddy-panel-note">{t('sdk.hint')}</p>
+      {/* 没有真实值档的平台不能沿用上面那段说明：它描述的是"两档之间发不发"，
+          而这里根本没有那一档。换成一句"这里没有它"。 */}
+      <p className="dsm-workbuddy-panel-note">{t(tierAbsent ? 'sdk.hintNoTier' : 'sdk.hint')}</p>
       <div className="dsm-workbuddy-diag">
         {/* 平台是这一屏的第一件事：同一个面板在 macOS 与 Windows 上的能力不同，
             先说平台，再说状态——否则用户会拿 Windows 截图对照 mac，把"取不到
@@ -320,12 +328,16 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
           <span className={`dsm-workbuddy-sdk-dot${stateOk ? ' dsm-workbuddy-sdk-dot-ok' : ''}`} aria-hidden="true" />
           {t(stateKey)}
         </Row>
+        {/* 没有这一档的平台不加载 SDK：目录与运行时没有意义，画出来只会让人
+            去关心一个不会被启动的东西。 */}
+        {tierAbsent ? null : <>
         <Row label={t('sdk.bundle')} mono>
           {sdk === undefined || sdk.bundle === '' ? t('sdk.unknown') : `${sdk.bundle} · ${sdk.path}`}
         </Row>
         <Row label={t('sdk.runtime')} mono>
           {sdk === undefined || sdk.runtime === '' ? t('sdk.unknown') : sdk.runtime}
         </Row>
+        </>}
         <Row label={t('sdk.fetched')}>
           {token?.fetchedAtMs === undefined
             ? t('sdk.never')
@@ -348,11 +360,12 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
           把它写成"再看看"，用户会一直重试；写清楚之后，同一行下面的
           「真实值档在这里一个头都不发」才是可预期的行为。只在 darwin 且确实
           取不到时出现——能取到的地方多一句话都是噪音。 */}
-      {sdk?.platform === 'darwin' && token?.state !== 'ok'
-        ? <p className="dsm-workbuddy-panel-note">{t('sdk.macTokenLimit')}</p>
+      {tierAbsent
+        ? <p className="dsm-workbuddy-panel-note">{t('sdk.noTierNote', { platform: sdk?.platform ?? 'this platform' })}</p>
         : null}
 
       {/* 真实值块：默认一行星号。`value` 只在用户点开之后才有内容，关掉即丢弃。 */}
+      {tierAbsent ? null : <>
       <div className="dsm-workbuddy-device-field">
         <span className="dsm-workbuddy-device-field-label">{t('sdk.valueLabel')}</span>
         <code className="dsm-workbuddy-sdk-value" aria-label={t('sdk.valueLabel')}>
@@ -388,6 +401,8 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
         </button>
       </div>
 
+      </>}
+
       {/* ── 设置：SDK 目录（作者意见 #1） ────────────────────────────────
           一个输入框 + 一个「保存」，而不是"猜"或"再装一遍"。发现链已经在跑
           （这一页的全部状态就是它的输出），但它只在桌面端装在标准位置时才命中；
@@ -395,7 +410,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
 
           空值 = 回到自动发现，所以占位文字写清楚"留空即自动"，而不是一个空框
           让人以为必须填。 */}
-      {settingsPath === '' || sdkDir === undefined
+      {settingsPath === '' || sdkDir === undefined || tierAbsent
         ? null
         : <>
             <div className="dsm-workbuddy-device-field">
