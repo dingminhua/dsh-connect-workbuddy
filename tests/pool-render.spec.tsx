@@ -1546,3 +1546,42 @@ describe('ordering-rule disclosure in the settings panel', () => {
     await m.unmount()
   })
 })
+
+/**
+ * macOS / Linux 上没有「真实值」档（SDK 取不到 token），所以那个选项不画。
+ *
+ * 这条用真实渲染钉住三件事：Windows 上两档都在；macOS 上只剩「虚拟值」；
+ * 以及"为什么少了一个"必须有一句解释——凭空消失的控件比置灰的更需要理由。
+ */
+describe('the Real tier is not offered where the platform has none', () => {
+  const tierProps = (overrides: Record<string, unknown>): Record<string, unknown> => baseProps({
+    deviceMode: 'virtual',
+    onDeviceModeChange: vi.fn(async () => true),
+    ...overrides,
+  })
+  const segButtons = (m: Awaited<ReturnType<typeof mount>>): HTMLButtonElement[] =>
+    m.buttons().filter(button => button.className.includes('dsm-workbuddy-device-seg-btn'))
+
+  it('renders both tiers on Windows', async () => {
+    const m = await mount(AccountPool, tierProps({ devicePlatform: 'win32' }))
+    const labels = segButtons(m).map(button => button.textContent)
+    expect(labels).toEqual(['row.deviceModeVirtual', 'row.deviceModeReal'])
+    expect(m.text()).not.toContain('row.deviceModePlatformMac')
+  })
+
+  it('renders only Virtual on macOS, with the reason next to it', async () => {
+    const m = await mount(AccountPool, tierProps({ devicePlatform: 'darwin' }))
+    const labels = segButtons(m).map(button => button.textContent)
+    expect(labels).toEqual(['row.deviceModeVirtual'])
+    expect(m.text()).toContain('row.deviceModePlatformMac|platform=darwin')
+  })
+
+  it('shows Virtual as the selected tier even when the file still says real', async () => {
+    // 旧配置（或从别的机器同步来的 home）里可能写着 real；这台机器兑现不了它，
+    // 于是界面上选中必须是虚拟值——否则"选中的那一档"与"线上发的那一档"不一致。
+    const m = await mount(AccountPool, tierProps({ devicePlatform: 'darwin', deviceMode: 'real' }))
+    const [only] = segButtons(m)
+    expect(only?.getAttribute('aria-pressed')).toBe('true')
+    expect(m.text()).toContain('row.deviceModeHintVirtual')
+  })
+})
