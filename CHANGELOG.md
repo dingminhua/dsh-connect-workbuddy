@@ -2,9 +2,16 @@
 
 ### 新增
 
-- **设备身份总开关**（作者意见）：卡片「SDK」分区顶部的「设备身份」开关，状态存在
-  `$DSH_HOME/.workbuddy-device-profiles.json` 的 `enabled` 字段（**缺省 = 开**，只有显式
-  `false` 才算关；字符串 `"false"` 不算——手改 JSON 写错类型时宁可保持功能在，也不要无声消失）。
+- **设备身份总开关**（作者/用户意见）：卡片「SDK」分区顶部的「设备身份」开关，状态存在
+  `$DSH_HOME/.workbuddy-device-profiles.json` 的 `enabled` 字段。**默认关**：缺字段按关处理，
+  只有显式 `true` 才开（字符串 `"true"` 不算——手改 JSON 写错类型时不能让一个字符串替用户
+  打开设备身份）。5.17.0 写下的文件没有这一项，升级后默认静默：设备标识属于用户的机器，
+  不属于版本，"之前发过"不是"以后继续发"的授权。
+  - 关着时请求路径**不再建盐**：`upstream.ts` 原来在构造 client 时无条件
+    `ensureDeviceSalt()`，于是"关掉之后第一次聊天"仍会写出
+    `$DSH_HOME/.workbuddy-device.json`——那枚盐正是"这台机器是谁"的指纹。现在底座
+    按开关状态分键缓存：关 ⇒ 不建、不读；打开后的下一次请求立刻能用（不用重启），
+    盐这时才落盘。`tests/upstream-device-switch.spec.ts` 钉住这三步。
   - 关掉之后：任何请求都不带 `X-Machine-ID` / `X-Session-ID` / `X-Device-Token`（`identity.deviceToken`
     这种静态来源也一起剥掉，不只是派生对），后台停止预拉 token，`doctor` 不再为它起子进程探测 SDK。
   - 档位（虚拟值 / 真实值）、每账号覆盖值、手填 SDK 目录与回退开关**都保留**：关掉不是恢复出厂设置，

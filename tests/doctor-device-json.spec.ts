@@ -32,7 +32,8 @@ afterEach(() => {
 async function writeDeviceSettings(
   mode: 'virtual' | 'real',
   sdkFallbackToVirtual: boolean,
-  enabled?: boolean,
+  /** `'absent'` = 写一份没有总开关字段的文件（5.17.0 的形状）。默认写 `true`。 */
+  enabled: boolean | 'absent' = true,
 ): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'doctor-device-'))
   homes.push(home)
@@ -41,7 +42,7 @@ async function writeDeviceSettings(
     join(home, '.workbuddy-device-profiles.json'),
     `${JSON.stringify({
       version: DEVICE_PROFILE_VERSION,
-      ...enabled === undefined ? {} : { enabled },
+      ...enabled === 'absent' ? {} : { enabled },
       mode,
       accounts: {},
       sdkFallbackToVirtual,
@@ -112,6 +113,16 @@ describe('doctor --json 的档位分岔（schemaVersion 10 的承诺）', () => 
  * 把它和"坏了"分开；这也让 schemaVersion 从 10 走到 11。
  */
 describe('doctor --json 的总开关（schemaVersion 11）', () => {
+  it('缺字段 = 关：5.17.0 写下的文件升级后默认静默', async () => {
+    // 这是"默认关闭"在 doctor 上的样子：文件里根本没有 enabled，报告必须说关。
+    // 升级不该替用户打开设备身份——那是一个属于用户的决定。
+    await writeDeviceSettings('virtual', true, 'absent')
+    const device = (await doctorJson())['deviceIdentity'] as Record<string, unknown>
+    expect(device['enabled']).toBe(false)
+    expect(device['onWire']).toEqual([])
+    expect(device['sdk']).toBeUndefined()
+  })
+
   it('关掉之后：enabled: false、onWire 空、SDK 不出现（没探测）', async () => {
     await writeDeviceSettings('virtual', true, false)
     const device = (await doctorJson())['deviceIdentity'] as Record<string, unknown>

@@ -4030,7 +4030,16 @@ export class WorkBuddyUpstreamClient {
    * 解析一次的底座：设备盐（P1）。真 token 不在这里——它分钟级过期，
    * 必须每条请求现取，见 {@link wireIdentity}。
    */
-  private readonly baseIdentity: Promise<WorkBuddyWireIdentity>
+  private readonly initialIdentity: WorkBuddyWireIdentity
+  /**
+   * 解析过的底座，**按开关状态分键**。
+   *
+   * 只按"解析过一次"缓存是不够的：总开关是运行时可改的，而关着时不该去建那枚
+   * 盐（`ensureDeviceSalt` 会落盘一个本机指纹），打开后又要能立刻用上。用
+   * `{enabled, value}` 做键，开关一变就重算一次——代价是每次请求读一次设置
+   * （那份 5 秒缓存），换来的是"关着的时候磁盘上什么都没多出来"。
+   */
+  private baseIdentityCache: { enabled: boolean, value: WorkBuddyWireIdentity } | undefined
   /** 外部 device token 的 TTL 读取器；未配置时为 undefined。 */
   private readonly deviceTokens: DeviceTokenReader | undefined
   /** 每账号覆盖值的读取器（设置里齿轮保存的那些）；未接线时为 undefined。 */
@@ -4052,7 +4061,7 @@ export class WorkBuddyUpstreamClient {
       realDevice?: TuringTokenSource
     } = {},
   ) {
-    this.baseIdentity = resolveWireIdentity(identity)
+    this.initialIdentity = identity
     this.deviceProfiles = options.deviceProfiles
     this.realDevice = options.realDevice
     const file = options.deviceTokenFile === undefined ? '' : options.deviceTokenFile.trim()
@@ -4072,8 +4081,24 @@ export class WorkBuddyUpstreamClient {
    * 用户随时会改的设置。三者里只有盐是常量，把另外两个钉在构造期，一个跑了几小时
    * 的进程会一直发过期 token、也永远看不到刚保存的覆盖值。
    */
+  /**
+   * 底座身份：本机盐（虚拟值档才需要）。
+   *
+   * 总开关关着时**不建盐、不读盘**，直接返回构造时拿到的那份 identity——关闭
+   * 之后这一族功能整体停摆，包括那枚会写进 `$DSH_HOME` 的盐文件。打开之后下一次
+   * 请求会重新解析（见 {@link baseIdentityCache}）。
+   */
+  private async baseIdentity(): Promise<WorkBuddyWireIdentity> {
+    const enabled = this.deviceProfiles === undefined ? true : await this.deviceProfiles.enabled()
+    const cached = this.baseIdentityCache
+    if (cached !== undefined && cached.enabled === enabled) return cached.value
+    const value = enabled ? await resolveWireIdentity(this.initialIdentity) : this.initialIdentity
+    this.baseIdentityCache = { enabled, value }
+    return value
+  }
+
   private async wireIdentity(credential: WorkBuddyCredential): Promise<WorkBuddyWireIdentity> {
-    const base = await this.baseIdentity
+    const base = await this.baseIdentity()
     if (profileOf(base) !== 'balanced') return base
     /**
      * 总开关（作者意见：这个功能整体该有个开关）。关 ⇒ 把盐从身份里剥掉，

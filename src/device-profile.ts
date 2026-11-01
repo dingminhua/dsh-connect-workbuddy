@@ -61,7 +61,8 @@ export interface WorkBuddyDeviceDerived {
 /** What the card and the resolver both read. */
 export interface WorkBuddyDeviceSettings {
   /**
-   * 设备身份功能的总开关。**默认开**。
+   * 设备身份功能的总开关。**默认关**（用户意见：这是"这台机器对外声称自己是谁"，
+   * 不该在一次升级里悄悄替人打开；要用的人自己打开一次）。
    *
    * 关掉之后这一族功能整体停摆：不发任何设备头（`X-Device-Token` /
    * `X-Machine-ID` / `X-Session-ID` 一个都不发）、后台预热不再起子进程、
@@ -70,8 +71,9 @@ export interface WorkBuddyDeviceSettings {
    * 回退的是**全部** P1 头（归属、语言、请求 id），而有人只想关设备身份、
    * 其余对齐保持不变。
    *
-   * 缺字段按开处理：与 `sdkFallbackToVirtual` 同一条宽容规则——旧文件写下时
-   * 这项还不存在，那时的行为就是"功能在跑"。
+   * 缺字段按**关**处理：5.17.0 写下的文件没有这一项，而那时设备头是默认发的；
+   * 但"之前发过"不是"以后继续发"的授权——一台机器的设备标识属于用户，不属于
+   * 版本。所以升级之后默认静默，谁要用谁打开一次。
    */
   enabled: boolean
   mode: WorkBuddyDeviceMode
@@ -114,7 +116,7 @@ export interface WorkBuddyDeviceSettings {
 function emptyDocument(): StoredDocument {
   return {
     version: DEVICE_PROFILE_VERSION,
-    enabled: true,
+    enabled: false,
     mode: 'virtual',
     accounts: {},
     sdkDir: '',
@@ -132,7 +134,7 @@ interface StoredAccount {
 
 interface StoredDocument {
   version: number
-  /** 总开关；见 `WorkBuddyDeviceSettings.enabled`。缺字段 = 开。 */
+  /** 总开关；见 `WorkBuddyDeviceSettings.enabled`。缺字段 = 关。 */
   enabled: boolean
   mode: WorkBuddyDeviceMode
   accounts: Record<string, StoredAccount>
@@ -216,8 +218,10 @@ async function readStored(dir?: string, nowMs: number = Date.now(), fresh = fals
   }
   const document: StoredDocument = {
     version: DEVICE_PROFILE_VERSION,
-    // 只有显式 `false` 才关：缺字段 = 开，理由与 `sdkFallbackToVirtual` 相同。
-    enabled: record['enabled'] !== false,
+    // 只有显式 `true` 才开：缺字段 = 关（见 `WorkBuddyDeviceSettings.enabled`）。
+    // 与 `sdkFallbackToVirtual` 是相反方向的宽容——那个字段缺失代表"旧行为"，
+    // 这个字段缺失代表"没有用户的授权"。
+    enabled: record['enabled'] === true,
     mode: isDeviceMode(record['mode']) ? record['mode'] : 'virtual',
     accounts,
     // 手填目录原样保留（只去首尾空白）：它是一条路径，不是身份，坏路径的代价是

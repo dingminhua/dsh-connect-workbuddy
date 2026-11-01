@@ -150,7 +150,9 @@ export function describeDeviceState(
   real?: {
     tier: 'virtual' | 'real'
     /**
-     * 总开关（作者意见：这个功能整体该有个开关）。省略 = 开。
+     * 总开关（作者意见：这个功能整体该有个开关）。省略 = 开——**默认关**这条
+     * 规则属于设置层（`device-profile.ts`，缺字段即关），调用方必须显式把它读
+     * 出来的值传进来；`doctor` 与请求路径都这么做。
      *
      * 关时 `doctor` **不探测 SDK**（不起那个子进程），所以那一档的 `sdk`/`token`
      * 读数压根不存在——两者因此是可选的。报告里 `enabled: false` 只在关时出现：
