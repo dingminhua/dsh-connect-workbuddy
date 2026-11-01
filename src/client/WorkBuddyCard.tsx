@@ -3249,6 +3249,9 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                         ...deviceSettings.derived === undefined ? {} : { deviceDerived: deviceSettings.derived },
                         onDeviceModeChange: changeDeviceMode,
                         onSaveDeviceProfile: saveDeviceProfile,
+                        // Host 判定的「真实值」可用性：界面不猜平台（mac 上 SDK 能发现、
+                        // probe 也答 ready，坏的是取 token 那一环，光看平台名判断不出装没装）。
+                        ...deviceSettings.realTier === undefined ? {} : { realTier: deviceSettings.realTier },
                       }}
                     />
                   </>

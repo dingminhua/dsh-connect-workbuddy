@@ -19,7 +19,7 @@ import {
   WorkBuddyVideoError,
   describeVideoFailure,
 } from '../src/video-gen.ts'
-import { createVideoTool, type VideoToolDeps } from '../src/video-tool.ts'
+import { createVideoTool, VIDEO_POLL_BUDGET_MS, VIDEO_TOOL_TIMEOUT_MS, type VideoToolDeps } from '../src/video-tool.ts'
 
 /** Both video tags — what each CN model declares today. */
 const MEDIA_TAGS_FOR_VIDEO = [VIDEO_TAG_TEXT_TO_VIDEO, VIDEO_TAG_IMAGE_TO_VIDEO] as const
@@ -240,3 +240,88 @@ describe('video tool duration validation and cooldown', () => {
   })
 })
 
+/**
+ * 图生视频的输入图承载形式（issue #187 的第二种现象）。
+ *
+ * 用户拿上一张成功的图做首帧是最自然的路径，而插件出图返回的是 COS 签名 URL。
+ * 旧实现只对它发 HEAD，再把 URL 原样交给上游：COS 签名只覆盖 GET，HEAD 拿到
+ * 403，于是报「输入图 URL 不可达」——把上游不接受外链这件事伪装成用户图片的问题。
+ *
+ * 这两条钉的是：URL 必须被**下载并编码成 data URL**，且只发 GET。
+ */
+describe('video tool image input (issue #187)', () => {
+  /** 一个最小但合法的 PNG（1x1）。 */
+  const PNG_BYTES = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+
+  it('downloads an http(s) image and sends a data URL, never the URL itself', async () => {
+    const calls: Array<{ url: string, method: string }> = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown, init?: { method?: string }) => {
+      calls.push({ url: String(url), method: init?.method ?? 'GET' })
+      return new Response(PNG_BYTES, { status: 200, headers: { 'content-type': 'image/png' } })
+    }) as typeof fetch
+    try {
+      let sentImage: string | undefined
+      const tool = createVideoTool(deps({
+        submitVideo: async (_c, request) => {
+          sentImage = request.image
+          return { taskId: 'task-1', warnings: [] }
+        },
+      }))
+      await tool.execute({ prompt: '猫', image: 'https://cos.example/a.png' }, {})
+
+      // 发出去的是 data URL，不是外链——上游只吃 data URI。
+      expect(sentImage?.startsWith('data:image/png;base64,')).toBe(true)
+      expect(sentImage).not.toContain('cos.example')
+      // 而且只发 GET：对 COS 签名 URL 发 HEAD 就是 403 的来源。
+      expect(calls.map(call => call.method)).toEqual(['GET'])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('reports a download failure against the image, not against the task', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response('denied', { status: 403 })) as typeof fetch
+    try {
+      const tool = createVideoTool(deps())
+      const error = await tool.execute({ prompt: '猫', image: 'https://cos.example/expired.png' }, {})
+        .then(() => undefined, (cause: unknown) => cause)
+      expect(error).toBeInstanceOf(WorkBuddyVideoError)
+      expect((error as WorkBuddyVideoError).code).toBe('INVALID_ARGS')
+      // 这条很关键：以前它伪装成「URL 不可达」，让人以为是图片本身坏了。
+      expect((error as WorkBuddyVideoError).message).toContain('下载输入图失败')
+      expect((error as WorkBuddyVideoError).message).toContain('403')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})
+
+/**
+ * 超时的**层级关系**（issue #187 的第三种现象）。
+ *
+ * 三个 deadline 同时存在的场景里，谁先到期决定了用户看到什么：
+ *
+ * - 插件内部（轮询）先到期 → 抛出 `POLL_TIMEOUT`，**带上 task id**，日志里有据可查；
+ * - 宿主工具上限先到期 → 裸的 `tool call timed out after 600000ms`，task id 丢掉。
+ *
+ * 修之前三者都是 600000，等于同时到期，实际总是宿主那个赢。这组断言钉的是
+ * "内部的永远严格更早"，而不是某个具体数字——数值以后可以调，顺序不能反。
+ */
+describe('video tool timeout ordering (issue #187)', () => {
+  it('the host tool limit is strictly below the host default of 600s', () => {
+    // 宿主给工具调用的默认上限就是 600_000；等于它就是这次 bug。
+    expect(VIDEO_TOOL_TIMEOUT_MS).toBeLessThan(600_000)
+  })
+
+  it('the poll budget is strictly below the tool limit, leaving room to report', () => {
+    // 轮询是最容易吃满的一段，它必须最早放弃，工具层才有机会把错误带回给模型。
+    expect(VIDEO_POLL_BUDGET_MS).toBeLessThan(VIDEO_TOOL_TIMEOUT_MS)
+    // 至少留够一次"抛错+下载"的余量，不能只差几十毫秒。
+    expect(VIDEO_TOOL_TIMEOUT_MS - VIDEO_POLL_BUDGET_MS).toBeGreaterThanOrEqual(10_000)
+  })
+})

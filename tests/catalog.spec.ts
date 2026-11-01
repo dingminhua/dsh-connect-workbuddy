@@ -150,6 +150,48 @@ describe('WorkBuddyCatalog', () => {
   })
 })
 
+/**
+ * `hasLiveRoster` is the discriminator that keeps issue #32 fixed from the
+ * OTHER side.
+ *
+ * `applySelection` passes `current()` into `configuredModels` as the roster a
+ * partial save may demote to instead of the static list. But the constructor
+ * seeds `current()` with that very static list, and `resolveRoster` cannot tell
+ * the two apart (it only sees a non-empty array). Without this flag a settings
+ * write arriving before the first refresh would copy the static roster in as
+ * if it were upstream.
+ */
+describe('WorkBuddyCatalog.hasLiveRoster', () => {
+  it('is false before any upstream answer, even though current() is non-empty', () => {
+    const catalog = new WorkBuddyCatalog('cn')
+    // The trap: the seeded fallback LOOKS like a roster.
+    expect(catalog.current().length).toBeGreaterThan(0)
+    expect(catalog.hasLiveRoster()).toBe(false)
+  })
+
+  it('becomes true once an upstream roster is set', () => {
+    const catalog = new WorkBuddyCatalog('cn')
+    catalog.set(MODELS)
+    expect(catalog.hasLiveRoster()).toBe(true)
+  })
+
+  it('stays false when a re-derivation is written — only upstream counts', () => {
+    // applySelection writes the roster it re-derived from the saved slot; that
+    // is bookkeeping, not a fresh observation.
+    const catalog = new WorkBuddyCatalog('cn')
+    catalog.set(MODELS, 'derived')
+    expect(catalog.hasLiveRoster()).toBe(false)
+  })
+
+  it('does not go back to false after a later derived write', () => {
+    // Once the upstream has answered, a re-derivation must not un-learn that.
+    const catalog = new WorkBuddyCatalog('cn')
+    catalog.set(MODELS)
+    catalog.set(MODELS, 'derived')
+    expect(catalog.hasLiveRoster()).toBe(true)
+  })
+})
+
 describe('fallbackModelsFor', () => {
   it('keeps each region on its own roster — the CN fallback never leaks into global', () => {
     // The CN catalog is the one that must never seed a global account: it has

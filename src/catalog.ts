@@ -184,6 +184,14 @@ export class WorkBuddyCatalog {
   private models: readonly WorkBuddyModelInfo[]
 
   /**
+   * Whether {@link models} came from the upstream at least once.
+   *
+   * Starts `false`: the constructor seeds the static fallback, and that list
+   * must never be mistaken for a live answer (see {@link hasLiveRoster}).
+   */
+  private live = false
+
+  /**
    * Whether this region has any local sign-in. Defaults to `true` — the
    * permissive direction — so a scan that has not run yet (or failed) keeps
    * serving the fallback rather than blanking a region that may be fine.
@@ -225,6 +233,29 @@ export class WorkBuddyCatalog {
    */
   current(): readonly WorkBuddyModelInfo[] {
     return this.usable && this.enabled ? this.models : []
+  }
+
+  /**
+   * Whether {@link current} is an UPSTREAM answer rather than the built-in
+   * fallback it was constructed with.
+   *
+   * This distinction is what keeps issue #32 fixed. `applySelection` passes
+   * `current()` into `configuredModels` as the live roster to fall back to, so
+   * a partial saved slot demotes to the live directory instead of the static
+   * list. But before the first refresh lands, `current()` IS the static list
+   * (the constructor seeds it), and `resolveRoster` cannot tell the two apart
+   * because it only sees a non-empty array. The result was the exact bug #32
+   * describes, reached from the other direction: a settings write arriving
+   * before the first catalog refresh let the STATIC roster masquerade as live,
+   * and `set()` then committed it — so a model that only exists upstream
+   * (`space-bunny`) vanished from the picker while the runtime still served it.
+   *
+   * Callers that use `current()` as a *live* answer must check this first. A
+   * caller that only wants "what would we advertise right now" does not need
+   * to: the fallback is the honest answer to that question.
+   */
+  hasLiveRoster(): boolean {
+    return this.live
   }
 
   /** Whether this region currently advertises any model. */
@@ -269,9 +300,21 @@ export class WorkBuddyCatalog {
     return true
   }
 
-  /** Replace the list; callers invalidate their adapter snapshot after this. */
-  set(models: readonly WorkBuddyModelInfo[]): void {
+  /**
+   * Replace the list; callers invalidate their adapter snapshot after this.
+   *
+   * `origin` says where the list came from, and it is not cosmetic: only an
+   * `upstream` answer may mark the catalog live. `applySelection` also calls
+   * this on every settings write — including before the first refresh has
+   * landed — and the list it passes then is the static fallback. Letting that
+   * count as live is what re-opened issue #32 (see {@link hasLiveRoster}).
+   *
+   * The default is `'upstream'` so every pre-existing call site keeps meaning
+   * what it meant; only the re-derivation path opts into `'derived'`.
+   */
+  set(models: readonly WorkBuddyModelInfo[], origin: 'upstream' | 'derived' = 'upstream'): void {
     if (models.length === 0) throw new Error('workbuddy model catalog cannot be empty')
+    if (origin === 'upstream') this.live = true
     this.models = models.map(model => ({ ...model }))
   }
 }

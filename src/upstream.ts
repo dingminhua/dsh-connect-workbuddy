@@ -566,8 +566,15 @@ const IMAGE_TIMEOUT_MS = 180_000
 const VIDEO_TIMEOUT_MS = 600_000
 /** 轮询之间的间隔（官方 CLI pollTask 用 5s）。 */
 const VIDEO_POLL_INTERVAL_MS = 5_000
-/** 单个轮询轮次的上限（与 VIDEO_TIMEOUT_MS 对应，防死循环）。 */
-const VIDEO_POLL_TIMEOUT_MS = 600_000
+/**
+ * 轮询循环自身上限（防死循环）。
+ *
+ * 比 {@link VIDEO_TIMEOUT_MS} 短 60s：工具层给的是一个更短的 signal
+ * （`VIDEO_TOOL_TIMEOUT_MS`），两者叠在一起时**这个检查要先生效**，才能带着
+ * task id 抛出 `POLL_TIMEOUT`。曾经的 600s 与宿主工具上限相等，先在宿主那边
+ * 掐断，于是用户只看到 `tool call timed out after 600000ms`（issue #187）。
+ */
+const VIDEO_POLL_TIMEOUT_MS = 540_000
 /** 单条视频下载超时（官方 CLI 用 120s）。 */
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 120_000
 
@@ -4695,8 +4702,14 @@ export class WorkBuddyUpstreamClient {
         }
       }
       if (result.status === 'failed') {
+        // `detail` 是上游在 `data` 里那些我们还没认识的原因字段（issue #187 的
+        // 第一种现象：只能看到 failed，看不到为什么）。带上它，而不是替用户
+        // 猜"可能是提示词"——前者下次能变成证据，后者永远只是猜测。
         throw new WorkBuddyVideoError(
-          `workbuddy video: 生视频任务失败（task ${taskId}）。`,
+          `workbuddy video: 生视频任务失败（task ${taskId}）。`
+          + (result.detail === undefined
+            ? '上游没有给出任何原因字段。'
+            : ` 上游返回的额外字段：${result.detail}`),
           'TASK_FAILED',
         )
       }

@@ -185,19 +185,38 @@ describe('defaultDesktopAuthDirs', () => {
     ])
   })
 
-  it('uses XDG_CONFIG_HOME on Linux when set', () => {
-    const dirs = defaultDesktopAuthDirs('linux', '/home/test', { XDG_CONFIG_HOME: '/cfg' })
-    expect(dirs).toEqual([join('/cfg', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+  /**
+   * Linux 候选是**两套** XDG 目录（issue #190 的附带发现）。
+   *
+   * 这组断言钉的是"旧的在前、新的是**追加**"——不是"两个都在"。顺序是契约：
+   * 它决定没设 `WORKBUDDY_AUTH_FILE` 时用哪一个，而 `~/.config` 是上线以来
+   * 的行为。把 `~/.local/share` 提到前面会改变老用户的解析结果，而 Linux 路径
+   * 从未经真机验证（README §平台支持），换来的收益没有证据。
+   */
+  it('uses XDG_CONFIG_HOME first on Linux, with the data dir appended', () => {
+    const dirs = defaultDesktopAuthDirs('linux', '/home/test', { XDG_CONFIG_HOME: '/cfg', XDG_DATA_HOME: '/data' })
+    expect(dirs).toEqual([
+      join('/cfg', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join('/data', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ])
   })
 
-  it('falls back to ~/.config on Linux when XDG_CONFIG_HOME is unset', () => {
+  it('falls back to ~/.config then ~/.local/share on Linux when the XDG vars are unset', () => {
     const dirs = defaultDesktopAuthDirs('linux', '/home/test', {})
-    expect(dirs).toEqual([join('/home/test', '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+    expect(dirs).toEqual([
+      join('/home/test', '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join('/home/test', '.local', 'share', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ])
   })
 
-  it('falls back to ~/.config on Linux when XDG_CONFIG_HOME is blank whitespace', () => {
-    const dirs = defaultDesktopAuthDirs('linux', '/home/test', { XDG_CONFIG_HOME: ' \t ' })
-    expect(dirs).toEqual([join('/home/test', '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
+  it('falls back to ~/.config then ~/.local/share on Linux when the XDG vars are blank', () => {
+    // 空白串与"未设置"必须同义：否则一个 `XDG_DATA_HOME= ` 会让候选变成
+    // 相对路径 `CodeBuddyExtension/...`，扫的是进程 cwd。
+    const dirs = defaultDesktopAuthDirs('linux', '/home/test', { XDG_CONFIG_HOME: ' ', XDG_DATA_HOME: '  ' })
+    expect(dirs).toEqual([
+      join('/home/test', '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+      join('/home/test', '.local', 'share', 'CodeBuddyExtension', 'Data', 'Public', 'auth'),
+    ])
   })
 
   it('uses the single Application Support path on macOS', () => {
@@ -205,6 +224,46 @@ describe('defaultDesktopAuthDirs', () => {
     expect(dirs).toEqual([join('/Users/test', 'Library', 'Application Support', 'CodeBuddyExtension', 'Data', 'Public', 'auth')])
   })
 
+  /**
+   * 鸿蒙（issue #190）。
+   *
+   * 这台机器上没有 `homedir()` 可用：DSHM 内嵌的 Node 把 `os.homedir()` 报成
+   * 应用沙箱 `/data/storage/el2/base/haps/entry/files`，而用户的真实凭据在
+   * `/storage/Users/currentUser/.local/share/...`。没有这条分支时函数落到
+   * `return []`，卡片连一个候选都扫不到，账号池恒为 0。
+   */
+  describe('HarmonyOS (issue #190)', () => {
+    it('probes the fixed user mount point, ignoring the sandboxed home', () => {
+      // 传一个"沙箱"式的 home，断言它**没有**被用进结果——这正是该平台的要害。
+      const dirs = defaultDesktopAuthDirs('openharmony', '/data/storage/el2/base/haps/entry/files', {})
+      expect(dirs).toEqual([
+        '/storage/Users/currentUser/.local/share/CodeBuddyExtension/Data/Public/auth',
+      ])
+    })
+
+    it('lets WORKBUDDY_USER_HOME override the mount point', () => {
+      // 多用户系统或发行版换了挂法时，用户不必改代码。
+      const dirs = defaultDesktopAuthDirs('openharmony', '/sandbox', { WORKBUDDY_USER_HOME: '/custom' })
+      expect(dirs).toEqual([
+        '/custom/.local/share/CodeBuddyExtension/Data/Public/auth',
+      ])
+    })
+
+    it('treats a blank WORKBUDDY_USER_HOME as unset', () => {
+      // 空白串若被当成有效值，候选会变成相对路径 `.local/share/...`，
+      // 那扫的是进程 cwd——比扫不到更难排查。
+      const dirs = defaultDesktopAuthDirs('openharmony', '/sandbox', { WORKBUDDY_USER_HOME: '  ' })
+      expect(dirs).toEqual([
+        '/storage/Users/currentUser/.local/share/CodeBuddyExtension/Data/Public/auth',
+      ])
+    })
+
+    it('does not claim to support platforms it has no evidence for', () => {
+      // 这条与上面三条是同一个规则的两面：只加有证据的分支。鸿蒙的证据来自
+      // issue #190 的真机回报；`freebsd` 之类没有，就仍然返回空。
+      expect(defaultDesktopAuthDirs('freebsd', '/home/test', {})).toEqual([])
+    })
+  })
   it('returns no candidates on unknown platforms', () => {
     expect(defaultDesktopAuthDirs('freebsd', '/home/test', {})).toEqual([])
   })

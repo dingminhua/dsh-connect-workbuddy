@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import { fetchDeviceSdk, refreshDeviceSdk, revealDeviceSdk } from './device-sdk.ts'
+import { fetchDeviceSdk, refreshDeviceSdk, revealDeviceSdk, setDeviceSdkEnabled } from './device-sdk.ts'
 import type { DeviceSdkReport } from './device-sdk.ts'
 import { fetchDeviceSettings, putDeviceSdk } from './device-profile.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -82,6 +82,16 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
   const [savingDir, setSavingDir] = useState(false)
   const [savingFallback, setSavingFallback] = useState(false)
   const [savedNote, setSavedNote] = useState(false)
+  /**
+   * SDK 总开关（`Config.deviceSdkEnabled`）。
+   *
+   * 与上面那几项**不是同一份文档**：这个落在插件配置（`cordis.patch.yml`），
+   * 而目录/回退落在设备设置文件。分两次读的理由与 `settingsPath` 分开一样——
+   * 两者可以各自缺席。`undefined` = 这个 Host 还不认识这一项（或没有 settings
+   * 服务），此时开关置灰并显示「不可用」，而不是假装它是关的。
+   */
+  const [sdkMasterEnabled, setSdkMasterEnabled] = useState<boolean | undefined>(undefined)
+  const [savingMaster, setSavingMaster] = useState(false)
 
   const load = useCallback(async (refresh: boolean) => {
     if (path === '') return
@@ -90,6 +100,8 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     try {
       const next = refresh ? await refreshDeviceSdk(path) : await fetchDeviceSdk(path)
       setReport(next)
+      // 总开关随快照一起回来，读到就同步；读不到（老宿主）保持 `undefined` = 不可用。
+      if (next?.sdkEnabled !== undefined) setSdkMasterEnabled(next.sdkEnabled)
       // 重取会换一枚 token，之前显示的那份已经不是它了。
       if (refresh) { setValue(undefined); setCopied(false) }
     } catch (cause: unknown) {
@@ -217,15 +229,59 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
     }
   }
 
+  /**
+   * 切换 SDK 总开关。
+   *
+   * 写完之后**重读一次快照**：关掉之后状态行必须立刻变成 `disabled`，而那一条是
+   * 从 `GET /device-sdk` 算出来的——只改本地 state 会让"已关"与下面那行"正常"
+   * 并存，正是这一页最不该出现的自相矛盾。
+   */
+  const saveMaster = async (value: boolean): Promise<void> => {
+    if (path === '') return
+    setSavingMaster(true)
+    setError(undefined)
+    try {
+      await setDeviceSdkEnabled(path, value)
+      setSdkMasterEnabled(value)
+      await load(false)
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSavingMaster(false)
+    }
+  }
+
   const sdk = report?.sdk
   const token = report?.token
-  const stateKey: WorkBuddySettingsKey = sdk?.state === 'ready'
-    ? (token?.state === 'ok' ? 'sdk.statusReady' : token?.state === 'stale' ? 'sdk.statusStale' : 'sdk.statusNoToken')
-    : sdk?.state === 'missing' ? 'sdk.statusMissing' : sdk?.state === 'unsupported' ? 'sdk.statusUnsupported' : 'sdk.statusError'
+  /**
+   * `disabled` 必须排在最前面，且**不**落进 `sdk.statusError`：关掉开关的人不是
+   * 遇到了故障，给他一条红色错误会让他以为要去修什么。
+   */
+  const disabled = sdk?.state === 'disabled'
+  const stateKey: WorkBuddySettingsKey = disabled
+    ? 'sdk.statusDisabled'
+    : sdk?.state === 'ready'
+      ? (token?.state === 'ok' ? 'sdk.statusReady' : token?.state === 'stale' ? 'sdk.statusStale' : 'sdk.statusNoToken')
+      : sdk?.state === 'missing' ? 'sdk.statusMissing' : sdk?.state === 'unsupported' ? 'sdk.statusUnsupported' : 'sdk.statusError'
   const stateOk = sdk?.state === 'ready' && token?.state === 'ok'
 
   return (
     <>
+      {/* 总开关放在最上面，在"这一段在讲什么"之前：它决定这一页剩下的每一行有没有
+          意义。关掉时下面的诊断块仍然渲染（它要如实回答 disabled），但拿值/复制/重取
+          那几个动作会自然失效（没有 token）。 */}
+      <div className="dsm-workbuddy-sdk-master">
+        <label className="dsm-workbuddy-sdk-switch">
+          <input
+            type="checkbox"
+            checked={sdkMasterEnabled ?? true}
+            disabled={savingMaster || sdkMasterEnabled === undefined}
+            onChange={event => { void saveMaster(event.target.checked) }}
+          />
+          <span>{t('sdk.masterLabel')}</span>
+        </label>
+        <p className="dsm-workbuddy-hint">{t('sdk.masterHint')}</p>
+      </div>
       <p className="dsm-workbuddy-panel-note">{t('sdk.hint')}</p>
       <div className="dsm-workbuddy-diag">
         <Row label={t('sdk.state')}>

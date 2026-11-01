@@ -477,6 +477,25 @@ export function parseVideoTask(payload: unknown): {
   status: string
   videos: readonly string[]
   credit?: number | undefined
+  /**
+   * 失败（或任何非完成态）时，`data` 里那些**我们认不出、但上游确实发了**的字段。
+   *
+   * ## 为什么是"原样带出来"而不是解析某个名字
+   *
+   * issue #187 的文生视频现象是：task 建成功、扣了积分、轮询返回 `status: "failed"`，
+   * 而插件只报「生视频任务失败（task …）」——没有任何原因。用户因此无法判断是
+   * 提示词、模型不支持、还是上游自己的问题。
+   *
+   * 但当前**没有任何一份上游响应样例**能证明那个原因字段叫什么
+   * （`docs/VIDEO_GEN.md` 只记了 `status` / `data[]` / `credit`）。猜一个
+   * `fail_reason` 去读，猜错就是永久静默；而人工写死一份"猜测清单"下次上游换个
+   * 名字又失配。
+   *
+   * 所以这里把 `data` 中除已知键以外的内容**原样**附上（深层对象做 JSON 截断）。
+   * 代价是报错文案多几十个字符；收益是下一次报错时，issue 里能直接看到上游到底
+   * 发了什么，从而一次取证就把字段名钉死——那时再把它提成结构化字段才是有依据的。
+   */
+  detail?: string | undefined
 } {
   if (typeof payload !== 'object' || payload === null) {
     throw new WorkBuddyVideoError('workbuddy video: 轮询响应不是 JSON 对象', 'UPSTREAM')
@@ -512,7 +531,35 @@ export function parseVideoTask(payload: unknown): {
       : undefined
     return { status, videos, credit }
   }
-  return { status, videos: [] }
+  return { status, videos: [], detail: describeUnknownTaskFields(data) }
+}
+
+/**
+ * `data` 里除已知键以外的内容，序列化成一行短文本。
+ *
+ * 已知键：`status`（状态机自己用）、`data`（成品 URL 列表）、`usage`（扣费）。
+ * 其余全部带上——那正是"上游说了原因但我们没读"的地方（issue #187）。
+ *
+ * 深层结构做 JSON 序列化并截断到 400 字符：一轮报错不该因为上游回了一棵大树而
+ * 变成几 KB。空对象返回 `undefined`，好让调用方不拼一个空的「（上游未给出原因）」。
+ */
+function describeUnknownTaskFields(data: Record<string, unknown>): string | undefined {
+  const known = new Set(['status', 'data', 'usage'])
+  const extra: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(data)) {
+    if (known.has(key)) continue
+    if (value === undefined || value === null || value === '') continue
+    extra[key] = value
+  }
+  if (Object.keys(extra).length === 0) return undefined
+  let text: string
+  try {
+    text = JSON.stringify(extra)
+  } catch {
+    // 循环引用之类：退回一句"有额外字段"，至少不让诊断本身变成新的故障。
+    return '（上游返回了无法序列化的额外字段）'
+  }
+  return text.length > 400 ? `${text.slice(0, 400)}…` : text
 }
 
 /** 把一次非 2xx 的提交/轮询响应翻成带 `code` 的错误，好让上层决定怎么提示。 */

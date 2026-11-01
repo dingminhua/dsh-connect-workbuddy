@@ -1,5 +1,216 @@
 # Changelog
 
+## 未发布
+
+### 修复（issue #190：HarmonyOS 上完全检测不到桌面账号）
+
+`defaultDesktopAuthDirs()` 只有 darwin / win32 / linux 三个分支，其余平台落到
+`return []`。DSHM（端侧形态）内嵌的 Node 在鸿蒙上把 `process.platform` 报成
+`"openharmony"`，于是候选列表为空 → 卡片一个路径都扫不到 → 账号池恒为 0、模型
+不出现；`doctor` 只会说 `no platform default; set WORKBUDDY_AUTH_FILE`，把一个
+本该自动完成的事推给用户。而该平台是 DSHM 的主平台，这不是"支持不善"，是核心
+功能完全不可用。
+
+- **新增 `openharmony` 分支**：`/storage/Users/currentUser/.local/share/CodeBuddyExtension/Data/Public/auth`。
+  - 不能用 `os.homedir()`：鸿蒙上它返回**应用沙箱**
+    （`/data/storage/el2/base/haps/entry/files`），不是用户目录。所以用系统固定
+    挂载点，并允许 `WORKBUDDY_USER_HOME` 覆盖。
+  - 用 `posix.join` 而不是宿主的 `join`：这些是**数据**规定的分隔符。用宿主 join
+    会在 Windows 上产出 `/storage/Users/currentUser\\.local\\share\\...` 这种永不
+    存在的混分隔符，而单元测试也会退化成"只在 POSIX 上绿"。这个坑 `turing-sdk.ts`
+    与 `at-rest.ts` 都踩过（docs/WINDOWS.md 的铁律）。
+  - `NodeJS.Platform` 里没有 `'openharmony'` 这个字面量，所以参数类型放宽成
+    `NodeJS.Platform | (string & {})`——保留联合类型的补全，同时允许运行时才出现的值。
+- **Linux 追加 `$XDG_DATA_HOME` 候选**（issue #190 的附带发现）：
+  `Data/Public/auth` 是**数据**，按 XDG 惯例本就在 `$XDG_DATA_HOME`（缺省
+  `~/.local/share`）下，而原先只读 `$XDG_CONFIG_HOME`（缺省 `~/.config`）。
+  - ⚠️ **只做加法：`~/.config` 仍排在前面。** 顺序决定"不设 `WORKBUDDY_AUTH_FILE`
+    时用哪一个"，而 `~/.config` 是上线以来的行为；README §平台支持明确写着 Linux
+    候选**从未经真机逐项验证**，把新目录提到前面会改变老用户的解析结果而没有证据
+    支撑。
+- **README 那段话是错的，一并改正**：原文写着"Linux 上没有 `~/.local/share` 这条路"——
+  那是**当时的实现**，不是平台事实。现在表格按探测顺序列出两套目录，并补上
+  HarmonyOS 一行与 `WORKBUDDY_USER_HOME` 的说明。
+
+### 说明（issue #189：子智能体请求被 11128 拦截）
+
+**不需要改代码**，报告者用的是 5.12.1。
+
+- 该现象的两条救援阶梯（前缀中性头 `forceNeutralHead`、按句改词
+  `rewriteChannelFingerprintPhrases`）在当前版本都覆盖 `assistant` 角色
+  （`scansOpening` 返回 `system || assistant`），子智能体的套话属于被扫描范围。
+- 按句改词是 **5.13.1 引入、5.14.0 补全**的；README §平台支持已经写明
+  「国内区的渠道校验 400 请确保插件 ≥ 5.14.0」，并记录了 5.12.x 只有「中性头 +
+  零宽扰动」三级救援、在同一份 body 上实测**全部 400**。
+- 所以这一条的正确处理是**升级**，不是改代码。但"我读代码觉得没问题"不算证据，
+  所以新增 `tests/issue189-subagent-channel-gate.spec.ts`（7 例）把它变成可执行的
+  断言：子智能体套话会被中性头挪开、会被按句改词改写、`user` 消息不被碰、
+  改词幂等、以及**最后一次救援会给无指纹消息也加中性头**（那是它"不认识指纹"
+  的代价，也是它能覆盖未知条目的原因）。
+
+### 测试（两条 issue 的回归）
+
+- issue #190：新增 7 例（鸿蒙固定路径、`WORKBUDDY_USER_HOME` 覆盖、空白串当未设置、
+  未知平台仍返回空；Linux 两套 XDG 目录的顺序与回落）。改写了 3 条既有的 Linux
+  断言——它们断言的是"只有一个候选"，而契约现在是"旧的在前、新的是追加"。
+- issue #189：新增 7 例，见上。**变异验证两次**：把 `scansOpening` 里的 `assistant`
+  去掉 → 打红 3 例；让 `rewriteChannelFingerprintPhrases` 失效 → 打红 1 例。
+  其中一条断言我改了三轮才对：先按"零宽打断"写（那套机制 2026-10-29 已被网关堵死，
+  现在是按句改词），又拿整个 body 做全等比较（`prepareChatBody` 还会补 `stream: true`，
+  与指纹无关）。两次失败都是**测试写错了对象**，不是实现有问题，过程记在这里免得
+  下次重犯。
+
+
+### 修复（issue #187：生视频三个各自独立的失败）
+
+issue 报了三种互不相干的现象。前两个是**真 bugs**，第三个是**超时值撞车**；报告里
+第 1 条（上游 `failed` 无 reason）没有可依据的上游样例，只加了取证诊断，不猜字段名。
+
+- **图生视频传 http(s) URL 必然 403。** 旧实现只对该 URL 发一个 `HEAD` 做可达性
+  校验，然后把 URL **原样**交给上游。两个问题叠在一起：
+  - COS 签名只覆盖 `GET`，对被签名的 URL 发 `HEAD` 拿到 **403**。而"用上一张
+    成功的图做首帧"是最自然的路径，于是用户在最不该卡的地方卡死，报错还说的是
+    「输入图 URL 不可达」——那个 URL 用 `curl` 明明取得到。
+  - 即使 HEAD 通过，上游也不吃外链：图生视频与图生图是同一条规则（PR #145 记过
+    "image 必须是 data URI，传 COS 原始 URL → invoke model error"）。原样传 URL
+    只是把失败推迟到创建任务之后，那时积分已经扣了。
+  - 现在与 `image-tool.ts` 的 `resolveImageInput` 严格对齐：**`GET` 下载并编码成
+    data URL**。五种输入形态（路径 / `file://` / `http(s)` / data URL / 裸 base64）
+    全部归一成 data URL。`docs/VIDEO_GEN.md` 里那段写反的描述一并改正。
+- **600 秒上限与宿主撞车，超时后没有任何结构化错误。** 三个 deadline 曾经都写作
+  600 000：宿主工具调用上限、`VIDEO_TOOL_TIMEOUT_MS`、`VIDEO_POLL_TIMEOUT_MS`。
+  同时到期时宿主的计时器先落地，插件内部的 `POLL_TIMEOUT` 分支**永远没有机会执行**，
+  用户拿到裸的 `tool call timed out after 600000ms`——没有 task id、日志里也分不出
+  是提交卡住还是轮询卡住。而 task id 是这个故障里唯一能拿去问上游的东西。
+  - 现在 570 000 / 540 000，内部两层严格更早，留 30s 给「抛错 + 下载」。
+  - 测试钉的是**顺序**（`video tool timeout ordering`），不是具体数字：数值以后
+    可以调，顺序不能反。
+- **上游 `failed` 时把它的原始字段带出来。** 旧实现只报「生视频任务失败（task …）」，
+  一个字的原因都没有。目前**没有任何上游响应样例**能证明那个原因字段叫什么
+  （`docs/VIDEO_GEN.md` 只记了 `status` / `data[]` / `credit`），所以**不去猜**
+  `fail_reason` 之类的名字——猜错就是永久静默。
+  - 改为把 `data` 里除已知键以外的内容**原样**附在报错后面（深层结构 JSON 截断到
+    400 字符）。代价是文案多几十个字符，收益是下一次报错就是一次取证，那时再把
+    字段名提成结构化的才是有依据的。
+
+
+### 变更
+
+- **SDK 功能有了总开关**（`deviceSdkEnabled`，**默认关**）。在此之前这项能力是
+  **无条件启动**的：插件挂载就建一条预热链，每 10 分钟起一次子进程、向风控服务取
+  一次设备 token——哪怕用户只用「虚拟值」档、根本不需要它。
+  - **默认关是因为它默认没用**：档位默认「虚拟值」，本来就不发这个 token，那么
+    默认去发现 SDK、起子进程、每 10 分钟取一次，取到的东西一次也用不上。更一般地
+    说，一个会碰用户机器上第三方原生模块的能力，默认该由用户主动打开。
+  - 关掉之后：不发现 SDK 目录、不起子进程、不预热，`probe` 直接答 `disabled`。
+    真实值档因此没有 token 可发；「虚拟值」档不受影响（它的 id 由本机盐派生）。
+  - **`disabled` 与 `missing` 是两个状态，不能合并**：前者是"我不要"，后者是
+    "这台机器上没有"。合并会让关掉开关的人每次打开面板都看到一条"装个桌面端就好"
+    的建议，而那正是他明确拒绝去做的事。
+  - **关闭后连缓存里的旧 token 也不再发**：用户关开关的意思是"别再冒充真实设备"，
+    不是"别再取新的、旧的可以继续用"。这条比省一次子进程重要。
+  - 开关**每次现读**，不在构造时求值一次：它是 `asVolatile` 配置项，热更新后会变，
+    而 SDK 句柄活到插件卸载。钉死一次会让"关掉"必须重启宿主才生效。
+  - 卡片在「SDK」分区最上面渲染它，与下面那组诊断用一条边框分开——否则"关掉它"和
+    "看它现在的状态"会被读成同一件事。
+  - `doctor` 走环境变量旁路 `WORKBUDDY_DEVICE_SDK_ENABLED`（同样**默认关**，与
+    插件的 `default(false)` 一致）：它是独立 CLI，读不到插件配置。没有这条旁路会出现
+    "卡片说关了、doctor 却报 ready"，而 `doctor` 的全部价值就是如实回答"现在到底
+    怎样"。代价是开启之前 `doctor` 只答 `disabled`——但那正是现状。想看 SDK 到底能
+    不能用，用 `WORKBUDDY_DEVICE_SDK_ENABLED=1 node lib/bin.js doctor` 临时打开。
+  - 未设置这个字段（老配置文件）落到**关**：`=== true` 而不是 `!== false`。后者会让
+    "未设置"与"显式开启"分叉，升级后老用户静默拿到与 schema 默认相反的行为。
+
+### 修复
+
+- **macOS 上「真实值」档现在被禁用**，并说明原因。此前它是一个**能点、点了没用、
+  只能靠降级兜底**的选项：SDK 能被发现、`probe` 也答 `ready`，但取 token 那一环会
+  `dispatch_sync` 到 dispatch 主队列，而纯 libuv 子进程永不排空它（`sample` 栈实测）。
+  用户切过去看到的是"加载成功"，token 却一直是空的。
+  - 判定由 Host 给（设备设置响应里新增 `realTier: { state, platform }`），**界面不猜
+    平台**。客户端虽然拿得到 `sdk.platform`，但那不是判据：一台没装桌面端的 mac 和
+    一台装了的 mac 在"真实值能不能用"上是两回事，光看平台名分不出来。
+  - **缺席 ≠ 禁用**：老 Host 没有这一项时界面不禁用任何东西。读不到就替用户取消一个
+    可能可用的功能，比不提示更糟。
+  - 判定抽成纯函数 `realTierAvailabilityFor(platform)`，所以它可被测试——写死成模块级
+    常量的话，唯一的验证方式是拿一台 mac 跑整个插件。
+  - ⚠️ 修好 `dispatch_sync` 那条路之后**这里必须跟着改**，否则界面会继续劝退一个已经
+    能用的功能。修法不在本次范围（需要一个排空主队列的伴生原生模块）。
+
+- **「SDK」分区两段说明文字的样式**：`.dsm-workbuddy-hint` 是全仓唯一只声明颜色、
+  没声明字号行高的辅助文字类。它同时被用在 `<p>` 与 `<span>` 上，而 `<p>` 带宿主
+  的默认段落样式，于是同一句说明在两处显示成两种大小（截图里 SDK 那两段比周围
+  12px 的辅助文字大了一圈）。补齐 `font-size:12px;line-height:18px`，与全仓其它
+  hint 类一致；`<p>` 的默认 margin 随之收紧，顺带修好了那两段与勾选框的间距。
+
+### 修复（目录竞态与测试）
+
+- **`issue12-region-hiding.spec.ts` 的那条间歇性失败查清了，不是产品 bug，是测试在
+  测错的东西。** 它报的是 `expected [...11 ids] to deeply equal ['glm-5.3','space-bunny']`，
+  而失败位置是 **`mountWorkBuddy` 之后第一个 `expect.poll`**（不是保存之后那条断言）——
+  我一开始按"保存竞态"去修，修错了两轮才发现。
+  - **根因一：等错了信号。** 另一个同类用例用 `poll(...).length > 0` 判断"启动完成"，
+    可 `WorkBuddyCatalog` 的构造函数就把**静态兜底表**设为 `models`，所以 `current()`
+    从第一个 tick 起就非空。那条 `poll` 立刻返回，`before` 拿到的是静态 id，于是
+    "部分保存不能覆盖 live 目录"这条断言拿着静态目录在自证——**通过得毫无意义**。
+  - **根因二：超时太短。** 启动刷新是 `void (async () => …)()` 的 fire-and-forget，
+    `expect.poll` 默认 1s。全量并行时 worker 要和另外 ~170 个文件抢 CPU，1s 不够，
+    于是"有时绿有时红"。单独跑该文件永远绿，所以长期被当成 flake。
+  - **修法**：新增 `waitForLiveRoster(ctx)`，等的是**只有上游才有**的 `space-bunny`
+    出现（15s 上限、25ms 间隔），而不是"有模型"这个假信号。第一个用例同时补上了它
+    一直缺失的 fetch 桩——没有桩，`space-bunny` 永远不可能出现，这正是它当初只能靠
+    静态目录蒙混过关的原因。
+  - **验证**：全量并行连跑 **16 轮**、2900 例全绿；改动前平均每 2–3 轮必红一次。
+
+- **`applySelection` 不再让静态兜底表冒充 live 目录。** 它把 `catalog.current()` 当作
+  "live 目录"传给 `configuredModels`，用于让部分保存降级到 live 而不是静态表——但
+  在首次刷新落地之前，`current()` **就是**静态表，而 `resolveRoster` 只看"非空"分不
+  出两者。于是一次早于首次刷新的设置写入，会把静态表当上游答案写进 catalog，从**另
+  一个方向**重新打开 #32。新增 `WorkBuddyCatalog.hasLiveRoster()` 作为判别器，并给
+  `set()` 加了 `origin` 参数（只有 `'upstream'` 才算 live）。
+  - 这条改动**最初没被测试覆盖**：把 `hasLiveRoster()` 改成恒真，整套测试仍然全绿。
+    因为 startup 刷新随后会把 live 写回来，而新的等待足够长，看不到中间态。补了 4 例
+    针对 `hasLiveRoster` 的直接单元测试后，该变异体被打红 2 例。
+
+
+- 新增 **25** 例（2909 总例），其中 issue #187 的 9 例：
+  - 图生视频 URL 必须下载成 data URL、且只发 `GET`（变异：退回 HEAD + 原样传 URL → 打红）；
+  - 下载失败报 `INVALID_ARGS` 并说"下载输入图失败"，而不是伪装成"URL 不可达"；
+  - 超时的层级关系：工具上限严格小于宿主 600s、轮询预算严格小于工具上限且留够
+    10s 余量（变异：工具超时退回 600s → 打红）；
+  - `parseVideoTask` 的失败诊断 5 例：带出未知字段、不重复已知键、无额外字段时为
+    `undefined`、空值不算原因、超长截断到 400 字符。
+- 其余 16 例：
+  - **「真实值」可用性判定 4 例**：mac 判 broken、Windows 判 available、未知平台
+    **不**判 broken（判据只有"已知坏掉的 darwin"，无端禁掉一个未被验证过的平台比让
+    用户自己发现取不到更糟）、平台名透传（说明里要能指名道姓）。
+- 客户端归一化 4 例：透传 Host 判定、**缺席保持缺席**（老 Host 不因此禁用任何东西）、
+  未知 state 不猜（猜成 available 会让真坏的平台看起来能用，猜成 broken 又会凭空
+  禁掉能用的）、Windows 上的 available。
+- 总开关 6 例：
+  - **默认关**（未设置这个字段时落到 `disabled`，否则升级后所有人凭空多出一条每
+    10 分钟的子进程）；
+  - `disabled` 且零子进程（也不伪装成 `missing`，那是"装一个桌面端就好"的建议）；
+  - 取 token 也不起进程；
+  - **关掉后不再发关之前取到的 token**；
+  - 预热在关闭状态下不起进程；
+  - 环境变量旁路，且显式 `enabled` 压过环境变量（插件永远显式传，两边不该打架）。
+- **变异验证**：把"未传 enabled 时的回落"改成恒真 → 打红 2 例（默认关 + 环境变量
+  旁路）；去掉 `current()` 里的开关检查 → 打红 1 例；`realTierAvailabilityFor` 把
+  darwin 也判 available → 打红 1 例；客户端把未知 state 猜成 available → 打红 1 例；
+  `hasLiveRoster()` 恒真 → 打红 2 例（加了单元测试之后；之前存活）。
+  - 其中最后一条**首轮存活**：最初的用例新建了一个 `enabled: false` 的实例去断言它
+    没有 token，而那个实例的缓存本来就是空的，连"忘了检查开关"都测不出来。已改成在
+    **同一个句柄**上切开关，并把这教训留在注释里。
+- 顺带修掉一条**自欺的断言**：预热用例原本叫 "never starts a prewarm chain while
+  off"，但它实际验证的是"不起子进程"——`warm()` 里还有一道开关检查会拦住，所以
+  定时器建了也看不出来。已改名为 `spawns nothing even after a prewarm is started
+  while off`，并在注释里写明这是纵深防御、三道检查里任意一道都够。
+- **测试注意**：`tests/turing-sdk.spec.ts` 的 `make()` helper 现在显式传
+  `enabled: true`。那个文件测的是 SDK 本身的行为（发现、缓存、TTL、退避、预热），
+  不是开关语义；不显式打开的话，每次 `make()` 都会落到 `disabled`，几十条与该开关
+  无关的用例会一起红。开关自己的用例直接调用 `createTuringSdk`。
+
 ## 5.17.0 (2026-11-01)
 
 ### 修复

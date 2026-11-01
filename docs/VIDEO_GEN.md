@@ -45,7 +45,7 @@
 | 名称 | `workbuddy_draw_video` |
 | 参数 | `prompt`（必填，非空字符串、≤2500 字）、`image`（可选，见「图生视频」）、`model`（可选）、`seconds`（可选，默认 5、须在模型 `[min,max]` 内）、`resolution`（可选，须在模型 `resolutions` 内）、`aspect_ratio`（可选，仅文生视频，`16:9`/`9:16`/`1:1`）、`negative_prompt`（可选，≤2500 字）、`enable_audio`（可选，默认 true） |
 | 输出 | `videos`（本地 `file://` 路径数组）、`mode`、`model`、`prompt`、`seconds`、`resolution`、`hint` 必填；`credit` 可选 |
-| 超时 | 600 000 ms（`VIDEO_TOOL_TIMEOUT_MS`；实测单条视频从提交到下载可能要几十秒到几分钟，留足余量） |
+| 超时 | 570 000 ms（`VIDEO_TOOL_TIMEOUT_MS`）。**必须小于宿主的 600 000 ms 工具上限**，见下面「超时的层级」 |
 | 执行模式 | 独占（不声明 `isConcurrencySafe`） |
 | 注册条件 | 宿主有 `tools` 服务，且**至少一个区**既启用了供应商（`regionEnabled`）又打开了该区的「允许模型自主生视频」；两区都符合时取国内区 |
 
@@ -82,10 +82,28 @@
 
 ### `image` 收哪几种形态
 
-与生图输入图一致：本地绝对路径 / `file://` URL / `http(s)` URL（宿主侧下载，
-`VIDEO_INPUT_TIMEOUT_MS = 30_000`）/ data URL / 裸 base64。一律先归一成可访问的
-URL 或本地路径（**不读成 base64**——视频上游接受的是 `image_url`，不是 base64），
-做 HEAD 校验或本地可读校验，**不做缩放、裁剪、格式转换**：用户给什么就用什么。
+与生图输入图**完全一致**：本地绝对路径 / `file://` URL / `http(s)` URL
+（宿主侧下载，`VIDEO_INPUT_TIMEOUT_MS = 30_000`）/ data URL / 裸 base64。
+
+**五种形态全部归一成 data URL**，然后放进 `image_url`。不做缩放、裁剪、格式转换：
+用户给什么就用什么，只改承载形式。
+
+> ### 这一段曾经写反了（issue #187）
+>
+> 旧文档（和旧实现）说「**不读成 base64**——视频上游接受的是 `image_url`，不是
+> base64」，于是 `http(s)` 这一支只发一个 `HEAD` 做可达性校验，再把 URL **原样**
+> 交给上游。两个后果：
+>
+> 1. **`HEAD` 被 COS 拒绝。** 插件自己出图返回的是腾讯 COS 签名 URL，签名只覆盖
+>    `GET`，对它发 `HEAD` 拿到 **403**。而"用上一张成功的图做首帧"是最自然的
+>    路径，于是用户在最不该卡的地方卡死，报错还说的是"你的图不可达"——用 `curl`
+>    明明取得到。
+> 2. **上游不吃外链。** 即使 HEAD 通过，图生视频与图生图是同一条规则（PR #145
+>    记录过："image 必须是 data URI，传 COS 原始 URL → invoke model error"）。原样
+>    传 URL 只是把失败推迟到上游，而那时 task 已建、积分已扣。
+>
+> 现在与 `image-tool.ts` 的 `resolveImageInput` 严格对齐：`GET` 下载、编码成
+> data URL。顺带让签名过期在上游建任务**之前**就报出可读的 `INVALID_ARGS`。
 
 ### 输入图的失败不进冷却
 
@@ -134,12 +152,31 @@ URL 或本地路径（**不读成 base64**——视频上游接受的是 `image_
 ### 轮询（`pollVideoTask` → `POST /v2/videos/tasks`，体 `{task_id}`）
 
 循环 POST 直到 `status` 终态，间隔 `VIDEO_POLL_INTERVAL_MS = 5_000`、整体上限
-`VIDEO_POLL_TIMEOUT_MS = 600_000`（超时抛 `POLL_TIMEOUT`）。状态机（`parseVideoTask()`）：
+`VIDEO_POLL_TIMEOUT_MS = 540_000`（超时抛 `POLL_TIMEOUT`，**带 task id**）。状态机（`parseVideoTask()`）：
 
 - `status === 'completed'`：取 `data.videos[].url` 与 `data.credit`（实扣积分）；
   若空 `videos` 当作未完成、继续轮询；上层在循环结束仍无视频时报 `EMPTY_RESULT`。
 - `status === 'failed'`：返回 failed，上层抛 `TASK_FAILED`。
 - 其它（含 `pending` / `running` / 未知值）：当成未完成，继续轮询。
+
+### 超时的层级（issue #187）
+
+一次视频调用里有三个 deadline 同时存在，**谁先到期决定了用户看到什么**：
+
+| 层 | 常量 | 值 | 到期表现 |
+| --- | --- | --- | --- |
+| 宿主工具调用上限 | （宿主内置） | 600 000 ms | 裸的 `tool call timed out after 600000ms`，**丢掉 task id** |
+| 插件工具层 | `VIDEO_TOOL_TIMEOUT_MS` | 570 000 ms | `POLL_TIMEOUT`，带 task id |
+| 轮询循环 | `VIDEO_POLL_TIMEOUT_MS` | 540 000 ms | `POLL_TIMEOUT`，带 task id |
+
+这三个值曾经都写作 600 000。等于同时到期，而宿主的计时器先落地，于是插件内部的
+`POLL_TIMEOUT` 分支**永远没有机会执行**：用户拿到的是一个没有任何上下文的超时，
+日志里也分不出是提交卡住还是轮询卡住。而 task id 恰恰是这个故障里唯一能拿去问上游
+的东西，丢掉它等于把可排障的失败变成不可排障的。
+
+现在内部两层都严格更早，并且留了 30s 给「抛错 + 下载」。`tests/video-tool.spec.ts`
+里的 `video tool timeout ordering` 钉的是这个**顺序**而不是具体数字——数值以后可以
+调，顺序不能反。
 
 ### 下载（`downloadVideo` → `GET <video url>`）
 

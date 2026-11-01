@@ -72,6 +72,18 @@ export interface WorkBuddyDeviceSettings {
    */
   derived?: Readonly<Record<string, WorkBuddyDeviceDerived>>
   /**
+   * 「真实值」档在这台机器上到底能不能用（由 Host 判定，界面不猜平台）。
+   *
+   * 见 `index.ts` 的 `REAL_TIER_AVAILABILITY`：macOS 上 SDK 能被发现、`probe` 也答
+   * `ready`，但取 token 那一环会 `dispatch_sync` 死锁，所以那一档永远只能降级。
+   * 界面据此禁用档位按钮并说明原因——一个"能点、点了没用、只能靠降级兜底"的选项
+   * 比不提供更差。
+   */
+  realTier?: {
+    state: 'available' | 'broken' | 'unavailable'
+    platform: string
+  }
+  /**
    * 用户在「SDK」分区手填的 SDK 目录；空串 = 走自动发现链。
    *
    * 优先级：`WORKBUDDY_TURING_SDK_DIR` > 这一项 > 自动发现。环境变量压过它，因为

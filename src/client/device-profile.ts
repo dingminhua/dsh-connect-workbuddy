@@ -37,6 +37,17 @@ export interface WorkBuddyDeviceSettings {
   sdkDir: string
   /** 真实值档取不到 token 时退回虚拟值（默认开）。 */
   sdkFallbackToVirtual: boolean
+  /**
+   * 「真实值」档在这台机器上到底能不能用。缺席 = 老 Host 没这一项，
+   * 此时**不禁用**任何东西（不能因为读不到就替用户做决定）。
+   */
+  realTier?: RealTierAvailability
+}
+
+/** 见 `index.ts` 的 `REAL_TIER_AVAILABILITY`。 */
+export interface RealTierAvailability {
+  state: 'available' | 'broken' | 'unavailable'
+  platform: string
 }
 
 /** 取不到设置时的答案：虚拟档、无覆盖、回退开、无手填目录。与 Host 一致。 */
@@ -87,6 +98,9 @@ function normalizeSettings(body: Partial<WorkBuddyDeviceSettings>): WorkBuddyDev
       derived[accountId] = { machineId, sessionId }
     }
   }
+  // 计算一次，不在对象字面量里调用两次（`exactOptionalPropertyTypes` 下也不能把
+  // `undefined` 塞进可选属性）。
+  const realTier = normalizeRealTier(body.realTier)
   return {
     mode: body.mode === 'real' ? 'real' : 'virtual',
     accounts,
@@ -94,7 +108,18 @@ function normalizeSettings(body: Partial<WorkBuddyDeviceSettings>): WorkBuddyDev
     sdkDir: typeof body.sdkDir === 'string' ? body.sdkDir : '',
     // 缺字段 = 回退开：与 Host 的默认值一致，也与「这个 Host 还不认识这一项」一致。
     sdkFallbackToVirtual: body.sdkFallbackToVirtual !== false,
+    // 老 Host 没有这一项时不带：界面据此**不禁用**任何东西，而不是替用户决定。
+    ...realTier === undefined ? {} : { realTier },
   }
+}
+
+/** 只接受三种已知状态；其它一律当"没这一项"，不去猜。 */
+function normalizeRealTier(value: unknown): RealTierAvailability | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  const state = record['state']
+  if (state !== 'available' && state !== 'broken' && state !== 'unavailable') return undefined
+  return { state, platform: typeof record['platform'] === 'string' ? record['platform'] : '' }
 }
 
 /**

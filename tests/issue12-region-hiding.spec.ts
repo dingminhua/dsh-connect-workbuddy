@@ -54,6 +54,28 @@ async function cnOnlyRoot(): Promise<string> {
   return join(dir, 'workbuddy-desktop.info')
 }
 
+/**
+ * Wait until the CN catalog serves its LIVE roster, not the static fallback.
+ *
+ * `length > 0` cannot express this: the catalog is seeded with the static
+ * fallback in its constructor, so "has models" is true from the very first
+ * tick. Only `space-bunny` — which exists upstream and nowhere in
+ * `FALLBACK_WORKBUDDY_MODELS` — proves a refresh actually landed.
+ *
+ * The timeout is generous on purpose. The startup refresh is fire-and-forget
+ * (`void (async () => …)()` in `apply`), and under full-suite parallelism the
+ * worker competes for CPU with ~170 other files. The old version inherited
+ * `expect.poll`'s 1s default and failed intermittently for that reason alone —
+ * the product code was fine, the wait was too short AND was watching the wrong
+ * signal.
+ */
+async function waitForLiveRoster(ctx: Context): Promise<void> {
+  await expect.poll(
+    async () => (await ctx.llm.listModels('workbuddy')).map(model => model.id).sort(),
+    { timeout: 15_000, interval: 25 },
+  ).toEqual(['glm-5.3', 'space-bunny'])
+}
+
 /** Mount the plugin with a direct `apply()`, sharing one mutable config. */
 function mountWorkBuddy(ctx: Context, config: Record<string, unknown>): void {
   liveConfig = config
@@ -125,12 +147,40 @@ describe('issue #32: a saved slot without a directory must not overwrite the liv
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
+    // The same upstream stub the sibling test uses. Without it this test has
+    // NO live answer to wait for, and `space-bunny` could never appear — which
+    // is exactly how it used to pass on the static fallback while claiming to
+    // exercise the live catalog.
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      code: 0,
+      data: {
+        models: [
+          { id: 'space-bunny', name: 'Space Bunny', maxInputTokens: 1_000_000, maxOutputTokens: 48_000 },
+          { id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 48_000 },
+        ],
+        agents: [{ name: 'cli', models: ['space-bunny', 'glm-5.3'] }],
+      },
+    }), { status: 200 })) as typeof fetch
+    try {
     mountWorkBuddy(ctx, { authFile })
 
-    // Let startup finish: the CN catalog carries its own roster.
-    await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    // Wait for the LIVE roster specifically — not merely for "some models".
+    //
+    // `length > 0` was a false signal: before the first upstream answer lands the
+    // catalog already serves the static fallback, so that poll returned
+    // immediately and `before` became the STATIC ids. The test then asserted the
+    // save could not replace "the live catalog" while holding the static one,
+    // which is why it could pass for years without testing anything. It also
+    // passed under load only by luck.
+    //
+    // `space-bunny` exists ONLY upstream, so seeing it is proof the refresh
+    // landed. `waitForLiveRoster` below polls for exactly that.
+    await waitForLiveRoster(ctx)
     const before = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
-    expect(before.length).toBeGreaterThan(0)
+    // Sorted: `listModels` preserves the upstream order, which the stub happens
+    // to answer as space-bunny first. The SET is what matters here.
+    expect([...before].sort()).toEqual(['glm-5.3', 'space-bunny'])
 
     // A partial save that never mentions `lastCatalog` — exactly the payload the
     // card's pool/preference writes used to send.
@@ -144,6 +194,9 @@ describe('issue #32: a saved slot without a directory must not overwrite the liv
     // "the static list replaced the live one".
     await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).map(model => model.id))
       .toEqual([before[0]])
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 
   it('does not report the in-use model as withdrawn after a directoryless save', async () => {
@@ -176,8 +229,7 @@ describe('issue #32: a saved slot without a directory must not overwrite the liv
     }), { status: 200 })) as typeof fetch
     try {
       mountWorkBuddy(ctx, { authFile })
-      await expect.poll(async () => (await ctx.llm.listModels('workbuddy')).map(model => model.id).sort())
-        .toEqual(['glm-5.3', 'space-bunny'])
+      await waitForLiveRoster(ctx)
 
       // The save lands a slot with no directory at all.
       await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {

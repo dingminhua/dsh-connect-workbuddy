@@ -80,12 +80,17 @@ afterEach(async () => {
 // `platform`/`arch` 注入与假 worker 的 probe 输出（win32/x64）保持一致：`bundle`
 // 在生产路径取真实主机，但断言不能钉住跑测试的机器（RELEASING.md §2.5）。
 // 不注入时这条套件在 Linux/macOS CI 上会因为 `darwin-arm64 !== win32-x64` 而红。
+// 总开关默认是关的（与档位默认「虚拟值」一致），而这一整个文件测的是 SDK 本身
+// 的行为——发现、缓存、TTL、退避、预热——不是开关语义。不在这里显式打开，每次
+// `make()` 都会落到 `disabled`，几十条与该开关无关的用例会一起红。
+// 开关自己的用例在 `describe('the master switch')` 里直接构造。
 const make = (overrides: { ttlMs?: number } = {}) => createTuringSdk({
   dir: sdkDir,
   worker,
   now: () => clock,
   platform: 'win32',
   arch: 'x64',
+  enabled: true,
   ...overrides,
 })
 
@@ -221,6 +226,7 @@ describe('discoverInstalledSdkDir', () => {
     // 端到端缝：发现链的产物要真的进到 probe 的 spawn 目录里。假 worker 只认
     // state.json，不关心 dir——所以这里看的是 info().path。
     const sdk = createTuringSdk({
+      enabled: true,
       worker,
       now: () => clock,
       platform: 'win32',
@@ -250,6 +256,7 @@ describe('createTuringSdk — a directory the user can change (作者意见 #1)'
   it('picks up a newly typed directory without rebuilding the handle', async () => {
     let typed = ''
     const sdk = createTuringSdk({
+      enabled: true,
       worker,
       now: () => clock,
       platform: 'win32',
@@ -277,6 +284,7 @@ describe('createTuringSdk — a directory the user can change (作者意见 #1)'
     // 才看见变化，而用户会以为保存失败了。
     let typed = 'D:\\one'
     const sdk = createTuringSdk({
+      enabled: true,
       worker,
       now: () => clock,
       platform: 'win32',
@@ -294,6 +302,7 @@ describe('createTuringSdk — a directory the user can change (作者意见 #1)'
     // 环境变量是排障旁路（doctor 只能读它），所以它压过卡片。反过来会让一个
     // 排障时设的变量在下一次点保存后静默失效。
     const sdk = createTuringSdk({
+      enabled: true,
       worker,
       now: () => clock,
       platform: 'win32',
@@ -312,6 +321,7 @@ describe('createTuringSdk — a directory the user can change (作者意见 #1)'
       now: () => clock,
       platform: 'win32',
       arch: 'x64',
+      enabled: true,
       env: {},
       exists: path => [...sdkShape('D:\\explicit'), ...sdkShape('D:\\typed')].includes(path),
       dirSource: async () => 'D:\\typed',
@@ -322,7 +332,7 @@ describe('createTuringSdk — a directory the user can change (作者意见 #1)'
 
 describe('probe', () => {
   it('reports missing without spawning anything when the bundle is absent', async () => {
-    const sdk = createTuringSdk({ dir: join(root, 'nope'), worker, now: () => clock })
+    const sdk = createTuringSdk({ dir: join(root, 'nope'), worker, now: () => clock, enabled: true })
     const info = await sdk.info()
     expect(info.state).toBe('missing')
     expect(info.reason).toContain('no installed WorkBuddy desktop SDK detected')
@@ -330,10 +340,88 @@ describe('probe', () => {
     expect(await readCalls()).toBe(0)
   })
 
+
+  /**
+   * 总开关（`deviceSdkEnabled`，**默认关**）。
+   *
+   * 与档位默认「虚拟值」一致：默认根本不发这个 token，那么默认去发现 SDK、起子进程、
+   * 每 10 分钟取一次，取到的东西一次也用不上。更一般地说，一个会碰用户机器上第三方
+   * 原生模块的能力，默认该由用户主动打开。
+   */
+  describe('the master switch', () => {
+    it('defaults to OFF — an unset field must not silently switch it on', async () => {
+      // 老配置文件里没有这个字段。"默认开"会让升级后所有人凭空多出一条每 10 分钟的
+      // 子进程，而"默认关"只是维持档位默认（虚拟值）本来就不需要它的现状。
+      const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, env: {} })
+      expect((await sdk.info()).state).toBe('disabled')
+    })
+
+    it('answers disabled and spawns nothing — not even a probe', async () => {
+      const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, enabled: false })
+      const info = await sdk.info()
+      expect(info.state).toBe('disabled')
+      // 关键：一个子进程都没有。关掉开关的人要的正是这个。
+      expect(await readCalls()).toBe(0)
+      // 也不该伪装成"没装"——那是完全不同的建议（装一个桌面端）。
+      expect(info.state).not.toBe('missing')
+    })
+
+    it('does not spawn for a token request either', async () => {
+      const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, enabled: false })
+      expect(await sdk.tokens.current()).toBeUndefined()
+      expect(await readCalls()).toBe(0)
+      expect(sdk.tokens.readout().state).toBe('idle')
+    })
+
+    it('stops sending a token it fetched BEFORE the switch went off', async () => {
+      // 关开关的意思是"别再冒充真实设备"，不是"别再取新的、旧的可以继续用"。
+      //
+      // 必须在**同一个句柄**上切开关：新建一个 `enabled: false` 的实例再断言它没有
+      // token 是空的（它的缓存本来就是空的），那样连"current 忘了检查开关"都测不
+      // 出来——第一版就是这么写的，变异体存活。
+      let on = true
+      const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, get enabled() { return on } })
+      expect(await sdk.tokens.current()).toBe('v3:real-token-value')
+      on = false
+      expect(await sdk.tokens.current()).toBeUndefined()
+    })
+
+    it('spawns nothing even after a prewarm is started while off', async () => {
+      // 这道检查是**纵深防御**，不是唯一的一道：`warm()` 与 `probe()` 里各有一处
+      // 开关检查，任意一道都足以让"关掉时不起子进程"成立。所以这个用例验证的是
+      // **最终行为**，而不是"startAutoRefresh 有没有提前返回"——把三处检查里的任意
+      // 一两处删掉，它仍然是绿的，这是冗余的本意，不是测试漏了。
+      //
+      // 第一版这里断言过"没建定时器"，但定时器建了也会因为 `warm()` 直接返回而什么
+      // 也不做，那条断言无法区分两者，属于自欺——已改成只断言可观察的结果。
+      const sdk = createTuringSdk({ dir: sdkDir, worker, now: () => clock, enabled: false })
+      sdk.startAutoRefresh()
+      await new Promise(resolve => setTimeout(resolve, 120))
+      expect(await readCalls()).toBe(0)
+      sdk.stopAutoRefresh()
+    })
+
+    it('honours the env var when no explicit flag is passed — that is the doctor path', async () => {
+      // `doctor` 是独立 CLI，读不到插件配置（`cordis.patch.yml`），所以它靠这条
+      // 变量。没有它，卡片说"关了"、doctor 却报 ready，排障时最误导人。
+      const off = createTuringSdk({ dir: sdkDir, worker, now: () => clock, env: { WORKBUDDY_DEVICE_SDK_ENABLED: '0' } })
+      expect((await off.info()).state).toBe('disabled')
+      const on = createTuringSdk({ dir: sdkDir, worker, now: () => clock, env: { WORKBUDDY_DEVICE_SDK_ENABLED: '1' } })
+      expect((await on.info()).state).toBe('ready')
+      // 显式 `enabled` 压过环境变量：插件永远显式传，两边不该打架。
+      const explicit = createTuringSdk({
+        dir: sdkDir, worker, now: () => clock,
+        enabled: true, env: { WORKBUDDY_DEVICE_SDK_ENABLED: '0' },
+      })
+      expect((await explicit.info()).state).toBe('ready')
+    })
+  })
+
+
   it('reports missing when there is no dir at all (discovery found nothing)', async () => {
     // `env: {}` 不是笔误：不传就会读真实 process.env，而这台机器上**可能**真的
     // 装着桌面端——那条安装链属于发现测试，不属于兜底行为测试。
-    const sdk = createTuringSdk({ worker, now: () => clock, env: {}, home: root, platform: 'linux' })
+    const sdk = createTuringSdk({ worker, now: () => clock, env: {}, home: root, platform: 'linux', enabled: true })
     const info = await sdk.info()
     expect(info.state).toBe('missing')
     expect(info.path).toBe('')
@@ -530,6 +618,7 @@ describe('自动预热（auto refresh）', () => {
     const sdk = createTuringSdk({
       dir: sdkDir,
       worker,
+      enabled: true,
       ttlMs: 250,
       keepAliveTiming: { leadMs: 0, minDelayMs: 40, retryMs: 40 },
     })
@@ -565,6 +654,7 @@ describe('自动预热（auto refresh）', () => {
     const sdk = createTuringSdk({
       dir: sdkDir,
       worker,
+      enabled: true,
       ttlMs: 200,
       keepAliveTiming: { leadMs: 0, minDelayMs: 30, retryMs: 30 },
     })

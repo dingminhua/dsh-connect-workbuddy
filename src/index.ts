@@ -645,6 +645,21 @@ export interface Config {
    */
   wireProfile?: 'conservative' | 'balanced'
   /**
+   * SDK 功能的**总开关**（默认开）。
+   *
+   * 关掉之后：不发现 SDK 目录、不起取 token 的子进程、不后台预热——真实值档因此
+   * 永远取不到 token。这是"我根本不想让这个插件碰桌面端的原生模块"的那条退路：
+   * 在此之前这项能力是无条件启动的，一个只想用虚拟值档的人也照样每 10 分钟付一次
+   * 子进程与一次风控取数。
+   *
+   * 与「取不到真实设备时退回虚拟值」不是一回事：那个管**取不到时怎么办**（落在设备
+   * 设置文件里），这个管**要不要去取**。两者都关时真实值档零设备头；总开关关而回退
+   * 开时，退到虚拟值。
+   *
+   * 关掉不影响虚拟值档：派生值全靠本机盐，与 SDK 无关。
+   */
+  deviceSdkEnabled?: boolean
+  /**
    * 外部设备 token（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P2）。
    *
    * 只收**文件**，不收内联字符串：token 是分钟级过期的，写在配置里的值十分钟后
@@ -1076,6 +1091,11 @@ export const Config: z<Config> = z.object({
       .default('balanced')
       .description('Outbound identity profile. "balanced" (default) makes every request claim the same client (WorkBuddy product/IDE/agent headers, X-CodeBuddy-Request, Accept-Language, X-Root-Request-ID, and a per-account X-Machine-ID/X-Session-ID pair) and gives the billing routes a User-Agent plus Origin/Referer. "conservative" restores the 5.16.0 bytes exactly, including X-Product: SaaS.'),
   ) as unknown as z<'conservative' | 'balanced'>,
+  deviceSdkEnabled: asVolatile(
+    z.boolean()
+      .default(false)
+      .description('Master switch for the real-device SDK. OFF by default, matching the default Virtual tier: turning it on makes the plugin discover the installed desktop SDK, fetch its device token in a background child process and keep it fresh. A capability that reaches into a third party\'s native modules on your machine should be opted into, and with the Virtual tier (the default) the token it fetches would never be sent anyway. On: discover, fetch, prewarm. Off: none of that — no discovery, no child process, no prewarming — so the Real tier has no token to send; the Virtual tier is unaffected (its ids derive from the local salt).'),
+  ) as unknown as z<boolean>,
   deviceToken: asVolatile(
     z.object({
       file: z.string().default(''),
@@ -1193,6 +1213,43 @@ interface WorkBuddyRegionStack {
 
 /** Every region, in card tab order. */
 const REGION_KEYS: readonly WorkBuddyRegion[] = ['cn', 'global']
+
+/**
+ * 「真实值」档在这台机器上能不能真的工作，以及为什么不能。
+ *
+ * ## 为什么不让界面自己判断平台
+ *
+ * 客户端能拿到 `sdk.platform`，但**平台不是判据**。macOS 上 SDK 能被发现、
+ * `probe` 也答 `ready`，真正坏掉的是取 token 那一环：SDK 向 dispatch 主队列
+ * `dispatch_sync`，而纯 libuv 子进程永不排空那个队列（`sample` 栈实测，见
+ * CHANGELOG 的「macOS 现状如实记录」）。于是「darwin → 禁用」会把一台**没装**
+ * 桌面端的 mac 和一台装了的 mac 说成同一件事，而它们的用户该做的事完全不同。
+ *
+ * ## 为什么现在还写死
+ *
+ * 这是一个**已知的、非本平台的**缺陷，不是运行时可以测出来的：真去测就要起子进程
+ * 等 15 秒超时，而这一页每次打开都会拉一次设置。写成常量意味着它是可以被人替换
+ * 的显式声明，而不是散在三个组件里的 `if (platform === 'darwin')`。
+ *
+ * ⚠️ 修好 `dispatch_sync` 那条路之后，**这里必须跟着改**，否则界面会继续劝退一个
+ * 已经能用的功能。修法不在本次范围（需要一个排空主队列的伴生原生模块）。
+ *
+ * `state`：
+ *   - `available` —— 能取到 token，切成「真实值」就能用；
+ *   - `broken` —— 这套 SDK 在本平台取不到 token，切过去只会降级，界面上应禁用
+ *     并说明原因；
+ *   - `unavailable` —— 本平台没有这条取链（不预期出现，留作兜底）。
+ */
+export function realTierAvailabilityFor(platform: string): {
+  state: 'available' | 'broken' | 'unavailable'
+  platform: string
+} {
+  return platform === 'darwin'
+    ? { state: 'broken', platform: 'darwin' }
+    : { state: 'available', platform }
+}
+
+const REAL_TIER_AVAILABILITY = realTierAvailabilityFor(process.platform)
 
 /**
  * The region that owns the image tool right now, or `undefined` when no region
@@ -1336,12 +1393,31 @@ export function apply(ctx: Context, config: Config): void {
    * `dirSource` 让卡片上填的目录**下一次观察就生效**（作者意见 #1）：句柄活到
    * 卸载，而设置随时会变，所以目录每次 `probe` 现问一次。`deviceProfiles` 读盘有
    * 5 秒缓存，保存会立即失效它。
+   *
+   * ⚠️ **总开关优先于预热**（`deviceSdkEnabled`）：关掉就不建定时器、不预取。
+   * 留着 `createTuringSdk()` 本身是因为端口（`createDeviceSdkPort`）仍要能回答
+   * "这个功能被关掉了"——它读到的是 `disabled` 状态，而不是一块空白面板。
    */
+  /**
+   * 总开关：**默认关**（`default(false)`）。
+   *
+   * 与档位默认值一致：档位默认「虚拟值」本来就不发这个 token，那么默认去发现
+   * SDK、起子进程、每 10 分钟取一次，取到的东西一次也用不上。更一般地说，一个
+   * 会碰用户机器上第三方原生模块的能力，默认该由用户主动打开。
+   *
+   * `=== true` 而不是 `!== false`：`undefined`（老配置文件里没有这个字段）必须
+   * 落到"关"，与 `default(false)` 同一个答案。写成 `!== false` 会让"未设置"和
+   * "显式开启"分叉，升级后老用户静默拿到与 schema 默认相反的行为。
+   */
+  const deviceSdkEnabled = unwrapVolatile(config.deviceSdkEnabled) === true
   const turing = createTuringSdk({
     productVersion: APP_VERSION,
     dirSource: () => deviceProfiles.sdkDir(),
+    // 关掉之后连发现链都不该跑：目录仍然解析得出来，但 probe 直接答 disabled，
+    // 因此不会有任何一次子进程被创建。
+    enabled: deviceSdkEnabled,
   })
-  turing.startAutoRefresh()
+  if (deviceSdkEnabled) turing.startAutoRefresh()
   ctx.effect(() => () => { turing.stopAutoRefresh() })
   const client = new WorkBuddyUpstreamClient(
     message => {
@@ -2006,7 +2082,17 @@ export function apply(ctx: Context, config: Config): void {
       // that lost its directory: a partial save must not be able to replace a
       // live catalog with the static one (issue #32). Read before `set`, which
       // is what keeps this from observing the write it is about to make.
-      stacks[region].catalog.set(configuredModels(value, region, stacks[region].catalog.current()))
+      //
+      // ⚠️ ONLY when that roster is really live. `catalog.current()` returns the
+      // static fallback until the first refresh lands, and `resolveRoster` cannot
+      // tell a static list from a live one (it only sees a non-empty array). So
+      // passing it unconditionally let a settings write that arrives BEFORE the
+      // first refresh copy the static roster into the catalog as if it were
+      // upstream — reopening issue #32 from the other side. `hasLiveRoster()`
+      // is the discriminator; without a live roster the region's saved slot is
+      // resolved on its own, which is the pre-refresh behaviour it wants anyway.
+      const liveRoster = stacks[region].catalog.hasLiveRoster() ? stacks[region].catalog.current() : []
+      stacks[region].catalog.set(configuredModels(value, region, liveRoster), 'derived')
     }
     invalidateCatalog()
     // The replay above rebuilt each roster from the SAVED directory, which
@@ -2016,9 +2102,14 @@ export function apply(ctx: Context, config: Config): void {
     // first, so the model list is never held hostage to a probe.
     for (const region of REGION_KEYS) {
       void (async () => {
+        // `origin: 'derived'` on purpose: this re-stamps load levels onto the
+        // roster `applySelection` just derived; it is NOT a fresh upstream
+        // answer. Marking it live would let the static fallback (which the
+        // roster can still be, before the first refresh) claim to be live —
+        // the same mistake the loop above was fixed for.
         const live = await restampBusyLevels(region, stacks[region].catalog.current())
         if (live.length === 0) return
-        stacks[region].catalog.set(live)
+        stacks[region].catalog.set(live, 'derived')
         invalidateCatalog()
       })()
     }
@@ -2434,11 +2525,17 @@ export function apply(ctx: Context, config: Config): void {
     const withDerived = async (settings: WorkBuddyDeviceSettings): Promise<WorkBuddyDeviceSettings> => {
       // 派生值只是"给用户看"的附加物：列举账号时的一次 IO 失败不该让整条设置
       // 路由 500——那会让档位开关和齿轮一起打不开，而它们本来是可以用的。
+      //
+      // `realTier` 与派生值不同：它**永远**要带上，包括派生值算失败的那条路径。
+      // 少了它，界面就退回"不禁用任何东西"，于是 mac 上那个点不动的「真实值」
+      // 又会重新变得可点——而这正是这次要消掉的状态。
       try {
         const derived = await describeDerivedDevices(await deviceAccounts())
-        return derived === undefined ? settings : { ...settings, derived }
+        return derived === undefined
+          ? { ...settings, realTier: REAL_TIER_AVAILABILITY }
+          : { ...settings, derived, realTier: REAL_TIER_AVAILABILITY }
       } catch {
-        return settings
+        return { ...settings, realTier: REAL_TIER_AVAILABILITY }
       }
     }
     return registerWorkBuddyStatusRoute(webCtx, {
@@ -2494,6 +2591,17 @@ export function apply(ctx: Context, config: Config): void {
     deviceSdk: createDeviceSdkPort({
       sdk: turing,
       mode: async () => (await readDeviceSettings()).mode,
+      /**
+       * 总开关走插件配置（`Config.deviceSdkEnabled`），不走设备设置文件。
+       *
+       * `read` 取的是 `current()`——也就是宿主交给 `apply()` 的那份活的引用，
+       * 所以 `ctx.settings.update` 写完它就能读到新值（`asVolatile` 会就地改）。
+       * 回 `undefined` 让卡片把开关标成不可用，而不是把它画成"关"。
+       */
+      enabled: {
+        read: async () => unwrapVolatile(config.deviceSdkEnabled) !== false,
+        write: writeDeviceSdkEnabled,
+      },
     }),
     /**
      * Why each of the region's accounts cannot serve right now, for the composer
@@ -3705,6 +3813,14 @@ export function apply(ctx: Context, config: Config): void {
   // the shapes here keeps the widening honest and reviewable.
   interface SettingsShapes {
     configure: (presentation: { auto?: boolean }, owner?: unknown) => () => void
+    /**
+     * 写一个设置命名空间下的字段——卡片上那个 SDK 总开关用的就是它。
+     *
+     * 只在 0.1.7 起存在（`tests/settings-integration.spec.ts` 也是这么用的），
+     * 所以这里是可选：老宿主上卡片会退化成只读（开关置灰），而不是让整个面板
+     * 抛出。
+     */
+    update?: (ns: string, patch: Record<string, unknown>) => Promise<unknown>
   }
 
   // `inject` rather than a direct read: `settings` is an optional service, and
@@ -3716,6 +3832,23 @@ export function apply(ctx: Context, config: Config): void {
     const settings = sctx.settings as unknown as SettingsShapes
     ctx.effect(() => settings.configure({ auto: true }, ctx.fiber))
   })
+
+  /**
+   * The one settings WRITE the card is allowed to make: the SDK master switch.
+   *
+   * Resolved lazily (not captured at mount) because `settings` is an optional
+   * service and the card may ask before that service is present — a captured
+   * `undefined` would make the switch permanently read-only on that host.
+   * Returns `false` rather than throwing when the host has no `update`: the
+   * panel renders the same switch either way, and a thrown error there would
+   * surface as "saving failed" for a capability the host simply lacks.
+   */
+  const writeDeviceSdkEnabled = async (enabled: boolean): Promise<boolean> => {
+    const host = ctx.get('settings') as unknown as SettingsShapes | undefined
+    if (host?.update === undefined) return false
+    await host.update(WORKBUDDY_SETTINGS_NS, { deviceSdkEnabled: enabled })
+    return true
+  }
 
   // 0.1.7 hands volatile values back as live references and announces each
   // write on this event, so the card's selections are re-read after one. The
@@ -3937,7 +4070,6 @@ export function apply(ctx: Context, config: Config): void {
         void (async () => {
           try {
             const credential = await stacks[region].store.resolve()
-            if (stopped) return
             const models = await withBusyLevels(
               region,
               await client.fetchModels(

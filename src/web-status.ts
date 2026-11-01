@@ -2411,7 +2411,12 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
         if (req.method === 'GET') {
           try {
-            json(res, 200, await port.read())
+            // 快照里带上总开关的**当前值**：卡片要能画出那个勾选框，而开关住在
+            // 插件配置里、不在设备设置文件里——多一次往返只为读一个布尔不值当，
+            // 也容易让两处答案短暂不一致。
+            const report = await port.read()
+            const enabled = await port.readEnabled()
+            json(res, 200, enabled === undefined ? report : { ...report, sdkEnabled: enabled })
           } catch (error: unknown) {
             json(res, 500, { reason: 'device-sdk-failed', error: safeMessage(error) })
           }
@@ -2428,10 +2433,23 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           if (action === 'refresh') {
             return json(res, 200, await port.refresh())
           }
+          /**
+           * `?action=enable` / `?action=disable` —— SDK 总开关。
+           *
+           * 用两个动作名而不是 `?enabled=1`：这个路由的其余动作都是**动词**，
+           * 而一个布尔查询参数会让"没传"和"传了空"看起来一样。
+           */
+          if (action === 'enable' || action === 'disable') {
+            const written = await port.writeEnabled(action === 'enable')
+            // 老宿主没有 settings 服务：501 而不是 500——这不是故障，是宿主缺一项
+            // 能力，卡片据此把开关标成不可用。
+            if (!written) return json(res, 501, { reason: 'settings-unavailable', error: 'this host has no settings write path' })
+            return json(res, 200, { sdkEnabled: action === 'enable' })
+          }
         } catch (error: unknown) {
           return json(res, 500, { reason: 'device-sdk-failed', error: safeMessage(error) })
         }
-        json(res, 400, { error: "action must be 'refresh' or 'reveal'" })
+        json(res, 400, { error: "action must be 'refresh', 'reveal', 'enable' or 'disable'" })
       },
     })
     return () => {

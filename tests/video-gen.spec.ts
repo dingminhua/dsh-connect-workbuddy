@@ -359,6 +359,58 @@ describe('parseVideoTask', () => {
     expect(result.status).toBe('failed')
     expect(result.videos).toEqual([])
   })
+
+  /**
+   * issue #187 的第一种现象：failed 但插件一个字的原因都不报，用户无从判断是
+   * 提示词、模型不支持还是上游自己的问题。
+   *
+   * 这里**不猜字段名**（没有一份上游样例能证明它叫 fail_reason 还是 error_message），
+   * 而是把 data 里除已知键以外的内容原样带出来。下面几条钉的是这个契约本身。
+   */
+  describe('失败时的上游诊断（issue #187）', () => {
+    it('把 data 里不认识的字段原样带出来', () => {
+      const result = parseVideoTask({
+        code: 0,
+        data: { status: 'failed', fail_reason: 'content policy', task_id: 'abc-WandVideo-1' },
+      })
+      expect(result.detail).toContain('fail_reason')
+      expect(result.detail).toContain('content policy')
+      expect(result.detail).toContain('abc-WandVideo-1')
+    })
+
+    it('不重复带上已知键 status / data / usage', () => {
+      const result = parseVideoTask({
+        code: 0,
+        data: { status: 'failed', data: [], usage: { credit: 0 }, error: 'boom' },
+      })
+      // 已知键不该出现在诊断里，否则每次报错都多一段噪音。
+      expect(result.detail).not.toContain('"status"')
+      expect(result.detail).not.toContain('"usage"')
+      expect(result.detail).toContain('boom')
+    })
+
+    it('没有任何额外字段时是 undefined（上层据此说"上游没有给出原因"）', () => {
+      const result = parseVideoTask({ code: 0, data: { status: 'failed' } })
+      expect(result.detail).toBeUndefined()
+    })
+
+    it('空的额外字段不算"有原因"', () => {
+      // 上游发一个 "" 或 null 不该被当成诊断——那会让文案写着"上游返回："
+      // 后面空一片。
+      const result = parseVideoTask({ code: 0, data: { status: 'failed', note: '', other: null } })
+      expect(result.detail).toBeUndefined()
+    })
+
+    it('很长的诊断被截断，不会把报错撑成几 KB', () => {
+      const result = parseVideoTask({
+        code: 0,
+        data: { status: 'failed', blob: 'x'.repeat(5000) },
+      })
+      expect(result.detail).toBeDefined()
+      expect(result.detail!.length).toBeLessThanOrEqual(401)
+      expect(result.detail!.endsWith('…')).toBe(true)
+    })
+  })
 })
 
 describe('describeVideoFailure', () => {

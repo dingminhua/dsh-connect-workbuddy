@@ -78,6 +78,17 @@ export const TURING_PRODUCT_VERSION_ENV = 'WORKBUDDY_TURING_PRODUCT_VERSION'
  */
 export const TURING_KEYCHAIN_STORAGE_ENV = 'WORKBUDDY_TURING_KEYCHAIN_STORAGE'
 
+/**
+ * 总开关的环境变量旁路（`deviceSdkEnabled`）。
+ *
+ * 插件里这个开关是**配置项**（`cordis.patch.yml`），但 `doctor` 是一个独立的 CLI
+ * 进程，读不到插件配置。没有这条变量，排障时会出现"卡片上说关了、doctor 却在探测
+ * 并报 ready"这种自相矛盾——而 `doctor` 的全部价值就是如实回答"现在到底怎样"。
+ *
+ * 取值与卡片同义：`0`/`false` = 关，其它/未设 = 开（默认开）。
+ */
+export const TURING_SDK_ENABLED_ENV = 'WORKBUDDY_DEVICE_SDK_ENABLED'
+
 /** 默认 token 有效期（重取周期）。与 SDK 侧风险消息的缓存窗口同一量级。 */
 export const TURING_TOKEN_TTL_MS = 10 * 60 * 1000
 
@@ -290,8 +301,16 @@ export function discoverInstalledSdkDir(options: {
 
 /** What one `probe` established about the SDK on THIS machine. */
 export interface TuringSdkInfo {
-  /** `ready` = 能加载且自称支持；`unsupported` = 平台不支持；`missing` = 没发现本机装有桌面端 SDK；`error` = 目录在但加载不了。 */
-  state: 'ready' | 'unsupported' | 'missing' | 'error'
+  /**
+   * `ready` = 能加载且自称支持；`unsupported` = 平台不支持；`missing` = 没发现本机
+   * 装有桌面端 SDK；`error` = 目录在但加载不了；
+   * `disabled` = 用户把总开关关了（`deviceSdkEnabled: false`）。
+   *
+   * `disabled` 与 `missing` 必须分开：前者是"我不要"，后者是"这台机器上没有"。
+   * 合并成一个会让关掉开关的用户每次打开面板都看到一条"装个桌面端就好"的建议，
+   * 而那正是他明确拒绝去做的事。
+   */
+  state: 'ready' | 'unsupported' | 'missing' | 'error' | 'disabled'
   /** `win32-x64` 之类的主机三元组；只用于展示与排障，不再决定目录。 */
   bundle: string
   /** 本机桌面端里的 SDK 目录（或 `WORKBUDDY_TURING_SDK_DIR` 指向的目录）；空串 = 没找到。 */
@@ -470,6 +489,18 @@ export interface WorkBuddyDeviceSdkPort {
   refresh(): Promise<WorkBuddyDeviceSdkReport>
   /** 完整 token；没有可用值时为 `undefined`。只在显式点击后调用。 */
   reveal(): Promise<string | undefined>
+  /**
+   * SDK 总开关（`Config.deviceSdkEnabled`）的读写。
+   *
+   * 与 `read` 分开两个方法，而不是并进上面那份快照：开关是**配置**，快照是
+   * **测量**。混在一起会让"读一次快照"变成一次可能失败的配置读，而这一页最该
+   * 做到的事就是"打不开也能告诉你是谁坏了"。
+   *
+   * `write` 返回 `false` 表示这个宿主没有 settings 服务（老宿主），卡片据此把
+   * 开关置灰，而不是显示一个点了没反应的勾选框。
+   */
+  readEnabled(): Promise<boolean | undefined>
+  writeEnabled(enabled: boolean): Promise<boolean>
 }
 
 /**
@@ -480,6 +511,15 @@ export interface WorkBuddyDeviceSdkPort {
 export function createDeviceSdkPort(options: {
   sdk: TuringSdk
   mode: () => Promise<WorkBuddyDeviceMode>
+  /**
+   * 总开关的读写。`undefined` = 这个宿主没有 settings 服务，卡片把开关置灰。
+   *
+   * 用回调而不是布尔值：开关会热更新（`asVolatile`），句柄是挂载时建的。
+   */
+  enabled?: {
+    read: () => Promise<boolean | undefined>
+    write: (enabled: boolean) => Promise<boolean>
+  }
 }): WorkBuddyDeviceSdkPort {
   const snap = async (): Promise<WorkBuddyDeviceSdkReport> => ({
     tier: await options.mode(),
@@ -493,6 +533,8 @@ export function createDeviceSdkPort(options: {
       return snap()
     },
     reveal: () => options.sdk.tokens.reveal(),
+    readEnabled: async () => options.enabled === undefined ? undefined : options.enabled.read(),
+    writeEnabled: async enabled => options.enabled === undefined ? false : options.enabled.write(enabled),
   }
 }
 
@@ -552,11 +594,36 @@ export function createTuringSdk(options: {
    * 排不到 `dir` / 环境变量前面：那两者是调用方与排障的显式选择。
    */
   dirSource?: () => Promise<string>
+  /**
+   * 总开关（`deviceSdkEnabled`）。`false` 时这个句柄仍然可用，但 `probe` 直接答
+   * `disabled`，`current()` 永远返回 `undefined`，且一个子进程都不会被创建。
+   *
+   * 放在句柄上而不是让调用方决定"要不要建这个对象"：SDK 端口要能回答"功能被关掉
+   * 了"，否则面板只能给一块空白，而空白读起来像"我点坏了"。
+   */
+  enabled?: boolean
 } = {}): TuringSdk {
   const now = options.now ?? (() => Date.now())
   const worker = options.worker ?? workerPath()
   const ttlMs = options.ttlMs ?? TURING_TOKEN_TTL_MS
   const keepAliveTiming: TuringKeepAliveTiming = { ...TURING_KEEP_ALIVE_TIMING, ...options.keepAliveTiming }
+  /**
+   * 每次**现读**开关，不在构造时求值一次。
+   *
+   * 开关是 `asVolatile` 的配置项，热更新后会变；而句柄活到卸载。钉死一次会让
+   * "关掉开关"必须重启宿主才生效——那与这个开关存在的理由（随时能停）矛盾。
+   *
+   * 未传 `enabled` 时回落到环境变量（{@link TURING_SDK_ENABLED_ENV}）：那是给
+   * `doctor` 这种读不到插件配置的独立进程用的。插件永远显式传，所以两边不会打架。
+   *
+   * **默认也是关**，与插件的 `default(false)` 同一个答案。代价是 `doctor` 在用户
+   * 开启之前只答 `disabled`——但那正是现状，而 `doctor` 的全部价值就是如实回答
+   * 现状。想排障"这个 SDK 到底能不能用"，用
+   * `WORKBUDDY_DEVICE_SDK_ENABLED=1 node lib/bin.js doctor` 临时打开即可。
+   */
+  const isEnabled = (): boolean => options.enabled !== undefined
+    ? options.enabled !== false
+    : /^(?:1|true)$/u.test(String((options.env ?? process.env)[TURING_SDK_ENABLED_ENV] ?? '').trim())
   const platform = options.platform ?? process.platform
   const arch = options.arch ?? process.arch
   const env = options.env ?? process.env
@@ -627,6 +694,23 @@ export function createTuringSdk(options: {
 
   async function probe(): Promise<TuringSdkInfo> {
     const at = now()
+    /**
+     * 总开关先于一切：关掉时**不解析目录、不碰文件系统、不起子进程**。
+     *
+     * 放在 `resolveDir()` 之前是刻意的——目录解析本身要读环境、可能读注册表（win32），
+     * 而关掉开关的人要的正是"这个插件别去碰桌面端"。
+     */
+    if (!isEnabled()) {
+      return {
+        state: 'disabled',
+        bundle,
+        path: '',
+        platform,
+        arch,
+        runtime: runtimeLabel,
+        reason: 'the real-device SDK is turned off in this plugin\'s settings',
+      }
+    }
     // 目录可能是用户刚在卡片上改的，所以先解析再命中缓存——缓存按**解析结果**
     // 判有效，否则"填了一个新目录"会在 10 秒的 probe 缓存里答成旧目录的状态。
     const dir = await resolveDir()
@@ -716,6 +800,10 @@ export function createTuringSdk(options: {
 
   async function current(): Promise<string | undefined> {
     const at = now()
+    // 总开关关掉时连缓存都不认：一枚关之前取到的 token 不该在关掉之后继续发出去。
+    // 这一条比"省一次子进程"重要——用户关开关的意思是"别再冒充真实设备"，
+    // 而不是"别再取新的但旧的可以继续用"。
+    if (!isEnabled()) return undefined
     if (cached !== undefined && at - cached.fetchedAtMs <= ttlMs) return cached.token
     // 退避：刚失败过就先别再造一个子进程。一轮对话十几条请求同时到，没有这一步，
     // 一次 SDK 故障会变成十几个子进程 + 十几个超时。
@@ -745,6 +833,10 @@ export function createTuringSdk(options: {
    */
   async function warm(): Promise<void> {
     const at = now()
+    // 关掉时预热什么都不做，也不起子进程。`startAutoRefresh()` 在调用方已经被
+    // `deviceSdkEnabled` 挡住，这里再挡一次是为了防"开关在热更新后被关掉、而定时器
+    // 还在跑"——句柄是挂载时建的，设置可能在那之后才改。
+    if (!isEnabled()) return
     const failedSinceFetch = cached !== undefined
       && lastFailureAtMs !== undefined
       && lastFailureAtMs >= cached.fetchedAtMs
@@ -793,6 +885,9 @@ export function createTuringSdk(options: {
   return {
     info: probe,
     startAutoRefresh(): void {
+      // 关掉时连定时器都不建：一个永远 early-return 的链仍然会让宿主进程多一条
+      // 待唤醒的句柄，而"关掉"最该省掉的正是这种残余。
+      if (!isEnabled()) return
       if (keepAliveActive) return
       keepAliveActive = true
       // 立即一次，不等定时器：重启后打开面板不该是"已加载但没取过"。
