@@ -190,9 +190,14 @@ function workerPath(): string {
  * `"/Applications/WorkBuddy AI.app"` 两份都在）：
  * `<bundle>/Contents/Resources/app.asar.unpacked/native/turing-sdk`，里面有
  * `index.cjs` / `package.json` / `build/Release/turing_sdk.node`。
- * Windows 按 Electron 的默认打包约定推为
- * `<install>\resources\app.asar.unpacked\native\turing-sdk`（B 级推断，待真机
- * 验证——issue #186 的验证机上跑一次 `doctor` 即可确认）。
+ * Windows 实测（A 级，2026-11-01，`F:\智能体安装路径\WorkBuddy`）：
+ * `<install>\resources\app.asar.unpacked\native\turing-sdk` 同形状成立——
+ * `WorkBuddy.exe` → 该目录 → `hasTuringSdkBinding` 命中，doctor 报
+ * `ready (win32-x64 — <install>\resources\app.asar.unpacked\native\turing-sdk)`
+ * 并经桌面端自己的 SDK 副本取到 1174 字符真 token。另经 app.asar 解包核对：
+ * `native/turing-sdk` 在 asar 头里标 `unpacked`，实体只在 `app.asar.unpacked`
+ * 一侧，两条路径就是全部分布。注意 DSH Desktop / DSH NEXT 本身是另一种应用、
+ * **不含**这份 SDK——发现的搜索对象是 WorkBuddy 桌面端，不是运行宿主。
  */
 function installedSdkDirFromExecutable(platform: string, executable: string): string | undefined {
   if (platform === 'win32') {
