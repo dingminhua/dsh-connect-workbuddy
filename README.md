@@ -316,7 +316,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行就�
 | 子进程的窗口 | **必须 `windowsHide`**：宿主本身没有控制台（GUI 进程），漏设会让每次探测都在屏幕上闪一个可见的黑框 | 不适用（该选项仅 Windows 生效） | 不适用 |
 | 设置写入的瞬时占用 | **会踩到**：profile 的配置文件 `cordis.patch.yml` 被杀毒软件 / OneDrive / 编辑器短暂锁定会拒绝 rename 覆盖，`@deepseek-ai/dsh-atomic-write` 的重试**只在 `win32` 生效** | 不踩：POSIX 的 rename 直接替换，同一段代码不进重试分支 | 同 macOS |
 | 凭据库（vault）的文件权限 | **`mode: 0o600` 不生效**，权限由继承的 DACL 决定 → 写入前后用 `icacls` 显式加固（只允许 所有者 / SYSTEM / Administrators）。`doctor` 会回读并报告 `protected` / `exposed` / `unverified` | 由 `mode 0600` 生效 | 由 `mode 0600` 生效 |
-| 设备身份（`X-Machine-ID` / `X-Session-ID` / `X-Device-Token`） | **两档都能用**：虚拟值档从本机盐派生；真实值档用本机桌面端内的 Turing Shield SDK 现场取 token（10 分钟有效） | **只有虚拟值档**：派生对完全正常；**「真实值」这个选项在 macOS 上不出现**——SDK 取数要桌面端的主队列，插件在独立子进程里加载它，没有那条队列（实测四种调用方式都在 15 s 超时，见 `docs/WINDOWS.md`），这一档取不到 token。因此**这个平台根本不加载 SDK**（不探活、不取数），卡片里只剩一句「为什么」，`doctor` 报 `SDK unsupported`。卡片与 `doctor` 都按虚拟值报告；旧配置里存着的 `real` 静默按虚拟值发送（`doctor` 会专门说明这一行） | 都不支持：无桌面端 SDK，也没有盐的稳定来源（设置仍可写，但只影响虚拟值档的派生） |
+| 设备身份（`X-Machine-ID` / `X-Session-ID` / `X-Device-Token`） | **两档都能用**：虚拟值档从本机盐派生；真实值档用本机桌面端内的 Turing Shield SDK 现场签发 token（10 分钟有效） | **macOS 不支持 SDK 功能**，所以这里只有虚拟值档：「真实值」这个选项不出现——设备 token 只能由 Windows 桌面端签发，插件在独立子进程里加载 SDK 没有那条主队列，实测四种调用方式都在 15 s 超时（见 [`docs/WINDOWS.md`](docs/WINDOWS.md)）。因此**这个平台根本不加载 SDK**（不探活、不取数），卡片里只剩一句「为什么」，`doctor` 报 `SDK unsupported`。卡片与 `doctor` 都按虚拟值报告；旧配置里存着的 `real` 静默按虚拟值发送（`doctor` 会专门说明这一行） | 都不支持：无桌面端 SDK，也没有盐的稳定来源（设置仍可写，但只影响虚拟值档的派生） |
 | CI 覆盖 | `windows-latest` 跑完整套件 | 开发者本机（macOS） | `ubuntu-latest` 跑完整套件 |
 
 **Windows 上需要知道的四个具体点**：
@@ -480,6 +480,8 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 `status` 与 `doctor` 支持 `--json` 输出机器可读格式。
 
 ### 设备身份相关的环境变量
+
+设备身份做的事说白了就是一件事：**让插件的请求看起来来自官方桌面端**。两条路——「真实值」用桌面端内的 SDK 现场签发一枚真 token（10 分钟有效，Windows 独有），「虚拟值」按本机盐派生一对 `X-Machine-ID` / `X-Session-ID`（稳定，但不会等于任何一台真机）。所以 macOS 上这个功能是**残缺的**：SDK 不支持，只剩虚拟值。
 
 出站身份档位（`wireProfile`）与设备头档位（`deviceTier`）都是**卡片配置项**，不是环境变量。设备身份还有一个**总开关**（卡片「SDK」分区顶部），**默认关**：装好之后不会自动发任何设备头，第一次要用得自己去打开一次。关着时三个设备头都不发、后台停止取 token、`doctor` 也不探测 SDK，而档位与逐账号覆盖值都保留，重新打开即回到原档位——它是"这台机器要不要对外声称自己是谁"的开关，不是重置。下面这些是给"配置项够不着的场景"留的旁路：
 

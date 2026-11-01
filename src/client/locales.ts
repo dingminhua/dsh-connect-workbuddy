@@ -458,7 +458,7 @@ export const en = {
   // the consequence (the gear is off) rather than only the mechanism, because a
   // greyed-out gear with no sentence next to it reads as a broken control.
   'row.deviceModeOffHint': 'Device identity is off — switch it on in the SDK tab before these values are sent again.',
-  'row.deviceModePlatformMac': '{platform} has no Real tier: the SDK produces its token on the desktop app main queue, which the plugin child process does not have — so only Virtual is offered here.',
+  'row.deviceModePlatformMac': '{platform} does not support the SDK, so there is no Real tier here — only Virtual values are sent.',
   'row.deviceModeTitle': 'Device identity',
   'row.deviceModeVirtual': 'Virtual',
   'row.deviceModeReal': 'Real',
@@ -501,7 +501,6 @@ export const en = {
   'sdk.platformOther': '{platform} — not supported',
   'sdk.hintNoTier': 'This machine has no Real tier: the SDK only signs a device token, and only the Windows desktop app can do that. Nothing is loaded here, so there is nothing to fetch or configure — the switch above governs the Virtual tier.',
   'sdk.noTierNote': '{platform} has no Real tier, so this section does not load the SDK and there is no device token to fetch. The switch above still governs the Virtual tier (the derived device ids).',
-  'sdk.macTokenLimit': 'macOS: this desktop SDK produces the token on the main queue. The plugin runs the SDK in a separate process that has no such queue, so a token cannot be produced on this machine — the probe above still answers, and the Real tier sends nothing here (it falls back to Virtual when that switch is on). Platform limit, not a configuration problem.',
   'sdk.state': 'Connection',
   'sdk.statusReady': 'Working',
   'sdk.statusStale': 'Reachable, but the last fetch failed — serving the previous token',
@@ -509,7 +508,7 @@ export const en = {
   // 而插件不是那个进程，点多少次都一样——原文案是那个死循环的帮凶。
   'sdk.statusNoToken': 'SDK loaded, this machine has not produced a token yet',
   'sdk.statusMissing': 'No installed WorkBuddy desktop SDK found on this machine',
-  'sdk.statusUnsupported': 'The SDK refused this platform',
+  'sdk.statusUnsupported': 'Not supported on this platform',
   'sdk.statusError': 'The SDK could not be loaded',
   'sdk.bundle': 'SDK',
   'sdk.runtime': 'Runtime',
@@ -1099,7 +1098,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 共用这台机器真实的设备**，所以齿轮关掉——一台真机不可能有两个 id。只写"不可
   // 编辑"而不写原因，用户会当成控件坏了。
   'row.deviceModeOffHint': '设备身份已在「SDK」页关闭——去那里打开后才会再发送这些参数。',
-  'row.deviceModePlatformMac': '本平台（{platform}）没有「真实值」档：SDK 要把 token 取在桌面端的主队列上，而插件是在独立子进程里加载它的，没有那条队列——所以这里只有「虚拟值」。',
+  'row.deviceModePlatformMac': '{platform} 不支持 SDK，所以这里没有「真实值」档——只发「虚拟值」。',
   'row.deviceModeTitle': '设备头',
   'row.deviceModeVirtual': '虚拟值',
   'row.deviceModeReal': '真实值',
@@ -1139,13 +1138,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'sdk.platformOther': '{platform}——不支持',
   'sdk.hintNoTier': '这台机器没有「真实值」档：SDK 只用来签发设备 token，而那需要 Windows 桌面端。所以这里什么都不加载，既没有可取的 token，也没有可配的目录——上面的总开关管的是「虚拟值」档。',
   'sdk.noTierNote': '{platform} 上没有「真实值」档，所以这一页不加载 SDK，也没有 token 可取。上面的总开关仍然管着「虚拟值」档（按本机盐派生的设备 id）。',
-  'sdk.macTokenLimit': 'macOS：桌面端 SDK 的取数要在主队列上跑，而插件是在独立进程里加载它的，没有那条队列——所以这台机器取不到 token。上面的探活仍会回答；真实值档在这里一个设备头都不发（回退开关开着时退回虚拟值）。这是平台的限制，不是配置问题。',
   'sdk.state': '连接状态',
   'sdk.statusReady': '正常',
   'sdk.statusStale': '能连上，但最近一次取数失败——仍在使用上一枚 token',
   'sdk.statusNoToken': 'SDK 已加载，本机还没取到 token',
   'sdk.statusMissing': '未在本机找到已安装的 WorkBuddy 桌面端 SDK',
-  'sdk.statusUnsupported': 'SDK 拒绝了这个平台',
+  'sdk.statusUnsupported': '本平台不支持',
   'sdk.statusError': 'SDK 加载失败',
   'sdk.bundle': 'SDK',
   'sdk.runtime': '运行时',

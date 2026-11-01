@@ -55,7 +55,7 @@
   - 平台能力判断只写一处（`realTierAvailable` / `effectiveDeviceMode`），卡片侧用同一条规则
     （`client/device-profile.ts` 的同名函数，缺 `platform` 时按"有"处理，旧 Host 上不隐藏功能）。
 
-- **没有「真实值」档的平台不再加载 SDK**（用户意见：「连接了 SDK 却拿不到 token，那为什么还连」）：
+- **macOS / Linux 不支持 SDK，因此不再加载它**（用户意见：「连接了 SDK 却拿不到 token，那为什么还连」）：
   那一档不存在时，加载 SDK 的唯一效果是面板上多一个绿点、然后永远没有 token——一个"连上了但没用"
   的状态比一句说明更让人困惑。现在 `turing-sdk.ts` 在 `realTierAvailable(platform)` 为假时**什么都不做**：
   不解析目录、不起子进程、不写探活缓存，`info()` 直接给 `state: 'unsupported'` 与原因，`tokens.current()`

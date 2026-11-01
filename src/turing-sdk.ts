@@ -677,7 +677,7 @@ export function createTuringSdk(options: {
         platform,
         arch,
         runtime: runtimeLabel,
-        reason: `no Real tier on ${platform}: the SDK's only output is a device token, and fetching it needs the desktop app's main queue — see docs/WINDOWS.md`,
+        reason: `${platform} does not support the SDK: only the Windows desktop app can sign a device token, so nothing is loaded here (see docs/WINDOWS.md)`,
       }
       probeCache = { at, path: '', info }
       return info
@@ -722,7 +722,7 @@ export function createTuringSdk(options: {
         state: 'unavailable',
         masked: '',
         length: 0,
-        reason: `no Real tier on ${platform}: nothing is fetched here, and no device token can be produced`,
+        reason: `${platform} does not support the SDK: no device token can be produced here`,
       }
     }
     if (cached === undefined) {

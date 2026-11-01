@@ -365,7 +365,7 @@ describe('probe', () => {
     expect(info.state).toBe('unsupported')
     expect(info.path).toBe('')
     expect(info.platform).toBe('darwin')
-    expect(info.reason).toContain('no Real tier')
+    expect(info.reason).toContain('does not support the SDK')
     // 目录里有真的 binding，但这一档不该被加载。
     expect(await readCalls()).toBe(0)
   })
@@ -376,7 +376,7 @@ describe('probe', () => {
     const readout = sdk.tokens.readout()
     expect(readout.state).toBe('unavailable')
     expect(readout.masked).toBe('')
-    expect(readout.reason).toContain('no Real tier')
+    expect(readout.reason).toContain('does not support the SDK')
     expect(await readCalls()).toBe(0)
   })
 
