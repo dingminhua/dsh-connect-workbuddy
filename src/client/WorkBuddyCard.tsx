@@ -110,7 +110,7 @@ export interface WorkBuddyCardInjected {
  */
 export type WorkBuddyCardProps =
   Partial<WorkBuddyCardInjected>
-  & { view?: string }
+  & { view?: string; surface?: 'card' | 'page'; backToConversation?: () => void }
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -587,7 +587,7 @@ class CardBodyBoundary extends Component<
  * The body is wrapped in {@link CardBodyBoundary} INSIDE the render, not here:
  * the header must keep working when the body throws (see that class).
  */
-export function WorkBuddyCard(props: WorkBuddyCardProps & { view?: string }) {
+export function WorkBuddyCard(props: WorkBuddyCardProps) {
   // The boundary needs a translation function to draw its face; the body
   // already refuses to render without one, so this throws the same error the
   // body would have thrown — just before the boundary could swallow it.
@@ -595,9 +595,14 @@ export function WorkBuddyCard(props: WorkBuddyCardProps & { view?: string }) {
   return h(WorkBuddyCardBody, props)
 }
 
-function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { view?: string }) {
+function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation }: WorkBuddyCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
-  const [open, setOpen] = useState(view === 'page')
+  const pageSurface = surface === 'page'
+  // A page surface is always expanded; only the card chrome toggles. The
+  // collapse button is not rendered in page mode, so `setCardOpen` is unused there
+  // — keeping a single `open` value lets the polling effects stay untouched.
+  const [cardOpen, setCardOpen] = useState(view === 'page')
+  const open = pageSurface || cardOpen
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
   /**
@@ -2831,26 +2836,27 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
     </div>
   )
 
-  return (
-    <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
-      <button
-        type="button"
-        className="dsm-plugin-card-header"
-        aria-expanded={open}
-        aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
-        onClick={() => { setOpen(!open) }}
-      >
-        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
-        <span className="dsm-plugin-card-head">
-          <span className="dsm-plugin-card-title">{title}</span>
-          <span className="dsm-plugin-card-description">{t('row.desc')}</span>
-        </span>
-        <span aria-hidden="true" className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} />
-      </button>
-      <div className="dsm-plugin-card-body" hidden={!open}>
-        {open
-          ? <CardBodyBoundary t={t}>
-              <div className="dsm-workbuddy-usage">
+  const pageHead = pageSurface ? (
+    <div className="dsm-workbuddy-page-head">
+      {backToConversation !== undefined
+        ? (
+            <button type="button" className="dsm-workbuddy-page-back" onClick={backToConversation}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>{t('nav.back')}</span>
+            </button>
+          )
+        : null}
+      <img className="dsm-workbuddy-page-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+      <span className="dsm-workbuddy-page-title">{title}</span>
+      <span className="dsm-workbuddy-page-desc">{t('row.desc')}</span>
+    </div>
+  ) : null
+
+  const cardBody = (
+    <CardBodyBoundary t={t}>
+      <div className="dsm-workbuddy-usage">
               <div className="dsm-workbuddy-tabs" role="tablist" aria-label={title}>
                 {WORKBUDDY_REGIONS.map(region => {
                   const regionStatus = statusByRegion[region]
@@ -3667,7 +3673,35 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                 : null}
             </div>
           </CardBodyBoundary>
-          : null}
+  )
+
+  if (pageSurface) {
+    return (
+      <div className="dsm-workbuddy-page">
+        {pageHead}
+        <div className="dsm-workbuddy-page-body">{cardBody}</div>
+      </div>
+    )
+  }
+
+  return (
+    <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
+      <button
+        type="button"
+        className="dsm-plugin-card-header"
+        aria-expanded={open}
+        aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
+        onClick={() => { setCardOpen(!cardOpen) }}
+      >
+        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+        <span className="dsm-plugin-card-head">
+          <span className="dsm-plugin-card-title">{title}</span>
+          <span className="dsm-plugin-card-description">{t('row.desc')}</span>
+        </span>
+        <span aria-hidden="true" className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} />
+      </button>
+      <div className="dsm-plugin-card-body" hidden={!open}>
+        {open ? cardBody : null}
       </div>
     </li>
   )

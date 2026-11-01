@@ -23,6 +23,8 @@
  */
 
 import { WORKBUDDY_CARD_KEYS, WORKBUDDY_SETTINGS_NAMESPACE_CANDIDATES, WORKBUDDY_SETTINGS_NS } from '../status-paths.ts'
+import { createElement as h } from 'react'
+import type { JSX } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
@@ -41,6 +43,7 @@ import { CodebuddyLive } from './CodebuddyLive.tsx'
 import { selectQuotaNoticeClaim, WorkBuddyQuotaNotice } from './WorkBuddyQuotaNotice.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
+import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 
 /**
  * The browser-side plugin context this entry needs.
@@ -247,6 +250,74 @@ export function apply(ctx: WorkBuddyClientContext): void {
     }
 
     /**
+     * The sidebar glyph for the WorkBuddy panel row.
+     *
+     * The sidebar renders `sidebar.panellist` registrants with `{ size, active }`
+     * inside a `currentColor`-themed glyph cell, so the brand mark is drawn as a
+     * small `<img>` — the PNG's own colours read as the plugin's identity, and
+     * the row's selection state is the host's to paint around it.
+     */
+    function WorkBuddyPanelIcon(props: { size?: number }): JSX.Element {
+      const edge = typeof props.size === 'number' && props.size > 0 ? props.size : 16
+      return h('img', {
+        className: 'dsm-workbuddy-panel-icon',
+        src: WORKBUDDY_PLUGIN_ICON,
+        alt: '',
+        width: edge,
+        height: edge,
+        'aria-hidden': 'true',
+      })
+    }
+
+    /**
+     * The WorkBuddy panel in the sidebar (`sidebar.panellist` row + `main` keyed
+     * page), mirroring how the host's own Plugins row and dsh-skill-mcp-panel
+     * put a full page in the centre column.
+     *
+     * Back navigation reuses the host's layout service: `selectPanel(null)`
+     * hands the main area back to the conversation. It is soft-probed, so a
+     * host that never declares `layout` simply renders the page without the back
+     * affordance instead of blocking the whole plugin (the same degradation the
+     * card already promises for a missing settings form).
+     */
+    const registerPanel = (): Array<() => void> => {
+      const PANEL_ID = 'dsh-connect-workbuddy'
+      const disposers: Array<() => void> = []
+      const backToConversation = (): void => {
+        const layout = softGet('layout') as { selectPanel?: (id: string | null) => void } | undefined
+        if (layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(null)
+      }
+      try {
+        disposers.push(ctx.slots.inject('sidebar.panellist' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; id: string; order: number; label: () => string; locale: string }, component: unknown): () => void
+        }).register({
+          name: 'sidebar.panellist',
+          id: PANEL_ID,
+          order: 2,
+          label: () => t('nav.panel'),
+          locale: namespace,
+        }, WorkBuddyPanelIcon)))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] sidebar panel row failed to register (host provider unaffected):', error)
+      }
+      try {
+        disposers.push(ctx.slots.inject('main' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; key: string; locale: string; inject: () => WorkBuddyCardInjected & { surface: 'page'; backToConversation: () => void } }, component: unknown): () => void
+        }).register({
+          name: 'main',
+          key: PANEL_ID,
+          locale: namespace,
+          inject: () => settingsScope === undefined
+            ? { t, surface: 'page' as const, backToConversation }
+            : { t, settingsScope, surface: 'page' as const, backToConversation },
+        }, WorkBuddyCard)))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] sidebar panel page failed to register (host provider unaffected):', error)
+      }
+      return disposers
+    }
+
+    /**
      * The SAME readout in the ambient dock below the composer card (issue #62).
      *
      * Registered unconditionally, like the composer seat, because the CHOICE
@@ -408,6 +479,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
       registerCliLive(),
       registerQuotaNotice(),
       registerModelLabel(),
+      ...registerPanel(),
     ].filter((disposer): disposer is () => void => disposer !== undefined)
 
     /**
