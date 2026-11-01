@@ -145,7 +145,7 @@ function fieldSnapshotOf(
  * the field's live value, preserving the other region.
  */
 async function saveViaHostEndpoint(
-  field: 'accounts' | 'regions' | 'cliBridge' | UpstreamSwitchField,
+  field: 'accounts' | 'regions' | 'cliBridge' | 'sidebarPanel' | UpstreamSwitchField,
   region: WorkBuddyWebRegion | undefined,
   value: unknown,
 ): Promise<Record<string, unknown> | undefined> {
@@ -383,6 +383,65 @@ export async function writeCliBridgeEnabled(
   throw hostError instanceof Error
     ? hostError
     : new WorkBuddySettingsWriteError('cliBridge', 'neither the Host save endpoint nor the settings scope persisted the value')
+}
+
+/**
+ * Read the opt-in DSH sidebar panel switch out of a settings snapshot.
+ *
+ * Only an explicit `true` is ON, matching the schema's `default(false)` and
+ * every other switch in this file: the row claims a GLOBAL sidebar seat shared
+ * by every installed bundle, so an absent or malformed value must read as
+ * "did not ask for this", never as consent.
+ *
+ * @param configured - the whole settings snapshot.
+ * @returns whether the panel row should exist.
+ */
+export function sidebarPanelEnabledOf(configured: unknown): boolean {
+  const value = (configured as Record<string, unknown> | undefined)?.['sidebarPanel']
+  return unwrapVolatileDeep(value) === true
+}
+
+/**
+ * Write the opt-in DSH sidebar panel switch, verifying it landed.
+ *
+ * Same two writers and same reasoning as {@link writeCliBridgeEnabled}: the
+ * Host endpoint first (it is the authoritative merge and reports its own
+ * refusal), the settings scope second, because this namespace's browser mirror
+ * is documented as stale on the affected 0.1.7 deployments — and a sidebar row
+ * that merely *looks* present while the Host disagrees is worse than no row.
+ *
+ * A plain top-level boolean, so it is set on its own path; there is no sibling
+ * state inside the field to preserve.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param enabled - the desired state.
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writeSidebarPanelEnabled(
+  scope: WorkBuddyAccountScope,
+  enabled: boolean,
+): Promise<void> {
+  let hostError: unknown
+  try {
+    const authoritative = await saveViaHostEndpoint('sidebarPanel', undefined, enabled)
+    if (authoritative !== undefined) {
+      // Mirror what the Host stored, never a client-side re-merge.
+      try { await scope.set('sidebarPanel', authoritative['sidebarPanel']) } catch { /* optional */ }
+    }
+    return
+  } catch (error) {
+    hostError = error
+  }
+  let delivered = false
+  try {
+    delivered = (await scope.set('sidebarPanel', enabled)) !== false
+  } catch {
+    delivered = false
+  }
+  if (delivered && sidebarPanelEnabledOf(scope.getSnapshot().value)) return
+  throw hostError instanceof Error
+    ? hostError
+    : new WorkBuddySettingsWriteError('sidebarPanel', 'neither the Host save endpoint nor the settings scope persisted the value')
 }
 
 /**

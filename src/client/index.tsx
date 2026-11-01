@@ -22,7 +22,9 @@
  * @module dsh-connect-workbuddy/client
  */
 
-import { WORKBUDDY_CARD_KEYS, WORKBUDDY_SETTINGS_NAMESPACE_CANDIDATES, WORKBUDDY_SETTINGS_NS } from '../status-paths.ts'
+import { WORKBUDDY_CARD_KEYS, WORKBUDDY_SETTINGS_NAMESPACE_CANDIDATES, WORKBUDDY_SETTINGS_NS, WORKBUDDY_USAGE_PATH, withWorkBuddyRegion } from '../status-paths.ts'
+import { createElement as h } from 'react'
+import type { JSX } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
@@ -41,6 +43,10 @@ import { CodebuddyLive } from './CodebuddyLive.tsx'
 import { selectQuotaNoticeClaim, WorkBuddyQuotaNotice } from './WorkBuddyQuotaNotice.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
+import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
+import {
+  setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted,
+} from './panel-switch.ts'
 
 /**
  * The browser-side plugin context this entry needs.
@@ -247,6 +253,115 @@ export function apply(ctx: WorkBuddyClientContext): void {
     }
 
     /**
+     * The sidebar glyph for the WorkBuddy panel row.
+     *
+     * The sidebar renders `sidebar.panellist` registrants with `{ size, active }`
+     * inside a `currentColor`-themed glyph cell, so the brand mark is drawn as a
+     * small `<img>` — the PNG's own colours read as the plugin's identity, and
+     * the row's selection state is the host's to paint around it.
+     */
+    function WorkBuddyPanelIcon(props: { size?: number }): JSX.Element {
+      const edge = typeof props.size === 'number' && props.size > 0 ? props.size : 16
+      return h('img', {
+        className: 'dsm-workbuddy-panel-icon',
+        src: WORKBUDDY_PLUGIN_ICON,
+        alt: '',
+        width: edge,
+        height: edge,
+        'aria-hidden': 'true',
+      })
+    }
+
+    /**
+     * The WorkBuddy panel in the sidebar (`sidebar.panellist` row + `main` keyed
+     * page), mirroring how the host's own Plugins row and dsh-skill-mcp-panel
+     * put a full page in the centre column.
+     *
+     * OPT-IN (`Config.sidebarPanel`, default false). Registering it is NOT the
+     * same as showing it: `ui-sidebar` builds the nav row from the slot's ENTRY
+     * METADATA (`usePanels` → `PanelRow` with `options.label` and
+     * `renderSlot(...)` as the glyph), so a component returning `null` leaves a
+     * blank but still-clickable button rather than no button. The row therefore
+     * has to be registered only while the switch is on, which is what
+     * {@link syncPanelRegistration} owns. See `panel-switch.ts` for the store
+     * that decision rides on.
+     *
+     * Back navigation reuses the host's layout service: `selectPanel(null)`
+     * hands the main area back to the conversation. It is soft-probed, so a
+     * host that never declares `layout` simply renders the page without the back
+     * affordance instead of blocking the whole plugin (the same degradation the
+     * card already promises for a missing settings form).
+     */
+    const registerPanel = (): Array<() => void> => {
+      const PANEL_ID = 'dsh-connect-workbuddy'
+      const disposers: Array<() => void> = []
+      const backToConversation = (): void => {
+        const layout = softGet('layout') as { selectPanel?: (id: string | null) => void } | undefined
+        if (layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(null)
+      }
+      try {
+        disposers.push(ctx.slots.inject('sidebar.panellist' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; id: string; order: number; label: () => string; locale: string }, component: unknown): () => void
+        }).register({
+          name: 'sidebar.panellist',
+          id: PANEL_ID,
+          order: 2,
+          label: () => t('nav.panel'),
+          locale: namespace,
+        }, WorkBuddyPanelIcon)))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] sidebar panel row failed to register (host provider unaffected):', error)
+      }
+      try {
+        disposers.push(ctx.slots.inject('main' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; key: string; locale: string; inject: () => WorkBuddyCardInjected & { surface: 'page'; backToConversation: () => void } }, component: unknown): () => void
+        }).register({
+          name: 'main',
+          key: PANEL_ID,
+          locale: namespace,
+          inject: () => settingsScope === undefined
+            ? { t, surface: 'page' as const, backToConversation }
+            : { t, settingsScope, surface: 'page' as const, backToConversation },
+        }, WorkBuddyCard)))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] sidebar panel page failed to register (host provider unaffected):', error)
+      }
+      return disposers
+    }
+
+    /**
+     * The live panel registrations, kept SEPARATE from {@link liveDisposers}.
+     *
+     * They are the only slots in this plugin that come and go while the page is
+     * open (the opt-in switch), so owning them apart from the rest means
+     * flipping the switch does not dispose and re-create the card, the composer
+     * readout and the five other seats — which would be a visible flicker on the
+     * Plugins page for a change that has nothing to do with it.
+     */
+    let panelDisposers: Array<() => void> = []
+
+    /**
+     * Bring the panel registrations in line with the opt-in switch.
+     *
+     * Dispose FIRST, then register, for the reason spelled out on
+     * {@link rebindSlots}: a live `key` / `id` cannot be registered twice, and
+     * the throw would be swallowed into "no entry at all".
+     *
+     * Re-registering (rather than only unregistering) is what keeps the entry
+     * fresh after a settings-scope rebind: the renderer caches each entry's
+     * `inject` result by object identity, so an entry created before the scope
+     * landed would keep serving props without it forever.
+     */
+    const syncPanelRegistration = (): void => {
+      for (const dispose of panelDisposers) {
+        try { dispose() } catch { /* already disposed by the slot service */ }
+      }
+      panelDisposers = []
+      if (!sidebarPanelWanted()) return
+      panelDisposers = registerPanel()
+    }
+
+    /**
      * The SAME readout in the ambient dock below the composer card (issue #62).
      *
      * Registered unconditionally, like the composer seat, because the CHOICE
@@ -408,6 +523,9 @@ export function apply(ctx: WorkBuddyClientContext): void {
       registerCliLive(),
       registerQuotaNotice(),
       registerModelLabel(),
+      // `registerPanel()` deliberately does NOT belong here: it is the one seat
+      // that is only registered while its opt-in switch is on, so it is owned by
+      // {@link syncPanelRegistration} instead of the always-on set above.
     ].filter((disposer): disposer is () => void => disposer !== undefined)
 
     /**
@@ -457,9 +575,14 @@ export function apply(ctx: WorkBuddyClientContext): void {
       try {
         console.info(
           `[dsh-connect-workbuddy] registered ${String(liveDisposers.length)} slots `
-          + `(settings form: ${settingsScope === undefined ? 'none — card is read-only' : 'bound'})`,
+          + `(settings form: ${settingsScope === undefined ? 'none — card is read-only' : 'bound'}, `
+          + `sidebar panel: ${sidebarPanelWanted() ? 'on' : 'off'})`,
         )
       } catch { /* a host without console must still get its slots */ }
+      // The panel rides its OWN switch, so it is reconciled rather than listed:
+      // an already-on panel is torn down and re-registered here so its `inject`
+      // closure sees the scope that was just bound.
+      syncPanelRegistration()
     }
 
     /**
@@ -500,6 +623,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
         // then renders read-only, which is the documented degradation.
         settingsScope = forms?.get(WORKBUDDY_SETTINGS_NS)
         liveDisposers = registerAllSlots()
+        syncPanelRegistration()
         return
       }
       // Wrapped in `ctx.effect` so the watch is torn down with the plugin fiber,
@@ -523,6 +647,10 @@ export function apply(ctx: WorkBuddyClientContext): void {
               try { dispose() } catch { /* already disposed by the slot service */ }
             }
             liveDisposers = []
+            for (const dispose of panelDisposers) {
+              try { dispose() } catch { /* already disposed by the slot service */ }
+            }
+            panelDisposers = []
           }
         },
       ), 'dsh-connect-workbuddy: settings namespace binding')
@@ -554,6 +682,42 @@ export function apply(ctx: WorkBuddyClientContext): void {
     }
 
     bindSettingsScope()
+
+    /**
+     * Follow the opt-in switch, and SEED it from the Host.
+     *
+     * The seed is a status read rather than the settings scope on purpose. This
+     * namespace's browser mirror is documented as stale on the affected 0.1.7
+     * deployments, and here a stale `false` would mean the row never appears —
+     * with no later event to correct it, because `whileServed` only fires on a
+     * namespace edge, not on a value change. The Host's own answer is the
+     * authority (`sidebarPanelEnabled` on the usage document), exactly as it is
+     * for the other Host-carried switches.
+     *
+     * A failed read is NOT an error to show: OFF is a legitimate and, in fact,
+     * the default answer, so a plugin whose status route is unreachable simply
+     * gets no row. There is nothing the user could do about it from here.
+     *
+     * The SUBSCRIPTION is what makes the switch live: the card calls
+     * `setSidebarPanelWanted` after a verified write, so the row appears and
+     * disappears without a reload. `ui-layout` drops an `activePanelId` whose
+     * `main` key has gone, so switching off while the page is open returns the
+     * centre column to the conversation on its own.
+     */
+    ctx.effect(
+      () => subscribeSidebarPanelWanted(syncPanelRegistration),
+      'dsh-connect-workbuddy: sidebar panel opt-in',
+    )
+    void (async () => {
+      try {
+        const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, 'cn'), {
+          headers: { accept: 'application/json' },
+        })
+        if (!response.ok) return
+        const document = await response.json() as { sidebarPanelEnabled?: unknown }
+        if (document.sidebarPanelEnabled === true) setSidebarPanelWanted(true)
+      } catch { /* no answer means no row; the switch stays off */ }
+    })()
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.

@@ -1291,6 +1291,16 @@ export type WorkBuddyWebUsage =
      */
     cliBridgeEnabled?: boolean
     /**
+     * Whether the OPTIONAL DSH sidebar panel is switched on (PR #188).
+     *
+     * GLOBAL, not per region — one nav row, one page, no region axis — so the
+     * same value rides on every region's answer and the card reads it off the
+     * active tab. Absent reads as OFF, matching the schema's `default(false)`:
+     * the row claims a `sidebar.panellist` seat every bundle shares, so a Host
+     * that cannot answer must not be read as consent.
+     */
+    sidebarPanelEnabled?: boolean
+    /**
      * The model the OPTIONAL CodeBuddy CLI route runs on, or `''` for
      * "nothing is pinned, the CLI uses its own default".
      *
@@ -1409,6 +1419,16 @@ export type WorkBuddyWebUsage =
      * must not be read as consent.
      */
     cliBridgeEnabled?: boolean
+    /**
+     * Whether the OPTIONAL DSH sidebar panel is switched on (PR #188).
+     *
+     * GLOBAL, not per region — one nav row, one page, no region axis — so the
+     * same value rides on every region's answer and the card reads it off the
+     * active tab. Absent reads as OFF, matching the schema's `default(false)`:
+     * the row claims a `sidebar.panellist` seat every bundle shares, so a Host
+     * that cannot answer must not be read as consent.
+     */
+    sidebarPanelEnabled?: boolean
     /**
      * The model the OPTIONAL CodeBuddy CLI route runs on, or `''` for
      * "nothing is pinned, the CLI uses its own default".

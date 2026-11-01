@@ -11,6 +11,8 @@
  */
 
 export const en = {
+  'nav.panel': 'WorkBuddy',
+  'nav.back': 'Back to conversation',
   'row.title': 'WorkBuddy credits & models (dsh-connect-workbuddy)',
   'row.desc': 'Use WorkBuddy models in DSH: each refresh reads every model\'s credit multiplier from the upstream catalog, image input is toggled per model, several accounts can be switched or failed over automatically, and daily check-in plus your remaining credits are one click away. The domestic and international sides are two independent providers, each with its own account — use both at the same time.',
   'row.expand': 'Expand',
@@ -555,6 +557,8 @@ export const en = {
   'row.channelRejectContinueText': 'Text sent:',
   'row.cliBridgeLabel': 'Let the local CodeBuddy CLI do the work',
   'row.cliBridgeHint': 'Adds the codebuddy_ask tool and the /codebuddy command. Each call spends CodeBuddy quota. injectResult only affects /codebuddy — its result is injected back into the session, costing one DSH turn when the session is idle; tool calls never read it. Rate-limited: 6 turns per session per hour, 20 per process per hour, one turn at a time. Off by default.',
+  'row.sidebarPanelLabel': 'Show WorkBuddy in the sidebar',
+  'row.sidebarPanelHint': 'Adds a WorkBuddy row to the DSH sidebar that opens this card as a full page. Off by default: the row takes a global sidebar slot shared by every installed plugin, and the Plugins page already reaches the same content. Takes effect on the click — no Save needed — and switching it off while the page is open returns you to the conversation.',
   // The three quick-adjust pins of the route: which model and which reasoning
   // tier the local CLI runs on, and in what order it walks the credential
   // regions. The model list is not hardcoded — it is the catalog the card
@@ -688,6 +692,8 @@ export const en = {
 export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
+  'nav.panel': 'WorkBuddy',
+  'nav.back': '返回会话',
   'row.title': '接入使用 WorkBuddy 积分与模型（dsh-connect-workbuddy）',
   'row.desc': '在 DSH 中使用 WorkBuddy 模型：每次刷新都按上游目录读取每个模型的积分倍率，图片输入可逐模型开关，多个账号可切换或由账号池自动换号，每日签到与剩余积分一键可查。国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。',
   'row.expand': '展开',
@@ -1182,6 +1188,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.channelRejectContinueText': '发送的文本：',
   'row.cliBridgeLabel': '允许调用本机 CodeBuddy CLI 干活',
   'row.cliBridgeHint': '开启后多出 codebuddy_ask 工具与 /codebuddy 指令；每次调用花 CodeBuddy 配额。injectResult 只影响 /codebuddy：其结果回注会话，会话空闲时多花一次 DSH 回合；工具调用不读它。限流：每会话每小时 6 回合、每进程每小时 20 回合、同时只跑一个回合。默认关闭。',
+  'row.sidebarPanelLabel': '在侧边栏显示 WorkBuddy',
+  'row.sidebarPanelHint': '在 DSH 侧边栏加一个 WorkBuddy 行，点开就是这张卡片的整页版。默认关闭：这一行占的是所有插件共用的全局侧边栏座位，而「插件」页本来就能看到同样的内容。点一下即生效，不用保存；页面开着时关掉它，会直接回到对话。',
   // 本地 CLI 路由的三个快调旋钮：跑哪个模型、哪个推理档位、按什么顺序
   // 遍历凭据区域。模型列表不写死——是卡片已为当前页签同步到的目录，
   // 跟随上游；已选值即使目录里没有也会原样列出，不让它无声消失。

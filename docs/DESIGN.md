@@ -63,13 +63,20 @@ README「Known Limitations and Deferred Work」逐字写着——
 > [`DSH-0.2.1-RC3-FOLLOWUP.md`](DSH-0.2.1-RC3-FOLLOWUP.md) §2.3。
 
 > **宿主面的边界写成了测试**：本插件认领的槽位是一个**封闭集合**（`conversation.input.right`、
-> `conversation.input.model.label`、`conversation.composer.dock`、`shell.quota-notice`），
-> 由 [`tests/host-slot-surface.spec.ts`](../tests/host-slot-surface.spec.ts) 钉住。加第五个槽位
+> `conversation.input.model.label`、`conversation.composer.dock`、`shell.quota-notice`、
+> `sidebar.panellist`、`main`），
+> 由 [`tests/host-slot-surface.spec.ts`](../tests/host-slot-surface.spec.ts) 钉住。加新槽位
 > 不会自动算错，但那是一次**改变了「我们在哪个宿主面上」的判断**，所以它先在那里变红，
 > 提醒回头读 [`DSH-0.2.1-RC5-FOLLOWUP.md`](DSH-0.2.1-RC5-FOLLOWUP.md) §2.1——那里记着
 > rc.5 起 `conversation.chat.reasoning.body` 的 `rawText` / `text` 语义分离，以及
 > 「渲染 `text` 时不得重复做显示处理」这条约定。同一个文件还以**条件断言**表达它：
 > 源码一旦碰到那个槽，就必须读 `rawText`。
+>
+> `sidebar.panellist` / `main` 这两个座位是 **opt-in** 的（`Config.sidebarPanel`，默认
+> `false`，PR #188）：它们占的是**所有已安装 bundle 共用的全局座位**，所以默认不注册，
+> 只有在用户从「能力」栏打开开关后才出现。开关关了就直接把注册**注销**——不能靠组件
+> 返回 `null`，因为侧边栏的导航行是用**槽位条目元数据**（`options.label` + `renderSlot`）
+> 拼出来的，返回 `null` 只会得到一颗空白的、仍然可点的按钮。
 
 ---
 

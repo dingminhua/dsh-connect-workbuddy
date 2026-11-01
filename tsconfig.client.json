@@ -61,6 +61,8 @@
     "tests/card-media-models.spec.tsx",
     "tests/card-channel-continue.spec.tsx",
     "tests/issue170-status-retry.spec.tsx",
+    "tests/sidebar-panel-page.spec.tsx",
+    "tests/sidebar-panel-optin.spec.tsx",
     "tests/device-profile-dialog.spec.tsx"
   ]
 }

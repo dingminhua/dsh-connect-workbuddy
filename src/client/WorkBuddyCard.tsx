@@ -64,7 +64,8 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
+import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { DeviceSdkPanel } from './DeviceSdkPanel.tsx'
 import { fetchDeviceSettings, putDeviceMode, putDeviceProfile } from './device-profile.ts'
@@ -115,7 +116,7 @@ export interface WorkBuddyCardInjected {
  */
 export type WorkBuddyCardProps =
   Partial<WorkBuddyCardInjected>
-  & { view?: string }
+  & { view?: string; surface?: 'card' | 'page'; backToConversation?: () => void }
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -592,7 +593,7 @@ class CardBodyBoundary extends Component<
  * The body is wrapped in {@link CardBodyBoundary} INSIDE the render, not here:
  * the header must keep working when the body throws (see that class).
  */
-export function WorkBuddyCard(props: WorkBuddyCardProps & { view?: string }) {
+export function WorkBuddyCard(props: WorkBuddyCardProps) {
   // The boundary needs a translation function to draw its face; the body
   // already refuses to render without one, so this throws the same error the
   // body would have thrown — just before the boundary could swallow it.
@@ -600,9 +601,14 @@ export function WorkBuddyCard(props: WorkBuddyCardProps & { view?: string }) {
   return h(WorkBuddyCardBody, props)
 }
 
-function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { view?: string }) {
+function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation }: WorkBuddyCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
-  const [open, setOpen] = useState(view === 'page')
+  const pageSurface = surface === 'page'
+  // A page surface is always expanded; only the card chrome toggles. The
+  // collapse button is not rendered in page mode, so `setCardOpen` is unused there
+  // — keeping a single `open` value lets the polling effects stay untouched.
+  const [cardOpen, setCardOpen] = useState(view === 'page')
+  const open = pageSurface || cardOpen
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
   /**
@@ -705,6 +711,14 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
    */
   const [cliBridgeOn, setCliBridgeOn] = useState<boolean | undefined>(undefined)
   const [cliBridgeBusy, setCliBridgeBusy] = useState(false)
+  /**
+   * The OPTIONAL sidebar-row switch (PR #188).
+   *
+   * `undefined` until the first Host answer arrives, so the box renders the
+   * committed value instead of guessing — the same rule as `cliBridgeOn`.
+   */
+  const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
+  const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
   /**
    * The quick-adjust pins of the CLI route (model, effort, region order) made
    * by THIS card instance.
@@ -1385,6 +1399,44 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setCliBridgeBusy(false)
+    }
+  }
+
+  /**
+   * Whether the OPTIONAL sidebar row is switched on (PR #188).
+   *
+   * Read Host-first, mirror-second, for the same measured reason as
+   * `cliBridgeSwitchedOn`: the browser's settings mirror is stale for this
+   * namespace on the affected 0.1.7 deployments. `=== true` on both — absent is
+   * not consent, and this switch claims a global sidebar seat.
+   */
+  const sidebarPanelSwitchedOn = (): boolean => {
+    if (sidebarPanelOn !== undefined) return sidebarPanelOn
+    const fromHost = (statusByRegion[activeRegion] as { sidebarPanelEnabled?: unknown } | undefined)?.sidebarPanelEnabled
+    if (typeof fromHost === 'boolean') return fromHost
+    return sidebarPanelEnabledOf(settingsScope?.getSnapshot().value)
+  }
+
+  /**
+   * Flip the sidebar-row switch.
+   *
+   * Published to the entry's opt-in store on success, because the row is built
+   * from slot ENTRY METADATA and therefore cannot decide its own visibility —
+   * see `panel-switch.ts`. Publishing only AFTER the write is verified keeps the
+   * two from disagreeing: the row never appears for a value the Host refused.
+   */
+  const toggleSidebarPanel = async (enabled: boolean): Promise<void> => {
+    if (settingsScope === undefined) return
+    setSidebarPanelBusy(true)
+    try {
+      await writeSidebarPanelEnabled(settingsScope, enabled)
+      if (mounted.current) setSidebarPanelOn(enabled)
+      setSidebarPanelWanted(enabled)
+      await refreshUsage(activeRegion)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setSidebarPanelBusy(false)
     }
   }
 
@@ -2597,6 +2649,34 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
   )
 
   /**
+   * The sidebar-row switch (PR #188).
+   *
+   * Its own class for the reason the CLI box has one: the credit-switch suite's
+   * "exactly one switch" selector (`.dsm-workbuddy-pref-check`) must keep
+   * resolving to the credit box alone.
+   *
+   * NOT gated on the active tab's provider: the row is a property of the whole
+   * plugin, not of one region, and a signed-out card can still turn it on.
+   */
+  const sidebarPanelPreference = (
+    <label className="dsm-workbuddy-pref" title={t('row.sidebarPanelHint')}>
+      <input
+        type="checkbox"
+        className="dsm-workbuddy-sidebar-panel-check"
+        checked={sidebarPanelSwitchedOn()}
+        disabled={!canWrite || saving || poolBusy || sidebarPanelBusy}
+        onChange={(event: { target: { checked: boolean } }) => {
+          void toggleSidebarPanel(event.target.checked)
+        }}
+      />
+      <span className="dsm-workbuddy-pref-copy">
+        <span className="dsm-workbuddy-pref-label">{t('row.sidebarPanelLabel')}</span>
+        <span className="dsm-workbuddy-pref-hint">{t('row.sidebarPanelHint')}</span>
+      </span>
+    </label>
+  )
+
+  /**
    * The two quick-adjust pins of the CLI route, rendered under its switch the
    * way the seat picker sits under its switch: indented, and only while the
    * switch is ON — the pickers configure the route the switch turned on, and
@@ -2880,26 +2960,27 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
     </div>
   )
 
-  return (
-    <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
-      <button
-        type="button"
-        className="dsm-plugin-card-header"
-        aria-expanded={open}
-        aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
-        onClick={() => { setOpen(!open) }}
-      >
-        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
-        <span className="dsm-plugin-card-head">
-          <span className="dsm-plugin-card-title">{title}</span>
-          <span className="dsm-plugin-card-description">{t('row.desc')}</span>
-        </span>
-        <span aria-hidden="true" className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} />
-      </button>
-      <div className="dsm-plugin-card-body" hidden={!open}>
-        {open
-          ? <CardBodyBoundary t={t}>
-              <div className="dsm-workbuddy-usage">
+  const pageHead = pageSurface ? (
+    <div className="dsm-workbuddy-page-head">
+      {backToConversation !== undefined
+        ? (
+            <button type="button" className="dsm-workbuddy-page-back" onClick={backToConversation}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>{t('nav.back')}</span>
+            </button>
+          )
+        : null}
+      <img className="dsm-workbuddy-page-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+      <span className="dsm-workbuddy-page-title">{title}</span>
+      <span className="dsm-workbuddy-page-desc">{t('row.desc')}</span>
+    </div>
+  ) : null
+
+  const cardBody = (
+    <CardBodyBoundary t={t}>
+      <div className="dsm-workbuddy-usage">
               <div className="dsm-workbuddy-tabs" role="tablist" aria-label={title}>
                 {WORKBUDDY_REGIONS.map(region => {
                   const regionStatus = statusByRegion[region]
@@ -3581,6 +3662,7 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                 {creditPreferences}
                 {upstreamSwitches}
                 {channelRejectContinuePreference}
+                {sidebarPanelPreference}
               </div>
               {/* DIAGNOSTICS — the third section, and the one that earns its tab
                   by holding nothing the other two already say: the facts a bug
@@ -3766,7 +3848,35 @@ function WorkBuddyCardBody({ t, settingsScope, view }: WorkBuddyCardProps & { vi
                 : null}
             </div>
           </CardBodyBoundary>
-          : null}
+  )
+
+  if (pageSurface) {
+    return (
+      <div className="dsm-workbuddy-page">
+        {pageHead}
+        <div className="dsm-workbuddy-page-body">{cardBody}</div>
+      </div>
+    )
+  }
+
+  return (
+    <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
+      <button
+        type="button"
+        className="dsm-plugin-card-header"
+        aria-expanded={open}
+        aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
+        onClick={() => { setCardOpen(!cardOpen) }}
+      >
+        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+        <span className="dsm-plugin-card-head">
+          <span className="dsm-plugin-card-title">{title}</span>
+          <span className="dsm-plugin-card-description">{t('row.desc')}</span>
+        </span>
+        <span aria-hidden="true" className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} />
+      </button>
+      <div className="dsm-plugin-card-body" hidden={!open}>
+        {open ? cardBody : null}
       </div>
     </li>
   )

@@ -606,6 +606,20 @@ export interface Config {
    */
   cliBridge?: CliBridgeSettings
   /**
+   * Put the WorkBuddy panel in the DSH sidebar (opt-IN, PR #188).
+   *
+   * OFF by default, like every other optional surface this plugin adds: the
+   * panel claims a GLOBAL seat (`sidebar.panellist` row + `main` page) that
+   * every bundle shares, so switching it on is a decision about the user's
+   * whole sidebar rather than a preference about this card. An absent value
+   * therefore reads as off, and an upgrade must never re-arrange a sidebar
+   * nobody asked to change.
+   *
+   * The settings card is unaffected either way: this only adds a second door to
+   * the same content, and the Plugins page keeps the first one.
+   */
+  sidebarPanel?: boolean
+  /**
    * When scanned messages are perturbed with invisible characters.
    *
    * `failure` (default) learns from a successful channel-gate rescue and starts
@@ -1053,6 +1067,15 @@ export const Config: z<Config> = z.object({
   cliBridge: asVolatile(
     cliBridgeConfig.default({} as any).description('Optional CodeBuddy CLI route; off by default and independent of the providers'),
   ) as unknown as z<CliBridgeSettings>,
+  // Volatile for the same reason as the block above: the browser card's switch
+  // writes it, and a full plugin reload (which disposes both provider stacks and
+  // drops in-flight requests) would be a wildly disproportionate price for
+  // adding one nav row.
+  sidebarPanel: asVolatile(
+    z.boolean()
+      .default(false)
+      .description('Add a WorkBuddy panel to the DSH sidebar: a nav row that opens the credits / accounts / model catalog as a full page. Off by default — the row claims a global sidebar seat shared by every bundle, and the Plugins page already reaches the same content.'),
+  ) as unknown as z<boolean>,
   channelPerturbation: asVolatile(
     z.union([z.const('off'), z.const('failure'), z.const('always')])
       .default('failure')
@@ -2667,6 +2690,15 @@ export function apply(ctx: Context, config: Config): void {
      * consent. `cliBridge` is a volatile field, hence the unwrap.
      */
     cliBridgeEnabled: () => unwrapVolatile(current().cliBridge)?.enabled === true,
+    /**
+     * Whether the optional DSH sidebar panel is switched on (PR #188).
+     *
+     * GLOBAL, so it takes no region. `=== true` like `cliBridgeEnabled`, not
+     * `!== false`: the row claims a `sidebar.panellist` seat and a `main` page
+     * that every installed bundle shares, so an absent value must read as "not
+     * asked for" rather than as consent. Volatile, hence the unwrap.
+     */
+    sidebarPanelEnabled: () => unwrapVolatile(current().sidebarPanel) === true,
     /**
      * The model / reasoning effort the optional CodeBuddy CLI route runs on.
      *

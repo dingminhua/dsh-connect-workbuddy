@@ -52,6 +52,8 @@ const CLAIMED_SLOTS: Record<string, string> = {
   'conversation.input.model.label': 'load badge in the model picker (single, priority -0.5)',
   'conversation.composer.dock': 'stats credits row (order 10) and CLI live row (order 11)',
   'shell.quota-notice': 'frame-wide quota notice chain contributor',
+  'sidebar.panellist': 'sidebar nav row (order 2) that opens the WorkBuddy full page',
+  'main': 'centre-column full page keyed to the sidebar row',
 }
 
 /**
