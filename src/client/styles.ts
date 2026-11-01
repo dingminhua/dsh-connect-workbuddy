@@ -797,7 +797,11 @@ export const WORKBUDDY_CARD_CSS = `
 /* Secondary text inside the transfer DIALOG (not a bar): the privacy note
    shown when credentials leave the machine. Kept independent of the bar
    classes so the dialog does not depend on the bar's layout to be readable. */
-.dsm-workbuddy-hint{color:var(--dsw-alias-label-tertiary,#999)}
+/* 辅助说明文字的**唯一**入口。字号与行高必须写死在这里，不能靠继承：
+   这个类同时被用在 <p> 与 <span> 上，而 <p> 在宿主里带默认段落样式，于是
+   同一句说明在两处会长成两种大小（实测截图里 SDK 那两段比周围 12px 的辅助
+   文字大了一圈，正是这个原因）。全仓其它 hint 类都写了 12px/18px，这里补齐。 */
+.dsm-workbuddy-hint{color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* The transfer dialog is deliberately a block: it holds a scrollable account
    list and per-entry checkboxes, which cannot live in a one-row bar. */
 .dsm-workbuddy-transfer-dialog{margin-top:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-secondary,transparent)}
@@ -946,6 +950,17 @@ export const WORKBUDDY_CARD_CSS = `
 /* 回退开关：勾选框交回平台（accent-color），方框尺寸/圆角/勾形不由我们画。 */
 .dsm-workbuddy-sdk-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary,#e8e9ed);cursor:pointer}
 .dsm-workbuddy-sdk-switch input{accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+/* 总开关区块：它在面板最上面，与下面那组诊断之间要有一道肉眼可见的分界——
+   否则"关掉它"和"看它现在的状态"会被读成同一件事。 */
+.dsm-workbuddy-sdk-master{
+  display:flex;flex-direction:column;gap:4px;
+  margin:0 0 10px;padding:10px 12px;
+  border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;
+  background:var(--dsw-alias-bg-layer-2,#232529);
+}
+.dsm-workbuddy-sdk-master .dsm-workbuddy-hint{margin:0}
+/* 关掉时整块诊断降饱和度：它仍然是事实（"现在没在跑"），但不再是当前动作的重点。 */
+.dsm-workbuddy-sdk-master-off + .dsm-workbuddy-panel-note{opacity:.75}
 .dsm-workbuddy-device-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-device-input-bad{border-color:var(--dsw-alias-label-error,#e5534b)}
 .dsm-workbuddy-device-error{color:var(--dsw-alias-label-error,#e5534b);font-size:12px;margin:4px 0 0}

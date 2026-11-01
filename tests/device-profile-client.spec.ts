@@ -92,3 +92,43 @@ describe('derived values from the Host', () => {
     expect(settings.derived?.['a1']?.machineId).toBe(MACHINE)
   })
 })
+
+/**
+ * 「真实值」可用性（`realTier`）：由 Host 判定，界面只照做。
+ *
+ * 关键取舍是**缺席不能等于禁用**：一个读不到这一项的旧 Host 上，「真实值」可能真的
+ * 能用，凭空禁掉它等于替用户取消一个功能。
+ */
+describe('the Real tier availability', () => {
+  const PATH = '/plugins/dsh-connect-workbuddy/device-profile'
+
+  function answer(body: unknown): void {
+    vi.stubGlobal('fetch', async () => ({ ok: true, status: 200, json: async () => body }))
+  }
+
+  it('carries the Host verdict through', async () => {
+    answer({ mode: 'virtual', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true, realTier: { state: 'broken', platform: 'darwin' } })
+    const settings = await fetchDeviceSettings(PATH)
+    expect(settings?.realTier).toEqual({ state: 'broken', platform: 'darwin' })
+  })
+
+  it('stays absent when the Host does not send it — so an old Host never disables anything', async () => {
+    answer({ mode: 'virtual', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true })
+    const settings = await fetchDeviceSettings(PATH)
+    expect(settings?.realTier).toBeUndefined()
+  })
+
+  it('rejects an unknown state rather than guessing one', async () => {
+    // 把不认识的字符串猜成 available 会让一个真坏掉的平台看起来能用；猜成 broken
+    // 又会凭空禁掉一个能用的。两种都不如"没这一项"。
+    answer({ mode: 'virtual', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true, realTier: { state: 'maybe', platform: 'linux' } })
+    const settings = await fetchDeviceSettings(PATH)
+    expect(settings?.realTier).toBeUndefined()
+  })
+
+  it('accepts available on Windows', async () => {
+    answer({ mode: 'virtual', accounts: {}, sdkDir: '', sdkFallbackToVirtual: true, realTier: { state: 'available', platform: 'win32' } })
+    const settings = await fetchDeviceSettings(PATH)
+    expect(settings?.realTier?.state).toBe('available')
+  })
+})

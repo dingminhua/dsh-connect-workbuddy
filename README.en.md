@@ -476,6 +476,7 @@ The outbound identity profile (`wireProfile`) and the device-header tier (`devic
 | `WORKBUDDY_TURING_PRODUCT_NAME` | `WorkBuddy` | Product name the SDK initialises with |
 | `WORKBUDDY_TURING_PRODUCT_VERSION` | plugin version | Product version the SDK initialises with |
 | `WORKBUDDY_TURING_KEYCHAIN_STORAGE` | unset (= off) | Set to `1` to let the SDK enable its own device-cache storage; off by default — the plugin does not write device state into the user's keychain |
+| `WORKBUDDY_DEVICE_SDK_ENABLED` | unset (= off) | Bypass for the SDK master switch, for `doctor` and other standalone processes that cannot read the plugin config: `1` / `true` = on. The card's switch of the same name (`deviceSdkEnabled`, **off by default**) is the normal entry point; both mean the same thing and the plugin always passes a value explicitly. Off means no discovery, no child process, no prewarming. To check whether the SDK works at all, run `WORKBUDDY_DEVICE_SDK_ENABLED=1 node lib/bin.js doctor` |
 
 > **Why these three commands work on a machine with nothing installed (issue #47)**
 >

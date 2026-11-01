@@ -13,7 +13,8 @@ export type DeviceSdkTier = 'virtual' | 'real'
 
 /** SDK 自身的加载状态（`probe` 的结论，不需要网络）。 */
 export interface DeviceSdkInfo {
-  state: 'ready' | 'unsupported' | 'missing' | 'error'
+  /** `disabled` = 用户把总开关关了；与 `missing`（这台机器没装）是两回事。 */
+  state: 'ready' | 'unsupported' | 'missing' | 'error' | 'disabled'
   /** `win32-x64` 之类。 */
   bundle: string
   path: string
@@ -39,6 +40,13 @@ export interface DeviceSdkReport {
   tier: DeviceSdkTier
   sdk: DeviceSdkInfo
   token: DeviceSdkToken
+  /**
+   * SDK 总开关的当前值（`Config.deviceSdkEnabled`）。
+   *
+   * 缺席 = 这个 Host 没有 settings 服务，卡片据此把开关标成不可用。缺席与
+   * `false` 必须能分开：前者是"这个宿主做不到"，后者是"用户关掉了"。
+   */
+  sdkEnabled?: boolean
 }
 
 function normalize(body: unknown): DeviceSdkReport | undefined {
@@ -54,7 +62,8 @@ function normalize(body: unknown): DeviceSdkReport | undefined {
   return {
     tier: record['tier'] === 'real' ? 'real' : 'virtual',
     sdk: {
-      state: sdkState === 'ready' || sdkState === 'unsupported' || sdkState === 'missing' || sdkState === 'error'
+      state: sdkState === 'ready' || sdkState === 'unsupported' || sdkState === 'missing'
+        || sdkState === 'error' || sdkState === 'disabled'
         ? sdkState
         : 'error',
       bundle: typeof sdkRecord['bundle'] === 'string' ? sdkRecord['bundle'] : '',
@@ -74,6 +83,8 @@ function normalize(body: unknown): DeviceSdkReport | undefined {
       ...typeof tokenRecord['lastAttemptMs'] === 'number' ? { lastAttemptMs: tokenRecord['lastAttemptMs'] } : {},
       ...typeof tokenRecord['reason'] === 'string' ? { reason: tokenRecord['reason'] } : {},
     },
+    // 只在宿主真的答了布尔时才带上：没有 settings 服务的宿主不该被画成"关"。
+    ...typeof record['sdkEnabled'] === 'boolean' ? { sdkEnabled: record['sdkEnabled'] } : {},
   }
 }
 
@@ -100,6 +111,22 @@ async function post(path: string, action: 'refresh' | 'reveal'): Promise<unknown
 /** 强制重取一次（会真的跑一次 SDK）。 */
 export async function refreshDeviceSdk(path: string): Promise<DeviceSdkReport | undefined> {
   return normalize(await post(path, 'refresh'))
+}
+
+/**
+ * 写 SDK 总开关（`Config.deviceSdkEnabled`）。
+ *
+ * 501 = 这个宿主没有 settings 写入路径。抛出去而不是静默吞掉：卡片要把开关置灰，
+ * 而那需要知道"做不到"，不是"做失败了"。
+ */
+export async function setDeviceSdkEnabled(path: string, enabled: boolean): Promise<void> {
+  const response = await fetch(`${path}?action=${enabled ? 'enable' : 'disable'}`, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+    credentials: 'same-origin',
+  })
+  if (response.status === 501) throw new Error('this host has no settings write path')
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
 }
 
 /** 取完整值。只在用户点「显示」或「复制」时调用。 */

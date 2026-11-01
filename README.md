@@ -491,6 +491,7 @@ dsh plugin --profile <web|desktop|dsh-tui> exec dsh-connect-workbuddy logout   #
 | `WORKBUDDY_TURING_PRODUCT_NAME` | `WorkBuddy` | SDK 初始化自称的产品名 |
 | `WORKBUDDY_TURING_PRODUCT_VERSION` | 插件版本 | SDK 初始化自称的产品版本 |
 | `WORKBUDDY_TURING_KEYCHAIN_STORAGE` | 未设（=关） | 设 `1` 允许 SDK 启用其自身的设备缓存存储；默认关闭——插件不把自己的设备状态写进用户机器的钥匙串 |
+| `WORKBUDDY_DEVICE_SDK_ENABLED` | 未设（=关） | SDK 总开关的**旁路**，供 `doctor` 这种读不到插件配置的独立进程使用：`1` / `true` = 开。卡片里的同名开关（`deviceSdkEnabled`，**默认关**）是常规入口；两者同义，插件永远显式传值，所以不会打架。关着时不发现 SDK、不起子进程、不预热。排障时想看「这个 SDK 到底能不能用」，用 `WORKBUDDY_DEVICE_SDK_ENABLED=1 node lib/bin.js doctor` 临时打开 |
 
 > **为什么这三条命令能在「什么都没装」的机器上跑（issue #47）**
 >

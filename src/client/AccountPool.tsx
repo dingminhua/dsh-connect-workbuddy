@@ -47,7 +47,7 @@ import { availabilityLine, formatShortClock, outcomeOk, outcomeText, stateColor 
 import { formatCredits } from './credit-format.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import { DeviceModeBlockedDialog, DeviceProfileDialog } from './DeviceProfileDialog.tsx'
-import type { WorkBuddyDeviceDerived, WorkBuddyDeviceMode, WorkBuddyDeviceProfile } from './device-profile.ts'
+import type { RealTierAvailability, WorkBuddyDeviceDerived, WorkBuddyDeviceMode, WorkBuddyDeviceProfile } from './device-profile.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import type { Translate } from './searched-paths.ts'
 import { readNdjson } from './ndjson.ts'
@@ -223,6 +223,13 @@ export interface AccountPoolProps {
   deviceMode?: WorkBuddyDeviceMode
   deviceProfiles?: Readonly<Record<string, WorkBuddyDeviceProfile>>
   /**
+   * 「真实值」档在这台机器上能不能真的工作（Host 判定）。
+   *
+   * 缺席 = 老 Host 没这一项，此时**不禁用**任何东西：读不到就替用户做决定，会让
+   * 一个本来可用的功能在旧宿主上凭空消失。
+   */
+  realTier?: RealTierAvailability
+  /**
    * accountId → 留空时真正会发出的那一对 id（Host 算好送来）。
    *
    * 缺席时弹窗只说"派生值不可用"，不会凭空给一个数字：显示一个和线上不一致的
@@ -297,7 +304,14 @@ function formatClock(value: number): string {
  */
 export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | null {
   const { t, region, pool, settingsScope, siblingBusy, onBusyChange, onSaved, onRefresh, onRescan, rescanning, onSelectAccount, selectingAccount, accountTools } = props
-  const { deviceMode, deviceProfiles, deviceDerived, onDeviceModeChange, onSaveDeviceProfile } = props
+  const { deviceMode, deviceProfiles, deviceDerived, onDeviceModeChange, onSaveDeviceProfile, realTier } = props
+  /**
+   * 「真实值」能不能用。`undefined`（老 Host 没这一项）必须落到 `true`——读不到就
+   * 禁用等于替用户取消一个可能可用的功能。
+   */
+  const realTierUsable = realTier === undefined ? true : realTier.state === 'available'
+  /** 当前正停在「真实值」但它已经不可用：把说明换成"用不了"，而不是宣传语。 */
+  const modeHintBlocked = realTierUsable === false && deviceMode === 'real'
   const [draft, setDraft] = useState<PoolPreferences | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
@@ -1448,6 +1462,11 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
 
       // 设备头档位：它同时决定"这台机器对外声称自己是谁"和每一行那个齿轮能不能
       // 用，所以必须贴着账号表——埋进「更多设置」会让齿轮看起来时好时坏。
+      //
+      // 「真实值」在已知取不到 token 的平台上**禁用**：一个能点、点了没用、只能靠
+      // 降级兜底的选项比不提供更差——用户以为切过去了，状态行却一直空着。判定由
+      // Host 给（`realTier`），界面不猜平台：mac 上 SDK 能发现、probe 也答 ready，
+      // 坏的是取 token 那一环，光看平台名判断不出"装了没装"。
       deviceMode === undefined || onDeviceModeChange === undefined
         ? null
         : h('div', { className: 'dsm-workbuddy-device-mode' },
@@ -1457,17 +1476,25 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               role: 'group',
               'aria-label': t('row.deviceModeTitle'),
             },
-              ...(['virtual', 'real'] as const).map(mode => h('button', {
-                key: mode,
-                type: 'button',
-                className: `dsm-workbuddy-device-seg-btn${deviceMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
-                'aria-pressed': deviceMode === mode,
-                disabled: deviceModeBusy,
-                onClick: () => { void changeDeviceMode(mode) },
-              }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))),
+              ...(['virtual', 'real'] as const).map(mode => {
+                const blocked = mode === 'real' && realTierUsable === false
+                return h('button', {
+                  key: mode,
+                  type: 'button',
+                  className: `dsm-workbuddy-device-seg-btn${deviceMode === mode ? ' dsm-workbuddy-device-seg-on' : ''}`,
+                  'aria-pressed': deviceMode === mode,
+                  disabled: deviceModeBusy || blocked,
+                  title: blocked ? t('row.deviceModeRealUnsupported') : undefined,
+                  onClick: () => { void changeDeviceMode(mode) },
+                }, t(mode === 'virtual' ? 'row.deviceModeVirtual' : 'row.deviceModeReal'))
+              }),
             ),
             h('span', { className: 'dsm-workbuddy-hint' },
-              deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
+              // 禁用时说的是"用不了以及为什么"，而不是当前档位的宣传语——后者会让
+              // 用户以为点一下就好了。
+              modeHintBlocked
+                ? t('row.deviceModeRealUnsupported')
+                : deviceMode === 'real' ? t('row.deviceModeHintReal') : t('row.deviceModeHintVirtual')),
           ),
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
