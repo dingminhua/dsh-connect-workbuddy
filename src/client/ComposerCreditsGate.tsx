@@ -133,6 +133,14 @@ export interface ComposerCreditsGateProps {
   /** Settings scope from the configForms mirror; the card writes the same field. */
   settingsScope?: WorkBuddyCardInjected['settingsScope']
   /**
+   * Open this plugin's settings page; see `ComposerCreditsProps.onOpenSettings`.
+   *
+   * Passed straight through: the gate is a visibility decision and has no
+   * business probing Host services, but it is the only component the entry
+   * registers, so the callback has to travel through it.
+   */
+  onOpenSettings?: () => boolean
+  /**
    * Standard slot hook: reads one Host-computed projection for this session.
    * Injected by the slot, so it is absent when this gate is rendered directly
    * from a test.
@@ -141,7 +149,7 @@ export interface ComposerCreditsGateProps {
 }
 
 export function ComposerCreditsGate(props: ComposerCreditsGateProps) {
-  const { t, position, settingsScope, useProjection } = props
+  const { t, position, settingsScope, useProjection, onOpenSettings } = props
   // Re-render when the settings change, so ticking the card's checkbox appears
   // without a remount. `settingsScope` is a stable injected reference, so the
   // subscription is set up once per scope.
@@ -177,5 +185,13 @@ export function ComposerCreditsGate(props: ComposerCreditsGateProps) {
   // provider is present too; the assertion states that rather than widening the
   // component's prop to accept an absent provider it never sees.
   const provider = selectedProviderOf(projection) as string
-  return <ComposerCredits t={t} provider={provider} region={region} {...settingsScope === undefined ? {} : { settingsScope }} />
+  return (
+    <ComposerCredits
+      t={t}
+      provider={provider}
+      region={region}
+      {...settingsScope === undefined ? {} : { settingsScope }}
+      {...onOpenSettings === undefined ? {} : { onOpenSettings }}
+    />
+  )
 }

@@ -37,20 +37,14 @@ import {
   availabilityLine,
   availabilityMark,
   stateTone,
-  testRowOf,
-  withTestRow,
 } from './account-state.ts'
 import type { AccountStateInput } from './account-state.ts'
 import {
   WORKBUDDY_ACCOUNT_CREDITS_PATH,
-  WORKBUDDY_POOL_PATH,
   WORKBUDDY_USAGE_PATH,
   withWorkBuddyRegion,
-  withWorkBuddyRegionAndAction,
 } from '../status-paths.ts'
-import { readNdjson } from './ndjson.ts'
 import { normalizeNewModelIds } from './new-model-ids.ts'
-import { poolFailureText } from './pool-state.ts'
 import { writeAccountSlot } from './account-selection.ts'
 import { formatCredits } from './credit-format.ts'
 import { WORKBUDDY_COMPOSER_CSS } from './styles.ts'
@@ -129,6 +123,21 @@ export interface ComposerCreditsProps extends Partial<ComposerCreditsInjected> {
    * inert, because a panel that switches nothing must not pretend to.
    */
   settingsScope?: WorkBuddyCardInjected['settingsScope']
+  /**
+   * Open this plugin's settings page, or answer `false` when the host offers no
+   * route to it.
+   *
+   * A CALLBACK rather than a panel id, for two reasons. The route is a Host
+   * service (`pluginNavigation`, falling back to `layout`) that only the entry
+   * can probe — this module must not import browser-only DSH packages. And the
+   * probe has to happen at PRESS time, not at registration time: the plugin
+   * providing it may apply after this one, so an answer captured in `apply`
+   * would be a dead button for the whole session (see `settings-route.ts`).
+   *
+   * Absent means "no route known", and the button is not rendered at all: a menu
+   * entry that cannot do what it says is worse than one that is not there.
+   */
+  onOpenSettings?: () => boolean
 }
 
 /**
@@ -265,32 +274,27 @@ function detailLine(...parts: Array<string | undefined>): string | undefined {
 }
 
 export function ComposerCredits(props: ComposerCreditsProps) {
-  const { t, provider, region, settingsScope } = props
+  const { t, provider, region, settingsScope, onOpenSettings } = props
   if (t === undefined) throw new Error('Composer credits readout requires its translation function')
   const owned = provider === undefined ? undefined : WORKBUDDY_COMPOSER_PROVIDERS[provider]
   const activeRegion = region ?? owned
 
   const [usage, setUsage] = useState<WorkBuddyWebUsage | undefined>(undefined)
   const [accountCredits, setAccountCredits] = useState<WorkBuddyWebAccountCredit[] | undefined>(undefined)
-  const [busy, setBusy] = useState(false)
-  /**
-   * A test batch is running.
-   *
-   * Separate from `busy`, which tracks a credits READ: the two take wildly
-   * different times (one round trip against one probe per account, serial with
-   * a gap), and sharing a flag would either freeze the readout for a minute or
-   * let a press be swallowed as "already refreshing".
-   */
-  const [testing, setTesting] = useState(false)
-  /** The batch's failure, in the user's language; `failed` is for reads. */
-  const [testError, setTestError] = useState<string | undefined>(undefined)
   const [switchingId, setSwitchingId] = useState<string | undefined>(undefined)
   const [failed, setFailed] = useState(false)
+  /**
+   * The settings button could not reach a page on this host.
+   *
+   * Its own flag, not `failed`, because the two render DIFFERENT sentences: this
+   * one says the host offers no route to the settings page, which is not the same
+   * claim as "the credits read failed", and sharing a flag would print one over
+   * the other.
+   */
+  const [settingsFailed, setSettingsFailed] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
   const [open, setOpen] = useState(false)
   const inFlight = useRef(false)
-  /** A batch is running; guards a second press that lands before `setTesting`. */
-  const testingRef = useRef(false)
   /** Account-table reads in flight; see `fetchAccountCredits`. */
   const accountsInFlight = useRef(0)
   /** Which account-table read is the newest; see `fetchAccountCredits`. */
@@ -354,7 +358,6 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const fetchUsage = useCallback(async (signal?: AbortSignal): Promise<void> => {
     if (inFlight.current || activeRegion === undefined) return
     inFlight.current = true
-    if (mounted.current) setBusy(true)
     try {
       const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, activeRegion), {
         headers: { accept: 'application/json' },
@@ -373,7 +376,6 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (mounted.current && signal?.aborted !== true) setFailed(true)
     } finally {
       inFlight.current = false
-      if (mounted.current) setBusy(false)
     }
   }, [activeRegion])
 
@@ -536,98 +538,29 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   }
 
   /**
-   * The header button: test EVERY account in this region, then re-read what the
-   * batch changed.
+   * The header's settings control: open this plugin's page, then close.
    *
-   * It used to be a plain refresh. The owner asked for the other thing this
-   * panel's readers actually want — the same "一键测试所有账号" the pool card
-   * runs (`src/account-pool-run.ts testAllAccounts`, one account at a time with
-   * a gap, because hitting the whole pool at once is how the upstream's volume
-   * limit gets tripped).
+   * CLOSING IS PART OF THE JOB. The panel is portaled to `document.body` and
+   * floats over the composer; navigating the centre column does not remove it, so
+   * leaving it open would park a credits table on top of the page the user just
+   * asked for. It is not reopened on return — a popover that comes back by itself
+   * after navigation is a popover the user cannot get rid of.
    *
-   * Two reasons the batch, not a read, is the right control HERE. A mark in this
-   * table is a MEASUREMENT (`被限流 · 约 6 小时后` is a probe result), and
-   * re-reading the usage document cannot improve a stale measurement — only
-   * running it again can. And the rows are the pool's members, so the question
-   * "which of these can serve?" is answered by testing them, not by asking the
-   * credits endpoint again.
-   *
-   * The re-read afterwards is not a courtesy: the probes live in the USAGE
-   * document (`usage.pool.accounts[].probe`), so the dots and marks only move
-   * once that document is fetched again. Without it the button would leave the
-   * table showing the state it just measured away.
-   *
-   * The batch answers NDJSON (one line per account, streamed) on a current Host
-   * and one document on an older one, so both shapes are read; the stream is
-   * drained even after unmount, because dropping the reader leaves the Host
-   * writing into a socket nobody reads.
+   * `false` (no route on this host) sets the panel's own error line rather than
+   * doing nothing: a press that changes nothing on screen is indistinguishable
+   * from a broken button, and the honest answer here is "this host has no way
+   * there".
    */
-  const testEveryAccount = useCallback(async (): Promise<void> => {
-    if (activeRegion === undefined || testingRef.current) return
-    testingRef.current = true
-    if (mounted.current) {
-      setTesting(true)
-      setTestError(undefined)
+  const openSettings = (): void => {
+    const opened = onOpenSettings === undefined ? false : onOpenSettings()
+    if (!opened) {
       setFailed(false)
+      setSettingsFailed(true)
+      return
     }
-    try {
-      const response = await fetch(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, activeRegion, 'test'), {
-        method: 'POST',
-        headers: { accept: 'application/json' },
-        credentials: 'same-origin',
-      })
-      let failure: string | undefined
-      // Same content-type test the card uses: the streamed shape commits its
-      // status on the first line, so a mid-batch failure arrives as a LINE, not
-      // as a non-2xx response.
-      if ((response.headers.get('content-type') ?? '').includes('ndjson')) {
-        if (!response.ok) {
-          failure = poolFailureText(t, { status: response.status })
-        } else {
-          await readNdjson(response.body, line => {
-            // Land each measurement the moment it exists. The batch is serial,
-            // so waiting for the whole stream leaves the row the user is watching
-            // wrong for as long as the SLOWEST account takes — the dead-looking
-            // panel the streamed batch was built to avoid. The re-read in
-            // `finally` then confirms the same facts from the Host's own store,
-            // so a fold is a shortcut, never the record.
-            const row = testRowOf(line)
-            if (row !== undefined) {
-              if (mounted.current) {
-                setUsage(previous => (previous === undefined ? previous : withTestRow(previous, row, Date.now())))
-              }
-              return
-            }
-            const reason = line['reason']
-            if (typeof reason !== 'string') return
-            failure = poolFailureText(t, {
-              status: 200,
-              reason,
-              error: typeof line['error'] === 'string' ? line['error'] : undefined,
-            })
-          })
-        }
-      } else {
-        const body = await response.json().catch(() => undefined) as
-          | { error?: string, reason?: string }
-          | undefined
-        if (!response.ok) {
-          failure = poolFailureText(t, { status: response.status, reason: body?.reason, error: body?.error })
-        }
-      }
-      if (mounted.current && failure !== undefined) setTestError(failure)
-    } catch {
-      // A transport failure. The rows keep their previous measurements rather
-      // than being blanked: nothing was learned about them.
-      if (mounted.current) setTestError(t('composer.testFailed'))
-    } finally {
-      testingRef.current = false
-      if (mounted.current) setTesting(false)
-      // `true`: a press must reach the upstream even if a timer tick is in
-      // flight, and it claims the newest generation so its answer lands.
-      await Promise.all([fetchUsage(), fetchAccountCredits(undefined, true)])
-    }
-  }, [activeRegion, fetchUsage, fetchAccountCredits, t])
+    setSettingsFailed(false)
+    setOpen(false)
+  }
 
   // Not this plugin's model: render nothing at all, so the composer row is
   // untouched while another provider is in use.
@@ -768,18 +701,23 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             <span className="dsm-workbuddy-composer-panel-title">
               {t(activeRegion === 'cn' ? 'composer.panelTitleCn' : 'composer.panelTitleGlobal')}
             </span>
-            <button
-              type="button"
-              className="dsm-workbuddy-composer-panel-refresh"
-              // Testing is what this button does now, so a running batch is its
-              // own disabled state; a credits read still blocks it too, because
-              // the two write the same table.
-              disabled={busy || testing || switchingId !== undefined}
-              title={t('composer.testAllHint')}
-              onClick={() => { void testEveryAccount() }}
-            >
-              {testing ? t('composer.testing') : t('composer.testAll')}
-            </button>
+            {/* Right-aligned: the settings link. ONE wrapper owns
+                `margin-left:auto` so the header stays title … [settings] and a
+                host with no route (no button) still pins nothing oddly. */}
+            <span className="dsm-workbuddy-composer-panel-actions">
+              {onOpenSettings === undefined
+                ? null
+                : (
+                  <button
+                    type="button"
+                    className="dsm-workbuddy-composer-panel-settings"
+                    title={t('composer.openSettingsHint')}
+                    onClick={openSettings}
+                  >
+                    {t('composer.openSettings')}
+                  </button>
+                )}
+            </span>
           </div>
           {signedOut
             ? <p className="dsm-workbuddy-composer-panel-empty">{t('composer.signedOut')}</p>
@@ -943,9 +881,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                 </div>
               )}
           {failed ? <p className="dsm-workbuddy-composer-panel-error" role="status">{t('composer.refreshFailed')}</p> : null}
-          {testError === undefined
-            ? null
-            : <p className="dsm-workbuddy-composer-panel-error" role="status">{testError}</p>}
+          {settingsFailed
+            ? <p className="dsm-workbuddy-composer-panel-error" role="status">{t('composer.openSettingsFailed')}</p>
+            : null}
         </div>,
         document.body,
       )}

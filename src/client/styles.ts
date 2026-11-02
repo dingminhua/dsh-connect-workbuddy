@@ -1082,19 +1082,31 @@ export const WORKBUDDY_COMPOSER_CSS = `
   font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#444);
 }
 .dsm-workbuddy-composer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
-.dsm-workbuddy-composer-panel-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
-/* Self-contained: the dsm-btn primitive lives in TRAE_CARD_CSS, which the
-   composer never loads, so the refresh button must style itself. */
-.dsm-workbuddy-composer-panel-refresh{
-  appearance:none;flex:none;margin-left:auto;padding:3px 10px;
-  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.34));
-  border-radius:7px;background:transparent;
+/* nowrap: the header is a title plus an 11px control in a ~250px popover, and
+   without it the TITLE broke across two lines ("WB AI" / "积分") the moment the
+   settings control joined the row — measured on the live Desktop host. The
+   title is the one thing that must stay on one line; what follows it is short by
+   construction. */
+.dsm-workbuddy-composer-panel-title{flex:none;white-space:nowrap;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
+/* The header's right-hand control: the link to this plugin's settings.
+   A wrapper rather than an auto margin on the button, because the button is NOT
+   always rendered (a host with no route renders none) and a wrapper that is
+   always present keeps the header layout identical either way. */
+.dsm-workbuddy-composer-panel-actions{flex:none;margin-left:auto;display:flex;align-items:center}
+/* Styled as a quiet text link rather than a bordered button: navigating away is
+   not the header's primary action, and a loud button beside a 13px title reads as
+   a toolbar. The border appears only on hover/focus, which is where the
+   affordance is needed. */
+.dsm-workbuddy-composer-panel-settings{
+  appearance:none;flex:none;padding:3px 4px;
+  border:1px solid transparent;border-radius:7px;background:transparent;
   color:var(--dsw-alias-label-secondary,#444);
   font:inherit;font-size:11px;line-height:16px;cursor:pointer;
+  text-decoration:underline;text-underline-offset:2px;
+  text-decoration-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));
 }
-.dsm-workbuddy-composer-panel-refresh:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsm-workbuddy-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsm-workbuddy-composer-panel-refresh:disabled{opacity:.5;cursor:default}
+.dsm-workbuddy-composer-panel-settings:hover{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsm-workbuddy-composer-panel-settings:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 /* The panel is a TABLE: one row per account in the region, one figure (the
    general balance) per row, and a row click switches accounts.
 

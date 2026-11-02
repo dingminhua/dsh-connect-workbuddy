@@ -44,6 +44,7 @@ import { selectQuotaNoticeClaim, WorkBuddyQuotaNotice } from './WorkBuddyQuotaNo
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
+import { openPluginSettingsPage } from './settings-route.ts'
 import {
   setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted,
 } from './panel-switch.ts'
@@ -98,6 +99,17 @@ export function apply(ctx: WorkBuddyClientContext): void {
     // absent service. Never touch `ctx.configForms` / `ctx.settingsScope`
     // directly; go through `get`.
     const softGet = (name: string): unknown => (ctx as unknown as { get(name: string): unknown }).get(name)
+
+    /**
+     * Open this plugin's settings page, as the credits panel's header control
+     * asks for it.
+     *
+     * Defined here because this is the only place with a service probe into the
+     * Host; the whole route lives in `settings-route.ts` so it has one home and
+     * its own test. The probe runs per press, which is why this is a function
+     * and not a captured answer.
+     */
+    const onOpenSettings = (): boolean => openPluginSettingsPage(softGet)
 
     let settingsScope: WorkBuddyCardInjected['settingsScope'] | undefined
     const forms = softGet('configForms') as
@@ -189,9 +201,14 @@ export function apply(ctx: WorkBuddyClientContext): void {
           locale: namespace,
           // `settingsScope` rides along so the gate can honor the card's
           // per-region switch without a second writer.
+          //
+          // `onOpenSettings` is a THUNK, not the answer: the service it reaches
+          // (`pluginNavigation`) belongs to the Plugins bundle, which may apply
+          // after this one, so the probe must run when the user presses and not
+          // when this slot registers. See `settings-route.ts`.
           inject: () => settingsScope === undefined
-            ? { t, position: 'composer' as const }
-            : { t, position: 'composer' as const, settingsScope },
+            ? { t, position: 'composer' as const, onOpenSettings }
+            : { t, position: 'composer' as const, settingsScope, onOpenSettings },
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-workbuddy] composer credits slot failed to register (host provider unaffected):', error)
@@ -393,8 +410,8 @@ export function apply(ctx: WorkBuddyClientContext): void {
           order: 10,
           locale: namespace,
           inject: () => settingsScope === undefined
-            ? { t, position: 'stats' as const }
-            : { t, position: 'stats' as const, settingsScope },
+            ? { t, position: 'stats' as const, onOpenSettings }
+            : { t, position: 'stats' as const, settingsScope, onOpenSettings },
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-workbuddy] stats credits slot failed to register (host provider unaffected):', error)

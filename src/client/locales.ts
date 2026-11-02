@@ -649,14 +649,14 @@ export const en = {
   'composer.current': 'In use',
   'composer.noAccounts': 'No account in this region',
   'composer.signedOut': 'Not signed in',
-  // The panel's header button TESTS the accounts rather than re-reading their
-  // balances: a mark in that table is a measurement, and only another measurement
-  // can improve it. It still re-reads afterwards — the probes live in the usage
-  // document — so pressing this leaves the table current as well as tested.
-  'composer.testAll': 'Test all',
-  'composer.testing': 'Testing…',
-  'composer.testAllHint': 'Test every account in this region, one at a time',
-  'composer.testFailed': 'Could not test the accounts',
+  // The panel's link to this plugin's OWN settings. Kept SHORT ("Settings", not
+  // "WorkBuddy settings"): the popover is ~250px wide and the header already
+  // carries the region title and the batch test, so a longer label wrapped the
+  // title onto two lines. The panel is unmistakably this plugin's, and the
+  // tooltip names the page, so nothing is lost by the short word.
+  'composer.openSettings': 'Settings',
+  'composer.openSettingsHint': 'Open this plugin\'s settings page (accounts, models, switches)',
+  'composer.openSettingsFailed': 'This host offers no route to the plugin settings page',
   'composer.refreshFailed': 'Could not refresh credits',
   'composer.lastRefresh': 'Last refreshed',
   'composer.panelTitle': 'WorkBuddy credits',
@@ -1269,10 +1269,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'composer.current': '当前选用',
   'composer.noAccounts': '该区域暂无账号',
   'composer.signedOut': '未登录',
-  'composer.testAll': '一键测试',
-  'composer.testing': '正在测试…',
-  'composer.testAllHint': '逐个测试本区所有账号（一次一个，避免触发上游限流）',
-  'composer.testFailed': '测试失败',
+  // 面板里通往本插件自身设置的入口。措辞取短（「设置」而不是「WorkBuddy 设置」）：
+  // 这个浮层只有约 250px 宽，头部还要放区域标题和一键测试，长标签会把标题挤成
+  // 两行。面板本身就只属于这个插件，去处由 tooltip 说明，短词不丢信息。
+  'composer.openSettings': '设置',
+  'composer.openSettingsHint': '打开本插件的设置页（账号、模型、各项开关）',
+  'composer.openSettingsFailed': '这台宿主没有通往插件设置页的入口',
   'composer.refreshFailed': '积分刷新失败',
   'composer.lastRefresh': '最近刷新',
   'composer.panelTitle': 'WorkBuddy 积分',

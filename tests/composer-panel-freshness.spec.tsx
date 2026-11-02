@@ -298,20 +298,26 @@ describe('the panel keeps its account rows current while it is open', () => {
     releaseTick?.()
     await m.settle()
   })
-  it('does NOT skip a deliberate press, even during an in-flight tick', async () => {
-    // The failure mode the guard must not have: the timer's read is slow, the
-    // user presses 刷新, and the press is dropped because a read is already
-    // running — so the control reports "the table is current" without having
-    // asked. That is the same class of defect as the button refreshing the wrong
-    // half, so the deliberate path claims the newest generation (`force`).
+  it('does NOT skip a deliberate read, even during an in-flight tick', async () => {
+    // The failure mode the guard must not have: the timer's read is slow and a
+    // DELIBERATE read arrives — here the re-read after the user switches account,
+    // which must report the account the user just picked. Dropping it because a
+    // read is already running would leave the panel describing the account it was
+    // showing BEFORE the switch, so the deliberate path claims the newest
+    // generation (`force`) and its answer is the one that lands.
     fakeIntervals()
     let tableCalls = 0
     let releaseFirst: (() => void) | undefined
     vi.stubGlobal('fetch', async (url: any, init: any) => {
       const target = String(url)
-      const payload = target.includes('account-credits')
-        ? { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 1072 }] }
-        : usageOf(1072)
+      const payload = target.includes('__save')
+        ? { ok: true, value: { accounts: { cn: 'a-2' } } }
+        : target.includes('account-credits')
+          ? { accounts: [
+              { id: 'a-1', accountName: 'A One', selected: true, credits: 1072 },
+              { id: 'a-2', accountName: 'A Two', selected: false, credits: 300 },
+            ] }
+          : usageOf(1072)
       if (target.includes('account-credits')) {
         tableCalls += 1
         if (tableCalls === 1) await new Promise<void>(resolve => { releaseFirst = resolve })
@@ -341,184 +347,16 @@ describe('the panel keeps its account rows current while it is open', () => {
     await m.settle()
     expect(tableCalls).toBe(1)
 
-    const refresh = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
-    await m.click(refresh as Element)
+    const rowButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-composer-panel-switch'))
+      .find(button => button.textContent?.includes('A Two'))
+    expect(rowButton, 'switch button for A Two').toBeDefined()
+    await m.click(rowButton as Element)
     await m.settle()
 
     // Mutation: make the guard unconditional (drop `!force &&`) → stays 1.
     expect(tableCalls).toBe(2)
     releaseFirst?.()
     await m.settle()
-  })
-})
-
-describe('the panel header button tests every account', () => {
-  it('re-reads the account table, not only the usage document', async () => {
-    // The defect this case was written for: the button sat in the ACCOUNT
-    // TABLE's header and called `fetchUsage` alone, so pressing it moved the
-    // trigger's balance and left every row — marks included — untouched. The
-    // button now runs a TEST batch, but it still must leave the table current:
-    // the probes it just wrote are only visible after the usage document is
-    // read again.
-    const calls = stubFetch((url) => ({
-      body: url.includes('account-credits')
-        ? { accounts: [
-            { id: 'a-1', accountName: 'A One', selected: true, credits: 1072 },
-            { id: 'a-2', accountName: 'A Two', selected: false, credits: 300 },
-          ] }
-        : usageOf(1072),
-    }))
-    const m = await openPanel()
-    const before = calls.filter(call => call.url.includes('account-credits')).length
-
-    const refresh = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
-    expect(refresh, 'panel refresh button').not.toBeNull()
-    await m.click(refresh as Element)
-    await m.settle()
-
-    // Mutation: restore `onClick={() => void fetchUsage()}` → this stays equal.
-    expect(calls.filter(call => call.url.includes('account-credits')).length)
-      .toBeGreaterThan(before)
-  })
-
-  it('posts the TEST batch for this region, then re-reads what it measured', async () => {
-    const usage = usageOf(1072)
-    const calls = stubFetch((url) =>
-      url.includes('account-credits')
-        ? { body: { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 1072 }] } }
-        : url.includes('/pool')
-          ? { body: { rows: [] } }
-          : { body: usage })
-    const m = await openPanel()
-    const usageBefore = calls.filter(call => call.url.includes('/usage')).length
-
-    const button = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
-    expect(button?.textContent, 'the control says what it does now').toBe('composer.testAll')
-    await m.click(button as Element)
-    await m.settle()
-
-    const batch = calls.filter(call => call.url.includes('/pool'))
-    expect(batch, 'one batch request').toHaveLength(1)
-    expect(batch[0]?.init?.method, 'the batch is a POST').toBe('POST')
-    expect(batch[0]?.url, 'the region the panel is showing').toContain('region=cn')
-    expect(batch[0]?.url, 'the test action, not checkin').toContain('action=test')
-    // The measurements live in the usage document, so a batch that is not
-    // followed by a read leaves the dots showing the state it just replaced.
-    expect(calls.filter(call => call.url.includes('/usage')).length)
-      .toBeGreaterThan(usageBefore)
-  })
-
-  it('reports a failure that arrives as a line of the stream', async () => {
-    // A current Host commits its HTTP status on the FIRST line, so a batch that
-    // dies mid-way answers 200 with a `reason` line. Reading only the status
-    // would report a dead batch as a clean one.
-    const calls = stubFetch((url) =>
-      // The batch answers NDJSON, and its FIRST line is the status: a batch that
-      // dies mid-way still answers 200, with a `reason` line.
-      url.includes('/pool')
-        ? {
-            body: '{"reason":"no-target-model","error":"no target model configured"}\n',
-            contentType: 'application/x-ndjson',
-          }
-        : url.includes('account-credits')
-          ? { body: { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 1072 }] } }
-          : { body: usageOf(1072) })
-    const m = await openPanel()
-    const button = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
-    await m.click(button as Element)
-    await m.settle()
-
-    expect(calls.some(call => call.url.includes('action=test')), 'the batch ran').toBe(true)
-    const errors = Array.from(document.body.querySelectorAll('.dsm-workbuddy-composer-panel-error'))
-      .map(node => node.textContent ?? '')
-    expect(errors.join(' | '), 'the batch died, so the panel says so').toContain('no target model configured')
-  })
-
-  it('lands each row while the batch is still running', async () => {
-    // The batch is SERIAL: account one is measured seconds before the last one,
-    // and a stuck member can hold the rest for a long time. Waiting for the end
-    // of the stream therefore leaves the row the user is watching wrong for the
-    // duration of the batch — the dead-looking panel the streamed route exists
-    // to avoid. The post-batch re-read is HELD here (it never answers), so a row
-    // that changes can only have changed on its own line.
-    const poolUsage = {
-      ...usageOf(1072),
-      pool: {
-        enabled: true,
-        checkinSupported: false,
-        targetModelSource: 'free',
-        targetModelId: 'free-1',
-        accounts: [
-          { accountId: 'a-1', accountName: 'A One', current: true, member: true },
-          { accountId: 'a-2', accountName: 'A Two', current: false, member: true },
-        ],
-      },
-    }
-    let usageReads = 0
-    const never = new Promise<Response>(() => {})
-    vi.stubGlobal('fetch', vi.fn(async (url: any) => {
-      const target = String(url)
-      if (target.includes('/pool')) {
-        return streamAnswer('application/x-ndjson', [
-          { action: 'test', modelId: 'free-1' },
-          {
-            row: {
-              accountId: 'a-2',
-              accountName: 'A Two',
-              result: { modelId: 'free-1', outcome: 'rate-limited', retryAtMs: Date.now() + 3_600_000 },
-            },
-          },
-          { row: { accountId: 'a-1', accountName: 'A One', result: { modelId: 'free-1', outcome: 'ok' } } },
-          { done: true },
-        ])
-      }
-      if (target.includes('account-credits')) {
-        return jsonAnswer({
-          accounts: [
-            { id: 'a-1', accountName: 'A One', selected: true, credits: 1072 },
-            { id: 'a-2', accountName: 'A Two', selected: false, credits: 300 },
-          ],
-        })
-      }
-      usageReads += 1
-      return usageReads === 1 ? jsonAnswer(poolUsage) : never
-    }))
-    const m = await openPanel()
-    const button = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
-    await m.click(button as Element)
-    await m.settle()
-
-    // Mutation: fold the rows only after `readNdjson` resolves → both marks come
-    // back empty, because nothing ever answers the re-read.
-    expect(rowMarkOf('A Two'), 'the limited row says why').toContain('row.poolExcludedRateLimited')
-    expect(rowMarkOf('A One'), 'the usable row claims nothing beyond being in use').toBe('composer.current')
-    expect(rowDotOf('A Two')).toContain('panel-dot-error')
-    expect(rowDotOf('A One')).toContain('panel-dot-ok')
-    // The re-read was issued — and never answered, which is what makes the two
-    // assertions above evidence for the fold rather than for the re-read.
-    expect(usageReads).toBe(2)
-  })
-
-  it('moves the footer clock when the table is refreshed', async () => {
-    // The footer says when the panel last asked about credits. A table that just
-    // refreshed under an unchanged timestamp is the same "is this stale?"
-    // question the frozen marks raised.
-    const calls = stubFetch((url) => ({
-      body: url.includes('account-credits')
-        ? { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 1072 }] }
-        : usageOf(1072),
-    }))
-    const m = await openPanel()
-    const footBefore = document.body.querySelector('.dsm-workbuddy-composer-panel-foot')?.textContent ?? ''
-    expect(footBefore).toContain('composer.lastRefresh')
-    // Two account reads in sequence must differ by the clock, so a fake advance
-    // is what makes the change observable.
-    const refresh = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
-    await m.click(refresh as Element)
-    await m.settle()
-    expect(calls.some(call => call.url.includes('account-credits'))).toBe(true)
-    expect(document.body.querySelector('.dsm-workbuddy-composer-panel-foot')?.textContent)
-      .toContain('composer.lastRefresh')
   })
 })
 
