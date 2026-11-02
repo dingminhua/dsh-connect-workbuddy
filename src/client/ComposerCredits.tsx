@@ -714,7 +714,39 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                     title={t('composer.openSettingsHint')}
                     onClick={openSettings}
                   >
-                    {t('composer.openSettings')}
+                    {/* A gear, because the label is one word and a one-word
+                        underlined link reads as body text that happens to be
+                        clickable. `aria-hidden`: the button's own text already
+                        names it, so the icon must not be announced twice. */}
+                    <svg
+                      className="dsm-workbuddy-composer-panel-settings-icon"
+                      viewBox="0 0 16 16"
+                      width="12"
+                      height="12"
+                      fill="none"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      {/* 1.5px stroke, not 1.3: measured at 11px the gear's
+                          teeth blurred into a grey disc, so the icon read as a
+                          smudge next to the label. 12px + 1.5 keeps the teeth
+                          legible at this size — the shape is the affordance. */}
+                      <path
+                        d="M8 10.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4Z"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      />
+                      <path
+                        d="M12.9 9.6a1.2 1.2 0 0 0 .24 1.32l.04.04a1.4 1.4 0 1 1-1.98 1.98l-.04-.04a1.2 1.2 0 0 0-1.32-.24 1.2 1.2 0 0 0-.72 1.1v.12a1.4 1.4 0 1 1-2.8 0v-.07a1.2 1.2 0 0 0-.78-1.1 1.2 1.2 0 0 0-1.32.24l-.04.04a1.4 1.4 0 1 1-1.98-1.98l.04-.04a1.2 1.2 0 0 0 .24-1.32 1.2 1.2 0 0 0-1.1-.72h-.12a1.4 1.4 0 1 1 0-2.8h.07a1.2 1.2 0 0 0 1.1-.78 1.2 1.2 0 0 0-.24-1.32l-.04-.04a1.4 1.4 0 1 1 1.98-1.98l.04.04a1.2 1.2 0 0 0 1.32.24h.05a1.2 1.2 0 0 0 .72-1.1v-.12a1.4 1.4 0 1 1 2.8 0v.07a1.2 1.2 0 0 0 .72 1.1 1.2 1.2 0 0 0 1.32-.24l.04-.04a1.4 1.4 0 1 1 1.98 1.98l-.04.04a1.2 1.2 0 0 0-.24 1.32v.05a1.2 1.2 0 0 0 1.1.72h.12a1.4 1.4 0 1 1 0 2.8h-.07a1.2 1.2 0 0 0-1.1.72Z"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <span className="dsm-workbuddy-composer-panel-settings-label">
+                      {t('composer.openSettings')}
+                    </span>
                   </button>
                 )}
             </span>

@@ -244,3 +244,59 @@ describe('settings control CSS contract', () => {
     expect(button).not.toContain('margin-left:auto')
   })
 })
+
+describe('settings control: the shape of the affordance', () => {
+  /**
+   * The control was an underlined grey word, which in a 13px header reads as
+   * body text that happens to be clickable — the owner's report was simply
+   * "美化一下". These pin the three properties that make it read as a control,
+   * because each of them is easy to lose in a later tweak and none of them is
+   * observable from the DOM alone.
+   */
+  const rule = (selector: string): string =>
+    new RegExp(`\\.${selector}\\{([^}]*)\\}`).exec(WORKBUDDY_COMPOSER_CSS)?.[1] ?? ''
+
+  it('is a pill with a visible fill at rest, not a text link', () => {
+    const button = rule('dsm-workbuddy-composer-panel-settings')
+    // A fill at REST is the whole point: an affordance that only appears on
+    // hover is discovered after the user already knew it was there.
+    expect(button).toContain('background:')
+    expect(button).toContain('border-radius:999px')
+    // No underline: that was the "this is a paragraph" tell.
+    expect(button).not.toContain('text-decoration:underline')
+  })
+
+  it('renders a gear beside the label, hidden from assistive tech', async () => {
+    stubFetch(() => ({ body: usageOf(1072) }))
+    const m = await mount(ComposerCredits as never, { t, provider: 'workbuddy', onOpenSettings: vi.fn(() => true) })
+    await m.settle()
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+
+    const button = panelButtons().find(node => node.className.includes('panel-settings'))
+    const icon = button?.querySelector('svg')
+    expect(icon).not.toBeNull()
+    // aria-hidden: the button's own text already names it, so announcing the
+    // icon too would read "设置 设置" to a screen reader.
+    expect(icon?.getAttribute('aria-hidden')).toBe('true')
+    expect(icon?.getAttribute('focusable')).toBe('false')
+    // The label is a SEPARATE element so the icon can be sized independently;
+    // a bare text node would make the gap between them unstyleable.
+    expect(button?.querySelector('.dsm-workbuddy-composer-panel-settings-label')?.textContent)
+      .toBe('composer.openSettings')
+  })
+
+  it('keeps the label on one line and the icon from shrinking', () => {
+    // A flex item shrinks by default, which would squash the gear into an oval
+    // in a narrow popover; and a wrapped label would push the header taller.
+    expect(rule('dsm-workbuddy-composer-panel-settings-icon')).toContain('flex:none')
+    expect(rule('dsm-workbuddy-composer-panel-settings-label')).toContain('white-space:nowrap')
+  })
+
+  it('stops transitioning under prefers-reduced-motion', () => {
+    // The colour transition is decoration; the hover state is fully visible
+    // without it, so the media query only removes motion.
+    expect(WORKBUDDY_COMPOSER_CSS).toContain('prefers-reduced-motion')
+    expect(WORKBUDDY_COMPOSER_CSS).toMatch(/prefers-reduced-motion[^}]*\{[^}]*transition:none/)
+  })
+})

@@ -1097,16 +1097,43 @@ export const WORKBUDDY_COMPOSER_CSS = `
    not the header's primary action, and a loud button beside a 13px title reads as
    a toolbar. The border appears only on hover/focus, which is where the
    affordance is needed. */
+/* A quiet PILL, not an underlined link. The underline made a one-word label
+   read as body text that happened to be clickable — in a 13px header the eye
+   does not register it as a control at all. The tinted fill plus the gear give
+   it a shape at rest, which is where the affordance is actually needed; the
+   underline only appeared on hover, i.e. after the user already knew.
+   The fill is the brand colour at 10%, so it reads as "secondary action in this
+   product" rather than as a fourth grey chip beside the title. */
 .dsm-workbuddy-composer-panel-settings{
-  appearance:none;flex:none;padding:3px 4px;
-  border:1px solid transparent;border-radius:7px;background:transparent;
-  color:var(--dsw-alias-label-secondary,#444);
-  font:inherit;font-size:11px;line-height:16px;cursor:pointer;
-  text-decoration:underline;text-underline-offset:2px;
-  text-decoration-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));
+  appearance:none;flex:none;
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px 3px 6px;
+  border:1px solid transparent;border-radius:999px;
+  background:rgba(86,134,254,.10);
+  color:var(--dsw-alias-brand-primary,#5686fe);
+  font:inherit;font-size:11px;line-height:16px;font-weight:500;
+  cursor:pointer;
+  transition:background-color .12s ease,border-color .12s ease,color .12s ease;
 }
-.dsm-workbuddy-composer-panel-settings:hover{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsm-workbuddy-composer-panel-settings:hover{
+  background:rgba(86,134,254,.18);
+  border-color:rgba(86,134,254,.34);
+  color:var(--dsw-alias-brand-primary,#5686fe);
+}
+.dsm-workbuddy-composer-panel-settings:active{background:rgba(86,134,254,.26)}
 .dsm-workbuddy-composer-panel-settings:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+/* The gear does not shrink when the label is a longer word ("Settings" vs
+   "设置"): a flex item defaults to shrinking, which would squash the icon into
+   an oval on a narrow popover. */
+.dsm-workbuddy-composer-panel-settings-icon{flex:none;display:block}
+/* The label never wraps. Two lines in a 16px-tall pill would push the header
+   taller and unstick the table below it. */
+.dsm-workbuddy-composer-panel-settings-label{flex:none;white-space:nowrap}
+/* Reduced motion: the colour transition is decoration, and the hover state is
+   still fully visible without it. */
+@media (prefers-reduced-motion:reduce){
+  .dsm-workbuddy-composer-panel-settings{transition:none}
+}
 /* The panel is a TABLE: one row per account in the region, one figure (the
    general balance) per row, and a row click switches accounts.
 
