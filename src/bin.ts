@@ -17,12 +17,13 @@
  */
 
 import { realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   defaultDesktopAuthCandidates,
   defaultDesktopAuthDirs,
+  isENOENT,
   legacyWorkbuddyOwnAuthPath,
   WORKBUDDY_AUTH_FILE_ENV,
   WORKBUDDY_VAULT_DIRNAME,
@@ -63,6 +64,17 @@ interface CredentialAclEntry {
   unexpected?: string[]
   reason?: string
   protectError?: string
+  /** The directory's owner, as a SID, when the ACL could be read (issue #199). */
+  owner?: string
+  /** Whether {@link owner} is this process's account. Absent = "cannot say". */
+  ownerIsCurrentUser?: boolean
+  /** The non-well-known principal the grants carried (the user, or `S-1-5-4`). */
+  principal?: string
+  /**
+   * Why this region's vault could not be LISTED, when it could not (issue #199
+   * defect 2). A locked directory and an empty one are different answers.
+   */
+  vaultError?: string
 }
 
 type Action = 'doctor' | 'logout' | 'status'
@@ -106,8 +118,19 @@ type Action = 'doctor' | 'logout' | 'status'
  * only when they diverge, so a consumer that only knows version 9 keeps working
  * for every machine that never turned the switch on, and a machine that did
  * becomes legible instead of self-contradictory.
+ *
+ * 10 → 11: `credentialAcl.regions.*.owner`, `.ownerIsCurrentUser`, `.principal`
+ * and `.vaultError` (issue #199). Version 10 could report a directory as
+ * `protected` when it was protected AND UNREADABLE BY ITS OWN USER, because the
+ * three granted SIDs look identical either way and the difference is the OWNER:
+ * `OWNER RIGHTS` resolves to whoever that is. `vaultError` is the other half —
+ * the runtime store swallows an unreadable vault so discovery survives, and a
+ * reporter therefore had a card saying accounts no longer exist with no field
+ * anywhere saying the vault could not be opened. All four are optional and absent
+ * reads as "not measured", so a version-10 consumer sees the same report it saw
+ * before plus three new chances to spot the lockout.
  */
-const JSON_SCHEMA_VERSION = 10
+const JSON_SCHEMA_VERSION = 11
 
 /** Both regions, in reporting order. */
 const REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
@@ -335,14 +358,36 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     const rootOutcome = await protectCredentialDirectory(dirname(directory))
     const outcome = await protectCredentialDirectory(directory)
     const acl = await inspectCredentialDirectory(directory)
+    /**
+     * Whether this region's vault can actually be READ by this process.
+     *
+     * Issue #199 defect 2, on the doctor side. The runtime store swallows an
+     * unreadable vault so discovery survives (which is right for a chat turn and
+     * was the wrong thing to also do to a DIAGNOSIS), so a locked machine used to
+     * report 「账号已不存在」 and nothing else. `doctor` asks the question directly:
+     * `readdir` on the region directory, and only the ENOENT branch counts as
+     * "empty, normal" — every other error is the finding itself, with its errno.
+     */
+    let vaultError: string | undefined
+    try {
+      await readdir(directory)
+    } catch (error: unknown) {
+      if (!isENOENT(error)) {
+        vaultError = error instanceof Error ? error.message : String(error)
+      }
+    }
     const entry: CredentialAclEntry = {
       directory: acl.directory,
       state: acl.state,
       ...acl.weak === undefined ? {} : { unexpected: acl.weak },
       ...acl.reason === undefined ? {} : { reason: acl.reason },
+      ...acl.owner === undefined ? {} : { owner: acl.owner },
+      ...acl.ownerIsCurrentUser === undefined ? {} : { ownerIsCurrentUser: acl.ownerIsCurrentUser },
+      ...acl.principal === undefined ? {} : { principal: acl.principal },
       ...outcome.state === 'failed'
         ? { protectError: outcome.reason }
         : rootOutcome.state === 'failed' ? { protectError: rootOutcome.reason } : {},
+      ...vaultError === undefined ? {} : { vaultError },
     }
     return [region, entry] as const
   }))
@@ -550,14 +595,61 @@ async function doctor(jsonOutput: boolean): Promise<number> {
         }
         return []
       }),
-      // Issue #183. Only machines where the ACL does NOT hold get a hint: a
-      // POSIX host reports `not-windows` (mode already conveys the intent) and a
-      // hardened Windows host reports `protected`, and neither is a problem the
-      // user can act on.
+      // Issue #183, extended by issue #199. A POSIX host reports `not-windows`
+      // and a healthy Windows host reports `protected` — neither is actionable.
+      // Everything else now gets a hint, which INVERTS the old coverage: #183
+      // warned only about `exposed`, i.e. "too wide", while the states that can
+      // LOCK A USER OUT (`failed`, `unverified`, a foreign owner) said nothing at
+      // all. That gap is why #199's reporter had to do the forensics by hand:
+      // their machine's one symptom was a card claiming accounts did not exist.
+      //
+      // `unverified` gets a hint even though it may mean "PowerShell is missing":
+      // a LOCKED directory cannot report its own DACL either, because reading one
+      // needs `READ_CONTROL` — the very right the lockout removed. Two readings,
+      // and the hint names the check that separates them.
       ...credentialAcl.flatMap(([region, entry]) => {
-        if (entry.state !== 'exposed') return []
-        const weak = entry.unexpected === undefined ? '' : ` (readable by ${entry.unexpected.join(', ')})`
-        return [`The ${region} credential vault holds PLAINTEXT tokens but its folder permissions do not restrict them${weak}: ${entry.directory}. Re-run doctor to retry the repair, or fix it by hand with: icacls "${entry.directory}" /inheritance:r /grant:r "*S-1-3-4:(OI)(CI)(F)" /grant:r "*S-1-5-18:(OI)(CI)(F)" /grant:r "*S-1-5-32-544:(OI)(CI)(F)"`]
+        const label = `${REGION_LABELS[region]} credential vault`
+        /**
+         * Owner anomaly — the ROOT CAUSE of #199 — stated once because it changes
+         * the ADVICE of every branch below: `OWNER RIGHTS` resolves to whoever owns
+         * the directory, so on a foreign owner a plain re-hardening is not the fix
+         * (that is the command that locked the reporter out) and ownership has to be
+         * repaired first.
+         *
+         * Emitted ONLY on a branch that is already broken. A foreign owner with a
+         * readable, listable, restricted vault gets NO hint: this plugin now grants
+         * the current user's own SID beside the owner rights, so it survives a
+         * foreign owner, and the issue itself documents eight legacy
+         * Administrators-owned directories under the same DSH home — warning about
+         * every one of them would be pure noise. The owner and the verdict stay in
+         * the JSON either way, for a reporter who needs them.
+         */
+        const foreignOwner = entry.ownerIsCurrentUser === false
+          ? [`The ${label} is OWNED BY ${entry.owner ?? 'another account'}, not the account running DSH, and OWNER RIGHTS resolves to that owner: repair ownership FIRST, as an administrator — takeown /F "${entry.directory}" /R /D Y` + ` then icacls "${entry.directory}" /reset /T`]
+          : []
+        if (entry.vaultError !== undefined) {
+          return [
+            ...foreignOwner,
+            `${label} could not be LISTED (${entry.vaultError}): ${entry.directory}. Accounts stored ONLY in this vault — every one added through the plugin — will read as "no longer exists" on the card, which is the WRONG advice: nothing was deleted. Repair the folder permissions (or the ownership, if the owner is not your account) rather than signing in again.`,
+          ]
+        }
+        if (entry.state === 'exposed') {
+          const weak = entry.unexpected === undefined ? '' : ` (readable by ${entry.unexpected.join(', ')})`
+          return [`${label} holds PLAINTEXT tokens but its folder permissions do not restrict them${weak}: ${entry.directory}. Re-run doctor to retry the repair, or fix it by hand with: icacls "${entry.directory}" /inheritance:r /grant:r "*${entry.principal ?? 'S-1-5-4'}:(OI)(CI)(F)" /grant:r "*S-1-3-4:(OI)(CI)(F)" /grant:r "*S-1-5-18:(OI)(CI)(F)" /grant:r "*S-1-5-32-544:(OI)(CI)(F)"`]
+        }
+        if (entry.protectError !== undefined) {
+          return [
+            ...foreignOwner,
+            `${label} could NOT be hardened (${entry.protectError}): ${entry.directory}. The plaintext tokens inside carry whatever permissions the folder inherited — on Windows that usually means Everyone. Fix the folder, then re-run doctor.`,
+          ]
+        }
+        if (entry.state === 'unverified') {
+          return [
+            ...foreignOwner,
+            `${label}'s folder permissions could not be read back${entry.reason === undefined ? '' : ` (${entry.reason})`}: ${entry.directory}. This is NOT "protected" — and a directory this plugin has locked gives exactly this answer, because reading a DACL needs a right the lockout removed. Check it yourself: icacls "${entry.directory}" (from an administrator session if access is denied).`,
+          ]
+        }
+        return []
       }),
     ],
   }
@@ -585,13 +677,24 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       ...REGIONS.map(region => {
         const entry = credentialAclByRegion[region]
         const detail = entry.state === 'protected'
-          ? 'owner / SYSTEM / Administrators only'
+          // The user's own SID is NAMED here, not folded into "owner": on a
+          // directory owned by another account those are two different principals,
+          // and #199 is exactly the case where telling them apart matters.
+          ? `owner + ${entry.principal ?? 'the current user'} / SYSTEM / Administrators only`
           : entry.state === 'not-windows'
             ? 'POSIX mode 0600 applies'
             : entry.state === 'exposed'
               ? `EXPOSED${entry.unexpected === undefined ? '' : ` to ${entry.unexpected.join(', ')}`}`
               : 'unverified'
-        return `Credential vault ACL (${REGION_LABELS[region]}): ${entry.state} — ${detail} (${entry.directory})`
+        // The owner rides on the SAME line as the verdict, because the two belong
+        // together: `OWNER RIGHTS` resolves to the owner, so the owner is the one
+        // fact a reader needs in order to know whether this verdict is usable or a
+        // lockout. `ownerIsCurrentUser` is absent when `whoami` could not answer.
+        const ownerNote = entry.owner === undefined
+          ? ''
+          : ` [owner ${entry.owner}${entry.ownerIsCurrentUser === false ? ' — NOT the current account' : ''}]`
+        const lockNote = entry.vaultError === undefined ? '' : ` [NOT LISTABLE: ${entry.vaultError}]`
+        return `Credential vault ACL (${REGION_LABELS[region]}): ${entry.state} — ${detail}${ownerNote}${lockNote} (${entry.directory})`
       }),
       ...REGIONS.map(region => {
         const summary = report.rosterSeen[region]

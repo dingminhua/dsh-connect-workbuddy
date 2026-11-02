@@ -2,6 +2,128 @@
 
 ## 未发布
 
+### 修复（issue #199：#183 的权限加固会把用户锁在自己的凭据库外，报告与取证来自 @yunyu-lu）
+
+**现象**：Windows 11 日常账户（非管理员）的账号池卡片显示「已保存的账号在本机已不存在」，
+钉住的账号消失，只剩桌面端扫到的那一个。用户被迫 `takeown` 才恢复。完整取证（A/B 受控复现、
+四角度来源验证、时间线重建）见 issue 正文。
+
+**根因（缺陷 1，主因）**：`src/windows-acl.ts` 的 grant 列表**只授 `*S-1-3-4`（OWNER RIGHTS）**，
+注释里写的理由是「创建文件的进程就是它的 owner，所以 OWNER RIGHTS 恰好授给将来读它的那个账户」，
+顺带省掉一次 `whoami` 子进程。**这个前提在真实机器上会不成立**：vault 目录可以早于加固代码
+存在，也可以由**提权进程**创建或接管（报告者机器上有 `RunLevel=Highest` 的免 UAC 启动任务），
+此时 owner 是 `BUILTIN\Administrators`。于是 `/inheritance:r` 删光继承 ACE 之后，剩下的三条
+权限分别命中 Administrators、SYSTEM、Administrators——**日常账户一条都不占**，`stat` /
+`readdir` / `mkdir` / `write` 全部 `EPERM`，连 `icacls <dir>` 查看都被拒。而 **`icacls` 退出码是
+0**：它从未承诺过账户权限。所以这不是「加固失败」，是**加固成功而前提错了**——比失败更难发现，
+因为它一切正常。
+
+issue 的 A/B 实验**逐字使用同一条命令**，唯一变量是目录 owner：owner=用户 → 写入正常；
+owner=Administrators → 读写全拒，DACL 与事故现场完全一致。缺陷 1 由此坐实（不是猜的）。
+
+**三条改动**（缺陷 1 为主，2/3 为辅，均按 issue 的建议方向）：
+
+- **缺陷 1**：grant 列表**追加当前用户自己的 SID**（`whoami /user /fo CSV /nh`）。提取按
+  `S-1-…` **文本匹配**而非 CSV 列切分——账户名部分本地化（`机器\用户`），SID 不会，这与本模块
+  「用 SID 不用名字」的既有口径一致。**`OWNER RIGHTS` 保留**：目录由本进程创建时它是准确且免费的。
+  **`whoami` 答不出来时退到 `*S-1-5-4`（NT AUTHORITY\INTERACTIVE）**，而不是退回「只授 owner
+  rights」——它比用户自己的 SID 宽（本机任何交互登录都算），所以只在精确答案不可得时使用，且
+  加固结果里带上**实际用了哪个 principal**，`doctor` 才能把「宽一档的授权」和「按用户授权」分开。
+- **缺陷 2（可观测性）**：`syncVault` 对非 ENOENT 的 vault 读取失败原本 `catch { return }`，
+  **既不记日志也不上报**。后果不是「少一条日志」而是**方向相反的误导**：vault 打不开 → 只存在于
+  vault 的账号（每一个通过插件添加的账号）消失 → 卡片显示「已保存的账号在本机已不存在」，而这条
+  文案暗示的动作（重选 / 重新登录）**正是唯一不能修复它的动作**。现在
+  `WorkBuddyCredentialStore.vaultError()` 保留原因（**只保留、不抛**——一次读不到的目录仍然不该
+  让账号发现整条链路停摆，这一点原判断是对的），经 usage 文档新增的 `vaultError` 字段与
+  `diagnose()` 一起上报，`signedOutNotice` 里**「读不到」压过 `selectionLost`**：`selectionLost`
+  是从账号列表**推出的结论**，而读取失败让那个列表**不完整**，结论不能站在自己的原因旁边。
+  已登录但列表静默少一行时，卡片另给一条 hint——那种状态下屏幕上没有任何错误，用户无从察觉少了
+  东西。
+- **缺陷 3（告警覆盖面正好是反的）**：`doctor` 的 hints 只接 `state === 'exposed'`，即只报「太
+  宽」；`failed` / `unverified` 一行提示都不给。而**锁死的目录必然报 `unverified`**——读 DACL 需要
+  `READ_CONTROL`，那正是锁死删掉的权限：**最需要诊断的那台机器恰好是唯一诊断不上的**。现在
+  `failed` / `unverified` / 无法列出 / 所有者异常都会产生 hint，`inspectCredentialDirectory` 也在
+  同一次 `Get-Acl` 里读回 **owner**（`GetOwner([SecurityIdentifier])`，名字解析不了时退回原始名字，
+  而不是为一次身份查询丢掉整份报告）并报 `ownerIsCurrentUser`。**同一份证据下「受限且可用」与
+  「受限且不可用」的 ACE 列表完全相同**，owner 是唯一能把两者分开的字段——这正是报告者当初要跑
+  四个角度才能推出的事实。`--json` 的 `schemaVersion` **10 → 11**（四个新字段全部可选，缺席读作
+  「没测到」，version-10 消费者看到的仍是原来的报告）。
+
+**「所有者异常但不该吵」的取舍**：owner 不是当前用户**本身不再产生 hint**。加固现在直接授用户自己
+的 SID，所以那种机器是**能用的**；而 issue 自己就记录了同一台机器的 `~/.dsh` 下有 **8 个**历史遗留
+的 Administrators-owner 目录（10/26–11/02，早于任何插件操作）——逢异常就告警会让这条提示在多数真实
+机器上变成噪音，而**噪音会让人不看提示**。owner 与判定仍照常进 JSON；且**当其他环节确实坏了**
+（加固失败 / 读不回 / 列不出）时，`takeown` 指引排在最前面：**先修所有权，再谈重新加固**——重新加固
+正是把人锁死的那条命令，顺序写反等于把事故再执行一遍。
+
+**修掉一个我自己写出来的并发 bug**（记下来，因为它是这条修复上的第二个坑）：`whoami` 的记忆最初
+写成「先置 looked-up 标志、再 await」——看着等价，其实标志置起的那一刻答案还是 `undefined`，
+**并发调用者全部拿到 `undefined`**，健康机器于是静默退到 `INTERACTIVE`；而
+`inspectCredentialDirectory` 正好用 `Promise.all` 同时问两次，必踩。是
+`tests/issue199-acl-lockout.spec.ts` 里「不得把自己刚授出去的 SID 报成 unexpected principal」那条
+用例抓住的（同一条用例也是「允许列表必须与 grant 共用同一来源」的原因）。**改成缓存 promise。**
+
+**成本口径**：一个目录仍是**一次 `icacls`**；`whoami` 是**每进程一次**、成功与失败都记住，不在
+每次凭据写入上追加子进程。`tests/issue199-acl-lockout.spec.ts` 直接数子进程个数。
+
+**给已经锁死的用户的恢复命令**（管理员 PowerShell）：
+`takeown /F "<DSH home>\workbuddy-vault" /R /D Y` 然后 `icacls "<同一路径>" /reset /T`。
+`/reset /T` 会连 #183 想加的受限 ACE 一起清掉——这是**可接受的临时态**（回到加固前的暴露形态）：
+**两害相权，锁死比暴露更糟**。升级插件后重跑 `doctor` 即重新加固。README（中英两份）的平台表与
+「需要知道的点」、`docs/WINDOWS.md` §1 第 7 条均已同步，并新增「第 7 条的第二种失效形态」一节。
+
+**证据档位**：锁死**现场**是 A 档（报告者真机取证 + A/B 受控复现）；**修复效果**目前只有 CI/单元
+测试（B/C 档），本插件没有在「目录由提权进程创建」的真机上复核过——若你的机器仍是锁死形态，请回报
+（`docs/WINDOWS.md` §2 已注明）。
+
+**顺带登记一个本次未修的新发现**（写 `doctor` 用例时撞出来的，与 #199 无关）：`doctor` 承诺
+「一台没登录的机器不该留下设备身份」（`src/bin.ts:405-406`，且它自己的盐分支确实按
+`deviceCredentials.length === 0` 只读不写），但**实测空 home 里零账号跑一次 `doctor`，
+`$DSH_HOME/.workbuddy-device.json` 照样被创建**：`doctor` 在盐分支之前先构造了两个
+`WorkBuddyUpstreamClient`，而**构造器把 `resolveWireIdentity()` 挂成一个没人 await 的 promise**
+（`src/upstream.ts:4076`），那个 helper 走的正是 `ensureDeviceSalt()`——一次 CREATE。
+单独构造一个 client（不跑 doctor）也实测到了：空 home 里 0 ms 还没有该文件，约 800 ms 后已在。
+三次 `doctor` 运行里报告都是 `deviceIdentity.salt.state: 'ok'`——`'ok'` 只可能来自**读到一个已存在
+且可解析的文件**（`readDeviceSalt()` 对 ENOENT 回的是 `absent`），所以这三次里 create 确实先于 doctor
+自己那次读。**它是否可能落在读之后**（于是报告 `absent`、盘上随后出现文件）我没有测到，要测得改 fs
+模块本身；因此这里只登记已证实的那半边，不写「报告可能与磁盘不一致」那种我没观察到的形态。
+这条**没有在本次修**：闭掉它要么给 client 加只读接缝、要么让 `baseIdentity` 惰性解析，两者的影响面
+都超出 #199/#198。盐不是凭据，所以这不是凭据泄露；但它属于本项目登记过的「看起来已经写对了」那一类。
+守卫它的是 `tests/issue199-doctor-acl-hints.spec.ts` 里名为「hardens exactly the two region
+directories and nothing else in the vault」那条——断的是 **vault 里不得多出凭据文件**，**没有**去
+断那个盐文件存在或 absent（断存在会在别人修好时变红，断 `salt.state` 等于把赛跑的赢家写进测试）。
+
+**变异验证**：15 个变异体，**15 个全部当场打红**（每个变异只改一处行为，跑的是「拥有该断言的那份
+spec」，不是整个套件）。覆盖：目录 grant 去掉用户 SID（3 红）、允许列表与 grant 脱钩（3 红）、
+promise 记忆退回「标志 + 值」（**8 红**——并发退化会污染整个文件，符合预期）、`whoami` 失败退回
+owner rights（2 红）、`failed` 冒充 `protected`（1 红）、owner 判定从省略改成猜（1 红）、
+`diagnose()` 重新吞掉（1 红）、**`syncVault` 重新吞掉读取失败（2 红）**、`vaultError` 不上 wire
+（2 红）、卡片文案优先级（2 红）、signed-in hint 删除（1 红）、`doctor` 退回只报 `exposed`（4 红）
+——上面列了 12 个，加上下面单独记的 3 个（owner 读取、`whoami` 的超时、`whoami` 的 `windowsHide`）
+才是 15 个，这里把账对平，免得下一人数不出来。
+
+**两个变异体第一次是「逃逸 / 打不上」的，都改了代码，不是记下就算了**：
+
+- **owner 读取（M7）第一次逃逸**。断言原本写 `expect(script).toContain('GetOwner')`，把方法名改成
+  `GetOwnerBroken` 之后**它照样绿**——坏名字里仍然**包含**被搜索的那串字符。这正是本仓库
+  `5.16.0` 变异记录里写过的同一类陷阱（「`filter(arg => arg.startsWith('*S-1-'))` 取授权，而变异体
+  产生的畸形串根本不在过滤器视野里」）。断言改成**钉整次 PowerShell 调用**，含
+  `GetOwner([System.Security.Principal.SecurityIdentifier])` 的类型实参——`[SecurityIdentifier]`
+  是「答案必须是 SID」这件事的一部分，去掉它 `.Owner` 返回的是**本地化名字**，而 #199 的判据恰恰
+  需要能和 SID 比。重跑后打红 1 例。
+- **`whoami` 这个新子进程被变异抓出两个漏项（M17/M18，各打红 1 例）**，都是「复用一个 helper 就
+  顺手继承错前提」的形态：`runCommand` 原本只接受一个超时，`whoami` 于是共享 `icacls` 的 **10 s**；
+  而 `hardeningPrincipal()` 是在加固**之前**被 await 的，所以这个上限**加在**首次凭据写入的最坏路径
+  上（10 s → 20 s），不是藏在里面。现在 `whoami` 有自己的 `SID_LOOKUP_TIMEOUT_MS = 2_000`（实测
+  几十毫秒，留 ~25× 余量），超时即退到 `INTERACTIVE`。另一次是 `windowsHide`——`docs/WINDOWS.md`
+  §1-5 登记过的黑框缺陷类，而 `whoami` 现在正跑在「用户能从卡片反复触发」的那条路径上。
+  两条都写成了对**实际 spawn options** 的断言（`whoami.timeout < icacls.timeout`、
+  `windowsHide === true`），不是对常量的断言。
+
+**脚本没有留在仓库里**（`scripts/` 按惯例只放活的探针与 `verify-*`，且这些 perl/sed 模式钉在当日
+源码文本上，不重验就会退化成 `SKIP-NODIFF` 的假绿）。上面每个变异体的**改法与打红例数**都记在这儿，
+要重跑就照文本再改一遍。
+
 ### 新增（积分面板里的「设置」按钮）
 
 积分浮层的头部多了一个「设置」按钮，点它直接跳到**本插件自己的设置页**（插件页里

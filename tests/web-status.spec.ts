@@ -234,6 +234,61 @@ describe('workBuddyWebStatus', () => {
     expect('selectionLost' in status).toBe(false)
   })
 
+  // -------------------------------------------------------------------------
+  // Issue #199 defect 2: the vault's read failure crosses the wire
+  // -------------------------------------------------------------------------
+
+  it('carries vaultError beside selectionLost on the signed-out branch', async () => {
+    // The two fields ride together on purpose. `selectionLost` is a CONCLUSION
+    // drawn from the account list, and an unreadable vault makes that list
+    // incomplete — handing the card one without the other is how #199's machine got
+    // its wrong advice (re-pick / re-login) served as its only message.
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => true,
+        vaultError: () => "EPERM: operation not permitted, opendir 'vault/cn'",
+        hasExplicitSelection: () => true,
+      }) as never,
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.selectionLost).toBe(true)
+    expect(status.vaultError).toMatch(/EPERM/u)
+  })
+
+  it('carries vaultError on a signed-in document too', async () => {
+    // The half the signed-out branch cannot express: the desktop scan answers for
+    // the accounts it CAN read, so the region looks healthy while the picker is
+    // silently missing every OAuth-added one — those exist only in the vault.
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        ...baseStore(),
+        vaultError: () => 'EACCES: permission denied, opendir',
+      }) as never,
+    }), 'cn')
+    expect(status.status).toBe('signed-in')
+    if (status.status !== 'signed-in') return
+    expect(status.vaultError).toMatch(/EACCES/u)
+  })
+
+  it('omits vaultError when the vault read fine, and degrades on an older store', async () => {
+    // An absent field means "readable", so the card's new branch must not fire on
+    // a healthy machine — and a store built without the method (an older Host's
+    // copy) answers "not reported" rather than throwing, the same guard
+    // `searchedPaths` uses for `diagnose`: this never fails the status route.
+    const clean = await workBuddyWebStatus(deps(), 'cn')
+    expect(clean.status).toBe('signed-in')
+    if (clean.status !== 'signed-in') return
+    expect('vaultError' in clean).toBe(false)
+    const legacy = await workBuddyWebStatus(deps({
+      store: () => ({ ...baseStore(), vaultError: undefined }) as never,
+    }), 'cn')
+    if (legacy.status !== 'signed-in') throw new Error('expected signed-in')
+    expect('vaultError' in legacy).toBe(false)
+  })
+
   it('reports whether a saved choice is in effect, so clearing is observable (issue #11)', async () => {
     // Clearing restores "follow the app's sign-in", which usually resolves to
     // the SAME account. Without this flag the card cannot tell the user that

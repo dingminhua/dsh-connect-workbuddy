@@ -943,6 +943,25 @@ async function searchedPaths(
   }
 }
 
+/**
+ * Why this region's credential vault could not be read, if it could not.
+ *
+ * Issue #199 defect 2. The store keeps the LAST vault failure rather than
+ * throwing it, because an unreadable vault must not take account discovery down —
+ * but "must not take it down" was implemented as "say nothing", and silence is
+ * what turned a lockout into the misleading 「已保存的账号在本机已不存在」. One
+ * helper feeds every branch so a card cannot render `selectionLost` without also
+ * knowing whether the vault that would prove it was readable.
+ *
+ * `safeMessage`d like the probe list: a raw filesystem error can embed an absolute
+ * path, and this crosses to the browser.
+ */
+function vaultErrorOf(store: WorkBuddyCredentialStore): { vaultError?: string } {
+  if (typeof store.vaultError !== 'function') return {}
+  const failure = store.vaultError()
+  return failure === undefined ? {} : { vaultError: safeMessage(failure) }
+}
+
 /** Reads schemastery's internal `meta.volatile` marker for one top-level field. */
 function volatileFlagOf(field: string): boolean {
   const dict = (Config as unknown as {
@@ -1180,6 +1199,11 @@ export async function workBuddyWebStatus(
       ...lastForeignThinking === undefined ? {} : { lastForeignThinking },
       busyLevels,
       ...await store.selectionLost() ? { selectionLost: true } : {},
+      // Issue #199 defect 2: `selectionLost` alone is the WRONG conclusion when
+      // the vault that would have proved the account exists could not be read.
+      // Both fields ride together so the card can say 「读不到」 rather than
+      // 「不存在」; `vaultErrorOf` degrades to nothing on a store that predates it.
+      ...vaultErrorOf(store),
       // Only the genuinely empty machine gets the probe list. When local
       // sign-ins DO exist (the orphaned-saved-id case), the card already has
       // the right advice and a list of failed paths would bury it.
@@ -1266,6 +1290,12 @@ export async function workBuddyWebStatus(
       accounts: volatileFlagOf('accounts'),
       authFile: volatileFlagOf('authFile'),
     },
+    // The same fact as on the signed-out branch (issue #199 defect 2), carried on
+    // a SIGNED-IN document too: an unreadable vault drops the accounts that live
+    // ONLY there — every OAuth-added one — while the desktop scan keeps feeding
+    // enough sign-ins to look healthy. The card then shows a picker that is
+    // silently missing an entry, and the user has nothing to connect it to.
+    ...vaultErrorOf(store),
     ...account,
     // The new-model segment's data. Spreads are conditional because both fields
     // are optional on the document shape (`exactOptionalPropertyTypes`).

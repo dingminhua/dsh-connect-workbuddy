@@ -2310,10 +2310,22 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    * real duplication: `resolve()`'s message already enumerated every path, and
    * the list below enumerates them again with better reasons.
    */
+  /**
+   * The Host's vault-read failure, whichever sign-in state this region is in.
+   *
+   * Issue #199 defect 2, in two halves. Signed-OUT: it becomes the paragraph, and
+   * outranks `selectionLost` inside `signedOutNotice`. Signed-IN: the same fact is
+   * the explanation for a picker that is silently missing every account that lives
+   * only in the vault — a desktop scan answers for the rest, so the region reads as
+   * healthy while an entry has vanished. The `error` variant carries nothing.
+   */
+  const vaultError = status.status === 'error' ? undefined : status.vaultError
   const notice = signedOutNotice({
     selectionLost,
     message: status.status === 'signed-out' ? status.message : undefined,
     searched,
+    // Issue #199 defect 2: outranks both of the above inside `signedOutNotice`.
+    vaultError,
   })
   /**
    * Whether this region runs a saved choice, per the Host. `undefined` only on
@@ -3150,8 +3162,22 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
               {accountError === undefined
                 ? null
                 : <p className="dsm-workbuddy-account-error" role="alert">{accountError}</p>}
-              {selectionLost
+              {/* Suppressed when the vault could not be read (issue #199 defect
+                  2): `selectionLost` is a CONCLUSION drawn from an account list
+                  that read failure made incomplete, so repeating it under the
+                  paragraph that explains exactly that would re-put the wrong
+                  advice — 「账号已不存在」 — on the screen. */}
+              {selectionLost && vaultError === undefined
                 ? <p className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</p>
+                : null}
+              {/* The signed-IN half of issue #199 defect 2. The list above may be
+                  short by every OAuth-added account while still looking fine,
+                  because the desktop scan answers for the entries it can read; this
+                  is the only place that fact can be said. A HINT, not an alert: the
+                  region still works, and role=alert here would announce on every
+                  poll for a state that is not an error the user caused. */}
+              {status.status === 'signed-in' && vaultError !== undefined
+                ? <p className="dsm-workbuddy-usage-hint" title={vaultError}>{t('row.vaultUnreadableHint')}</p>
                 : null}
               {status.status === 'signed-in'
                 ? <>

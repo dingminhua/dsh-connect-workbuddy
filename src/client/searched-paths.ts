@@ -121,6 +121,14 @@ export interface SignedOutNotice {
   key: WorkBuddySettingsKey
   /** The Host's raw `resolve()` error, shown only when nothing supersedes it. */
   fallback?: string
+  /**
+   * Interpolation values for {@link key}.
+   *
+   * Carried here rather than interpolated at the call site so the copy decision
+   * and its values stay one unit — and so {@link signedOutText} remains the only
+   * place that turns a decision into the string the card renders.
+   */
+  params?: Record<string, unknown>
 }
 
 /**
@@ -159,7 +167,28 @@ export function signedOutNotice(input: {
   selectionLost: boolean
   message: string | undefined
   searched: readonly WorkBuddyWebSearchPath[]
+  /**
+   * The Host's reason the vault could not be read, when it could not
+   * (issue #199 defect 2). Present means "these entries were LOST, not absent".
+   *
+   * `| undefined` explicitly: the document field is optional under
+   * `exactOptionalPropertyTypes`, so reading it off a variant that does not carry
+   * it yields `undefined` and that is a legal, meaningful input here — "not
+   * reported", not "not passed".
+   */
+  vaultError?: string | undefined
 }): SignedOutNotice {
+  // FIRST, outranking even `selectionLost`, and this is the whole point of the
+  // field: `selectionLost` is a CONCLUSION about the account list, and an
+  // unreadable vault makes that list incomplete rather than short. On the
+  // reporter's machine the pinned OAuth account was still on disk — only the ACL
+  // lockout made it invisible — and the card's one honest-looking sentence was
+  // 「已保存的账号在本机已不存在」, whose every suggested action (re-pick, re-login)
+  // cannot work. A direction-wrong message is worse than no message, so the cause
+  // that explains BOTH the missing entry and the lost selection wins.
+  if (input.vaultError !== undefined) {
+    return { key: 'row.vaultUnreadableMessage', params: { error: input.vaultError } }
+  }
   if (input.selectionLost) return { key: 'row.selectionLostMessage' }
   // `encrypted` OUTRANKS `wrong-region`, and the order was reversed until
   // issue #68 — which is where it was caught. The two can appear TOGETHER, and
@@ -197,6 +226,6 @@ export function signedOutNotice(input: {
  * be asserted on the string that is actually rendered, not on its inputs.
  */
 export function signedOutText(notice: SignedOutNotice, t: Translate): string {
-  const hint = t(notice.key)
+  const hint = notice.params === undefined ? t(notice.key) : t(notice.key, notice.params)
   return notice.fallback === undefined ? hint : `${hint} (${notice.fallback})`
 }

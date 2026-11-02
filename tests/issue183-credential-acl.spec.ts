@@ -63,6 +63,14 @@ function grantArgsOf(args: readonly string[]): string[] {
  * the production expression prints.
  */
 let aclStdout = ''
+/**
+ * `whoami /user` output, as the real command prints it: `<account>,<SID>`.
+ *
+ * A NAME COMMA SID, because that is the shape production parses (#199) — an
+ * extractor tested against a bare SID would pass here and fail on a machine, and
+ * the account part of the line is exactly the part that is localized.
+ */
+let whoamiStdout = 'LAPTOP\\luyuyu,S-1-5-21-1411259516-1007003351-3697357812-1001'
 /** When set, every spawn rejects with this message instead of succeeding. */
 let failWith: string | undefined
 
@@ -81,12 +89,15 @@ vi.mock('node:child_process', async importOriginal => {
         callback(Object.assign(new Error(failWith), { code: 'ENOENT' }), '', failWith)
         return
       }
-      callback(null, file === 'powershell' ? aclStdout : '', '')
+      // Deliberately per-executable rather than "stdout for powershell, nothing
+      // otherwise": `whoami` joined this module's child processes in #199, and a
+      // mock that answers nothing for it would silently test only the fallback.
+      callback(null, file === 'powershell' ? aclStdout : file === 'whoami' ? whoamiStdout : '', '')
     },
   }
 })
 
-const { inspectCredentialDirectory, protectCredentialDirectory, protectCredentialFile } =
+const { inspectCredentialDirectory, protectCredentialDirectory, protectCredentialFile, resetWindowsAclStateForTests } =
   await import('../src/windows-acl.ts')
 
 const {
@@ -101,6 +112,9 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
     spawned.length = 0
     aclStdout = ''
     failWith = undefined
+    // The SID lookup and the directory memo are per-PROCESS state (#199), so one
+    // test's `whoami` answer would otherwise decide the grant list of the next.
+    resetWindowsAclStateForTests()
     const { mkdtemp } = await import('node:fs/promises')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
@@ -239,7 +253,7 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
       // A name-based grant would be localized and therefore wrong on a zh-CN
       // host; every grant must be the `*S-1-…` form.
       const grants = grantArgsOf(args)
-      expect(grants).toHaveLength(3)
+      expect(grants).toHaveLength(4)
       for (const grant of grants) expect(grant.startsWith('*S-1-')).toBe(true)
       // `/T` blanks the DACL of the files it walks (measured on a real host,
       // see the src module note), so it must never appear.
@@ -256,11 +270,11 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
     const dirCall = argsOf('icacls').find(args => args[0] === `${root}/vault`)
     expect(dirCall).toBeDefined()
     const grants = grantArgsOf(dirCall!)
-    // Exactly the three intended principals: a test that filtered for
+    // Exactly the four intended principals: a test that filtered for
     // well-formed grants only would silently accept a MALFORMED one (measured:
     // mutating the first spec to `*:(OI)(CI)(F)` left 12/12 green, because the
     // malformed entry simply failed the `startsWith('*S-1-')` filter).
-    expect(grants).toHaveLength(3)
+    expect(grants).toHaveLength(4)
     for (const grant of grants) {
       expect(grant.startsWith('*S-1-')).toBe(true)
       expect(grant.endsWith('(OI)(CI)(F)')).toBe(true)
@@ -273,7 +287,7 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
     const fileCall = argsOf('icacls')[0]
     expect(fileCall).toBeDefined()
     const grants = grantArgsOf(fileCall!)
-    expect(grants).toHaveLength(3)
+    expect(grants).toHaveLength(4)
     for (const grant of grants) {
       expect(grant.startsWith('*S-1-')).toBe(true)
       // `(OI)`/`(CI)` on a FILE are meaningless, and passing them is what
@@ -290,7 +304,10 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
 
   it('reports protected when only the owner, SYSTEM and Administrators hold access', async () => {
     actAsWindows()
-    aclStdout = ['S-1-3-4', 'S-1-5-18', 'S-1-5-32-544'].join('\r\n')
+    aclStdout = [
+      'OWNER S-1-5-21-1411259516-1007003351-3697357812-1001',
+      'S-1-3-4', 'S-1-5-18', 'S-1-5-32-544',
+    ].join('\r\n')
     const report = await inspectCredentialDirectory(`${root}/vault/cn`)
     expect(report.state).toBe('protected')
     expect(report.weak).toEqual([])
@@ -300,7 +317,10 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
     actAsWindows()
     // S-1-1-0 is `Everyone` — the exact ACE measured on the reporter's machine,
     // inherited from ~/.dsh.
-    aclStdout = ['S-1-3-4', 'S-1-5-18', 'S-1-5-32-544', 'S-1-1-0'].join('\r\n')
+    aclStdout = [
+      'OWNER S-1-5-21-1411259516-1007003351-3697357812-1001',
+      'S-1-3-4', 'S-1-5-18', 'S-1-5-32-544', 'S-1-1-0',
+    ].join('\r\n')
     const report = await inspectCredentialDirectory(`${root}/vault/cn`)
     expect(report.state).toBe('exposed')
     expect(report.weak).toEqual(['S-1-1-0'])

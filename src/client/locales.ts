@@ -89,6 +89,13 @@ export const en = {
   'row.accountsWriteFailed': 'The account change was not saved: {message} — the active profile\'s configuration file could not be updated (on Windows it may be locked by an antivirus scanner or a sync client). Your previous choice is still in effect; close whatever holds that file and try again (see docs/WINDOWS.md in the plugin repo for the exact path).',
   'row.selectionLostHint': 'The saved account no longer exists locally.',
   'row.selectionLostMessage': 'The account saved for this region is no longer among the local sign-ins (WorkBuddy replaced its login or cleaned up backups). Your other sign-ins are fine — pick a current one from the list above. Signing in again in the desktop app will not fix this.',
+  // Issue #199 defect 2: the vault — where an OAuth-added account lives and where
+  // every scanned sign-in is mirrored — could not be READ at all, which used to be
+  // silent. Silence made the missing entries look like accounts that had gone away,
+  // so the only advice on screen was 「re-pick / sign in again」 for a credential
+  // that was healthy and merely unopenable. These two say the opposite, true thing.
+  'row.vaultUnreadableHint': 'The local credential vault could not be read, so some accounts may be missing from this list — they are not gone.',
+  'row.vaultUnreadableMessage': 'The local credential vault ({error}) could not be read, so this list may be missing accounts — including any added through this plugin, which exist nowhere else. Nothing was deleted and signing in again will not help: the folder permissions need repair. Run the plugin\'s doctor command (dsh plugin exec dsh-connect-workbuddy doctor --json) and follow the credentialAcl hint; on Windows a directory owned by another account needs takeown + icacls /reset first.',
   // The card's three sections. The card is 3,500 px tall in one column, and the
   // two jobs on it are unrelated: operating an account (who serves, how much is
   // left, which order) and editing the catalog (which models, what context
@@ -772,6 +779,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.accountsWriteFailed': '账号改动未保存：{message} —— 当前 profile 的配置文件写入失败（Windows 上可能被杀毒软件或同步盘占用）。当前仍是原来保存的选择，请先关闭占用该文件的程序再重试（文件的确切路径见插件仓库的 docs/WINDOWS.md）。',
   'row.selectionLostHint': '已保存的账号在本机已不存在。',
   'row.selectionLostMessage': '该区域保存的账号已不在本机登录列表中（WorkBuddy 更换了登录或清理了备份文件）。本机其他登录仍然可用——请在上方列表中重新选择一个当前账号。重新登录桌面端 App 无法修复此问题。',
+  // issue #199 缺陷 2：凭据库（OAuth 添加的账号只存在这里，桌面端扫到的登录也会
+  // 回写到这里）根本**读不出来**，而这份失败过去是静默的。静默让「少了几条」看起来
+  // 像「账号没了」，于是屏幕上唯一的建议成了「重选 / 重新登录」——可那条凭据好好的，
+  // 只是打不开。下面两句说的是相反且真实的事。
+  'row.vaultUnreadableHint': '本机凭据库读取失败，列表中可能因此少了账号——它们并没有被删除。',
+  'row.vaultUnreadableMessage': '本机凭据库读取失败（{error}），账号列表可能因此缺少条目——包括通过本插件添加的账号，它们不存在于任何其他地方。这里没有任何东西被删除，重新登录也解决不了：需要修的是这个目录的权限。请运行插件的诊断命令（dsh plugin exec dsh-connect-workbuddy doctor --json）并按 credentialAcl 那条提示处理；Windows 上若目录所有者不是当前账户，需要先 takeown，再用 icacls /reset 恢复继承。',
   'row.panelAccounts': '账号',
   'row.panelModels': '模型',
   'row.panelCapabilities': '能力',

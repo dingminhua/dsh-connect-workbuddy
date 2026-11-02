@@ -1049,8 +1049,14 @@ function parseOwnDocument(text: string, filePath: string): WorkBuddyCredential |
   }
 }
 
-/** Whether a filesystem error reports an absent path. */
-function isENOENT(error: unknown): boolean {
+/**
+ * Whether a filesystem error reports an absent path.
+ *
+ * Exported for `bin.ts`: `doctor` asks the vault the same question the runtime
+ * store does (issue #199 defect 2), and "absent is normal, anything else is the
+ * finding" must be ONE rule rather than two that can drift.
+ */
+export function isENOENT(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }
 
@@ -1363,6 +1369,23 @@ export class WorkBuddyCredentialStore {
    * is ever written to settings.
    */
   private rotatedAccountId: string | undefined
+
+  /**
+   * Why the LAST vault read failed, or undefined when it did not.
+   *
+   * ISSUE #199 DEFECT 2. An unreadable vault used to be swallowed at the call
+   * site with the reasoning "discovery must not go down" — right for the account
+   * LIST, wrong for the USER: the vault's entries simply vanished, and a pinned
+   * account that vanishes reads as `selectionLost` / 「已保存的账号在本机已不存在」,
+   * advice that cannot possibly work because the credential IS there and merely
+   * cannot be opened. On the reporter's machine the cause was an ACL LOCKOUT
+   * produced by this plugin's own hardening (defect 1).
+   *
+   * So the failure is KEPT and reported through {@link vaultError}, never thrown:
+   * a broken directory still must not take discovery down. Cleared by the next
+   * successful read, so a machine that recovers stops complaining.
+   */
+  private vaultFailure: string | undefined
 
   constructor(options: WorkBuddyStoreOptions) {
     this.refresh = options.refresh
@@ -1682,10 +1705,19 @@ export class WorkBuddyCredentialStore {
     let entries: Map<string, VaultEntry>
     try {
       entries = await readVaultEntries(dir)
-    } catch {
-      // An unreadable vault must not take account discovery down: the scan's
-      // own results are still valid. Writing is skipped this round, so a
-      // broken directory cannot be made worse by this call.
+      this.vaultFailure = undefined
+    } catch (error: unknown) {
+      // An unreadable vault must not take account discovery down: the scan's own
+      // results are still valid. Writing is skipped this round, so a broken
+      // directory cannot be made worse by this call.
+      //
+      // But it must not be SILENT either (issue #199 defect 2): this exact return
+      // is what turned an ACL lockout into a plausible-looking "the account no
+      // longer exists". The reason is kept for `vaultError()` so the surfaces can
+      // say 「读不到」 instead of 「不存在」 — the one distinction that decides
+      // whether the user should re-login (which cannot help) or repair the
+      // directory (which can).
+      this.vaultFailure = error instanceof Error ? error.message : String(error)
       return
     }
     let dirReady = false
@@ -1699,8 +1731,11 @@ export class WorkBuddyCredentialStore {
         try {
           await mkdir(dir, { recursive: true })
           dirReady = true
-        } catch {
-          // No writable vault: discovery still returns the scan's accounts.
+        } catch (error: unknown) {
+          // No writable vault: discovery still returns the scan's accounts — and
+          // the reason is recorded, same as above (a read-only vault from a
+          // lockout is a DIFFERENT complaint from an empty one).
+          this.vaultFailure = error instanceof Error ? error.message : String(error)
           return
         }
       }
@@ -1839,6 +1874,24 @@ export class WorkBuddyCredentialStore {
     const credentials = await this.readAll()
     if (credentials.length === 0) return false
     return !credentials.some(credential => workbuddyAccountId(credential) === this.accountId)
+  }
+
+  /**
+   * Why the LAST vault read or write could not be completed, or `undefined`.
+   *
+   * Issue #199 defect 2. `undefined` means "the vault was readable", which is a
+   * DIFFERENT answer from "there is nothing in it" — and the surfaces need that
+   * distinction, because the account list derived from an unreadable vault is
+   * MISSING ENTRIES rather than empty. Without it, an OAuth-only account (which no
+   * desktop scan can re-find) silently disappears and the card's only explanation
+   * is 「已保存的账号在本机已不存在」: re-sign-in advice for a credential that is
+   * perfectly healthy and merely cannot be OPENED.
+   *
+   * The message is a filesystem `errno` string (`EPERM`, `EACCES`, …) plus the
+   * syscall: no path (the caller has the directory), and never file contents.
+   */
+  vaultError(): string | undefined {
+    return this.vaultFailure
   }
 
   /** The freshest stored credential for the current selection, no refresh. */
@@ -2390,10 +2443,20 @@ export class WorkBuddyCredentialStore {
           candidates.push({ path, source: 'dsh', reason: 'invalid', message: 'not a readable vault credential' })
         }
       }
-    } catch {
-      // Absent/unreadable vault directory: absence is normal (nothing added
-      // yet), and a read error is already reported through the own copies'
-      // diagnostics pass above.
+    } catch (error: unknown) {
+      // Absent vault directory is normal (nothing added yet) and stays silent.
+      //
+      // Anything else is the FINDING, and used to be discarded with the comment
+      // "a read error is already reported through the own copies' diagnostics pass
+      // above" — which is not true: that pass reads FILES, and a directory nobody
+      // can OPEN produces no file-level error at all. Issue #199's machine therefore
+      // got a `diagnose()` answer of "nothing wrong here" for the one thing that was
+      // wrong, and the card had only 「已保存的账号在本机已不存在」 left to say.
+      if (!isENOENT(error)) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.vaultFailure = message
+        candidates.push({ path: this.vaultDir(), source: 'dsh', reason: 'unreadable', message })
+      }
     }
     return { tried: [...desktopTried, ...this.ownCandidates()], failures: candidates }
   }

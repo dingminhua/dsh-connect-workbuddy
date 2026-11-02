@@ -26,18 +26,36 @@ Windows 在本项目里不是「顺带能跑」的平台，而是**有专属分�
 | 4 | 设置写入回读校验（`src/client/account-selection.ts`） | 写入后**回读校验**：profile 的 `cordis.patch.yml` 被占用会让 rename 覆盖失败，而 `set()` 的 promise 仍 resolve | 用户看到假确认（显示「已清除」但没落盘）→ issue #11 |
 | 5 | 子进程启动选项：`src/host-heartbeat.ts` `PROCESS_PROBE_OPTIONS` 与 `src/at-rest.ts` `fetchAtRestKeyPayload()` | 一律带 `windowsHide: true`（POSIX 忽略该选项） | **宿主本身没有控制台**（Electron GUI 进程，实测 `MainWindowHandle = 0`），Windows 会给子进程**新建一个可见的控制台窗口** → 每次进程存活判定都在屏幕上闪一次黑框 |
 | 6 | `src/at-rest.ts` `readAtRestKey()` → `findWorkbuddyAppExecutableWithSource()` | 字段密钥**不带参数**调用时才走注册表回退（`reg query` × 3 个卸载 hive）；这个探测曾被**只按成功结果**缓存 | 桌面端不在候选目录、凭据又是加密的机器上，`scanAll()` 会**逐文件**重跑整套探测。issue #77 实测：19.1 s 的请求里 15.3 s 花在 `spawnSync`，约 **135 个 `reg query` 子进程**（`findWorkbuddyAppExecutable()` 被调用 45 次）→ 打开页面白等 60 s。POSIX 上这一支根本不跑，**在 macOS 开发机上永远看不到** |
-| 7 | `src/windows-acl.ts` `protectCredentialDirectory()`（issue #183） | 凭据库的访问权限**不能靠 `mode: 0o600`**：Windows 上 `fs.writeFile` / `fs.rename` 的 `mode` 被接受但不生效，权限完全由继承的 DACL 决定。改为在**写入之前**对 vault 根目录发一次 `icacls`（`/inheritance:r` + `*S-1-3-4`、`*S-1-5-18`、`*S-1-5-32-544`，含 `(OI)(CI)`），靠 Windows 的继承传播覆盖整棵子树 | vault 里是**明文** `accessToken` / `refreshToken`。未加固时实测该文件被 `<机器>\CodexSandboxUsers`（DSH 自己沙箱账户）以 `Modify` 读取，且本机 `~/.dsh` 还额外带着 `Everyone: FullControl` → 本机任何低权限进程都能取到可用 JWT |
+| 7 | `src/windows-acl.ts` `protectCredentialDirectory()`（issue #183，形态被 issue #199 修正） | 凭据库的访问权限**不能靠 `mode: 0o600`**：Windows 上 `fs.writeFile` / `fs.rename` 的 `mode` 被接受但不生效，权限完全由继承的 DACL 决定。改为在**写入之前**对 vault 根目录发一次 `icacls`（`/inheritance:r` + `*S-1-3-4`、**当前用户 SID**、`*S-1-5-18`、`*S-1-5-32-544`，含 `(OI)(CI)`），靠 Windows 的继承传播覆盖整棵子树 | vault 里是**明文** `accessToken` / `refreshToken`。未加固时实测该文件被 `<机器>\CodexSandboxUsers`（DSH 自己沙箱账户）以 `Modify` 读取，且本机 `~/.dsh` 还额外带着 `Everyone: FullControl` → 本机任何低权限进程都能取到可用 JWT。**而「只授 OWNER RIGHTS」的第一版加固会把用户彻底锁死**，见下方「第 7 条的第二种失效形态」 |
 
 **第 7 条为什么单列**：它是本项目里**第一个「静默失效的防御」**——`mode: 0o600` 看起来像已做了权限限制，代码注释、目录名（`vault`）和既有文档都暗示这一点，而 Windows 上它**什么都不做**。这类缺陷的危险不在于写错，而在于**看起来已经写对了**：没有报错、没有日志、`doctor` 也一切正常。真机取证（2026-10-27，Windows 11）用 `Get-Acl` 读到的事实与代码意图相反，这才把它暴露出来。
 
 **加固的四条实测结论**（A 档，真机 `icacls` / `Get-Acl`）：
 
 1. **`/T` 必须禁用**。`icacls <dir> /T /inheritance:r /grant:r "*S-1-3-4:(OI)(CI)(F)"` 会让它走过的**每个文件得到空 DACL**（实测 `ACEcount=0`）——比原来更糟，因为谁都读不了，包括插件自己。正确形态是目录用 `(OI)(CI)`、文件用裸 `(F)`；本实现的写入路径只加固目录，靠传播覆盖文件。
-2. **一次 `icacls` 覆盖整棵树，不需要遍历**。实测：对一个同时含 `cn/`、`global/` 子目录与文件、且全部带 `Everyone`/`CodexSandboxUsers` 的根目录只跑一次 `icacls`，事后根、两个子目录、子目录里的文件全部变成恰好三条 ACE（`weak=0`）。因此实现里没有按目录遍历，也没有按文件逐个加固。
+2. **一次 `icacls` 覆盖整棵树，不需要遍历**。实测：对一个同时含 `cn/`、`global/` 子目录与文件、且全部带 `Everyone`/`CodexSandboxUsers` 的根目录只跑一次 `icacls`，事后根、两个子目录、子目录里的文件全部变成恰好那几条 ACE（`weak=0`）。因此实现里没有按目录遍历，也没有按文件逐个加固。（#183 时是三条；#199 之后多一条**当前用户 SID**，见下。）
 3. **加固必须在写入之前**。`writeFileAtomic` 是「写临时 inode → rename 覆盖」，替换出来的是**新 inode**；写在之后加固既留下 pre-rename 窗口，也会被下一次替换抹掉。
 4. **要加固 vault 根目录，不只是 region 目录**。`Everyone: FullControl` 是从 `~/.dsh` 继承到 `…/workbuddy-vault` 上的；只加固 `<vault>/<region>` 时根目录仍可写，任何进程都能替换掉 region 目录本身。`writeVaultEntry()` 传的是 `dirname(dir)`。
 
 **成本是这里的一等约束**（A 档实测）：`icacls` 是子进程，静止态 19–52 ms，**并行负载下最高 1242 ms**。因此实现遵守两条：一个目录**一次**调用；同一路径**正在进行的**加固被 join 而不重复发起。这不是提前优化——最初「每次写入后再加固一次文件」的版本把 `tests/issue12-region-hiding.spec.ts` 的 1 s 轮询预算顶穿，才定位到成本形态并改成现在这样。**改动这里的调用次数或等待策略时，请以该用例为成本哨兵。**
+
+**第 7 条的第二种失效形态（issue #199，A 档：报告者真机 Windows 11 + `icacls`/`Get-Acl` 取证）**：#183 的加固**只授 `*S-1-3-4`（OWNER RIGHTS）**，注释写的理由是「创建文件的进程就是它的 owner，所以 OWNER RIGHTS 恰好授给将来读它的那个账户」，而省掉一次 `whoami` 子进程。**这个前提在真实机器上会不成立**：vault 目录可能早于加固代码存在，或由**提权进程**创建/接管（报告者机器上有 `RunLevel=Highest` 的免 UAC 启动任务），此时 owner 是 `BUILTIN\Administrators`。于是 `icacls … /inheritance:r /grant:r *S-1-3-4:… *S-1-5-18:… *S-1-5-32-544:…` 的结果是：三条 ACE 分别命中 Administrators、SYSTEM、Administrators，**当前日常账户一条都不占**，而 `/inheritance:r` 又删光了它原本继承到的权限 → `stat` / `readdir` / `mkdir` / `write` 全部 `EPERM`，连 `icacls <dir>` 查看都被拒。`icacls` **退出码为 0**——它从未承诺过账户权限，所以这条路径上没有任何报错。
+
+**为什么这一类比 #183 更难发现**（登记下来，因为它是同一处代码的第二次「看起来已经写对了」）：
+
+1. **加固执行成功 ≠ 加固结果可用**。#183 的 `doctor` 只把 `state === 'exposed'`（权限太宽）接进 hints，`failed` / `unverified`（可能锁死人）一行提示都不给——**告警覆盖面正好是反的**。锁死的目录必然报 `unverified`，因为读 DACL 需要 `READ_CONTROL`，而那正是锁死删掉的权限。
+2. **owner 是判据，不在报告里**。同一串 ACE（`OW`/`SY`/`BA`）在 owner=当前用户时健康、owner=Administrators 时是牢笼；不读 owner 就**无法区分两者**。`inspectCredentialDirectory` 现在同一次 `Get-Acl` 里把 `GetOwner([SecurityIdentifier])` 读出来，报告为 `owner` / `ownerIsCurrentUser`。
+3. **读取失败被静默降级成方向相反的文案**。`syncVault` 对非 ENOENT 的 `readdir` 失败 `catch { return }`，既不记日志也不上报——vault 打不开 → 只存在于 vault 的账号（**每一个通过插件添加的账号**）消失 → 卡片显示「已保存的账号在本机已不存在」。该文案建议的动作（重选 / 重新登录）**正是唯一不能修复它的动作**。现在 `WorkBuddyCredentialStore.vaultError()` 保留原因，经 usage 文档的 `vaultError` 字段与 `diagnose()` 上报，`signedOutNotice` 让**读不到**压过 `selectionLost`。
+
+**修复的三条要点**（本插件的守卫在 `tests/issue199-acl-lockout.spec.ts` 与 `tests/issue199-doctor-acl-hints.spec.ts`；**修复本身在真机上尚未经报告者复核**，属 B/C 档，若你的机器仍是锁死形态请回报）：
+
+- grant 列表**追加当前用户自己的 SID**（`whoami /user /fo CSV /nh`，按 `S-1-…` 文本提取而非 CSV 列切分——账户名部分本地化、SID 不会）。`OWNER RIGHTS` **保留**：目录由本进程创建时它是准确的且免费。owner 异常时用户仍有第二条权限通道。
+- **`whoami` 每进程只跑一次，且缓存的是 promise 而不是值**。写成「先置 looked-up 标志、再 await」会在标志置起的那一刻答案仍是 `undefined`——并发调用者全部拿到 `undefined`，健康机器于是静默退到 `INTERACTIVE`；本文件第一版就是这么写的，被 `tests/issue199-acl-lockout.spec.ts` 里「不得把自己刚授出去的 SID 报成 unexpected principal」那条用例抓住（它同时是允许列表必须与 grant 共用同一来源的原因）。
+- **`whoami` 答不出来时退到 `*S-1-5-4`（NT AUTHORITY\INTERACTIVE）**，而不是退回「只授 owner rights」。它比用户自己的 SID 宽（本机任何交互登录都算），所以只在精确答案不可得时用；加固结果里带上实际用的 principal，`doctor` 才能把「宽一档的授权」和「按用户授权」区分开。
+
+**成本口径的更新**（A 档实测见上）：一个目录仍**只有一次 `icacls`**；`whoami` 是**每进程一次**、成功与失败都记住，不在每次写入上追加子进程。
+
+**已验证的恢复命令**（给已经锁死的用户，管理员 PowerShell）：`takeown /F "<DSH home>\workbuddy-vault" /R /D Y` 然后 `icacls "<…>" /reset /T`。`/reset /T` 会连 #183 想加的受限 ACE 一起清掉——这是**可接受的临时态**（回到加固前的暴露形态），两害相权，**锁死比暴露更糟**；插件修复后重新跑一次 `doctor` 即可重新加固。
 
 **没有做的事**（诚实登记）：issue #183 的建议 1（DPAPI / `safeStorage` 加密落盘）**未实现**。当前落盘的仍是明文，只是权限收紧了；管理员、SYSTEM 服务，或已经拿到该用户令牌的攻击者仍可读取。要做到那一步需要改变 vault 的**磁盘格式**并做迁移，属独立改动。README 明写「此文件含明文 token」。
 
@@ -58,7 +76,7 @@ Windows 在本项目里不是「顺带能跑」的平台，而是**有专属分�
 | 档位 | 含义 | 实例 |
 | --- | --- | --- |
 | **A 真机取证** | 在真实 Windows 上取得，可作为最终判据 | ① 真实 Windows 安装（2026-09-26）里 `workbuddy-desktop.info` 的 `nickname` / `phoneNumber` / `accessToken` 信封**观察到 `keyId=9127dea1b44020a7`**；② issue #13 报告的 `E:\WorkBuddy\WorkBuddy.exe`；③ **§1-5 的控制台闪窗**（见下方专门说明）；④ §1-1 凭据目录与 §1-2 可执行文件候选在真机上命中（`doctor` 全绿，见 §7 记录） |
-| **B CI 实测** | `windows-latest` 上跑过，覆盖跨平台正确性 | 套件全绿；`tests/auth.spec.ts` 的 `win32` 分支断言（注入 `platform`/`home`/`env`，**任何主机上都能跑**） |
+| **B CI 实测** | `windows-latest` 上跑过，覆盖跨平台正确性 | 套件全绿；`tests/auth.spec.ts` 的 `win32` 分支断言（注入 `platform`/`home`/`env`，**任何主机上都能跑**）；issue #199 的修复由 `tests/issue199-acl-lockout.spec.ts` / `tests/issue199-doctor-acl-hints.spec.ts` 钉住（**修复本身未经报告者真机复核**，其锁死现场是 A 档、修复效果目前只到 B/C 档） |
 | **C 约定推导** | 按平台约定写出 + 单元测试钉住，**未在真机逐项验证** | 四个凭据/可执行文件候选路径中**未在本机命中的那些**（见 §7 记录：本机只命中了 `%LOCALAPPDATA%\Programs\WorkBuddy` 与 `%LOCALAPPDATA%\...\auth`，其余候选仍属 C 档） |
 
 **档位决定用途，不只是一句标注**（2026-10-24 补写，来源是 #132 的实际取舍）：

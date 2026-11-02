@@ -1357,6 +1357,21 @@ export type WorkBuddyWebUsage =
     message?: string
     /** The persisted account id matches no local account. */
     selectionLost?: boolean
+    /**
+     * Why the LAST read of this region's credential vault failed, if it did.
+     *
+     * Issue #199 defect 2, and the field that keeps `selectionLost` honest. An
+     * unreadable vault LOSES ENTRIES rather than being empty — an account that
+     * lives only there (every OAuth-added one) vanishes from the list, and the
+     * card's then-only explanation was 「已保存的账号在本机已不存在」, i.e. re-pick
+     * or re-login advice for a credential that is perfectly healthy and merely
+     * cannot be OPENED. Absent means "the vault read fine", which is a DIFFERENT
+     * answer from "the vault is empty".
+     *
+     * A filesystem `errno` string (`EPERM`, `EACCES`, …) plus the syscall; the
+     * card pairs it with a repair hint rather than showing it raw.
+     */
+    vaultError?: string
     /** A saved per-region choice is in effect (false = following the app). */
     selectionExplicit: boolean
     /**
@@ -1383,6 +1398,16 @@ export type WorkBuddyWebUsage =
     region: WorkBuddyWebRegion
     /** Whether this region's provider is currently offered to DSH. */
     enabled?: boolean
+    /**
+     * Why the LAST read of this region's credential vault failed, if it did.
+     *
+     * Issue #199 defect 2 — see the signed-out variant for why the distinction
+     * matters. It rides on a SIGNED-IN document too, because an unreadable vault
+     * loses ONLY the entries living there (every OAuth-added account) while the
+     * desktop scan still answers: the account list then looks healthy and is
+     * silently short by one row, with nothing on screen to connect that to.
+     */
+    vaultError?: string
     /**
      * Whether this region's sidebar credit line is shown. See the signed-out
      * variant for why this travels on the Host's answer instead of the browser
