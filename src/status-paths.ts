@@ -1357,6 +1357,20 @@ export type WorkBuddyWebUsage =
     message?: string
     /** The persisted account id matches no local account. */
     selectionLost?: boolean
+    /**
+     * The vault directory exists but could not be READ (issue #199).
+     *
+     * A directory whose DACL excludes the current user (the issue #199 lockout:
+     * owner = Administrators + `/inheritance:r`) makes every vault entry
+     * invisible while the desktop scan still finds its own accounts — the card
+     * then reports the SAVED choice as "no longer on this machine", which sends
+     * the user re-signing-in when the tokens are fine on disk. Carrying the raw
+     * readdir error lets the card say "the vault is unreadable" — a statement
+     * about PERMISSIONS, with a takeown recovery — instead of a false claim
+     * about the accounts. Absent means the vault read either succeeded or the
+     * directory is genuinely absent (nothing added yet).
+     */
+    vaultUnreadable?: string
     /** A saved per-region choice is in effect (false = following the app). */
     selectionExplicit: boolean
     /**

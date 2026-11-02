@@ -2298,6 +2298,16 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   /** The saved choice no longer matches a local sign-in (tokens are fine). */
   const selectionLost = status.status === 'signed-out' && status.selectionLost === true
   /**
+   * The vault directory could not be READ at all (issue #199).
+   *
+   * A permissions failure masquerades as "the account is gone": `syncVault`
+   * skips the vault when its readdir fails, so the saved OAuth-only account
+   * drops out of the list while the desktop scan's accounts remain. Without
+   * this the card tells the user to re-sign-in, which cannot repair a DACL.
+   * The raw error is shown because it names the actual failing operation.
+   */
+  const vaultUnreadable = status.status === 'signed-out' ? status.vaultUnreadable : undefined
+  /**
    * The paths the Host probed, on the branch where nothing was found at all.
    * Absent on the legacy card payload (an older Host), so it defaults empty
    * rather than rendering an empty diagnostic.
@@ -3152,6 +3162,16 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 : <p className="dsm-workbuddy-account-error" role="alert">{accountError}</p>}
               {selectionLost
                 ? <p className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</p>
+                : null}
+              {/* Issue #199: shown INSTEAD of blaming the account list. When
+                  the vault is unreadable, "the saved account is gone" is not
+                  just unhelpful — it is false; the accounts are on disk, this
+                  process just may not read the folder. The raw error names the
+                  failing operation so a paste into an issue is usable. */}
+              {vaultUnreadable !== undefined
+                ? <p className="dsm-workbuddy-account-error" role="alert">
+                    {t('row.vaultUnreadableHint', { message: vaultUnreadable })}
+                  </p>
                 : null}
               {status.status === 'signed-in'
                 ? <>

@@ -38,14 +38,56 @@
  * `Everyone` but `BUILTIN\Administrators` does not). The `*S-1-5-…` form makes
  * every argument locale-independent, so the same argv works on any UI language.
  *
- * WHY `OWNER RIGHTS` (S-1-3-4) RATHER THAN THE CURRENT USER. Resolving the
- * current user's SID costs a child process (`whoami`) on every hardening round,
- * and the answer is already implied: the process that creates a file becomes its
- * owner, so `OWNER RIGHTS` grants exactly the account that will read it back.
- * `SYSTEM` and `Administrators` are kept so backup/AV/service software that
- * legitimately expects to reach user files is not locked out — removing them
- * would make the vault unmanageable on a machine where the user's own session is
- * not the one repairing it.
+ * WHY `OWNER RIGHTS` (S-1-3-4) RATHER THAN THE CURRENT USER — AND WHERE THAT
+ * ASSUMPTION BREAKS. Resolving the current user's SID costs a child process
+ * (`whoami`) on every hardening round, and the answer is usually already
+ * implied: the process that creates a file becomes its owner, so `OWNER RIGHTS`
+ * grants exactly the account that will read it back. `SYSTEM` and
+ * `Administrators` are kept so backup/AV/service software that legitimately
+ * expects to reach user files is not locked out — removing them would make the
+ * vault unmanageable on a machine where the user's own session is not the one
+ * repairing it.
+ *
+ * THE BREAK. "The creator is the owner" only holds when the creating process
+ * runs with the user's own (possibly elevated) token. When a directory was
+ * created by a process whose token derives from the Administrators group — an
+ * elevated DSH started from a RunLevel=Highest scheduled task, an installer,
+ * a recovery console — the directory owner is `BUILTIN\Administrators`, and
+ * `OWNER RIGHTS` then grants Administrators, not the user. Because
+ * {@link applyAcl} also drops inherited ACEs (`/inheritance:r`), a non-admin
+ * user is left with NO access at all to their own vault: stat/readdir/write
+ * all fail with EPERM, and recovery requires an explicit `takeown`. Reproduced
+ * as a controlled experiment (same command, only the owner differs):
+ * owner=user → writable; owner=Administrators → locked. Reported in issue
+ * #199 (forensic: fork branch `forensic/acl-lockout-20261102`).
+ *
+ * THE FIX. The grant names the account that will read the vault — the current
+ * user — EXPLICITLY, and never relies on `OWNER RIGHTS`. {@link resolveUserSid}
+ * reads that SID once per process (memoized) via `whoami.exe`, which measured
+ * 22–26 ms on the reported host against PowerShell's 133 ms;
+ * {@link hardenDirectory} then issues the same single `icacls` call the 5.x
+ * design used, with `*<userSid>:(OI)(CI)(F)` in place of `*S-1-3-4`. Because
+ * the granted principal no longer depends on who owns the object, a vault
+ * created by an elevated process (owner = Administrators) stays readable by
+ * its user.
+ *
+ * WHY NOT COMPARE THE OWNER FIRST. The alternative — read each directory's
+ * owner and keep `OWNER RIGHTS` when it matches the user — needs a PowerShell
+ * `Get-Acl` (~133 ms) on the credential-write path, and it does not buy
+ * anything: the granted principal is always the user, so the comparison only
+ * decides which spelling of the same grant to emit. That extra child process
+ * is also what broke the 1 s polling budget of
+ * `tests/issue12-region-hiding.spec.ts` while this fix was being developed
+ * (measured: the owner lookup plus the user lookup pushed a first vault write
+ * past the budget, the startup refresh lost the race, and the global region
+ * kept advertising its fallback models). One memoized `whoami` for the whole
+ * process replaces a per-directory `Get-Acl`.
+ *
+ * OWNER RIGHTS IS STILL ACCEPTED ON READ. {@link ALLOWED_SIDS} keeps
+ * `S-1-3-4` so a vault hardened by 5.x — where the user usually IS the owner
+ * and the ACE therefore was correct — still reads as `protected` instead of
+ * being reported as a widening that never happened. It is simply no longer
+ * ever GRANTED.
  *
  * WHAT THIS IS AND IS NOT. This is the issue's suggestion #2 (explicit ACLs
  * after writing), which it calls "the smallest change". It is NOT DPAPI
@@ -75,6 +117,12 @@ import { join } from 'node:path'
  *
  * Deliberately a SID rather than an account name: it needs no lookup, it works
  * on every UI language, and `icacls` accepts it in the `*S-…` form.
+ *
+ * Since issue #199 it is READ-ONLY here: 5.x granted it, which locks a user out
+ * of a directory owned by somebody else, so {@link directoryGrants} and
+ * {@link fileGrants} no longer use it — but {@link ALLOWED_SIDS} still accepts
+ * it, so a vault hardened by 5.x (where the user normally IS the owner) still
+ * inspects as `protected`.
  */
 const OWNER_RIGHTS_SID = 'S-1-3-4'
 
@@ -97,12 +145,19 @@ const ALLOWED_SIDS: ReadonlySet<string> = new Set([OWNER_RIGHTS_SID, SYSTEM_SID,
  * Grant specs for a DIRECTORY: `(OI)` object-inherit and `(CI)` container-inherit
  * make the ACE apply to files and subdirectories created later, which is the
  * whole mechanism this module relies on.
+ *
+ * `userSid` is deliberately a PARAMETER rather than a constant: it is the only
+ * principal whose identity is not a well-known SID, and making it explicit at
+ * the call site is what keeps a future edit from quietly falling back to
+ * `OWNER RIGHTS` (the issue #199 lockout).
  */
-const DIRECTORY_GRANTS: readonly string[] = [
-  `*${OWNER_RIGHTS_SID}:(OI)(CI)(F)`,
-  `*${SYSTEM_SID}:(OI)(CI)(F)`,
-  `*${ADMINISTRATORS_SID}:(OI)(CI)(F)`,
-]
+function directoryGrants(userSid: string): readonly string[] {
+  return [
+    `*${userSid}:(OI)(CI)(F)`,
+    `*${SYSTEM_SID}:(OI)(CI)(F)`,
+    `*${ADMINISTRATORS_SID}:(OI)(CI)(F)`,
+  ]
+}
 
 /**
  * Grant specs for a FILE.
@@ -110,11 +165,13 @@ const DIRECTORY_GRANTS: readonly string[] = [
  * No `(OI)(CI)`: inheritance flags on a file are meaningless, and passing them
  * is what produced the blanked DACLs measured with `/T`.
  */
-const FILE_GRANTS: readonly string[] = [
-  `*${OWNER_RIGHTS_SID}:(F)`,
-  `*${SYSTEM_SID}:(F)`,
-  `*${ADMINISTRATORS_SID}:(F)`,
-]
+function fileGrants(userSid: string): readonly string[] {
+  return [
+    `*${userSid}:(F)`,
+    `*${SYSTEM_SID}:(F)`,
+    `*${ADMINISTRATORS_SID}:(F)`,
+  ]
+}
 
 /** How long one `icacls` (or PowerShell) child may take before it is abandoned. */
 const ACL_COMMAND_TIMEOUT_MS = 10_000
@@ -141,7 +198,8 @@ export type CredentialAclOutcome =
 export interface CredentialAclReport {
   /** The directory inspected. */
   directory: string
-  state: 'protected' | 'exposed' | 'not-windows' | 'unverified'
+  /** `failed` arrived with issue #199: the doctor-side report now carries it. */
+  state: 'protected' | 'exposed' | 'not-windows' | 'unverified' | 'failed'
   /** Principals holding access, as SIDs, when the read succeeded. */
   entries?: string[]
   /** The subset of {@link entries} that is neither the owner nor an administrator. */
@@ -258,11 +316,61 @@ export async function protectCredentialDirectory(directory: string): Promise<Cre
   }
 }
 
+/**
+ * The current user's SID, resolved once per process.
+ *
+ * Node's `os.userInfo()` does NOT expose a SID on Windows (its typings have no
+ * `sid`, and the runtime object carries none — measured), so the SID has to
+ * come from outside the process.
+ *
+ * `whoami.exe` rather than PowerShell: measured on the machine that reported
+ * issue #199, `whoami /user /fo csv /nh` takes 22–26 ms while a
+ * `powershell -Command` round trip takes 133 ms — and since this shape pays the
+ * cost on the credential-write path, which the startup roster refresh is
+ * racing, that 5× difference is the difference between fitting the poll budget
+ * and blowing it.
+ *
+ * The absolute path is deliberate: a bare `whoami` resolves through `PATH`,
+ * where Git for Windows ships an MSYS `whoami` that does not understand
+ * `/user` at all. `/fo csv /nh` gives one quoted line
+ * (`"desktop\user","S-1-5-21-…"`), which is parsed rather than the default
+ * formatted block, again for locale independence.
+ *
+ * Memoized for the process on SUCCESS only: an unresolvable SID is a real
+ * failure and must be retried by the next write, not cached as broken forever.
+ */
+let cachedUserSid: string | undefined
+async function resolveUserSid(): Promise<string> {
+  if (cachedUserSid === undefined) {
+    const whoami = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'whoami.exe')
+    const stdout = await runCommand(whoami, ['/user', '/fo', 'csv', '/nh'])
+    const line = stdout.split(/\r?\n/u).map(entry => entry.trim()).find(entry => /S-1-5-[\d-]+/u.test(entry))
+    if (line === undefined) throw new Error('whoami returned no resolvable user SID')
+    const match = /"(S-1-5-[\d-]+)"/u.exec(line) ?? /S-1-5-[\d-]+/u.exec(line)
+    if (match === null) throw new Error('whoami output has no parseable SID field')
+    cachedUserSid = match[1] ?? match[0]
+  }
+  return cachedUserSid
+}
+
 /** The work behind {@link protectCredentialDirectory}: one `icacls` call. */
 async function hardenDirectory(directory: string): Promise<CredentialAclOutcome> {
   try {
     await mkdir(directory, { recursive: true })
-    await applyAcl(directory, DIRECTORY_GRANTS)
+    let grants: readonly string[]
+    try {
+      // The grant names the user EXPLICITLY, so the directory's owner is
+      // irrelevant and never read. Only the user SID has to resolve, and it is
+      // memoized after the first success.
+      grants = directoryGrants(await resolveUserSid())
+    } catch (error: unknown) {
+      // An unresolvable user SID → do NOT guess. Falling back to
+      // `OWNER RIGHTS` here would risk re-creating the issue #199 lockout;
+      // failing loudly lets the next write retry and keeps the outcome
+      // visible to `doctor` instead of silently locking the user out.
+      return { state: 'failed', reason: `user SID lookup failed: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    await applyAcl(directory, grants)
     protectedDirectories.add(directory)
     return { state: 'protected' }
   } catch (error: unknown) {
@@ -288,7 +396,7 @@ async function hardenDirectory(directory: string): Promise<CredentialAclOutcome>
 export async function protectCredentialFile(path: string): Promise<CredentialAclOutcome> {
   if (!isWindows()) return { state: 'not-windows' }
   try {
-    await applyAcl(path, FILE_GRANTS)
+    await applyAcl(path, fileGrants(await resolveUserSid()))
     return { state: 'protected' }
   } catch (error: unknown) {
     return { state: 'failed', reason: error instanceof Error ? error.message : String(error) }
@@ -333,6 +441,27 @@ export async function inspectCredentialDirectory(directory: string): Promise<Cre
   if (entries.length === 0) {
     return { directory, state: 'unverified', reason: 'Get-Acl returned no principals' }
   }
-  const weak = entries.filter(sid => !ALLOWED_SIDS.has(sid))
+  /**
+   * The current user is an ALLOWED principal, not a widening.
+   *
+   * This is the read side of the issue #199 fix: 5.x granted `OWNER RIGHTS`,
+   * whose SID (S-1-3-4) can be compared against {@link ALLOWED_SIDS} without
+   * knowing who runs the process, but the fix grants the user's REAL SID — so
+   * the allowlist has to learn it, or a correctly hardened directory reports as
+   * `exposed` naming the user themselves. Measured on a real host before this
+   * was wired up: `weak: ["S-1-5-21-…-1001"]` on a freshly hardened vault.
+   *
+   * An unresolvable user SID is reported as `unverified` rather than guessed:
+   * without it the read cannot tell "the user" from "some other account", and
+   * both wrong answers (allowing everyone / accusing the user) are worse than
+   * saying the measurement did not happen.
+   */
+  let userSid: string
+  try {
+    userSid = await resolveUserSid()
+  } catch (error: unknown) {
+    return { directory, state: 'unverified', reason: `user SID lookup failed: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  const weak = entries.filter(sid => sid !== userSid && !ALLOWED_SIDS.has(sid))
   return { directory, state: weak.length === 0 ? 'protected' : 'exposed', entries, weak }
 }

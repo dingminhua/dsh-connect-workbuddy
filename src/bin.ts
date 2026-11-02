@@ -557,7 +557,16 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       ...credentialAcl.flatMap(([region, entry]) => {
         if (entry.state !== 'exposed') return []
         const weak = entry.unexpected === undefined ? '' : ` (readable by ${entry.unexpected.join(', ')})`
-        return [`The ${region} credential vault holds PLAINTEXT tokens but its folder permissions do not restrict them${weak}: ${entry.directory}. Re-run doctor to retry the repair, or fix it by hand with: icacls "${entry.directory}" /inheritance:r /grant:r "*S-1-3-4:(OI)(CI)(F)" /grant:r "*S-1-5-18:(OI)(CI)(F)" /grant:r "*S-1-5-32-544:(OI)(CI)(F)"`]
+        return [`The ${region} credential vault holds PLAINTEXT tokens but its folder permissions do not restrict them${weak}: ${entry.directory}. Re-run doctor to retry the repair, or fix it by hand with: icacls "${entry.directory}" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)(F)" /grant:r "*S-1-5-18:(OI)(CI)(F)" /grant:r "*S-1-5-32-544:(OI)(CI)(F)"`]
+      }),
+      // Issue #199: the two states the original hint set ignored are the ones
+      // that can LOCK the user out (as opposed to `exposed`, which only means
+      // "too wide"). Say so, with the recovery that actually worked on the
+      // reported machine.
+      ...credentialAcl.flatMap(([region, entry]) => {
+        if (entry.state !== 'failed' && entry.state !== 'unverified') return []
+        const why = entry.reason === undefined ? '' : ` Reason: ${entry.reason}`
+        return [`The ${region} credential vault ACL could NOT be verified or repaired this run${why}: ${entry.directory}. If the directory is suddenly unreadable (EPERM on stat/readdir), its owner is probably not your user account — recover with (elevated): takeown /F "${entry.directory}" /R /D Y && icacls "${entry.directory}" /reset /T, then re-run doctor.`]
       }),
     ],
   }

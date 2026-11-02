@@ -58,6 +58,9 @@ function grantArgsOf(args: readonly string[]): string[] {
   return grants
 }
 
+/** A fixed account SID standing in for "the user running the tests". */
+const TEST_USER_SID = 'S-1-5-21-1004-3372736888-3120236814-1004'
+
 /**
  * `Get-Acl` output the inspect tests feed back: one SID per line, exactly what
  * the production expression prints.
@@ -65,6 +68,11 @@ function grantArgsOf(args: readonly string[]): string[] {
 let aclStdout = ''
 /** When set, every spawn rejects with this message instead of succeeding. */
 let failWith: string | undefined
+/**
+ * When set, only the `whoami` (user SID) spawn fails — the case issue #199's
+ * fix has to handle without falling back to `OWNER RIGHTS`.
+ */
+let failWhoami: string | undefined
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>()
@@ -81,7 +89,23 @@ vi.mock('node:child_process', async importOriginal => {
         callback(Object.assign(new Error(failWith), { code: 'ENOENT' }), '', failWith)
         return
       }
-      callback(null, file === 'powershell' ? aclStdout : '', '')
+      // `whoami.exe` answers the current-user SID lookup; ACCOUNT NAME vs SID
+      // is the only field the production parser reads, so the canned line is
+      // `whoami /user /fo csv /nh` output rather than a bare SID — a mock that
+      // returned a bare SID would make the parser look correct while it was
+      // actually slicing a shape `whoami` never prints.
+      if (file !== 'powershell') {
+        if (failWhoami !== undefined) {
+          callback(Object.assign(new Error(failWhoami), { code: 'ENOENT' }), '', failWhoami)
+          return
+        }
+        callback(null, `"desktop-tv0b0du\\tester","${TEST_USER_SID}"\r\n`, '')
+        return
+      }
+      // Inspect reads `$a.Access`; nothing else shells out to PowerShell since
+      // issue #199 replaced the two `Get-Acl`/`WindowsIdentity` lookups with
+      // one `whoami`.
+      callback(null, aclStdout, '')
     },
   }
 })
@@ -296,6 +320,28 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
     expect(report.weak).toEqual([])
   })
 
+  it('counts the CURRENT USER as allowed, so the issue #199 grant is not reported as a widening', async () => {
+    actAsWindows()
+    // Exactly what `protectCredentialDirectory` writes since issue #199: the
+    // user's real SID in place of OWNER RIGHTS. Measured on a real host before
+    // the allowlist learned it, this reported `exposed` with the user named in
+    // `weak` — a false alarm on a correctly hardened vault.
+    aclStdout = [TEST_USER_SID, 'S-1-5-18', 'S-1-5-32-544'].join('\r\n')
+    const report = await inspectCredentialDirectory(`${root}/vault/cn`)
+    expect(report.state).toBe('protected')
+    expect(report.weak).toEqual([])
+  })
+
+  it('still names a DIFFERENT user as the weak principal', async () => {
+    actAsWindows()
+    // The allowlist must accept the user running this process and nothing else:
+    // a sibling account with a real SID is exactly the widening #183 was about.
+    aclStdout = [`${TEST_USER_SID.slice(0, -4)}2001`, 'S-1-5-18', 'S-1-5-32-544'].join('\r\n')
+    const report = await inspectCredentialDirectory(`${root}/vault/cn`)
+    expect(report.state).toBe('exposed')
+    expect(report.weak).toHaveLength(1)
+  })
+
   it('reports exposed and names the offending principals', async () => {
     actAsWindows()
     // S-1-1-0 is `Everyone` — the exact ACE measured on the reporter's machine,
@@ -353,5 +399,76 @@ describe('issue #183: the credential vault is restricted on Windows', () => {
     expect(afterFirst).toBeGreaterThan(0)
     await protectCredentialDirectory(dir)
     expect(spawned.length).toBe(afterFirst)
+    // The user-SID lookup is memoized process-wide (issue #199): whatever it
+    // cost earlier in this file, a SECOND call on the SAME directory adds no
+    // second lookup of its own.
+    const identityCallsBefore = spawned.filter(
+      call => call.file !== 'powershell' && call.args.includes('/user'),
+    ).length
+    await protectCredentialDirectory(`${root}/vault-memo-2`)
+    const identityCallsAfter = spawned.filter(
+      call => call.file !== 'powershell' && call.args.includes('/user'),
+    ).length
+    expect(identityCallsAfter).toBe(identityCallsBefore)
+  })
+
+  // -------------------------------------------------------------------------
+  // 7. Issue #199: the grant names the user, never the owner
+  // -------------------------------------------------------------------------
+
+  it('never grants OWNER RIGHTS, which is what locked a user out of a foreign-owner vault', async () => {
+    actAsWindows()
+    await protectCredentialDirectory(`${root}/vault-own`)
+    const calls = argsOf('icacls')
+    expect(calls.length).toBeGreaterThan(0)
+    const grants = grantArgsOf(calls[0]!)
+    // The whole defect: `S-1-3-4` resolves to the OWNER, so on a vault created
+    // by an elevated process (owner = Administrators) the user got nothing.
+    expect(grants).not.toContain('*S-1-3-4:(OI)(CI)(F)')
+    // The user is named explicitly instead, whatever the owner is.
+    expect(grants).toContain(`*${TEST_USER_SID}:(OI)(CI)(F)`)
+    expect(grants).toContain('*S-1-5-18:(OI)(CI)(F)')
+    expect(grants).toContain('*S-1-5-32-544:(OI)(CI)(F)')
+  })
+
+  it('does not read the directory owner, so hardening spawns no PowerShell at all', async () => {
+    actAsWindows()
+    await protectCredentialDirectory(`${root}/vault-fast`)
+    // The decisive cost property, and the reason issue #199's first fix broke
+    // `tests/issue12-region-hiding.spec.ts`: a `Get-Acl` per directory measured
+    // 133 ms against `whoami`'s 22–26 ms, and that lookup sits on the
+    // credential-write path the startup roster refresh races. Regression guard:
+    // every child process on the hardening path must be `icacls` or `whoami`.
+    const unexpected = spawned.filter(call => call.file === 'powershell')
+    expect(unexpected).toEqual([])
+    for (const call of spawned) {
+      if (call.file === 'icacls') continue
+      expect(call.args).toContain('/user')
+      expect(call.args).toContain('/fo')
+      expect(call.args).toContain('csv')
+    }
+  })
+
+  it('fails loudly instead of hardening when the user SID cannot be resolved', async () => {
+    actAsWindows()
+    // A FRESH module instance: the user SID is memoized on success for the
+    // whole process, so the only honest way to observe the unresolvable case is
+    // a registry where no earlier test has already resolved it. Re-importing
+    // also re-runs this file's `node:child_process` factory, whose closure
+    // reads `failWhoami` at call time — so the mock follows the reset.
+    vi.resetModules()
+    const fresh = await import('../src/windows-acl.ts')
+    spawned.length = 0
+    failWhoami = 'whoami exited ENOENT'
+    const outcome = await fresh.protectCredentialDirectory(`${root}/vault-unresolvable`)
+    expect(outcome.state).toBe('failed')
+    expect(outcome.state === 'failed' && outcome.reason).toContain('user SID lookup failed')
+    // And it spawned no icacls: guessing the grant — in particular falling back
+    // to OWNER RIGHTS — is exactly the failure mode issue #199 reports.
+    expect(argsOf('icacls')).toHaveLength(0)
+    // The failure is not memoized: the next attempt retries the lookup.
+    failWhoami = undefined
+    const retry = await fresh.protectCredentialDirectory(`${root}/vault-unresolvable`)
+    expect(retry.state).toBe('protected')
   })
 })

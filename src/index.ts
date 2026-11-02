@@ -2150,10 +2150,12 @@ export function apply(ctx: Context, config: Config): void {
       let accounts
       try {
         accounts = await stacks[region].store.accounts()
-      } catch {
+      } catch (error) {
+        ctx.logger('workbuddy').warn('region usability scan failed for %s: %s', region, error)
         continue
       }
-      if (stacks[region].catalog.setRegionUsable(accounts.length > 0)) invalidateCatalog()
+      const changed = stacks[region].catalog.setRegionUsable(accounts.length > 0)
+      if (changed) invalidateCatalog()
     }
   }
 

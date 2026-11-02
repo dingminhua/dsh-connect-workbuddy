@@ -89,6 +89,7 @@ export const en = {
   'row.accountsWriteFailed': 'The account change was not saved: {message} — the active profile\'s configuration file could not be updated (on Windows it may be locked by an antivirus scanner or a sync client). Your previous choice is still in effect; close whatever holds that file and try again (see docs/WINDOWS.md in the plugin repo for the exact path).',
   'row.selectionLostHint': 'The saved account no longer exists locally.',
   'row.selectionLostMessage': 'The account saved for this region is no longer among the local sign-ins (WorkBuddy replaced its login or cleaned up backups). Your other sign-ins are fine — pick a current one from the list above. Signing in again in the desktop app will not fix this.',
+  'row.vaultUnreadableHint': 'The credential vault directory could not be read ({message}). This is usually a permissions problem, not a lost account: the saved accounts are still on disk. Run as administrator: takeown /F "<vault dir>" /R /D Y && icacls "<vault dir>" /reset /T, then restart DSH. The directory path is documented in docs/WINDOWS.md of the plugin repo.',
   // The card's three sections. The card is 3,500 px tall in one column, and the
   // two jobs on it are unrelated: operating an account (who serves, how much is
   // left, which order) and editing the catalog (which models, what context
@@ -759,6 +760,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.accountsWriteFailed': '账号改动未保存：{message} —— 当前 profile 的配置文件写入失败（Windows 上可能被杀毒软件或同步盘占用）。当前仍是原来保存的选择，请先关闭占用该文件的程序再重试（文件的确切路径见插件仓库的 docs/WINDOWS.md）。',
   'row.selectionLostHint': '已保存的账号在本机已不存在。',
   'row.selectionLostMessage': '该区域保存的账号已不在本机登录列表中（WorkBuddy 更换了登录或清理了备份文件）。本机其他登录仍然可用——请在上方列表中重新选择一个当前账号。重新登录桌面端 App 无法修复此问题。',
+  'row.vaultUnreadableHint': '凭据保险库目录无法读取（{message}）。这通常是权限问题而不是账号丢失：已保存的账号其实还在磁盘上。请以管理员身份运行：takeown /F "<vault 目录>" /R /D Y && icacls "<vault 目录>" /reset /T，然后重启 DSH。目录路径见插件仓库 docs/WINDOWS.md 的 vault 说明。',
   'row.panelAccounts': '账号',
   'row.panelModels': '模型',
   'row.panelCapabilities': '能力',
