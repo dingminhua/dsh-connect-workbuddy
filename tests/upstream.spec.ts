@@ -1455,18 +1455,19 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
     // never replies blocks every account behind it — that is the "dead button"
     // making the response streamed alone would NOT have fixed.
     //
-    // Ten seconds: comfortably above a working gateway's first byte, far below a
-    // user's patience.
+    // Thirty seconds (PROBE_TIMEOUT_MS): comfortably above a working gateway's
+    // first byte — measured at up to 6.97 s on a real 25k-token probe body — and
+    // still far below a user's patience.
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
       init.signal?.addEventListener('abort', () => {
-        reject(new Error('no response within 10000ms'))
+        reject(new Error('no response within 30000ms'))
       })
     })))
     // 身份先解析、再起表 —— 所以这里把盐喂进去，让那一段只剩微任务。若让它去读
-    // 本机盐文件，真实 I/O 会吃掉假时钟的刻度，9999/10000 这条边界就测不准了。
+    // 本机盐文件，真实 I/O 会吃掉假时钟的刻度，29999/30000 这条边界就测不准了。
     const answer = new WorkBuddyUpstreamClient(undefined, { deviceSalt: 'a'.repeat(64) }).probeChat(credential(), '{}')
-    await vi.advanceTimersByTimeAsync(9_999)
+    await vi.advanceTimersByTimeAsync(29_999)
     await vi.advanceTimersByTimeAsync(1)
     // status 0 is the transport-failure convention the shim already maps to
     // `server`, so this reads as "the upstream is unreachable" — not as a
@@ -1476,7 +1477,7 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
 
   it('starts its clock after the identity work, not before', async () => {
     // P3 回归：真实值档取 token 是一次子进程调用（预算 20 s），而 probe 的预算只有
-    // 10 s。若定时器先起跑，一次冷启动就会把健康的网关报成 status 0 —— 账号池据此
+    // 30 s。若定时器先起跑，一次冷启动就会把健康的网关报成 status 0 —— 账号池据此
     // 把账号移出轮换。这条用例把两段分开计时：先花 11 s 拿 token，请求必须已经发出。
     vi.useFakeTimers()
     const fetchSpy = vi.fn((_url: string, init: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
@@ -1506,8 +1507,8 @@ describe('WorkBuddyUpstreamClient.probeChat', () => {
     const answer = client.probeChat(credential(), '{}')
     await vi.advanceTimersByTimeAsync(11_000)
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    // 请求发出之后才开始自己的 10 s：再走满才超时。
-    await vi.advanceTimersByTimeAsync(10_000)
+    // 请求发出之后才开始自己的 30 s：再走满才超时。
+    await vi.advanceTimersByTimeAsync(30_000)
     await expect(answer).resolves.toMatchObject({ ok: false, status: 0 })
   })
 

@@ -290,14 +290,31 @@ export function probeUpdatesOf(
 }
 
 /**
- * Whether a probe result measures the transport rather than the model.
+ * Whether a probe result measures the TRANSPORT rather than the model.
  *
- * `credential-rejected` with the pool's own "no stored credential" message is
- * the one case we can attribute to ourselves rather than the upstream: the
- * request never left. Every other rejection came from the upstream and IS a
- * statement about this account, so it is kept.
+ * Two shapes qualify, and both must be dropped rather than persisted:
+ *
+ * 1. `credential-rejected` with the pool's own "no stored credential" message —
+ *    we could not even read the credential, so the request never left.
+ * 2. `status: 0` — the request never produced an HTTP response at all. That is
+ *    what a probe timeout looks like (`transport error: no response within
+ *    10000ms`), and equally a DNS failure or a reset connection.
+ *
+ * WHY (2) MATTERS — it is the difference between a working pool and a 30-minute
+ * outage. A `status: 0` result carries no `retryAtMs` (nothing upstream said
+ * when to come back), so `exclusionOf` falls back to
+ * {@link POOL_UNKNOWN_COOLDOWN_MS} — 30 minutes. Persisting a timeout therefore
+ * benches a perfectly healthy account for half an hour, and since nothing
+ * re-probes an excluded member, the pool stays empty until the cooldown lapses
+ * on its own. The user sees "池中已无可用账号" and a 502 for a fault that was
+ * never the account's.
+ *
+ * The distinction has to stay honest in the other direction too: `status >= 500`
+ * is NOT a transport failure. The gateway answered, and its answer is a
+ * statement about this account's standing with it, so those rows are still kept.
  */
 function isTransportFailure(result: WorkBuddyProbeResult): boolean {
+  if (result.status === 0) return true
   return result.outcome === 'credential-rejected'
     && result.message?.startsWith('no stored credential') === true
 }

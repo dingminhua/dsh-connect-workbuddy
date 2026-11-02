@@ -315,4 +315,51 @@ describe('probeUpdatesOf', () => {
     ])
     expect(updates['alpha']?.atMs).toBe(updates['beta']?.atMs)
   })
+
+  /**
+   * One probe timeout used to empty the whole pool.
+   *
+   * A probe that times out comes back `status: 0` with a `transport error`
+   * message. That is a statement about the NETWORK, not the account — but it was
+   * persisted as a real measurement, and since it carries no `retryAtMs` the
+   * pool fell back to the 30-minute POOL_UNKNOWN_COOLDOWN_MS. Healthy accounts
+   * were benched, every request answered "池中已无可用账号", and because nothing
+   * re-probes an excluded member the pool stayed empty until the cooldown lapsed
+   * on its own.
+   */
+  it('omits a probe that never reached an HTTP response (status 0)', () => {
+    const updates = probeUpdatesOf([
+      row('alpha', {
+        modelId: 'hy3',
+        outcome: 'unavailable',
+        status: 0,
+        message: 'transport error: Error: no response within 10000ms',
+      }),
+      row('beta', {
+        modelId: 'hy3',
+        outcome: 'unavailable',
+        status: 0,
+        message: 'transport error: TypeError: fetch failed',
+      }),
+      row('gamma', { modelId: 'hy3', outcome: 'ok' }),
+    ])
+    // Neither transport failure may be written: persisting either one benches a
+    // healthy account for half an hour over an event that said nothing about it.
+    expect(updates['alpha']).toBeUndefined()
+    expect(updates['beta']).toBeUndefined()
+    // The account that actually answered is still measured.
+    expect(updates['gamma']?.source).toBe('test-batch')
+  })
+
+  it('still records a 5xx, which the gateway DID answer', () => {
+    // The other direction of the same rule, pinned so a future edit cannot widen
+    // `isTransportFailure` into swallowing real upstream verdicts: a 5xx means
+    // the gateway formed an opinion about this account, so the row is a real
+    // measurement and must be kept. Excluding it would hide a broken account.
+    const updates = probeUpdatesOf([
+      row('alpha', { modelId: 'm', outcome: 'unavailable', status: 502, message: 'bad gateway' }),
+    ])
+    expect(updates['alpha']?.outcome).toBe('unavailable')
+    expect(updates['alpha']?.source).toBe('test-batch')
+  })
 })
