@@ -3512,6 +3512,13 @@ export function apply(ctx: Context, config: Config): void {
   ): Promise<void> => {
     if (!poolPreferencesOf(current(), region).enabled) return
     if (failure.kind === 'client') return
+    // A request that never reached an HTTP response says nothing about the
+    // account: it is the transport, not the model. Persisting it would bench a
+    // healthy account for POOL_UNKNOWN_COOLDOWN_MS (30 minutes), because a
+    // transport failure carries no `retryAtMs` — the same defect that let one
+    // probe timeout empty the pool. `status: 0` is this codebase's convention
+    // for "never landed" (see `probeChat` and `chatStream`).
+    if (failure.status === 0) return
     // Only accounts this pool covers. Membership is the explicit "yes, spend
     // this account's credits" tick, and a measurement steers routing.
     const members = poolPreferencesOf(current(), region).memberAccountIds

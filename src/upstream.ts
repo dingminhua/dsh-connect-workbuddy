@@ -542,16 +542,30 @@ const ERROR_BODY_LIMIT = 4096
  * tokens, so prompt processing legitimately takes a while before the first byte
  * comes back. It exists only to stop a connection that will NEVER answer — the
  * pool's batch is serial, so one hung member would otherwise block all the rest
- * with nothing in the UI to say which one it was. Ten seconds is comfortably
- * above a working gateway's first byte and far below a user's patience; the
- * budget covers the response only, never the one-line body that follows.
+ * with nothing in the UI to say which one it was; the budget covers the response
+ * only, never the one-line body that follows.
+ *
+ * THIRTY SECONDS, NOT TEN. The old 10 s was chosen as "comfortably above a
+ * working gateway's first byte", and on a fast path it is — but measured on a
+ * real 25k-token probe body over ordinary Chinese broadband, the first byte
+ * alone took 3.47 s / 3.57 s / 6.97 s on three consecutive attempts. A 10 s
+ * ceiling therefore left under 3 s of margin on the worst run, and any jitter
+ * blew through it.
+ *
+ * The cost of tripping it was never just a failed test: `status: 0` carries no
+ * `retryAtMs`, so the pool fell back to {@link POOL_UNKNOWN_COOLDOWN_MS} (30
+ * minutes) and benched healthy accounts, answering "池中已无可用账号" and a 502 to
+ * every request until the cooldown lapsed. The two failure directions are not
+ * symmetric — waiting an extra 20 s on a genuinely dead endpoint costs one
+ * stalled batch member, while firing early costs half an hour of the whole pool
+ * — so this ceiling is deliberately generous.
  *
  * It also does not cover THIS MACHINE's identity work. Since P3 the header build
  * may spawn the device-token subprocess (budget 20 s), and starting the clock
  * before that would turn a healthy gateway into "unreachable" on a cold start —
  * see the note in `probeChat` for why that matters to the pool.
  */
-const PROBE_TIMEOUT_MS = 10_000
+const PROBE_TIMEOUT_MS = 30_000
 
 /**
  * 生图请求的超时。
