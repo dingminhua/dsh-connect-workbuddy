@@ -553,6 +553,25 @@ export async function probeModel(input: {
     return {
       modelId: input.modelId,
       outcome: 'unavailable',
+      // `status: 0` — the request never landed, so this is the transport talking
+      // and NOT a measurement of the account.
+      //
+      // It is written EXPLICITLY here because the throw this catches never came
+      // from the upstream. `probeChat` already reports its own failures as a
+      // return value (`status: 0` for a timeout or a dead socket); what reaches
+      // this `catch` is the work that happens BEFORE the request is sent —
+      // `wireIdentity()`, which reads the device-profile file, may spawn the
+      // device-token subprocess, and resolves the SDK directory. Any of those can
+      // throw, and none of them has an opinion about this account.
+      //
+      // Leaving the field out was a real defect (issue #195): `status` is
+      // optional on {@link WorkBuddyProbeResult}, so an omitted value read as
+      // "no HTTP status to speak of" and `isTransportFailure` — which asks for
+      // `status === 0` — did not recognise the row. It was then persisted as a
+      // real measurement, and because it carries no `retryAtMs` the pool applied
+      // the 30-minute `POOL_UNKNOWN_COOLDOWN_MS` fallback to a perfectly healthy
+      // account. Same outage as issue #193, arriving through a different door.
+      status: 0,
       message: redactUpstreamText(error instanceof Error ? error.message : String(error)),
     }
   }

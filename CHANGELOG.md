@@ -2,6 +2,35 @@
 
 ## 未发布
 
+### 修复（issue #195：另外两条「非账号事件被写成账号测量」的路径）
+
+#194 修掉了主路径（探测超时 `status: 0` 被落盘）。这一条补上同一错误模式的另外两扇门——
+都是既有代码，都不在 #194 的 diff 里。
+
+- **`probeModel()` 的 catch 分支不带 `status`，于是 `status === 0` 认不出它。**
+  那个 catch 接住的**从来不是上游的答复**（`probeChat` 自己的失败都是以返回值报的），
+  而是请求发出**之前**的工作：`wireIdentity()` 要读设备档文件、可能起设备 token 子进程、
+  解析 SDK 目录，任何一步都可能抛。而 `WorkBuddyProbeResult.status` 是可选字段，
+  漏写就等于「没有 HTTP 状态可谈」，`isTransportFailure()` 按 `status === 0` 判因而放行，
+  于是照样落盘、照样吃 30 分钟兜底冷却。现在显式写 `status: 0`——让「请求从未落地」
+  这条约定只有一个来源。
+- **`testOne()` 里凭据库抛错被写成永久 `credential-rejected`。** 这个 outcome 是
+  `exclusionOf` 里**唯一不给冷却**的一种：账号**永久**退池，卡片还显示「账号登录已失效」，
+  把用户往「重新登录」这个错误方向引导（账号其实完全正常）。一次 `EIO` 就能让健康账号
+  永久下线，比 #193 的半小时更重。现在改成 `failed` + `status: 0`：**不落盘**（账号保留
+  上一次测量——这才是诚实的，我们什么都没学到），但**仍逐行报告**（一个坏账号不能掩盖
+  其余账号），且 `failed` 而不是 `unavailable`——后者会显示成「连不上上游」，怪错了对象。
+- **测试**：`tests/account-pool-run.spec.ts` 把原来那条正向断言「凭据库抛错 = `credential-rejected`」
+  的用例**拆成两半**——「整批不中断」保留（这才是它真正要保证的），「归类」改为断言
+  不落盘；新增 2 例（`failed` 而非 `credential-rejected`、`status: 0` 使 `probeUpdatesOf` 丢弃）。
+  `tests/probe.spec.ts` 新增 1 例（catch 必须带 `status: 0`），并在 `account-pool-run` 里加了
+  一条**端到端**用例：真的驱动 `probeModel`，把它真实的输出喂给 `probeUpdatesOf`——
+  手工构造 `status: 0` 的行在修复前后都会通过，证明不了任何事。
+- **验证方式**：4 条新用例在**没有**修复的源码上全部失败（`4 failed | 75 passed`），
+  有修复时全部通过——不是「写了测试」而是「测试真的抓住了缺陷」。
+- **复验**：`pnpm run typecheck` 干净；全量 `vitest run` **2941 passed + 2 skipped**
+  （比 `main` 多 4 条新用例）；`pnpm run build` 6 个声明产物齐全。
+
 ### 修复（issue #193：一次探测超时把整个账号池停摆半小时，合并 PR #194 by @Antony232）
 
 现场是两个**完全健康**的账号被判为不可用，之后所有请求一律 502，直到半小时后冷却自然
