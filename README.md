@@ -335,6 +335,13 @@ dsh: plugin command failed; diagnostics: …/operation-xxxx/pnpm.log
 > 这三条与 [issue #204](https://github.com/dingminhua/dsh-connect-workbuddy/issues/204)
 > 对应。那条 issue 里的自动摘要把原因写成「本插件依赖了原生模块、pnpm 默认拦了它的
 > 构建脚本」，**这个归因是错的**——那个 `dsh-purge` 不是本插件的依赖。
+>
+> 那个自动摘要来自插件市场（`dsh-plugin-hub`）安装器，已在其
+> [#583](https://github.com/dshplugin/dsh-plugin-hub/issues/583) 里修正：从 2.2.8 起，
+> 当 `Ignored build scripts:` 里的包**全是** `file:` / `link:` 本地依赖时，它不再
+> 归因给被装的那个插件（已发布的插件不可能依赖用户 profile 里的路径），改为提示
+> 用户自己去 profile 的 `package.json` 里找那些 `file:` / `link:` 条目。混合列表
+> （本地 + registry）仍归给作者，因为其中可能真有插件的传递依赖。
 
 ## 更新
 

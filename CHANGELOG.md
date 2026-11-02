@@ -23,6 +23,13 @@ README 的安装章节因此新增一节，写清三件事：为什么这个错�
 短写包名在 pnpm 11 里对 `file:` 依赖不生效，而放行后会真的去执行那个脚本——如果它
 本身是坏的，报错会从 `IGNORED_BUILDS` 变成 `Cannot find module`。
 
+那个自动摘要来自插件市场（`dsh-plugin-hub`）安装器，作者已在
+[dshplugin/dsh-plugin-hub#583](https://github.com/dshplugin/dsh-plugin-hub/issues/583)
+修正（2.2.8 起）：当 `Ignored build scripts:` 里的包**全是** `file:` / `link:` 本地
+依赖时，不再归因给被装的那个插件——已发布的插件不可能依赖用户 profile 里的路径。
+混合列表（本地 + registry）仍归给作者，因为其中可能真有插件的传递依赖，而客户端不读
+profile 的 lockfile，无法在不猜的前提下判定归属。README 已同步这条。
+
 ### 修复（issue #198：模型行的「上下文预算」第三档在窄屏被裁掉，用户只能选到 200K / 500K）
 
 **现象**：dsh-go 手机版 / 窄设置面板（约 360–400 px）里，`nativeContextWindow > 500K` 的模型行
