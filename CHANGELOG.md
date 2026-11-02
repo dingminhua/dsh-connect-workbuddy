@@ -2,6 +2,48 @@
 
 ## 未发布
 
+### 修复（issue #198：模型行的「上下文预算」第三档在窄屏被裁掉，用户只能选到 200K / 500K）
+
+**现象**：dsh-go 手机版 / 窄设置面板（约 360–400 px）里，`nativeContextWindow > 500K` 的模型行
+只显示 `200K` 与 `500K` 两个 radio，第三档「模型原生窗口」（`1M`、`1.048M`…）**整个被挤出可视区**
+——不是文字被省略号截断，是看不到也点不到。用户因此以为插件把上下文封顶在 500K，而 README 写的
+是三档。报告者核对了 5.13.1 与 5.17.0 两个包，**该处样式逐字相同，升级绕不过去**。
+
+**根因**（issue 的分析方向正确，但漏了最关键的一环）：`.dsm-workbuddy-model-actions` 是
+`display:flex` 且**没有 `flex-wrap`**，`.dsm-workbuddy-context-budget` 又设了 **`flex:none`**；而
+**真正包住 radio 组的是 `.dsm-workbuddy-model-head`，它同样没有 `flex-wrap`**——issue 建议只改
+`-actions`，那样改不到出问题的那一行。外层 `.dsm-workbuddy-model-list` 带 `overflow:hidden`，窄屏时
+行内固有宽度超过容器，溢出部分**被裁掉**，连横向滚动都看不到。全表只有一条 `@media (max-width:760px)`
+且只管账号池行，模型行没有任何响应式规则。
+
+**改法**（采纳 issue 建议 1 + 2，两条一起才够）：
+
+- `.dsm-workbuddy-model-head` 与 `.dsm-workbuddy-model-actions` 都加 `flex-wrap:wrap` + `row-gap`；
+- `.dsm-workbuddy-context-budget` 加 `flex-wrap:wrap`，**保留 `flex:none`**（它不能被长模型名挤成
+  不可读），但组内三个标签在手机上单独就超过一行，所以组自己也要能断行；标签加 `white-space:nowrap`
+  （`200K` / `测试` 这类短标签不能从中间断开，断开的控件读起来像渲染 bug）；
+- 复用账号池已有的 `760px` 断点，窄屏时让预算组 `flex:1 1 100%` 占满整行并**左对齐**：右对齐的
+  换行组会像挂在按钮下面的碎片，而用户要找的那一档恰好是组里最后一个标签。
+
+**测试为什么写在样式表上**：`tests/context-tiers.spec.tsx` 原有的断言全是 DOM 存在性——**三档一直
+都在 DOM 里**，坏的只是渲染，所以这些用例在 5.13.1 → 5.17.0 一路全绿。jsdom 不做布局，
+`offsetWidth` 恒为 0，「被裁掉的元素」和「可见的元素」量起来完全一样，**在这台测试引擎里「能不能
+点到」根本无法断言**。因此新增三条守卫直接断言规则文本（行与 footer 的 `flex-wrap`、组内
+`white-space:nowrap`、窄屏 media query 的 `flex:1 1 100%` + `justify-content:flex-start`），并按
+issue 结尾的要求补一条 DOM 存在性守卫作为前提。
+
+**又踩到仓库自己记录过的坑（一次）**：第一版把说明写进 `WORKBUDDY_CARD_CSS` 模板字符串**内部**的
+注释并用了反引号——字面量当场被截断，后面所有 CSS 消失。`tests/client-host-contract.spec.ts` 的
+「每个 class 都得有规则」守卫立刻咬住（那个文件里正写着「不要在这个字面量里用反引号」，且记录着
+它当年就是这样把一整块样式弄丢的）。本轮改动共被**既有守卫抓住 3 次**（另两次是 #199 里那个并发
+bug 与上面那个 `toContain('GetOwner')` 假绿），都不是靠人眼发现的。
+
+**变异验证**：3 个变异体，**3 个全部当场打红**（各 1 红 / 10 绿，跑 `tests/context-tiers.spec.tsx`）：
+模型行去掉 `flex-wrap:wrap`、预算组去掉 `flex-wrap:wrap`、删掉窄屏 `@media` 那条规则。第一条同时
+证明了一件事——**issue 建议的选择器不是出问题的那个**：只按报告改 `.dsm-workbuddy-model-actions`
+仍然打不红这条守卫，因为 radio 组实际包在 `.dsm-workbuddy-model-head` 里。这三条断言读的是规则
+文本，所以变异是唯一能证明它们**不是恰好匹配到一串字**的手段。
+
 ### 新增（积分面板里的「设置」按钮）
 
 积分浮层的头部多了一个「设置」按钮，点它直接跳到**本插件自己的设置页**（插件页里

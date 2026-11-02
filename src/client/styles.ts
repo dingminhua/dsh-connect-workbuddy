@@ -321,7 +321,21 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-model{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;padding:10px 12px;background:var(--dsw-alias-bg-layer-2,#232529);transition:opacity .16s}
 .dsm-workbuddy-model-disabled{opacity:.55}
 .dsm-workbuddy-model+.dsm-workbuddy-model{border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
-.dsm-workbuddy-model-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+/* ISSUE #198 — the model row's controls MUST WRAP.
+
+   The row carries four groups on one line: the name, the two checkboxes, the
+   context-budget radio group, and the test/measure buttons. The budget group had
+   flex:none and the row had no flex-wrap, so on a narrow card (dsh-go on a
+   phone, a ~360 px settings panel) the row's intrinsic width exceeded the
+   container and the model list's overflow:hidden CLIPPED THE REST — the third
+   radio (「模型原生窗口」, e.g. 1M) was neither visible nor clickable, and the
+   largest budget a user could pick looked like 500K. A control that is clipped is
+   worse than one that is missing: the README promises three tiers and the screen
+   silently contradicts it. Both halves are needed — the row wraps, AND the group
+   itself wraps, because its three labels can exceed even a whole narrow line —
+   hence the media query below as well, which gives the group the full width on a
+   phone so it reads as one deliberate line rather than a scramble. */
+.dsm-workbuddy-model-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;row-gap:8px;min-width:0}
 .dsm-workbuddy-model-enabled{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;flex:1}
 .dsm-workbuddy-model-enabled input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe);flex:none}
 .dsm-workbuddy-model-image{display:inline-flex;align-items:center;gap:5px;flex:none;cursor:pointer;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
@@ -369,8 +383,14 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-model-effort-select:hover:not(:disabled){border-color:var(--dsw-alias-border-l2,#3a3d45)}
 .dsm-workbuddy-model-effort-select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 .dsm-workbuddy-model-effort-select:disabled{opacity:.55;cursor:default}
-.dsm-workbuddy-context-budget{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
-.dsm-workbuddy-context-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+/* The three tiers plus the two probe buttons plus the two checkboxes are MORE
+   than one narrow line can hold, so this group must be allowed to break between
+   its own labels too (issue #199's sibling, #198): flex:none alone was half of
+   the clipping bug, and flex-wrap is the other half — a 1.048M label is wider
+   than 200K. Left-aligning the group under the media query makes the group
+   own its line on a phone instead of dangling at the right edge. */
+.dsm-workbuddy-context-budget{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;row-gap:6px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
+.dsm-workbuddy-context-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
 .dsm-workbuddy-context-budget input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-model-capability-note{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* Model probe (test button + result). The result line is its own row under the
@@ -394,7 +414,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-model-probe-result-ok{color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-workbuddy-model-probe-result-warn{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-workbuddy-model-probe-result-bad{color:var(--dsw-alias-state-error-primary,#ef4444)}
-.dsm-workbuddy-model-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px}
+.dsm-workbuddy-model-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;row-gap:8px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px}
 .dsm-workbuddy-model-save-error{flex:1;min-width:0;color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:16px;text-align:right}
 .dsm-workbuddy-model-actions-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .dsm-workbuddy-usage-cheer{display:inline-flex;align-items:center;gap:4px;flex:none;text-decoration:underline;text-underline-offset:2px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;line-height:1.5;transition:color .16s}
@@ -767,6 +787,12 @@ export const WORKBUDDY_CARD_CSS = `
 /* This account's own test model (issue #61). Narrower than the section-level
    picker so a long model name cannot push the two buttons out of the row. */
 @media (max-width:760px){.dsm-workbuddy-pool-row{grid-template-columns:1fr 1fr;row-gap:6px}.dsm-workbuddy-pool-select{max-width:180px}}
+/* ISSUE #198, the same breakpoint the pool row already uses. On a phone the model
+   row's budget group takes the WHOLE line and left-aligns: right-justified, a
+   wrapped two-tier group reads as a stray fragment under the buttons, and the tier
+   the user is trying to find — the native window — is the last label in the group,
+   so the line has to start at the left to have room to end at all. */
+@media (max-width:760px){.dsm-workbuddy-context-budget{flex:1 1 100%;justify-content:flex-start}}
 /* Pool switch, namespaced under .dsm-workbuddy-pool so it cannot collide with host styles. */
 .dsm-workbuddy-pool .sw{position:relative;display:inline-block;width:38px;height:22px;flex:none;cursor:pointer}
 .dsm-workbuddy-pool .sw input{position:absolute;opacity:0;width:0;height:0}
