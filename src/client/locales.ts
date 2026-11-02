@@ -657,6 +657,13 @@ export const en = {
   'composer.openSettings': 'Settings',
   'composer.openSettingsHint': 'Open this plugin\'s settings page (accounts, models, switches)',
   'composer.openSettingsFailed': 'This host offers no route to the plugin settings page',
+  // The header's TEST control (left of settings). Labels name the SCOPE
+  // ("all") because the pool card also has a per-row test, and a bare "Test"
+  // here would read as "test the selected account".
+  'composer.testAll': 'Re-test',
+  'composer.testing': 'Testing…',
+  'composer.testAllHint': 'Re-test every account in this region, one at a time (refreshes the status shown beside each row)',
+  'composer.testFailed': 'Could not test the accounts',
   'composer.refreshFailed': 'Could not refresh credits',
   'composer.lastRefresh': 'Last refreshed',
   'composer.panelTitle': 'WorkBuddy credits',
@@ -1275,6 +1282,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'composer.openSettings': '设置',
   'composer.openSettingsHint': '打开本插件的设置页（账号、模型、各项开关）',
   'composer.openSettingsFailed': '这台宿主没有通往插件设置页的入口',
+  // 头部的测试按钮（在「设置」左侧）。标签写清楚作用域：卡片里还有单行测试，
+  // 这里只写「测试」会被读成「测当前账号」。
+  'composer.testAll': '重测',
+  'composer.testing': '正在测试…',
+  'composer.testAllHint': '逐个重测本区所有账号（刷新每行旁边的状态，一次一个避免触发上游限流）',
+  'composer.testFailed': '测试失败',
   'composer.refreshFailed': '积分刷新失败',
   'composer.lastRefresh': '最近刷新',
   'composer.panelTitle': 'WorkBuddy 积分',

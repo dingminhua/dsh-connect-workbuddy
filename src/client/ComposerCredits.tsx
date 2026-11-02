@@ -37,15 +37,21 @@ import {
   availabilityLine,
   availabilityMark,
   stateTone,
+  testRowOf,
+  withTestRow,
 } from './account-state.ts'
 import type { AccountStateInput } from './account-state.ts'
 import {
   WORKBUDDY_ACCOUNT_CREDITS_PATH,
+  WORKBUDDY_POOL_PATH,
   WORKBUDDY_USAGE_PATH,
   withWorkBuddyRegion,
+  withWorkBuddyRegionAndAction,
 } from '../status-paths.ts'
+import { readNdjson } from './ndjson.ts'
 import { normalizeNewModelIds } from './new-model-ids.ts'
 import { writeAccountSlot } from './account-selection.ts'
+import { poolFailureText } from './pool-state.ts'
 import { formatCredits } from './credit-format.ts'
 import { WORKBUDDY_COMPOSER_CSS } from './styles.ts'
 import type { WorkBuddyWebAccountCredit, WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebUsage } from '../status-paths.ts'
@@ -282,6 +288,17 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [usage, setUsage] = useState<WorkBuddyWebUsage | undefined>(undefined)
   const [accountCredits, setAccountCredits] = useState<WorkBuddyWebAccountCredit[] | undefined>(undefined)
   const [switchingId, setSwitchingId] = useState<string | undefined>(undefined)
+  /**
+   * A test batch is running.
+   *
+   * Its OWN flag, not shared with `failed`/`inFlight`: a batch is one serial
+   * probe per account (a minute for a big pool) while a credits read is one
+   * round trip. Sharing a flag would either freeze the readout for a minute or
+   * let a press be swallowed as "already refreshing".
+   */
+  const [testing, setTesting] = useState(false)
+  /** The batch's failure, in the user's language; `failed` is for reads. */
+  const [testError, setTestError] = useState<string | undefined>(undefined)
   const [failed, setFailed] = useState(false)
   /**
    * The settings button could not reach a page on this host.
@@ -295,6 +312,8 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
   const [open, setOpen] = useState(false)
   const inFlight = useRef(false)
+  /** A batch is running; guards a second press that lands before `setTesting`. */
+  const testingRef = useRef(false)
   /** Account-table reads in flight; see `fetchAccountCredits`. */
   const accountsInFlight = useRef(0)
   /** Which account-table read is the newest; see `fetchAccountCredits`. */
@@ -538,6 +557,85 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   }
 
   /**
+   * The header's test control: probe every account in this region.
+   *
+   * THE ROW COLOURS ARE WHAT THIS PRODUCES. The dots and the "被限流 · 约 N 小时后"
+   * lines in the table are not read from the upstream on every poll — they are
+   * the last MEASUREMENT the Host persisted. Until something probes an account,
+   * there is nothing to report and every row looks usable. That is why this
+   * lives beside the settings control rather than in the pool card alone: this
+   * table is where the reader sees the state, so this is where the question "is
+   * this still true?" gets asked.
+   *
+   * The batch is SERIAL on the Host (one probe per account, with a gap), so it
+   * streams NDJSON and each row is folded in the moment it lands. Waiting for
+   * the whole stream would leave the row the user is watching wrong for as long
+   * as the SLOWEST account takes — the dead-looking panel the streamed shape
+   * exists to avoid. The re-read in `finally` then confirms the same facts from
+   * the Host's own store, so the fold is a shortcut, never the record.
+   */
+  const testEveryAccount = useCallback(async (): Promise<void> => {
+    if (activeRegion === undefined || testingRef.current) return
+    testingRef.current = true
+    if (mounted.current) {
+      setTesting(true)
+      setTestError(undefined)
+      setFailed(false)
+    }
+    try {
+      const response = await fetch(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, activeRegion, 'test'), {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+        credentials: 'same-origin',
+      })
+      let failure: string | undefined
+      // Same content-type test the card uses: the streamed shape commits its
+      // status on the first line, so a mid-batch failure arrives as a LINE, not
+      // as a non-2xx response.
+      if ((response.headers.get('content-type') ?? '').includes('ndjson')) {
+        if (!response.ok) {
+          failure = poolFailureText(t, { status: response.status })
+        } else {
+          await readNdjson(response.body, line => {
+            const row = testRowOf(line)
+            if (row !== undefined) {
+              if (mounted.current) {
+                setUsage(previous => (previous === undefined ? previous : withTestRow(previous, row, Date.now())))
+              }
+              return
+            }
+            const reason = line['reason']
+            if (typeof reason !== 'string') return
+            failure = poolFailureText(t, {
+              status: 200,
+              reason,
+              error: typeof line['error'] === 'string' ? line['error'] : undefined,
+            })
+          })
+        }
+      } else {
+        const body = await response.json().catch(() => undefined) as
+          | { error?: string, reason?: string }
+          | undefined
+        if (!response.ok) {
+          failure = poolFailureText(t, { status: response.status, reason: body?.reason, error: body?.error })
+        }
+      }
+      if (mounted.current && failure !== undefined) setTestError(failure)
+    } catch {
+      // A transport failure. The rows keep their previous measurements rather
+      // than being blanked: nothing was learned about them.
+      if (mounted.current) setTestError(t('composer.testFailed'))
+    } finally {
+      testingRef.current = false
+      if (mounted.current) setTesting(false)
+      // `true`: a press must reach the upstream even if a timer tick is in
+      // flight, and it claims the newest generation so its answer lands.
+      await Promise.all([fetchUsage(), fetchAccountCredits(undefined, true)])
+    }
+  }, [activeRegion, fetchUsage, fetchAccountCredits, t])
+
+  /**
    * The header's settings control: open this plugin's page, then close.
    *
    * CLOSING IS PART OF THE JOB. The panel is portaled to `document.body` and
@@ -701,10 +799,59 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             <span className="dsm-workbuddy-composer-panel-title">
               {t(activeRegion === 'cn' ? 'composer.panelTitleCn' : 'composer.panelTitleGlobal')}
             </span>
-            {/* Right-aligned: the settings link. ONE wrapper owns
-                `margin-left:auto` so the header stays title … [settings] and a
-                host with no route (no button) still pins nothing oddly. */}
+            {/* Right-aligned: test, then settings. ONE wrapper owns
+                `margin-left:auto` so the header stays title … [controls] and a
+                host with no settings route (no button) still pins nothing oddly. */}
             <span className="dsm-workbuddy-composer-panel-actions">
+              {/* Test sits LEFT of settings: it acts on the table below (a
+                  local, repeatable action), while settings leaves the panel
+                  entirely. Destructive/navigating controls go last so a press
+                  meant for "re-check" cannot land on "leave". */}
+              <button
+                type="button"
+                className="dsm-workbuddy-composer-panel-refresh"
+                // A running batch is its own disabled state; a credits read and
+                // an account switch block it too, because all three write the
+                // same table.
+                disabled={testing || switchingId !== undefined}
+                title={t('composer.testAllHint')}
+                aria-label={t('composer.testAllHint')}
+                onClick={() => { void testEveryAccount() }}
+              >
+                {/* A circular arrow that SPINS while the batch runs: a disabled
+                    button with an unchanged label reads as a broken one, and a
+                    serial batch is long enough that "did my press land?" is a
+                    real question. `aria-hidden` because the label below already
+                    names the action and the button carries an aria-label. */}
+                <svg
+                  className={testing
+                    ? 'dsm-workbuddy-composer-panel-refresh-icon dsm-workbuddy-composer-panel-refresh-icon-spin'
+                    : 'dsm-workbuddy-composer-panel-refresh-icon'}
+                  viewBox="0 0 16 16"
+                  width="12"
+                  height="12"
+                  fill="none"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path
+                    d="M13.3 8a5.3 5.3 0 1 1-1.55-3.75"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M13.4 2.2v2.9h-2.9"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="dsm-workbuddy-composer-panel-refresh-label">
+                  {testing ? t('composer.testing') : t('composer.testAll')}
+                </span>
+              </button>
               {onOpenSettings === undefined
                 ? null
                 : (
@@ -913,6 +1060,12 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                 </div>
               )}
           {failed ? <p className="dsm-workbuddy-composer-panel-error" role="status">{t('composer.refreshFailed')}</p> : null}
+          {/* The batch's own line, not `failed`: a probe that was refused is a
+              different claim from "the credits read failed", and sharing the
+              flag would print one over the other. */}
+          {testError === undefined
+            ? null
+            : <p className="dsm-workbuddy-composer-panel-error" role="status">{testError}</p>}
           {settingsFailed
             ? <p className="dsm-workbuddy-composer-panel-error" role="status">{t('composer.openSettingsFailed')}</p>
             : null}

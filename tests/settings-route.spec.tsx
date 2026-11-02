@@ -200,12 +200,19 @@ describe('ComposerCredits settings control', () => {
     expect(panel?.textContent).toContain('composer.openSettingsFailed')
   })
 
-  it('leaves the batch test OUT of the header', async () => {
-    // The owner's call (m02239): the one-click "test all" control is gone. It
-    // was a real cost — a serial probe batch that spends credits and takes a
-    // minute — sitting one pixel from a link, and the card's account pool already
-    // owns that job. Pinned here so it is not quietly restored: the panel now has
-    // exactly one header control.
+  it('puts the re-test control LEFT of settings, and only those two', async () => {
+    // The header's shape is a decision, not an accident:
+    //
+    //  - TWO controls. An earlier revision removed the batch test entirely
+    //    (m02239) and this test pinned "exactly one". The owner asked for it
+    //    back, in this exact place, for a reason the old placement did not have:
+    //    the dots and the "被限流 · 约 N 小时后" lines in this table are the last
+    //    MEASUREMENT the Host persisted, and nothing on this surface could
+    //    refresh them — so a stale verdict could sit there indefinitely with no
+    //    way to ask "is this still true?".
+    //  - LEFT of settings. Re-testing acts on the table below (local,
+    //    repeatable); settings leaves the panel entirely. A press meant for
+    //    "re-check" must not be able to land on "navigate away".
     stubFetch(() => ({ body: usageOf(1072) }))
     const m = await mount(ComposerCredits as never, {
       t,
@@ -219,8 +226,50 @@ describe('ComposerCredits settings control', () => {
     const headerButtons = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-composer-panel-head button'),
     )
-    expect(headerButtons).toHaveLength(1)
-    expect(headerButtons[0]?.className).toContain('panel-settings')
+    expect(headerButtons).toHaveLength(2)
+    expect(headerButtons[0]?.className).toContain('panel-refresh')
+    expect(headerButtons[1]?.className).toContain('panel-settings')
+  })
+
+  it('re-tests every account through the streamed pool route', async () => {
+    // What the control DOES, driven end to end rather than asserted on a label:
+    // a POST to the pool's `test` action, and the streamed row folded into the
+    // table so the status beside that account updates before the batch ends.
+    const calls: string[] = []
+    stubFetch((url) => {
+      calls.push(String(url))
+      if (String(url).includes('action=test')) {
+        // The Host's streamed shape: one `row` line per account, then `done`.
+        // `contentType` is the helper's key (its response mock only ever
+        // answers `content-type`), which is exactly what the component sniffs.
+        return {
+          contentType: 'application/x-ndjson',
+          body: JSON.stringify({
+            row: {
+              accountId: 'a-1',
+              accountName: 'A One',
+              result: { modelId: 'm', outcome: 'ok' },
+            },
+          }) + '\n' + JSON.stringify({ done: true }) + '\n',
+        }
+      }
+      return { body: usageOf(1072) }
+    })
+    const m = await mount(ComposerCredits as never, {
+      t,
+      provider: 'workbuddy',
+      onOpenSettings: vi.fn(() => true),
+    })
+    await m.settle()
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+
+    const button = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
+    await m.click(button as Element)
+    await m.settle()
+
+    // The batch went to the pool route with the action, not to a credits read.
+    expect(calls.some(url => url.includes('/pool') && url.includes('action=test'))).toBe(true)
   })
 })
 

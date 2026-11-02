@@ -1088,6 +1088,52 @@ export const WORKBUDDY_COMPOSER_CSS = `
    title is the one thing that must stay on one line; what follows it is short by
    construction. */
 .dsm-workbuddy-composer-panel-title{flex:none;white-space:nowrap;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
+/* The header's TEST control, left of settings.
+   A quiet pill like its neighbour, but WITHOUT the brand fill: re-testing is a
+   local, repeatable action on the table right below it, while the settings pill
+   is the one control that leaves the panel. Two equally loud pills would make
+   the header read as a toolbar; this one stays a step quieter and earns its
+   colour only on hover. */
+.dsm-workbuddy-composer-panel-refresh{
+  appearance:none;flex:none;
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px 3px 6px;margin-right:6px;
+  border:1px solid transparent;border-radius:999px;
+  background:transparent;
+  color:var(--dsw-alias-label-secondary,#444);
+  font:inherit;font-size:11px;line-height:16px;font-weight:500;
+  cursor:pointer;
+  transition:background-color .12s ease,border-color .12s ease,color .12s ease;
+}
+.dsm-workbuddy-composer-panel-refresh:hover:not(:disabled){
+  background:rgba(127,127,127,.10);
+  border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));
+  color:var(--dsw-alias-label-primary,CanvasText);
+}
+.dsm-workbuddy-composer-panel-refresh:active:not(:disabled){background:rgba(127,127,127,.16)}
+.dsm-workbuddy-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+/* A running batch keeps the label readable but stops the hover: the button is
+   disabled, and a disabled control that still lights up on hover invites a
+   second press that will be ignored. */
+.dsm-workbuddy-composer-panel-refresh:disabled{cursor:default;opacity:.6}
+/* The circular arrow does not shrink (a flex item defaults to it) and never
+   wraps away from the label. */
+.dsm-workbuddy-composer-panel-refresh-icon{flex:none;display:block}
+/* While the batch runs the arrow TURNS. A disabled button with a static icon
+   reads as broken, and a serial batch is long enough that "did my press land?"
+   is a real question. One turn per 900ms: fast enough to read as motion, slow
+   enough not to look like a rendering fault. */
+.dsm-workbuddy-composer-panel-refresh-icon-spin{animation:dsm-workbuddy-panel-refresh-spin .9s linear infinite}
+@keyframes dsm-workbuddy-panel-refresh-spin{to{transform:rotate(360deg)}}
+.dsm-workbuddy-composer-panel-refresh-label{flex:none;white-space:nowrap}
+/* The spinner is the ONLY indication the batch is alive, so under reduced
+   motion it must not disappear: the animation is dropped and the icon keeps a
+   distinct look (dimmed) plus the label says 「正在测试…」. */
+@media (prefers-reduced-motion:reduce){
+  .dsm-workbuddy-composer-panel-refresh{transition:none}
+  .dsm-workbuddy-composer-panel-refresh-icon-spin{animation:none;opacity:.55}
+}
+
 /* The header's right-hand control: the link to this plugin's settings.
    A wrapper rather than an auto margin on the button, because the button is NOT
    always rendered (a host with no route renders none) and a wrapper that is
