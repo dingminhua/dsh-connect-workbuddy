@@ -657,13 +657,19 @@ export const en = {
   'composer.openSettings': 'Settings',
   'composer.openSettingsHint': 'Open this plugin\'s settings page (accounts, models, switches)',
   'composer.openSettingsFailed': 'This host offers no route to the plugin settings page',
-  // The header's TEST control (left of settings). Labels name the SCOPE
-  // ("all") because the pool card also has a per-row test, and a bare "Test"
-  // here would read as "test the selected account".
-  'composer.testAll': 'Re-test',
-  'composer.testing': 'Testing…',
-  'composer.testAllHint': 'Re-test every account in this region, one at a time (refreshes the status shown beside each row)',
-  'composer.testFailed': 'Could not test the accounts',
+  // The header's REFRESH control (left of settings). Named for what the reader
+  // gets — this table brought up to date — rather than for the mechanism, which
+  // is a probe batch. The hint has to say the mechanism out loud, because
+  // "refresh" implies a free re-read and this one spends credits and takes a
+  // minute: a control that surprises you with a bill is worse than one with a
+  // long label.
+  'composer.refresh': 'Refresh',
+  'composer.refreshing': 'Refreshing…',
+  'composer.refreshHint': 'Refresh every account status in this region — probes each account once, one at a time (spends a small amount of credits, takes up to a minute)',
+  // NOT `composer.refreshFailed` (below): that one is the credits read. Two
+  // lines both saying "refresh failed" would leave the reader unable to tell
+  // which refresh broke.
+  'composer.refreshAccountsFailed': 'Could not refresh the account status',
   'composer.refreshFailed': 'Could not refresh credits',
   'composer.lastRefresh': 'Last refreshed',
   'composer.panelTitle': 'WorkBuddy credits',
@@ -1282,12 +1288,16 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'composer.openSettings': '设置',
   'composer.openSettingsHint': '打开本插件的设置页（账号、模型、各项开关）',
   'composer.openSettingsFailed': '这台宿主没有通往插件设置页的入口',
-  // 头部的测试按钮（在「设置」左侧）。标签写清楚作用域：卡片里还有单行测试，
-  // 这里只写「测试」会被读成「测当前账号」。
-  'composer.testAll': '重测',
-  'composer.testing': '正在测试…',
-  'composer.testAllHint': '逐个重测本区所有账号（刷新每行旁边的状态，一次一个避免触发上游限流）',
-  'composer.testFailed': '测试失败',
+  // 头部的刷新按钮（在「设置」左侧）。按读者拿到的东西命名——这张表变成最新的
+  // ——而不是按机制命名（机制是一批探测）。提示必须把机制说出来：「刷新」听起来
+  // 是免费重读，而这个要花积分、要跑一分钟；让人意外掏钱的控件，比标签长一点的
+  // 控件更糟。
+  'composer.refresh': '刷新',
+  'composer.refreshing': '正在刷新…',
+  'composer.refreshHint': '刷新本区所有账号的状态——逐个探测每个账号（会消耗少量积分，最长约一分钟）',
+  // 不复用下面的 `composer.refreshFailed`：那条是积分读取。两行都写「刷新失败」
+  // 会让读者分不清是哪一次刷新坏了。
+  'composer.refreshAccountsFailed': '账号状态刷新失败',
   'composer.refreshFailed': '积分刷新失败',
   'composer.lastRefresh': '最近刷新',
   'composer.panelTitle': 'WorkBuddy 积分',

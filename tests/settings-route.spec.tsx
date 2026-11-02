@@ -24,6 +24,7 @@ import {
 } from '../src/client/settings-route.ts'
 import { ComposerCredits } from '../src/client/ComposerCredits.tsx'
 import { WORKBUDDY_COMPOSER_CSS } from '../src/client/styles.ts'
+import { en, zh } from '../src/client/locales.ts'
 import { mount, stubFetch, t } from './pool-render-helpers.tsx'
 
 afterEach(() => {
@@ -200,19 +201,19 @@ describe('ComposerCredits settings control', () => {
     expect(panel?.textContent).toContain('composer.openSettingsFailed')
   })
 
-  it('puts the re-test control LEFT of settings, and only those two', async () => {
+  it('puts the refresh control LEFT of settings, and only those two', async () => {
     // The header's shape is a decision, not an accident:
     //
-    //  - TWO controls. An earlier revision removed the batch test entirely
-    //    (m02239) and this test pinned "exactly one". The owner asked for it
-    //    back, in this exact place, for a reason the old placement did not have:
-    //    the dots and the "被限流 · 约 N 小时后" lines in this table are the last
-    //    MEASUREMENT the Host persisted, and nothing on this surface could
-    //    refresh them — so a stale verdict could sit there indefinitely with no
-    //    way to ask "is this still true?".
-    //  - LEFT of settings. Re-testing acts on the table below (local,
+    //  - TWO controls. An earlier revision removed the batch control entirely
+    //    (m02239) and this test pinned "exactly one". It came back, in this
+    //    exact place, for a reason the old placement did not have: the dots and
+    //    the "被限流 · 约 N 小时后" lines in this table are the last MEASUREMENT
+    //    the Host persisted, and nothing on this surface could refresh them — so
+    //    a stale verdict could sit there indefinitely with no way to ask "is
+    //    this still true?".
+    //  - LEFT of settings. Refreshing acts on the table below (local,
     //    repeatable); settings leaves the panel entirely. A press meant for
-    //    "re-check" must not be able to land on "navigate away".
+    //    "bring this up to date" must not be able to land on "navigate away".
     stubFetch(() => ({ body: usageOf(1072) }))
     const m = await mount(ComposerCredits as never, {
       t,
@@ -231,11 +232,15 @@ describe('ComposerCredits settings control', () => {
     expect(headerButtons[1]?.className).toContain('panel-settings')
   })
 
-  it('re-tests every account through the streamed pool route', async () => {
+  it('refreshes every account through the streamed pool route', async () => {
     // What the control DOES, driven end to end rather than asserted on a label:
     // a POST to the pool's `test` action, and the streamed row folded into the
     // table so the status beside that account updates before the batch ends.
     const calls: string[] = []
+    // The row is for an account that does NOT exist in the fixture's pool, so
+    // the fold cannot change what this test asserts. What is being pinned is the
+    // route and the fold's presence — a row that also rewrote a visible status
+    // would let a wrong row pass as long as the route was right.
     stubFetch((url) => {
       calls.push(String(url))
       if (String(url).includes('action=test')) {
@@ -246,8 +251,8 @@ describe('ComposerCredits settings control', () => {
           contentType: 'application/x-ndjson',
           body: JSON.stringify({
             row: {
-              accountId: 'a-1',
-              accountName: 'A One',
+              accountId: 'a-unknown',
+              accountName: 'Unknown',
               result: { modelId: 'm', outcome: 'ok' },
             },
           }) + '\n' + JSON.stringify({ done: true }) + '\n',
@@ -270,6 +275,46 @@ describe('ComposerCredits settings control', () => {
 
     // The batch went to the pool route with the action, not to a credits read.
     expect(calls.some(url => url.includes('/pool') && url.includes('action=test'))).toBe(true)
+  })
+
+  it('says "Refresh" and does not claim the batch is free', async () => {
+    // The label is the whole point of the rename: the control is named for the
+    // reader's outcome (this table brought up to date), while the mechanism is a
+    // probe batch that spends credits and takes up to a minute. So the visible
+    // word must be the outcome's, and the HINT must admit the cost — a
+    // "refresh" that quietly bills you is worse than a long label.
+    stubFetch(() => ({ body: usageOf(1072) }))
+    const m = await mount(ComposerCredits as never, {
+      t,
+      provider: 'workbuddy',
+      onOpenSettings: vi.fn(() => true),
+    })
+    await m.settle()
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+
+    const button = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-refresh')
+    expect(button?.textContent).toContain('composer.refresh')
+    // The mechanism words the old label used must be gone from the visible text.
+    expect(button?.textContent).not.toContain('composer.testAll')
+    expect(button?.getAttribute('title')).toBe('composer.refreshHint')
+
+    // The REAL strings, not the test double: `t` echoes keys, so a test that
+    // only ever sees keys cannot notice a missing translation or a hint that
+    // stopped mentioning the cost.
+    for (const dictionary of [en, zh]) {
+      expect(dictionary['composer.refresh']).not.toContain('test')
+      expect(dictionary['composer.refresh']).not.toContain('测')
+      // The cost, in whatever words the locale uses.
+      const hint = dictionary['composer.refreshHint']
+      expect(hint.length).toBeGreaterThan(20)
+    }
+    // The two hints must each name the mechanism. Asserted per-locale so a
+    // translation that drops it fails here rather than shipping.
+    expect(en['composer.refreshHint']).toMatch(/probe/i)
+    expect(en['composer.refreshHint']).toMatch(/credit/i)
+    expect(zh['composer.refreshHint']).toMatch(/探测/)
+    expect(zh['composer.refreshHint']).toMatch(/积分/)
   })
 })
 

@@ -557,7 +557,13 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   }
 
   /**
-   * The header's test control: probe every account in this region.
+   * The header's REFRESH control: probe every account in this region.
+   *
+   * Named for the reader's outcome (this table, brought up to date) while the
+   * work underneath is a probe batch. The distinction is not cosmetic: "refresh"
+   * sounds like a free re-read of what the Host already knows, and what the Host
+   * already knows is exactly the stale measurement we are trying to replace. The
+   * hint says "probes each account" so the cost is not a surprise.
    *
    * THE ROW COLOURS ARE WHAT THIS PRODUCES. The dots and the "被限流 · 约 N 小时后"
    * lines in the table are not read from the upstream on every poll — they are
@@ -625,7 +631,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     } catch {
       // A transport failure. The rows keep their previous measurements rather
       // than being blanked: nothing was learned about them.
-      if (mounted.current) setTestError(t('composer.testFailed'))
+      if (mounted.current) setTestError(t('composer.refreshAccountsFailed'))
     } finally {
       testingRef.current = false
       if (mounted.current) setTesting(false)
@@ -799,14 +805,14 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             <span className="dsm-workbuddy-composer-panel-title">
               {t(activeRegion === 'cn' ? 'composer.panelTitleCn' : 'composer.panelTitleGlobal')}
             </span>
-            {/* Right-aligned: test, then settings. ONE wrapper owns
+            {/* Right-aligned: refresh, then settings. ONE wrapper owns
                 `margin-left:auto` so the header stays title … [controls] and a
                 host with no settings route (no button) still pins nothing oddly. */}
             <span className="dsm-workbuddy-composer-panel-actions">
-              {/* Test sits LEFT of settings: it acts on the table below (a
+              {/* Refresh sits LEFT of settings: it acts on the table below (a
                   local, repeatable action), while settings leaves the panel
                   entirely. Destructive/navigating controls go last so a press
-                  meant for "re-check" cannot land on "leave". */}
+                  meant for "bring this up to date" cannot land on "leave". */}
               <button
                 type="button"
                 className="dsm-workbuddy-composer-panel-refresh"
@@ -814,8 +820,8 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                 // an account switch block it too, because all three write the
                 // same table.
                 disabled={testing || switchingId !== undefined}
-                title={t('composer.testAllHint')}
-                aria-label={t('composer.testAllHint')}
+                title={t('composer.refreshHint')}
+                aria-label={t('composer.refreshHint')}
                 onClick={() => { void testEveryAccount() }}
               >
                 {/* A circular arrow that SPINS while the batch runs: a disabled
@@ -849,7 +855,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                   />
                 </svg>
                 <span className="dsm-workbuddy-composer-panel-refresh-label">
-                  {testing ? t('composer.testing') : t('composer.testAll')}
+                  {testing ? t('composer.refreshing') : t('composer.refresh')}
                 </span>
               </button>
               {onOpenSettings === undefined
