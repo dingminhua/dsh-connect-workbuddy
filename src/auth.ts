@@ -1841,6 +1841,35 @@ export class WorkBuddyCredentialStore {
     return !credentials.some(credential => workbuddyAccountId(credential) === this.accountId)
   }
 
+  /**
+   * Why the vault could not be read, when it could not (issue #199).
+   *
+   * `syncVault` deliberately swallows a failed `readVaultEntries` so account
+   * discovery stays up — the right call for availability, the wrong call for
+   * honesty: the user then sees the SAVED account reported as "no longer on
+   * this machine" when the truth is "this process may not read the directory".
+   * The issue #199 lockout (foreign owner + `/inheritance:r`) produces exactly
+   * that shape: readdir EPERM while per-path readFile still works, so nothing
+   * else in the diagnostics reports the directory either.
+   *
+   * A dedicated readdir probe rather than a field recorded during the scan:
+   * the scan is shared/cached (`scanInflight`), its failure is transient by
+   * design, and a probe here is one cheap readdir on a path that is already
+   * failing — the error string is the fact the card needs.
+   *
+   * Returns the raw error message, or `undefined` when the directory reads
+   * (including the absent case, which is normal before the first OAuth add).
+   */
+  async vaultReadError(): Promise<string | undefined> {
+    try {
+      await readdir(this.vaultDir())
+      return undefined
+    } catch (error: unknown) {
+      if (isENOENT(error)) return undefined
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
   /** The freshest stored credential for the current selection, no refresh. */
   async current(): Promise<WorkBuddyCredential | undefined> {
     const credentials = await this.readAll()

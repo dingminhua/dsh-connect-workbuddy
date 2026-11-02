@@ -943,6 +943,27 @@ async function searchedPaths(
   }
 }
 
+/**
+ * The vault-read failure for the card, when there is one (issue #199).
+ *
+ * Mirrors `searchedPaths`' defensive shape: a store built without the probe
+ * (an older Host half) or one whose probe throws degrades to the plain status
+ * rather than failing the whole signed-out payload. The raw error is carried
+ * verbatim — it is the ONLY place the #199 lockout (readdir EPERM with
+ * per-path reads still working) becomes visible anywhere in the card data.
+ */
+async function vaultUnreadableOf(
+  store: WorkBuddyCredentialStore,
+): Promise<{ vaultUnreadable?: string }> {
+  if (typeof store.vaultReadError !== 'function') return {}
+  try {
+    const message = await store.vaultReadError()
+    return message === undefined ? {} : { vaultUnreadable: message }
+  } catch {
+    return {}
+  }
+}
+
 /** Reads schemastery's internal `meta.volatile` marker for one top-level field. */
 function volatileFlagOf(field: string): boolean {
   const dict = (Config as unknown as {
@@ -1180,6 +1201,10 @@ export async function workBuddyWebStatus(
       ...lastForeignThinking === undefined ? {} : { lastForeignThinking },
       busyLevels,
       ...await store.selectionLost() ? { selectionLost: true } : {},
+      // Issue #199: a vault the process cannot READ is a permissions story,
+      // not an account story — carry the error so the card can say so instead
+      // of letting `selectionLost` claim the saved account vanished.
+      ...await vaultUnreadableOf(store),
       // Only the genuinely empty machine gets the probe list. When local
       // sign-ins DO exist (the orphaned-saved-id case), the card already has
       // the right advice and a list of failed paths would bury it.
