@@ -106,6 +106,13 @@ export interface PoolPreferences {
    */
   orderAccountIds: readonly string[]
   /**
+   * Whether the plugin claims the daily check-in by itself (issue #191).
+   *
+   * A DRAFT field like the rest: it takes effect on Save, so the switch never
+   * claims a background job is running before the write landed.
+   */
+  autoCheckin: boolean
+  /**
    * Per-account test model, keyed by account id (issue #61).
    *
    * A MAP rather than a scalar because `6004` is an account × model condition:
@@ -375,6 +382,9 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     // one: an empty order means "let the credit policy decide" — the same
     // semantics as an older profile that predates manual sorting.
     orderAccountIds: pool?.orderAccountIds ?? [],
+    // Absent reads as OFF: this switch authorises a real WRITE on the user's
+    // account, so "the host could not answer" must never become "on".
+    autoCheckin: pool?.autoCheckin === true,
     // Copied verbatim (issue #61), including entries whose model has left the
     // catalog: the host keeps them for the same reason, and dropping one here
     // would make the next Save delete the user's choice.
@@ -413,7 +423,41 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     // even though the set is untouched. `sameOrder` compares positionally; the
     // set-based `sameIds` must NOT be reused here (it would swallow a reorder).
     || !sameOrder(draft.orderAccountIds, saved.orderAccountIds)
+    // A real edit: the switch authorises a background WRITE on the user's
+    // accounts, so flipping it must go through Save like every other field here
+    // rather than taking effect on the click.
+    || draft.autoCheckin !== saved.autoCheckin
   )
+
+  /**
+   * The automatic check-in's progress line, or nothing.
+   *
+   * Read from the SAVED switch, not the draft: this describes what the runner is
+   * doing, and a draft that says "on" has not started anything yet. Showing
+   * progress for a switch that is not saved would claim a job was running.
+   */
+  const autoCheckinStatus = (() => {
+    if (!saved.autoCheckin) return null
+    const today = pool?.autoCheckinToday
+    if (today === undefined) return null
+    // Three states, three sentences: everything done, partway, and "there are
+    // retries owed". The last one is the only place a user learns the job is
+    // still trying rather than silently stuck.
+    const headline = today.pending === 0 && today.done === today.total
+      ? t('row.poolAutoCheckinDone', { total: String(today.total) })
+      : t('row.poolAutoCheckinToday', { done: String(today.done), total: String(today.total) })
+    return h('div', { className: 'dsm-workbuddy-pool-auto-checkin-status' },
+      h('span', { className: 'dsm-workbuddy-pool-auto-checkin-line' }, headline),
+      today.pending === 0
+        ? null
+        : h('span', { className: 'dsm-workbuddy-pool-auto-checkin-pending' },
+            t('row.poolAutoCheckinPending', { count: String(today.pending) })),
+      today.lastError === undefined
+        ? null
+        : h('span', { className: 'dsm-workbuddy-pool-auto-checkin-error' },
+            t('row.poolAutoCheckinFailed', { message: today.lastError })),
+    )
+  })()
 
   /**
    * Membership that actually resolves to a local sign-in — what a batch runs on.
@@ -1300,6 +1344,40 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       // their own disclosure in the member block, where the ordering is actually
       // edited; a second copy here would be the same duplication in a new place.
       h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolEnabledHint')),
+
+      // THE AUTOMATIC CHECK-IN (issue #191).
+      //
+      // Beside the pool switch because it is the same kind of decision — "the
+      // plugin may act on these accounts by itself" — and because the accounts
+      // it acts on are exactly the ones checked below it. Only on a region with
+      // a check-in at all: the international gateway has none, and offering a
+      // switch whose only outcome is a predictable refusal is worse than
+      // omitting it.
+      pool.checkinSupported
+        ? h('div', { className: 'dsm-workbuddy-pool-auto-checkin' },
+            h('label', { className: 'dsm-workbuddy-pool-modebar' },
+              h('span', { className: 'sw' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: active.autoCheckin,
+                  disabled: !canEditPool,
+                  onChange: (event: { currentTarget: { checked: boolean } }) => {
+                    const next = event.currentTarget.checked
+                    editDraft(current => ({ ...current, autoCheckin: next }))
+                  },
+                }),
+                h('span', { className: 'sw-track' }),
+              ),
+              h('b', { className: 'dsm-workbuddy-pool-modebar-label' }, t('row.poolAutoCheckin')),
+            ),
+            h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolAutoCheckinHint')),
+            // The status line, and ONLY when the switch is on and the runner has
+            // something to report. Absent `autoCheckinToday` means "nothing has
+            // run", which is different from "ran and found nothing to do" — the
+            // card must not print "0 of 0" for the first case.
+            autoCheckinStatus,
+          )
+        : null,
     ),
 
     // "In use" and "in the pool" are orthogonal, and the row cannot say both

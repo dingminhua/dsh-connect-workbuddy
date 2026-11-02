@@ -116,6 +116,19 @@ import {
   rankPool,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
+import {
+  autoCheckinRegions,
+  emptyAutoCheckinState,
+  foldAttempt,
+  isDue,
+  localDayKey,
+  nextDelayMs,
+  pendingTargets,
+  summarizeAutoCheckin,
+  AUTO_CHECKIN_IDLE_MS,
+} from './auto-checkin.ts'
+import type { AutoCheckinState } from './auto-checkin.ts'
+import { readAutoCheckinState, writeAutoCheckinState } from './auto-checkin-store.ts'
 import { createFileRosterSeenStore } from './roster-seen-store.ts'
 import type { RosterSeenStore } from './roster-seen-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
@@ -559,6 +572,19 @@ export interface WorkBuddyPoolPreferences {
    * silently merged into membership.
    */
   orderAccountIds?: string[]
+  /**
+   * Whether the plugin claims the daily check-in by itself (issue #191).
+   *
+   * OFF by default. Claiming a daily reward is a real WRITE on the user's
+   * account, and this plugin deliberately shipped without an automatic
+   * check-in so it would never make that decision on someone's behalf. The
+   * reasoning still holds — what changed is that the user can now make that
+   * decision once and have it honoured.
+   *
+   * Only the CN region has a check-in, so the card hides the switch elsewhere
+   * and the runner refuses to start there.
+   */
+  autoCheckin?: boolean
 }
 
 /** Plugin configuration. */
@@ -815,6 +841,25 @@ const poolConfig = z.object({
    */
   probeInputTokens: z.number().step(1).default(0).description('Input tokens each test probe sends: 10000 / 20000 / 30000 / 50000 / 100000. Bigger probes catch a rate limit real conversations would hit, but cost more credit per test and may mark an account unusable for large requests only. 0 uses the measured default (25000)'),
   memberAccountIds: z.array(z.string()).default([]).description('Account ids checked into this pool (opt-in; empty means the pool covers nothing)'),
+  /**
+   * Whether the plugin claims the daily check-in by itself (opt-IN, default off).
+   *
+   * OFF BY DEFAULT, and that is the whole design (issue #191). Claiming a daily
+   * reward is a real WRITE on the user's account, and this plugin shipped with no
+   * automatic check-in precisely so it would never make that decision for
+   * someone. The reasoning still holds — what changed is that the user can now
+   * make the decision once and have it honoured.
+   *
+   * The alternative was worse than it looks: a missed day resets the streak to
+   * zero (the reporter was at 32), and the claim costs no credits and is
+   * idempotent upstream. So the trade is "one switch" against "a 32-day streak
+   * lost to a weekend".
+   *
+   * Only the CN region has a check-in; the switch is hidden elsewhere and the
+   * runner refuses to start there, so a hand-edited profile cannot make the
+   * background path spend a request per account per day learning a refusal.
+   */
+  autoCheckin: z.boolean().default(false).description('Claim the daily check-in automatically for the accounts checked into this pool (opt-in). Idempotent: an account already checked in today is reported, never re-claimed. Only the CN region has a daily check-in.'),
   orderAccountIds: z.array(z.string()).default([]).description('The user\'s hand-ordered pool order, as account ids. Independent of membership: an id need not be checked in (it only takes effect once the account is a member), and ids not listed sort last. Separate from memberAccountIds so reordering never conflicts with, or is destroyed by, a membership edit.'),
 })
 
@@ -3067,6 +3112,22 @@ export function apply(ctx: Context, config: Config): void {
        * no equivalent here, so its card must not offer the action.
        */
       checkinSupported: region => region === 'cn',
+      /**
+       * What the background check-in has settled today (issue #191).
+       *
+       * Answers from the runner's in-memory state, which is the same object the
+       * tick updates — so the card never has to guess which accounts a previous
+       * attempt already handled. `undefined` when the switch is off or nothing
+       * has run, which the card renders as "no status line" rather than "0 of N".
+       */
+      autoCheckinToday: region => {
+        if (!autoCheckinEnabled(region)) return undefined
+        const state = autoCheckinState[region]
+        if (state === undefined) return undefined
+        // The denominator came with the state, so this runs on the card's poll
+        // without enumerating the credential store (see `scopeSize`).
+        return summarizeAutoCheckin(state)
+      },
       checkin: async region => {
         const rows = await checkinAllAccounts(
           await poolTargets(region),
@@ -3721,6 +3782,9 @@ export function apply(ctx: Context, config: Config): void {
       ...probeInputTokens === undefined ? {} : { probeInputTokens },
       memberAccountIds: pool?.memberAccountIds ?? [],
       orderAccountIds: pool?.orderAccountIds ?? [],
+      // `=== true`, not `?? false`: an older profile has no key at all, and an
+      // absent answer must read as OFF — this switch authorises a real WRITE.
+      autoCheckin: pool?.autoCheckin === true,
     }
   }
 
@@ -3807,6 +3871,152 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  /**
+   * The automatic daily check-in (issue #191).
+   *
+   * A single timer per region, armed only when the user ticks the switch. The
+   * rules live in `src/auto-checkin.ts` (pure) and the memory in
+   * `src/auto-checkin-store.ts`; this block owns only the two things those
+   * modules deliberately do not: a real clock and a real batch call.
+   *
+   * ## Why a re-arming one-shot instead of `setInterval`
+   *
+   * The interval is not constant: a failure walks a widening backoff, a finished
+   * day idles, and a day rollover resets everything. `setInterval` can only
+   * express a fixed period, so the delay is computed per tick and the timer is
+   * re-armed from the tick's own `finally`. The alternative — a 30-minute
+   * `setInterval` plus "is it due?" inside — would sleep past the short first
+   * retries (30 s, 60 s) and make a transient fault look like a 30-minute outage.
+   *
+   * ## Why the timer never stops
+   *
+   * Even when the day is finished the timer re-arms at {@link AUTO_CHECKIN_IDLE_MS}.
+   * A timer that stops after its first successful day cannot notice the next
+   * local midnight, so the feature would silently work exactly once — the
+   * failure mode this whole design exists to avoid. The idle tick costs no
+   * request: `isDue` answers "nothing pending" before any I/O.
+   *
+   * ## Why it is safe to run alongside a manual press
+   *
+   * `checkinAllAccounts` reads status first and reports `already` WITHOUT a
+   * claim, so two overlapping runs cannot double-claim. The batch is also
+   * serial, so the worst case is one redundant status request per account.
+   */
+  const autoCheckinTimers: Partial<Record<WorkBuddyRegion, ReturnType<typeof setTimeout>>> = {}
+  /** In-memory mirror of the on-disk state, so a tick does not re-read the file. */
+  const autoCheckinState: Partial<Record<WorkBuddyRegion, AutoCheckinState>> = {}
+  /** Guards against a second tick landing while one is still running. */
+  const autoCheckinRunning: Partial<Record<WorkBuddyRegion, boolean>> = {}
+
+  /** Whether the user has asked for the background check-in on this region. */
+  function autoCheckinEnabled(region: WorkBuddyRegion): boolean {
+    if (!autoCheckinRegions().includes(region)) return false
+    return poolPreferencesOf(current(), region).autoCheckin === true
+  }
+
+  /**
+   * One tick: decide, run, fold, persist, re-arm.
+   *
+   * Deliberately never throws — a background feature that can take down `apply`
+   * (or a later tick) over a disk error would be worse than not having it.
+   */
+  async function autoCheckinTick(region: WorkBuddyRegion): Promise<void> {
+    if (autoCheckinRunning[region] === true) return
+    autoCheckinRunning[region] = true
+    try {
+      // Read the switch EVERY tick, not once at `apply`: turning it off must
+      // stop the next tick, and the settings object is live.
+      if (!autoCheckinEnabled(region)) return
+      const nowMs = Date.now()
+      const today = localDayKey(nowMs)
+      const stored = autoCheckinState[region] ?? await readAutoCheckinState(region)
+      // A new local day resets everything. `day` is the only field that decides
+      // this, so a clock change (a laptop crossing a timezone) simply starts a
+      // fresh day rather than trusting a stale `doneAccountIds`.
+      const state = stored === undefined || stored.day !== today
+        ? emptyAutoCheckinState(today)
+        : stored
+      autoCheckinState[region] = state
+      const targets = pendingTargets(await poolTargets(region), state)
+      if (!isDue(state, targets.length, nowMs)) {
+        // Nothing owed right now. Re-arm and do NO I/O — this is the branch that
+        // makes an idle day cost nothing.
+        scheduleAutoCheckin(region, AUTO_CHECKIN_IDLE_MS)
+        return
+      }
+      const rows = await checkinAllAccounts(targets, poolRunnerDeps(region))
+      // Drop the cached readings for accounts this batch touched, exactly as the
+      // manual action does, so the card's column reflects the result at once.
+      for (const row of rows) {
+        if (row.status === 'failed') continue
+        const cached = checkinStateCache[region]
+        if (cached !== undefined) delete cached[row.accountId]
+      }
+      // `scopeSize` is the count this attempt was measured against: pending
+      // targets PLUS whatever the day already settled, which is the honest
+      // denominator for "N of M" even after a membership edit.
+      const folded = foldAttempt(state, rows, nowMs, targets.length + state.doneAccountIds.length)
+      autoCheckinState[region] = folded
+      await writeAutoCheckinState(region, folded)
+      const pending = pendingTargets(await poolTargets(region), folded).length
+      scheduleAutoCheckin(region, nextDelayMs(folded, pending) ?? AUTO_CHECKIN_IDLE_MS)
+    } catch (error: unknown) {
+      // A throw here is OUR fault (a store read, a pool enumeration), not the
+      // upstream's. Log it and re-arm on the slow clock so one bad tick cannot
+      // stop the feature for the rest of the day.
+      ctx.logger.warn(`dsh-connect-workbuddy: auto check-in tick failed (${region})`, error)
+      scheduleAutoCheckin(region, AUTO_CHECKIN_IDLE_MS)
+    } finally {
+      autoCheckinRunning[region] = false
+    }
+  }
+
+  /** Arm the next tick, replacing any pending one. */
+  function scheduleAutoCheckin(region: WorkBuddyRegion, delayMs: number): void {
+    const existing = autoCheckinTimers[region]
+    if (existing !== undefined) clearTimeout(existing)
+    const timer = setTimeout(() => { void autoCheckinTick(region) }, delayMs)
+    // A pending check-in must not hold the host process open: this is a
+    // convenience, and a host that is shutting down should not wait 30 minutes
+    // for it. (Tests' fake timers have no `unref`.)
+    timer.unref?.()
+    autoCheckinTimers[region] = timer
+  }
+
+  /**
+   * Arm or disarm every region to match the saved switches.
+   *
+   * Called once at `apply` and again on every settings change, so flipping the
+   * switch takes effect without a restart. Disarming CLEARS the timer rather
+   * than leaving it to notice: an off switch must stop the work immediately, not
+   * at the next tick.
+   */
+  function syncAutoCheckin(): void {
+    for (const region of autoCheckinRegions()) {
+      if (autoCheckinEnabled(region)) {
+        if (autoCheckinTimers[region] === undefined) scheduleAutoCheckin(region, 0)
+        continue
+      }
+      const timer = autoCheckinTimers[region]
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        delete autoCheckinTimers[region]
+      }
+    }
+  }
+
+  /** Stop every timer; called on unload. */
+  function stopAutoCheckin(): void {
+    for (const region of autoCheckinRegions()) {
+      const timer = autoCheckinTimers[region]
+      if (timer !== undefined) clearTimeout(timer)
+      delete autoCheckinTimers[region]
+    }
+  }
+
+  syncAutoCheckin()
+  ctx.effect(() => () => { stopAutoCheckin() })
+
   // Settings registration (0.1.7+ only).
   // `SettingsForms` dropped `installSection` entirely and exposes
   // `configure({auto}, owner)`; calling the removed method unconditionally made
@@ -3876,6 +4086,9 @@ export function apply(ctx: Context, config: Config): void {
   ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
     .on('loader/volatile-update', () => {
       applySelection(current())
+      // The auto check-in switch lives in the same volatile region slot, so this
+      // is also where turning it on or off takes effect — without a restart.
+      syncAutoCheckin()
     })
 
   // Initial wiring: selections, per-region catalogs from the saved state.

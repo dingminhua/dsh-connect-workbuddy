@@ -935,6 +935,15 @@ export async function writePoolPreferences(
     memberAccountIds: readonly string[]
     /** Manual priority order for member accounts; always a real array. */
     orderAccountIds: readonly string[]
+    /**
+     * Whether the plugin claims the daily check-in by itself (issue #191).
+     *
+     * Optional so a caller that has not learnt about the setting still
+     * satisfies this signature — its absence then leaves the stored value
+     * untouched, which is what an older card's save must do: dropping the key
+     * would silently switch a background job OFF on an unrelated save.
+     */
+    autoCheckin?: boolean
   },
 ): Promise<void> {
   // The merge starts from the EXISTING slot, read here rather than taken from
@@ -955,6 +964,11 @@ export async function writePoolPreferences(
   }
   if (preferences.probeInputTokens !== undefined) {
     slot['probeInputTokens'] = preferences.probeInputTokens
+  }
+  // Written only when the caller supplied it: see the parameter note. `false`
+  // is a real value and must be written (it is how the user turns the job off).
+  if (preferences.autoCheckin !== undefined) {
+    slot['autoCheckin'] = preferences.autoCheckin
   }
   const merged = nextRegionPool(scope.getSnapshot().value, region, slot)
   const next = merged[region] as Record<string, unknown>
