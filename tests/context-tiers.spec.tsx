@@ -12,9 +12,17 @@
  *
  * Every assertion below therefore checks WHICH tiers exist for a given window,
  * not merely that a 500K input is present somewhere on the page.
+ *
+ * THE SECOND HALF (issue #198): existing is not the same as CLICKABLE. All three
+ * radios were always in the DOM; on a narrow card the row clipped the third one
+ * out of view, so a phone user could only ever pick 200K / 500K and the plugin
+ * appeared to cap the context at 500K. jsdom performs NO layout, so "would this
+ * survive a 360px panel" cannot be asserted on the rendered box — it is pinned on
+ * the stylesheet instead, which is where the clipping actually lived.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyCard } from '../src/client/WorkBuddyCard.tsx'
+import { WORKBUDDY_CARD_CSS } from '../src/client/styles.ts'
 import { fakeScope, mount, stubFetch, t } from './pool-render-helpers.tsx'
 
 afterEach(() => { vi.unstubAllGlobals() })
@@ -125,5 +133,72 @@ describe('context-budget tiers', () => {
     const radios = tierRadios(m.container)
     expect(radios).toHaveLength(3)
     expect(radios.map(radio => radio.disabled)).toEqual([false, false, false])
+  })
+
+  // -------------------------------------------------------------------------
+  // 7. Issue #198: every tier is REACHABLE on a narrow card, not merely rendered
+  // -------------------------------------------------------------------------
+
+  /**
+   * One selector's declaration block from the shipped card stylesheet.
+   *
+   * Extracted rather than eyeballed because the whole bug was a declaration:
+   * `flex:none` on a row that had no `flex-wrap`, inside a list with
+   * `overflow:hidden`. A test on the RENDERED box cannot see any of that — jsdom
+   * performs no layout, so `offsetWidth` is 0 for everything and a clipped
+   * element measures exactly as visible as an unclipped one. That is why this
+   * file's DOM assertions stayed green across 5.13.1 → 5.17.0 while the third
+   * tier was unreachable on every phone: the defect lived one layer below the
+   * thing those assertions look at.
+   */
+  function ruleOf(selector: string): string {
+    return new RegExp(`\\.${selector}\\{([^}]*)\\}`).exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
+  }
+
+  it('lets the model row wrap, so no tier can be clipped out of view', () => {
+    // The row that carries the budget group. `flex-wrap:wrap` is the half that
+    // makes the group land on a second line instead of running past the clip.
+    expect(ruleOf('dsm-workbuddy-model-head')).toContain('flex-wrap:wrap')
+    // The section footer beside it (cheer link / save buttons), same failure mode
+    // and the one the issue named: a fixed single line on a ~360 px panel.
+    expect(ruleOf('dsm-workbuddy-model-actions')).toContain('flex-wrap:wrap')
+  })
+
+  it('lets the tier group wrap between its own labels', () => {
+    // `flex:none` stays — the group must not be SHRUNK into unreadability by a
+    // long model name — but `flex-wrap` has to be set too, because the three
+    // labels (`200K`, `500K`, `1.048M`) exceed a phone row on their own. Without
+    // this the group would be pushed whole past the clip: a wrapped row whose
+    // children refuse to wrap still overflows.
+    const budget = ruleOf('dsm-workbuddy-context-budget')
+    expect(budget).toContain('flex-wrap:wrap')
+    expect(budget).toContain('flex:none')
+    // A tier label breaks mid-word otherwise (`20` / `0K`), which reads as a
+    // rendering bug on the one control the user is trying to hit.
+    expect(ruleOf('dsm-workbuddy-context-budget label')).toContain('white-space:nowrap')
+  })
+
+  it('gives the tier group its own full-width line on a phone', () => {
+    // The media query is the difference between "reachable" and "scrambled": at
+    // `justify-content:flex-end` a wrapped group dangles under the buttons, and
+    // the native-window tier — the last label in the group, and the one #198 is
+    // about — is what lands nearest the edge.
+    const media = /@media \(max-width:760px\)\{\.dsm-workbuddy-context-budget\{([^}]*)\}\}/u.exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
+    expect(media).toContain('flex:1 1 100%')
+    expect(media).toContain('justify-content:flex-start')
+  })
+
+  it('renders all three tiers in the DOM for a 1M model', async () => {
+    // The guard the issue asked for on top of the CSS ones: DOM presence is not
+    // what regressed, and asserting it alone is precisely how this stayed green
+    // — but it is the PREMISE of the CSS assertions, so it is pinned here in the
+    // same file that reads them. All three, in one row, for one model.
+    const m = await render(usageWithWindow(1_000_000))
+    expect(tierRadios(m.container)).toHaveLength(3)
+    expect(tierLabels(m.html())).toEqual(['200K', '500K', '1M'])
+    // And the row that holds them is the one the stylesheet allows to wrap.
+    const head = m.container.querySelector('.dsm-workbuddy-model-head')
+    expect(head).not.toBeNull()
+    expect(head?.querySelector('.dsm-workbuddy-context-budget')).not.toBeNull()
   })
 })
