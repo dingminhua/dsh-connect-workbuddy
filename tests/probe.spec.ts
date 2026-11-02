@@ -546,6 +546,29 @@ describe('probeModel', () => {
     expect(result.message).toContain('socket hang up')
   })
 
+  it('reports status 0 when the throw came before the request was sent (issue #195)', async () => {
+    // What actually reaches this `catch` is never an upstream answer: `probeChat`
+    // returns its own failures as values. The throw comes from `wireIdentity()` —
+    // the device-profile file, the device-token subprocess, the SDK directory —
+    // and none of those has an opinion about this account.
+    //
+    // The field has to be written EXPLICITLY. It is optional on
+    // `WorkBuddyProbeResult`, so omitting it read as "no HTTP status to speak of"
+    // and `isTransportFailure` (which asks for `status === 0`) did not recognise
+    // the row; it was then persisted and benched a healthy account for the
+    // 30-minute `POOL_UNKNOWN_COOLDOWN_MS` fallback. Same outage as #193.
+    const client = {
+      probeChat: async () => { throw new Error('device-profile read exploded') },
+    }
+    const result = await probeModel({
+      client,
+      credential: CREDENTIAL,
+      modelId: 'glm-5.3',
+      nowMs: Date.now(),
+    })
+    expect(result.status).toBe(0)
+  })
+
   it('redacts token-shaped content out of a failure message', async () => {
     const client = clientAnswering({
       ok: false,

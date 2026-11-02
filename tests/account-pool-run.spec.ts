@@ -12,6 +12,7 @@ import type {
 } from '../src/account-pool-run.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import type { WorkBuddyProbeResult } from '../src/probe.ts'
+import { probeModel } from '../src/probe.ts'
 
 function credential(id: string): WorkBuddyCredential {
   return {
@@ -231,13 +232,47 @@ describe('testAllAccounts', () => {
   })
 
   it('never throws when the credential store itself throws', async () => {
+    // The property this pins is BATCH CONTINUITY: one unreadable account must
+    // not hide the other rows. What it must NOT pin is the CLASSIFICATION — see
+    // the two tests below, which split the old assertion in half because
+    // reporting a store fault as `credential-rejected` was itself a defect.
     const deps = runner({
       credentialFor: async () => { throw new Error('store exploded') },
     })
     const rows = await testAllAccounts(TARGETS, 'm', deps)
     expect(rows).toHaveLength(3)
-    expect(rows.every(row => row.result.outcome === 'credential-rejected')).toBe(true)
     expect(rows[0]?.result.message).toBe('store exploded')
+  })
+
+  it('does not blame the account when the credential STORE throws (issue #195)', async () => {
+    // A local disk fault is not an upstream verdict about this account.
+    //
+    // This row used to be `credential-rejected`, the one outcome `exclusionOf`
+    // excludes with NO cooldown: the account left the pool PERMANENTLY, and the
+    // card explained it as "sign in again" while the sign-in was perfectly fine.
+    // A one-off `EIO` on the vault file idled a healthy account forever — worse
+    // than issue #193's half-hour, and aimed at a fix that cannot work.
+    const deps = runner({
+      credentialFor: async () => { throw new Error('store exploded') },
+    })
+    const rows = await testAllAccounts([TARGETS[0]!], 'm', deps)
+    expect(rows[0]?.result.outcome).not.toBe('credential-rejected')
+    // `failed`, not `unavailable`: the latter renders as "cannot reach the
+    // upstream", which names the wrong party. Nothing was ever sent.
+    expect(rows[0]?.result.outcome).toBe('failed')
+  })
+
+  it('marks a credential-store fault as status 0, so it is never persisted', async () => {
+    // `status: 0` is the codebase's convention for "the request never landed",
+    // and it is what makes `probeUpdatesOf` DROP the row. That is the honest
+    // outcome: we learned nothing about this account, so it keeps its previous
+    // measurement instead of acquiring a new (and wrong) one.
+    const deps = runner({
+      credentialFor: async () => { throw new Error('store exploded') },
+    })
+    const rows = await testAllAccounts([TARGETS[0]!], 'm', deps)
+    expect(rows[0]?.result.status).toBe(0)
+    expect(probeUpdatesOf(rows)).toEqual({})
   })
 
   it('runs strictly serially', async () => {
@@ -361,5 +396,31 @@ describe('probeUpdatesOf', () => {
     ])
     expect(updates['alpha']?.outcome).toBe('unavailable')
     expect(updates['alpha']?.source).toBe('test-batch')
+  })
+
+  it('drops the row a real probeModel catch produces when identity work throws (issue #195)', async () => {
+    // The third door onto the same outage, asserted END TO END.
+    //
+    // A hand-built `status: 0` row would pass with or without the fix — it is
+    // the shape the fix is supposed to produce, so building it by hand proves
+    // nothing. What matters is that the REAL `probeModel` catch emits a row this
+    // writer drops, so the test drives `probeModel` and feeds its actual output
+    // through `probeUpdatesOf`.
+    //
+    // Before the fix the catch omitted `status`, `status === 0` did not match,
+    // and the row was persisted — a 30-minute bench for a healthy account, the
+    // same outage as #193.
+    const result = await probeModel({
+      client: { probeChat: async () => { throw new Error('device-profile read exploded') } },
+      credential: credential('alpha'),
+      modelId: 'hy3',
+      nowMs: Date.now(),
+    })
+    const updates = probeUpdatesOf([
+      { accountId: 'alpha', accountName: 'alpha', result },
+      row('beta', { modelId: 'hy3', outcome: 'ok' }),
+    ])
+    expect(updates['alpha']).toBeUndefined()
+    expect(updates['beta']?.source).toBe('test-batch')
   })
 })

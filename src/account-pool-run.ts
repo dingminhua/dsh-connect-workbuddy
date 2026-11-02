@@ -225,9 +225,26 @@ async function testOne(
   try {
     credential = await deps.credentialFor(target.accountId)
   } catch (error: unknown) {
+    // Reading the credential STORE threw — a local disk fault, not an upstream
+    // verdict about this account (issue #195).
+    //
+    // This used to report `credential-rejected`, which is the one outcome
+    // `exclusionOf` excludes with NO cooldown: the account left the pool
+    // permanently, and the card explained it as "sign in again" while the
+    // sign-in was perfectly fine. A one-off `EIO` on the vault file would
+    // therefore idle a healthy account forever — worse than issue #193's
+    // half-hour, and pointing the user at a fix that cannot work.
+    //
+    // `status: 0` is this codebase's convention for "the request never landed",
+    // and it is what makes `probeUpdatesOf` DROP this row instead of persisting
+    // it — the account keeps its previous measurement, which is the honest
+    // outcome: we learned nothing about it. The batch still reports the row (a
+    // failure must never hide the other accounts), and `failed` is the neutral
+    // label for the row itself: `unavailable` would render as "cannot reach the
+    // upstream", which is precisely the wrong party to blame.
     return {
       ...base,
-      result: { modelId, outcome: 'credential-rejected', message: messageOf(error) },
+      result: { modelId, outcome: 'failed', status: 0, message: messageOf(error) },
     }
   }
   if (credential === undefined) {
@@ -250,6 +267,13 @@ async function testOne(
  * failed because the credential could not even be read says nothing about the
  * model, and recording it would exclude a possibly-perfect account from the
  * pool — so those accounts keep their previous measurement instead.
+ *
+ * That covers two distinct "we never got to ask the model" cases, and they are
+ * dropped by {@link isTransportFailure} for different reasons: an absent
+ * credential reports itself as `credential-rejected` with the pool's own
+ * message, while a credential STORE that threw reports `failed` with `status: 0`
+ * (issue #195 — it used to report `credential-rejected`, which carries no
+ * cooldown and excluded the account permanently).
  *
  * `atMs` is stamped here, once for the batch, so the card's "tested N minutes
  * ago" reflects when the batch finished rather than drifting per row.
@@ -298,7 +322,11 @@ export function probeUpdatesOf(
  *    we could not even read the credential, so the request never left.
  * 2. `status: 0` — the request never produced an HTTP response at all. That is
  *    what a probe timeout looks like (`transport error: no response within
- *    10000ms`), and equally a DNS failure or a reset connection.
+ *    30000ms`), and equally a DNS failure, a reset connection, or a throw from
+ *    the identity work that runs BEFORE the request is sent (`wireIdentity`).
+ *    Issue #195 is the third of those: `probeModel`'s own `catch` returned
+ *    `unavailable` with NO `status` at all, so it slipped past this test and
+ *    benched a healthy account for half an hour.
  *
  * WHY (2) MATTERS — it is the difference between a working pool and a 30-minute
  * outage. A `status: 0` result carries no `retryAtMs` (nothing upstream said
