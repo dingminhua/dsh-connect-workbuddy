@@ -3849,11 +3849,22 @@ export function apply(ctx: Context, config: Config): void {
    * Returns `false` rather than throwing when the host has no `update`: the
    * panel renders the same switch either way, and a thrown error there would
    * surface as "saving failed" for a capability the host simply lacks.
+   *
+   * ⚠️ The namespace MUST be `settingsNs` — the Loader entry id the host
+   * actually serves — never the declared `WORKBUDDY_SETTINGS_NS` fallback. The
+   * settings service resolves an entry by EXACT id
+   * (`entries().find(row => row.options.id === ns)`) and throws
+   * `No configurable plugin entry "workbuddy"` for a name it does not serve.
+   * Every other write path here already threads `settingsNs`
+   * (`writeRegionCatalog`, `healRegionsField`, the `__save` route); this one
+   * shipped with the bare constant, so on the live Desktop host — whose entry is
+   * `include:dsh-connect-workbuddy` — the switch answered HTTP 500 and could
+   * never be turned on.
    */
   const writeDeviceSdkEnabled = async (enabled: boolean): Promise<boolean> => {
     const host = ctx.get('settings') as unknown as SettingsShapes | undefined
     if (host?.update === undefined) return false
-    await host.update(WORKBUDDY_SETTINGS_NS, { deviceSdkEnabled: enabled })
+    await host.update(settingsNs, { deviceSdkEnabled: enabled })
     return true
   }
 
