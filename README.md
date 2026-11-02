@@ -275,6 +275,67 @@ dsh plugin --profile web add dsh-connect-workbuddy     # Web
 dsh plugin --profile dsh-tui add dsh-connect-workbuddy # TUI
 ```
 
+### 安装报 `ERR_PNPM_IGNORED_BUILDS`？先看这条
+
+```
+[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: <某个包>
+dsh: plugin command failed; diagnostics: …/operation-xxxx/pnpm.log
+```
+
+**这个错误几乎总是别的插件的，不是本插件的。** 本插件的 `dependencies` 只有
+`@deepseek-ai/schemastery` 一个，没有任何 `preinstall` / `install` / `postinstall`
+脚本，也没有 `optionalDependencies` 或原生模块（`native/turing-sdk/worker.cjs` 是
+纯文本 JS）。所以它不可能产生「被拦下的构建脚本」。
+
+那为什么装本插件时会报？**因为 pnpm 每次 `add` 都会重新校验整个 profile 的依赖树。**
+如果树里已经有某个包声明了构建脚本、而 pnpm 没有拿到批准，`strictDepBuilds`
+（pnpm 11 起的默认值 `true`）就会让**这一整次安装失败**——装的哪个包都一样。实测
+在同一个 profile 里装 `dsh-better-sidebar`、`dsh-better-reasoning-effort` 也会报
+同一句，而干净的 profile 装本插件是 1.5 秒成功。
+
+**怎么定位是哪个包。** 看报错里 `Ignored build scripts:` 冒号后面那个名字，那是
+**别人的包**。例如：
+
+```
+[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: dsh-purge@file:../../vendor/dsh-purge
+```
+
+`@file:…` 说明它不是从 npm 装的，而是一个**本地目录**。上面这个路径是相对 profile
+目录写的：`<DSH Home>/profiles/<profile>/../../vendor/dsh-purge` 就是
+`<DSH Home>/vendor/dsh-purge`。也就是说这个包被放在了 DSH Home 下的 `vendor/` 里，
+再由 profile 以 file 协议引用。这类包最容易出问题：它的 `postinstall` 指向的文件
+可能没被打进那个目录，于是即使放行，执行时还会报 `Cannot find module …`。
+
+（路径按报错原文推算，用来定位是哪个目录；具体是谁、为什么把包装在那里，得看那个
+包自己的安装说明。）
+
+**三条修法，按推荐顺序：**
+
+1. **卸掉那个包**（最干净）——如果它不是你正在用的插件：
+   ```sh
+   dsh plugin --profile <你的profile> remove <那个包名>
+   ```
+2. **让 pnpm 不再因为被拒的构建脚本整体失败**——编辑 profile 的
+   `pnpm-workspace.yaml`（位置：`<DSH Home>/profiles/<profile>/pnpm-workspace.yaml`，
+   Windows 上是 `C:\Users\<你>\.dsh\profiles\<profile>\pnpm-workspace.yaml`），加一行：
+   ```yaml
+   strictDepBuilds: false
+   ```
+   这不会执行任何脚本，只是把「有脚本没被批准」从**错误**降级为**警告**。
+3. **显式放行那个包**——只有在你确实需要它的构建脚本时：
+   ```yaml
+   allowBuilds:
+     "dsh-purge@file:vendor/dsh-purge": true
+   ```
+   ⚠️ 两件事：key 必须是**完整标识**——写 `"dsh-purge@file:vendor/dsh-purge"`，
+   只写包名 `dsh-purge` 在 pnpm 11 里对 `file:` 依赖不生效（实测仍报同一句）；
+   而且放行后会**真的去执行**那个脚本，如果它本身是坏的，你会从
+   `IGNORED_BUILDS` 变成 `Cannot find module`——那就回到第 1 条，卸掉它。
+
+> 这三条与 [issue #204](https://github.com/dingminhua/dsh-connect-workbuddy/issues/204)
+> 对应。那条 issue 里的自动摘要把原因写成「本插件依赖了原生模块、pnpm 默认拦了它的
+> 构建脚本」，**这个归因是错的**——那个 `dsh-purge` 不是本插件的依赖。
+
 ## 更新
 
 > **市场里显示几就是几，那是快照；`npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 才是准的。**

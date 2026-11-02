@@ -2,6 +2,27 @@
 
 ## 未发布
 
+### 文档（安装章节加一节 `ERR_PNPM_IGNORED_BUILDS` 排障）
+
+issue #204 报「装本插件失败，`[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts:
+dsh-purge@file:../../vendor/dsh-purge`」，自动摘要把原因写成「本插件依赖了原生模块、
+pnpm 默认拦了它的构建脚本」。**这个归因是错的**，已实测复现并证伪：
+
+- 本插件 `dependencies` 只有 `@deepseek-ai/schemastery` 一个，无 `preinstall` /
+  `install` / `postinstall`，无 `optionalDependencies`，无原生模块
+  （`native/turing-sdk/worker.cjs` 是纯文本 JS）。干净 profile 装它是 1.5 秒成功，
+  依赖树里**有 install 脚本的包数 = 0**。
+- 报错里那个 `dsh-purge` 是 profile 里**另一个包**，以 `file:` 协议引用。pnpm 11 的
+  `strictDepBuilds` 默认 `true`，树里只要有一个声明了构建脚本却没被批准的包，
+  **整次 `add` 就失败**——装哪个包都一样。同一个坏 profile 里装
+  `dsh-better-sidebar`、`dsh-better-reasoning-effort` 报同一句。
+
+README 的安装章节因此新增一节，写清三件事：为什么这个错误通常不怪被装的那个包、
+怎么从 `Ignored build scripts:` 后面认出真正的问题包、以及三条修法（卸掉它 /
+`strictDepBuilds: false` / 用**完整标识**写 `allowBuilds`）。最后一条特别注明：
+短写包名在 pnpm 11 里对 `file:` 依赖不生效，而放行后会真的去执行那个脚本——如果它
+本身是坏的，报错会从 `IGNORED_BUILDS` 变成 `Cannot find module`。
+
 ### 修复（issue #198：模型行的「上下文预算」第三档在窄屏被裁掉，用户只能选到 200K / 500K）
 
 **现象**：dsh-go 手机版 / 窄设置面板（约 360–400 px）里，`nativeContextWindow > 500K` 的模型行
