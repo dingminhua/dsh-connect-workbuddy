@@ -1,5 +1,34 @@
 # Changelog
 
+## 未发布
+
+### 修复（issue #193：一次探测超时把整个账号池停摆半小时，合并 PR #194 by @Antony232）
+
+现场是两个**完全健康**的账号被判为不可用，之后所有请求一律 502，直到半小时后冷却自然
+过期。两个账号用同一枚 token、同一个模型、同一个端点手工发请求，HTTP 200、TTFB 2.4 秒。
+
+- **根因是一条三环链，每一环单独看都合理。** `probeChat()` 超时返回 `status: 0` +
+  `transport error: …`，`probe.ts` 的 `outcomeOfFailure` 把它归为 `unavailable`；
+  但 `isTransportFailure()` 当时只认「凭据读不到」这一种形状，于是 `probeUpdatesOf()` 里
+  那行 `continue` 放行了传输超时；而传输失败**不带 `retryAtMs`**（上游什么都没说），
+  `retryDue()` 于是兜底 `POOL_UNKNOWN_COOLDOWN_MS` = **30 分钟**。三环合起来，一次网络
+  抖动被写成了「关于账号的测量」，而**没有任何东西会重新探测一个已被排除的成员**，
+  池子只能干等冷却过期。
+- **`isTransportFailure()` 增加 `status === 0` 判定**：请求压根没拿到 HTTP 响应，那是
+  传输层的事，不是账号的事。`recordAccountFailure()`（实时请求那条写入路径）有完全相同
+  的缺陷，同样跳过 `status === 0`。
+- **`status >= 500` 刻意不一起拦，并写成测试钉住。** 5xx 是网关**真的答了**，它的答案
+  是关于这个账号的陈述，必须保留；放宽这一条会把「账号真的坏了」也一起藏起来。
+- **`PROBE_TIMEOUT_MS` 10 s → 30 s。** 真实 25k token 探测体实测首字节 3.47 / 3.57 /
+  6.97 秒，10 秒只余不到 3 秒。两个方向的代价不对称：等久点只是批量里一个成员慢 20 秒，
+  提前开枪是整个池停摆半小时。**不是**调小 `probeInputTokens` 能解决的——上游按请求体积
+  限流，小请求永远「可用」，那正是这个功能要消灭的「测试通过、实际被限」。
+- **测试**：`tests/account-pool-run.spec.ts` 新增 2 例（`status: 0` 的超时与 `fetch failed`
+  两种消息都必须被丢弃；5xx 必须保留）；`tests/upstream.spec.ts` 两条假时钟用例的边界值
+  跟着从 10 s 改成 30 s。
+- **复验**：`pnpm run typecheck` 干净；全量 `vitest run` **2937 passed + 2 skipped**；
+  CI 三条腿（ubuntu / windows / pi-ai 1.1.0）全绿。
+
 ## 5.18.0 (2026-11-02)
 
 ### 新增（issue #188：侧边栏面板，可选、默认关闭）
