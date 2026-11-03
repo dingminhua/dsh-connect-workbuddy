@@ -160,6 +160,67 @@ describe('issue #179: resolution never invents a tier', () => {
     expect(defaultEffortFor(fiveTier)).not.toBe(WORKBUDDY_DEFAULT_EFFORT)
   })
 
+  // qoder 518ecbb: its own tests caught that a `low/high/max` model has no
+  // `medium`, so a "middle tier" fallback that hard-codes `medium` degrades to
+  // the WEAKEST declared tier. WorkBuddy's old `declared[0]` did exactly that
+  // for every model that declares no upstream default. The live catalogs carry
+  // such rows (`hy3`: `['low']`, `default-model`: `['low', 'medium']`).
+  it('falls back to the model’s own middle tier, never its weakest one', () => {
+    // No upstream default and no `medium`: the middle of `low/high/max` is
+    // `high`. `declared[0]` would have answered `low` — thinking turned down.
+    expect(defaultEffortFor({
+      ...FLASH,
+      id: 'glm-5.3-flash',
+      reasoning: { supportedEfforts: ['low', 'high', 'max'] },
+    })).toBe('high')
+    // A five-tier roster with no declared default keeps its middle tier too.
+    expect(defaultEffortFor({
+      ...FLASH,
+      id: 'space-bunny',
+      reasoning: { supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    })).toBe('high')
+    // An EVEN-sized vocabulary is where qoder's own formula (`floor((len-1)/2)`)
+    // still lands on the weakest tier — `['low','high']` → `low`. The upper
+    // middle is `high`, and is index 0 for no vocabulary of two or more tiers.
+    expect(defaultEffortFor({
+      ...FLASH,
+      id: 'hy3-x',
+      reasoning: { supportedEfforts: ['low', 'high'] },
+    })).toBe('high')
+    expect(defaultEffortFor({
+      ...FLASH,
+      id: 'default-model',
+      reasoning: { supportedEfforts: ['low', 'medium'] },
+    })).toBe('medium')
+  })
+
+  it('a single declared tier is its own middle (and never the route constant)', () => {
+    // `hy3` in the live catalog: `['low']` with no upstream default. There is
+    // no other tier to choose, and `WORKBUDDY_DEFAULT_EFFORT` (`high`) is NOT
+    // declared by this model — advertising it would be a hard
+    // UNSUPPORTED_REASONING_EFFORT.
+    const single: WorkBuddyModelInfo = {
+      ...FLASH,
+      id: 'hy3',
+      reasoning: { supportedEfforts: ['low'] },
+    }
+    expect(defaultEffortFor(single)).toBe('low')
+    expect(defaultEffortFor(single)).not.toBe(WORKBUDDY_DEFAULT_EFFORT)
+  })
+
+  it('never lets the route constant override an upstream default it declares', () => {
+    // The constant used to be consulted BEFORE `declared[0]`, so a model whose
+    // upstream default was absent but which declares `high` still got `high`
+    // by coincidence. With a real upstream default of `low`, the old constant
+    // branch was unreachable but the new rule must still prefer the declaration.
+    const lowDefault: WorkBuddyModelInfo = {
+      ...FLASH,
+      id: 'step-5-preview',
+      reasoning: { supportedEfforts: ['low', 'medium', 'high'], defaultEffort: 'low' },
+    }
+    expect(defaultEffortFor(lowDefault)).toBe('low')
+  })
+
   it('never answers off, even when off is a real tier', () => {
     const offCapable: WorkBuddyModelInfo = {
       ...FLASH,

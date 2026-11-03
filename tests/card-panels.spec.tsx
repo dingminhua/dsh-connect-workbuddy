@@ -45,6 +45,9 @@ function usageOf(overrides: Record<string, unknown> = {}): Record<string, unknow
     models: [
       { id: 'free-1', name: 'Free One', creditMultiplier: 0 },
       { id: 'paid-1', name: 'Paid One', creditMultiplier: 0.79 },
+      // qoder 518ecbb: declares tiers but NO upstream default. The card's
+      // "Default (x)" must name the tier the adapter will really dispatch.
+      { id: 'no-default-1', name: 'No Default', creditMultiplier: 0, reasoning: { supportedEfforts: ['low', 'high', 'max'] } },
     ],
     enabledModelIds: ['free-1'],
     imageModelIds: [],
@@ -74,14 +77,19 @@ async function mountCard(body: Record<string, unknown> = usageOf()) {
 }
 
 /**
- * Find a panel or a section tab by id.
+ * Find one model's reasoning picker, by the model's NAME.
  *
- * Scanned by class plus id rather than by a `#id` selector: inside this harness
- * an id selector occasionally resolves to null for an element that is plainly
- * in the tree (the same element is found by `getElementById` and by a class
- * query in the same tick). Matching the class list and comparing `el.id` is
- * both deterministic and what the assertions actually mean.
+ * The card labels the select with the model's name (never its id), so the
+ * lookup matches that. `t` renders `key|param=value`, which makes the
+ * assertion name the exact message the component chose.
  */
+const effortPicker = (m: Awaited<ReturnType<typeof mountCard>>, name: string): HTMLSelectElement => {
+  const found = Array.from(m.container.querySelectorAll<HTMLSelectElement>('.dsm-workbuddy-model-effort-select'))
+    .find(element => element.getAttribute('aria-label') === `row.modelEffortAria|model=${name}`)
+  if (found === undefined) throw new Error(`no effort picker for ${name}`)
+  return found
+}
+
 const panel = (m: Awaited<ReturnType<typeof mountCard>>, id: string): HTMLElement => {
   const found = Array.from(m.container.querySelectorAll<HTMLElement>('.dsm-workbuddy-panel'))
     .find(element => element.id === `dsm-workbuddy-panel-${id}`)
@@ -171,6 +179,37 @@ describe('the card splits into three sections', () => {
     // The one screen of instructions stays visible: `hidden` is never applied
     // without the tabs that could undo it.
     expect(panel(m, 'accounts').hidden).toBe(false)
+    await m.unmount()
+  })
+
+  // qoder 518ecbb's third seam: the card's "Default (x)" label must name the
+  // tier the runtime will ACTUALLY dispatch when the first option is picked,
+  // not just the upstream declaration. For a model that declares `low/high/max`
+  // and NO default, the old card showed a bare "Default" while the adapter
+  // silently used `low` (its weakest tier).
+  it('names the resolved middle tier as the default when upstream declares none', async () => {
+    const m = await mountCard()
+    const select = effortPicker(m, 'No Default')
+    const options = Array.from(select.querySelectorAll('option'))
+    // The first option is the "follow" answer; it must carry the resolved tier
+    // (`high`), which is the same answer `defaultEffortFor` gives the adapter.
+    expect(options[0]?.textContent).toBe('row.modelEffortFollowNamed|effort=high')
+    expect(options.map(option => option.value)).toEqual(['', 'low', 'high', 'max'])
+    await m.unmount()
+  })
+
+  it('describes the follow option, not the saved choice, when one is picked', async () => {
+    const m = await mountCard({
+      // A real saved choice for the SAME model, layered over the full fixture.
+      // The first option must still describe what happens if the user clears it
+      // (the middle tier `high`), not echo the saved `low` — otherwise the row
+      // would read "Default (low)" with a separate `low` option beside it.
+      ...usageOf(),
+      defaultThinkingEfforts: { 'no-default-1': 'low' },
+    })
+    const select = effortPicker(m, 'No Default')
+    expect(select.value).toBe('low')
+    expect(select.querySelector('option')?.textContent).toBe('row.modelEffortFollowNamed|effort=high')
     await m.unmount()
   })
 })

@@ -2,6 +2,42 @@
 
 ## 未发布
 
+### 修复（默认思考强度：没声明默认档的模型不再落到最弱的一档）
+
+对齐 qoder 刚提交的 `518ecbb`（「上游声明的默认档就是默认档——选择时落在那一档，而不是
+Default」）。逐缝核对：
+
+- **缝① 适配器**：workbuddy 的 `EffortNormalizingAdapter` 早就在 `resolveModel` 与
+  `prepareCall` 两处 `advertiseDefaultEffort`（issue #179，提交 8344475），qoder 的注释也
+  明说参考了 workbuddy —— 这一缝**本来就有**，无需改。
+- **缝② 取值规则**：`src/default-effort.ts` 的 `defaultEffortFor()` 旧兜底是
+  `declared[0]`，也就是该模型**最弱的那一档**；并且 `WORKBUDDY_DEFAULT_EFFORT='high'`
+  这个路由级常量抢在模型自身声明之前。qoder 的测试正是抓住了同一个坑：`low/high/max`
+  这一族没有 `medium`，兜底退化成 `low` 等于默认把思考调低。workbuddy 的实测目录里
+  `hy3`（`['low']`）、`default-model`（`['low','medium']`）、`hy3-x`（`['low','high']`）
+  都声明了档位却没有上游默认档，旧规则一律答 `low`。
+  - **修法**：优先级改为「用户保存 > 上游声明默认 > **该模型自己声明的中档**」，
+    删掉路由级常量分支；兜底取 `declared[Math.floor(declared.length / 2)]`。用**上中位**
+    而不是 qoder 的 `Math.floor((len-1)/2)`：偶数词表（如 `['low','high']`）取后者仍会
+    落到最弱的 `low`，与本插件名册已有的偶数词表冲突（issue #90 的三条断言当场转红）。
+  - **卡片**：第一项「默认（x）」现在读同一份 `defaultEffortFor()`，x 就是适配器真正会
+    advertise、宿主真正会物化的那一档；此前上游没标默认档时卡片只写「默认」，界面与实际
+    行为分家。
+  - **文档/文案**：`README.md`、`README.en.md`、中英文 `row.modelEffortHint` 同步说明。
+- **缝③ shim**：qoder 的 shim 把请求里带下来的 `reasoning_effort` 丢掉、只认自己那张
+  保存表，所以才要 `effort = savedEffort ?? requestedEffort`。workbuddy **没有这一层**：
+  线体由 pi-ai/宿主按 `defaultEffort` 物化 `reasoning_effort` 后透传，
+  `prepareChatBody` 只删字面量 `"off"`（issue #83），不碰任何正档；
+  `tests/issue179-default-thinking-effort.spec.ts` 的 host 驱动断言已钉住「请求体里
+  真正发出的是选中的档位」。这一缝**不存在**，无需改。
+
+**测试**：`tests/issue179-default-thinking-effort.spec.ts` 19 → 22 条（新增三条兜底与
+常量优先级），`tests/card-panels.spec.tsx` 6 → 8 条（卡片第一项写出解析后的档位；有保存
+选择时第一项仍描述「清除选择后」的答案，而不是回显那个选择）。
+变异验证：兜底改回 `declared[0]` → issue179 一条 + issue90 三条转红；卡片解析去掉 →
+卡片一条转红；卡片把保存表传进解析 → 卡片一条转红。全量 3019 passed + 2 skipped；
+两个 tsconfig 干净；build 6 个入口产物齐全。
+
 ### 修复（账号池卡片里两个开关的样式不一致）
 
 **现象**：「启用账号池」与「每天自动签到」两个开关并排在同一张卡里，但看起来像两种控件——

@@ -959,9 +959,11 @@ const regionStateConfig = z.object({
    * not have is a hard `UNSUPPORTED_REASONING_EFFORT` (issue #90).
    *
    * An ABSENT key means "follow this model's own upstream `defaultEffort`",
-   * which every model in the live catalog declares (measured 2026-10-30: `high`
-   * on thirteen of fifteen, `max` on the two five-tier ones). That is NOT the
-   * same as "no opinion": the adapter must still pin SOMETHING for the request
+   * which the great majority of the live catalog declares (measured 2026-10-30:
+   * `high` on thirteen of fifteen, `max` on the two five-tier ones) — and where
+   * the upstream declares none, "follow this model's own MIDDLE tier", never its
+   * weakest one (qoder 518ecbb's rule; see `src/default-effort.ts`). That is NOT
+   * the same as "no opinion": the adapter must still pin SOMETHING for the request
    * paths that name no tier, and issue #83 is the record of what happens when
    * that is left to pi-ai's level map — it filled in `off`, the upstream answers
    * 400 / 11133, and `/compact` failed.

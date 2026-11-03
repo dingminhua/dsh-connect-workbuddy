@@ -23,7 +23,8 @@
  *      broke `/compact` for good (issue #83).
  *
  * So the rule is always "name one tier, and only ever one this model declares",
- * with the user's saved choice winning over the upstream's own default.
+ * with the user's saved choice winning over the upstream's own default — and the
+ * last-resort fallback NEVER the model's weakest tier (qoder 518ecbb).
  */
 
 import type { WorkBuddyReasoning } from './upstream.ts'
@@ -34,10 +35,13 @@ const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as 
 /**
  * The tier this bundle assumed before issue #179, and the last-resort fallback.
  *
- * Kept as the final fallback rather than becoming dead: a model that declares
- * `canDisableThinking` only (no tier list) still needs an explicit tier the way
- * it always did, and #83's fix — never leave the choice to pi-ai — must survive
- * this feature.
+ * Kept alive as the ROUTE-WIDE dispatch fallback in `profileFor` (issue #83's
+ * fix — never leave the choice to pi-ai — must survive this feature). It is
+ * deliberately NOT part of `defaultEffortFor` any more: it is a single constant
+ * for a roster whose vocabularies disagree, so as a per-model default it can
+ * name a tier a model does not declare (host: UNSUPPORTED_REASONING_EFFORT), or
+ * one that is NOT the tier the upstream declared as that model's default. The
+ * per-model answer is resolved by `defaultEffortFor` instead.
  */
 export const WORKBUDDY_DEFAULT_EFFORT = 'high' as const
 
@@ -65,7 +69,8 @@ export function declaredEfforts(reasoning: WorkBuddyReasoning | undefined): stri
  *
  * @param model - the catalog entry, carrying the upstream's own declaration.
  * @param saved - the user's per-model choice, keyed by model id; an absent (or
- *   unsupported, or stale) entry falls through to the upstream default.
+ *   unsupported, or stale) entry falls through to the upstream default, then to
+ *   this model's own MIDDLE tier (never its weakest one).
  * @returns a tier the model declares, or `undefined` when it declares none — in
  *   which case the adapter's existing `off` normalization (issue #90) is still
  *   the right answer and this module must not invent one.
@@ -88,8 +93,28 @@ export function defaultEffortFor(
   if (typeof asked === 'string' && declared.includes(asked)) return asked
   const upstreamDefault = model.reasoning?.defaultEffort
   if (typeof upstreamDefault === 'string' && declared.includes(upstreamDefault)) return upstreamDefault
-  if (declared.includes(WORKBUDDY_DEFAULT_EFFORT)) return WORKBUDDY_DEFAULT_EFFORT
-  return declared[0]
+  // Neither the user nor the upstream has an opinion, so fall back to THIS
+  // model's own MIDDLE tier — never to `declared[0]`, its weakest one.
+  //
+  // That last step is qoder 518ecbb's fix, and its own test suite is what caught
+  // it: the fallback was the first declared tier, and for the `low/high/max`
+  // family `declared[0]` is `low` — i.e. a model that declares thinking tiers
+  // would have defaulted to the weakest one, which is indistinguishable from
+  // having turned thinking down. Measured in this bundle's own live catalogs:
+  // `hy3` declares `['low']` with no default, `default-model` `['low','medium']`,
+  // and `hy3-x` `['low','high']` — `declared[0]` answers `low` for all three.
+  //
+  // Take the UPPER middle (`Math.floor(len / 2)`), not qoder's lower middle
+  // (`Math.floor((len-1) / 2)`): with an even-sized vocabulary the lower middle
+  // IS the weakest tier (`['low','high']` → `low`), so qoder's own formula still
+  // contradicts its rule for exactly those rosters. The upper middle is never
+  // index 0 for any vocabulary with two or more tiers, and it keeps `high` for
+  // `low/high/max` and `low/high` alike.
+  //
+  // `WORKBUDDY_DEFAULT_EFFORT` is NOT consulted here on purpose. It is a
+  // route-wide constant, and this is a per-model question: the whole point of
+  // the saved map is that one constant cannot be right for the roster.
+  return declared[Math.floor(declared.length / 2)]
 }
 
 /**

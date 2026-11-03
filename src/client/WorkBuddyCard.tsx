@@ -77,7 +77,7 @@ import { AccountTransfer } from './AccountTransfer.tsx'
 // and one set of tests.
 import { createLatestWins } from '../account-pool.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
-import { selectableEfforts } from '../default-effort.ts'
+import { defaultEffortFor, selectableEfforts } from '../default-effort.ts'
 import { selectPromoBadge, selectPromoMultiplier } from '../promo.ts'
 import { busyIcon } from './busy-icon.tsx'
 import { promoBadgeColor, promoBadgeLabel, promoBadgeTooltip, uiLanguage } from './promo-badge.ts'
@@ -3555,22 +3555,34 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                       own tiers, named exactly as the upstream names
                                       them — the same words every other client shows.
 
-                                      The first option is "default (high)" — the
-                                      tier is named, because an unset choice is a
-                                      real answer here (the model's own upstream
-                                      `defaultEffort`) and leaving it out hid
-                                      which tier that actually is. Only that one
-                                      word of prose is added; the fallback form
-                                      ("default") covers the rare upstream that
-                                      declares no default at all. */}
+                                      The first option names the tier the runtime
+                                      will actually use with no saved choice, so
+                                      the label can never disagree with what the
+                                      adapter advertises. */}
                                   {(() => {
                                     const efforts = selectableEfforts(model.reasoning)
                                     if (efforts.length === 0) return null
                                     const saved = activeDefaultEfforts[model.id]
                                     const chosen = typeof saved === 'string' && efforts.includes(saved) ? saved : ''
-                                    const upstream = model.reasoning?.defaultEffort
-                                    const followLabel = upstream !== undefined && efforts.includes(upstream)
-                                      ? t('row.modelEffortFollowNamed', { effort: upstream })
+                                    // Name the tier this model will actually run
+                                    // on if the user picks the FIRST option — i.e.
+                                    // with the saved choice cleared. Resolved with
+                                    // an EMPTY map on purpose: passing the saved
+                                    // picks would describe the user's own choice
+                                    // instead of the option they are reading, so
+                                    // the label would say "Default (low)" on the
+                                    // very row where `low` is a separate option.
+                                    //
+                                    // `defaultEffortFor` is the single source of
+                                    // that answer (upstream default > this model's
+                                    // own MIDDLE tier), so the card can never
+                                    // claim a tier the adapter does not advertise
+                                    // — or, for a model whose upstream declares no
+                                    // default, show a bare "Default" while the
+                                    // adapter silently dispatches the middle tier.
+                                    const follow = defaultEffortFor(model)
+                                    const followLabel = follow !== undefined
+                                      ? t('row.modelEffortFollowNamed', { effort: follow })
                                       : t('row.modelEffortFollow')
                                     return (
                                       <label
