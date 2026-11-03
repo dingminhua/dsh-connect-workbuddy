@@ -1355,8 +1355,29 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       // omitting it.
       pool.checkinSupported
         ? h('div', { className: 'dsm-workbuddy-pool-auto-checkin' },
-            h('label', { className: 'dsm-workbuddy-pool-modebar' },
-              h('span', { className: 'sw' },
+            // The SAME DOM shape as the pool switch above: a row that holds
+            // `label.sw` (the switch itself) and its text as siblings.
+            //
+            // Two defects are fixed together here, and the second was invisible
+            // in the screenshot because the first made the controls different
+            // sizes anyway:
+            //
+            //  1. The label carried the mode BAR class — the one that styles the
+            //     WHOLE tinted bar (12px/14px padding, brand gradient, its own
+            //     border and radius). So the check-in switch was drawn as a
+            //     second, nested card inside the bar's card: a smaller switch in a
+            //     darker box, with a deep gap above it.
+            //  2. Even once the card class was gone, the switch was
+            //     `span.sw > input + span.sw-track` while the pool switch is
+            //     `label.sw > input + span.sw-track`. The `.sw` rule carries the
+            //     38x22 box, so on the span it LOOKED right while the outer label
+            //     stayed an unstyled second click surface — the two switches then
+            //     differed in what responded to a click.
+            //
+            // Mirroring the pool switch exactly is the fix that cannot drift: one
+            // shape, one set of classes, one click target.
+            h('div', { className: 'dsm-workbuddy-pool-switchrow' },
+              h('label', { className: 'sw' },
                 h('input', {
                   type: 'checkbox',
                   checked: active.autoCheckin,
