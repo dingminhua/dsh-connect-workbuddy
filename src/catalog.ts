@@ -52,7 +52,28 @@ export const FALLBACK_WORKBUDDY_MODELS: readonly WorkBuddyModelInfo[] = [
  * expose different rosters — the CN list has no `gpt-*`/`gemini-*` entries —
  * so a global account must never be seeded with the CN list. Like the CN
  * fallback this is replaced by the live refresh; it only keeps the provider
- * usable before the first fetch lands. Order and rates mirror the upstream.
+ * usable before the first fetch lands. Order mirrors the upstream.
+ *
+ * ⚠️ IT CARRIES NO `creditMultiplier`, AND THAT IS THE FIX FOR ISSUE #214.
+ * This list used to hardcode one rate per model, captured on 2026-09-11. The
+ * upstream moves those rates — the reporter measured `glm-5.3` at x0.69 and
+ * `hy4-preview` at x0.29 on 2026-11-04 against the x0.79 / x0.00 written
+ * here — so every captured rate aged into a WRONG PRICE. Worse, the overlay
+ * rule (`overlayLiveCapabilities`: the live side owns `creditMultiplier`)
+ * meant this table WON over the user's saved directory whenever the catalog
+ * still held it, which is exactly the reported symptom: the card showed the
+ * built-in table's figures, not the saved ones and not the upstream's.
+ *
+ * A price is a FACT ABOUT NOW, and this module never learns "now": it is the
+ * offline placeholder, written once and never refreshed. So it must not
+ * assert a price at all. An absent multiplier renders as "no rate" — the
+ * honest answer — and `pickFreeModel` deliberately treats absence as NOT
+ * free, so the account pool can never probe a paid model by mistake. The CN
+ * table has always been shaped this way for the same reason.
+ *
+ * The ROSTER (ids, names, windows) stays: that is what keeps the provider
+ * non-empty while the first fetch is in flight, and an id list ages far
+ * more slowly than a price list.
  */
 export const FALLBACK_WORKBUDDY_MODELS_GLOBAL: readonly WorkBuddyModelInfo[] = [
   // `default-model` is deliberately ABSENT: it is the international gateway's
@@ -60,27 +81,30 @@ export const FALLBACK_WORKBUDDY_MODELS_GLOBAL: readonly WorkBuddyModelInfo[] = [
   // `ROUTER_MODEL_IDS` drops it from the live roster. This list must agree —
   // shipping it here would reintroduce the row on the offline path only, which
   // is the one place nobody looks. See `src/native-modality.ts`.
-  { id: 'fast-model', name: 'Fast', contextWindow: 200_000, maxTokens: 32_000, creditMultiplier: 0.34 },
-  { id: 'balanced-model', name: 'Balanced', contextWindow: 256_000, maxTokens: 32_000, creditMultiplier: 0.59 },
-  { id: 'primary-model', name: 'Primary', contextWindow: 272_000, maxTokens: 72_000, creditMultiplier: 3.31 },
-  { id: 'deep-model', name: 'Deep', contextWindow: 176_000, maxTokens: 24_000, creditMultiplier: 3.33 },
-  // Free promotional model (`x0.00`, "Free now"): the reason the global roster
-  // is read from the desktop channel at all — the CLI channel omits it.
-  { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, maxTokens: 128_000, creditMultiplier: 0 },
-  { id: 'gpt-6-astra', name: 'GPT-6-Astra', contextWindow: 1_000_000, maxTokens: 128_000, creditMultiplier: 6.67 },
-  { id: 'hy4-preview', name: 'Hy4 preview', contextWindow: 1_000_000, maxTokens: 64_000, creditMultiplier: 0 },
-  { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000, creditMultiplier: 0 },
-  { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', contextWindow: 1_000_000, maxTokens: 128_000, creditMultiplier: 3.47 },
-  { id: 'gpt-5.6-terra', name: 'GPT-5.6-Terra', contextWindow: 1_000_000, maxTokens: 128_000, creditMultiplier: 1.39 },
-  { id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna', contextWindow: 1_000_000, maxTokens: 128_000, creditMultiplier: 0.14 },
-  { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 1_000_000, maxTokens: 128_000, creditMultiplier: 3.31 },
-  { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 272_000, maxTokens: 72_000, creditMultiplier: 1.65 },
-  { id: 'gpt-5.3-codex', name: 'GPT-5.3-Codex', contextWindow: 272_000, maxTokens: 72_000, creditMultiplier: 1.25 },
-  { id: 'gemini-3.5-flash', name: 'Gemini-3.5-Flash', contextWindow: 1_000_000, maxTokens: 65_536, creditMultiplier: 0.99 },
-  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, creditMultiplier: 0.79 },
-  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, maxTokens: 48_000, creditMultiplier: 0.79 },
-  { id: 'kimi-k3', name: 'Kimi-K3', contextWindow: 1_000_000, maxTokens: 32_000, creditMultiplier: 1.62 },
-  { id: 'kimi-k2.6', name: 'Kimi-K2.6', contextWindow: 256_000, maxTokens: 32_000, creditMultiplier: 0.52 },
+  { id: 'fast-model', name: 'Fast', contextWindow: 200_000, maxTokens: 32_000 },
+  { id: 'balanced-model', name: 'Balanced', contextWindow: 256_000, maxTokens: 32_000 },
+  { id: 'primary-model', name: 'Primary', contextWindow: 272_000, maxTokens: 72_000 },
+  { id: 'deep-model', name: 'Deep', contextWindow: 176_000, maxTokens: 24_000 },
+  // The desktop channel's free-flagged `deepseek-v4.1-flash` is the reason the
+  // global roster is read from that channel at all — the CLI channel omits it.
+  // Its rate is NOT pinned here: the reporter measured it billing real credits
+  // while the channel still advertised x0.00, so a captured "free" is the most
+  // expensive thing this table could claim.
+  { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'gpt-6-astra', name: 'GPT-6-Astra', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'hy4-preview', name: 'Hy4 preview', contextWindow: 1_000_000, maxTokens: 64_000 },
+  { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
+  { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'gpt-5.6-terra', name: 'GPT-5.6-Terra', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 272_000, maxTokens: 72_000 },
+  { id: 'gpt-5.3-codex', name: 'GPT-5.3-Codex', contextWindow: 272_000, maxTokens: 72_000 },
+  { id: 'gemini-3.5-flash', name: 'Gemini-3.5-Flash', contextWindow: 1_000_000, maxTokens: 65_536 },
+  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 },
+  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, maxTokens: 48_000 },
+  { id: 'kimi-k3', name: 'Kimi-K3', contextWindow: 1_000_000, maxTokens: 32_000 },
+  { id: 'kimi-k2.6', name: 'Kimi-K2.6', contextWindow: 256_000, maxTokens: 32_000 },
 ]
 
 /**

@@ -220,6 +220,17 @@ describe('isUnconfiguredFallbackSnapshot: the seeded placeholder is not a select
     expect(isUnconfiguredFallbackSnapshot(saved, 'cn')).toBe(false)
   })
 
+  it('keeps a saved directory that carries PRICES but no reasoning (issue #214)', () => {
+    // The card's save writes whatever a live refresh produced, and a refresh
+    // can legitimately answer prices without any `reasoning` block. Before
+    // issue #214 this predicate only tested `reasoning`, so such a directory
+    // matched the placeholder by id list and was REPLACED by the live roster —
+    // silently deleting the prices the user had just saved. It must read as a
+    // real directory.
+    const saved = FALLBACK_WORKBUDDY_MODELS_GLOBAL.map(model => ({ ...model, creditMultiplier: 0.5 }))
+    expect(isUnconfiguredFallbackSnapshot(saved, 'global')).toBe(false)
+  })
+
   it('does not mistake a differently-named roster for the placeholder', () => {
     const saved = FALLBACK_WORKBUDDY_MODELS.map(model => ({ ...model, id: `${model.id}-x` }))
     expect(isUnconfiguredFallbackSnapshot(saved, 'cn')).toBe(false)

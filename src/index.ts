@@ -1795,7 +1795,31 @@ export function apply(ctx: Context, config: Config): void {
     // `default-model`, and this snapshot is what the card lists — so without
     // the filter the row would survive the upgrade and only vanish at the next
     // refresh, which reads as "the fix did not work".
-    const live = stacks[region]?.catalog?.current() ?? []
+    //
+    // ⚠️ ONLY WHEN THAT ROSTER IS REALLY LIVE (issue #214). `current()` is
+    // seeded with the STATIC fallback table by the constructor, and
+    // `resolveRoster` cannot tell a static list from an upstream answer (it
+    // only sees a non-empty array). Passing it unconditionally made the built-in
+    // table speak as the upstream:
+    //
+    //   - `overlayLiveCapabilities` gives the live side ownership of
+    //     `creditMultiplier` / `reasoning` / `supportsImages`, so a table that
+    //     declares one of those overrides the user's saved value. THIS IS THE
+    //     #214 PRICE BUG; the table's captured rates are what actually did the
+    //     damage, and they are gone (see `src/catalog.ts`).
+    //   - `mergeRoster` lists the live roster FIRST and appends saved-only
+    //     models, so the card's directory was led by a placeholder roster.
+    //
+    // `applySelection` was fixed for this in 5.18.0; this reader was not, which
+    // is why the report survived the upgrade. The guard is now defence in depth
+    // rather than the fix: the table asserts no live-owned field, so it is not
+    // observable today (the regression test says so explicitly). It stays
+    // because the next field someone adds to that table would otherwise
+    // silently start overriding a saved value again — which is exactly how
+    // this issue began.
+    const live = stacks[region]?.catalog?.hasLiveRoster() === true
+      ? stacks[region].catalog.current()
+      : []
     // `keepLoadLevel` is OFF: this is the card's DIRECTORY, and the load level
     // is a fact about this minute that is deliberately never persisted (see
     // `src/busy.ts`). The card reads the level from a separate map instead —
@@ -1919,6 +1943,7 @@ export function apply(ctx: Context, config: Config): void {
   const repairRegionCatalog = async (
     region: WorkBuddyRegion,
     live: readonly WorkBuddyModelInfo[],
+    options: { readonly strict?: boolean } = {},
   ): Promise<void> => {
     if (live.length === 0) return
     const state = regionStateOf(current(), region)
@@ -1953,8 +1978,14 @@ export function apply(ctx: Context, config: Config): void {
     try {
       await writeRegionCatalog(hostSettings(), settingsNs, region, repaired)
     } catch (error: unknown) {
-      // The read side already serves the live roster, so a failed repair
-      // costs nothing but the profile's own tidiness. Log it and move on.
+      // STRICT means the caller PROMISED this write (issue #214). The refresh
+      // route answers "here are the fresh prices, and they are recorded"; if the
+      // recording failed, a 200 would be a lie the user acts on — they would
+      // close the card believing the new rate was saved. Such a caller gets the
+      // error and reports it, instead of a log line nobody reads.
+      if (options.strict === true) throw error
+      // The read side already serves the live roster, so a failed automatic
+      // repair costs nothing but the profile's own tidiness. Log and move on.
       ctx.logger.warn(
         `dsh-connect-workbuddy: could not repair the ${region} model directory against the live roster`,
         error,
@@ -2022,6 +2053,69 @@ export function apply(ctx: Context, config: Config): void {
     // and the chat endpoint still answers for it, so it stays in the roster.
     const keep = regionStateOf(current(), region).enabledModelIds ?? []
     return client.fetchModels(credential, signal, keep)
+  }
+  /**
+   * Record a refresh the card just asked for (issue #214).
+   *
+   * The reported bug, in one sentence: the refresh button was the only code
+   * path that read the CURRENT upstream prices, and it discarded them. So the
+   * fresh numbers were visible only inside the response to that one press —
+   * the card went on rendering `displayModels()` (the saved directory) and the
+   * runtime went on serving the catalog built at startup, which is why the
+   * reporter saw 0.69 from `models/refresh` and 0.79 from `usage` on the same
+   * host at the same moment.
+   *
+   * TWO WRITES, and they are deliberately different:
+   *
+   *   1. the live CATALOG, so the running provider and the picker's price
+   *      labels follow the upstream immediately — this is the in-memory answer
+   *      the user was looking at when they pressed the button;
+   *   2. the saved DIRECTORY, through the Host's merge, so the price survives
+   *      the settings card being closed and the harness being restarted.
+   *
+   * What is NOT written is the user's selection. `enabledModelIds`,
+   * `imageModelIds`, `contextBudgets` and `defaultThinkingEfforts` remain the
+   * card's DRAFT until Save — the card's own refresh handler re-maps them onto
+   * the fresh rows and keeps them dirty, and the reporter's report shows the
+   * draft list containing models that were not ticked. Committing them here
+   * would turn one press of "refresh" into an unrequested "save".
+   *
+   * `origin: 'upstream'` on the catalog write is correct and load-bearing: this
+   * roster IS a fresh upstream answer, which is what lets `hasLiveRoster()`
+   * become true and every other reader stop mistaking the static table for the
+   * upstream (see `displayModels`).
+   */
+  const persistRefreshedModels = async (
+    region: WorkBuddyRegion,
+    models: readonly WorkBuddyModelInfo[],
+  ): Promise<void> => {
+    if (models.length === 0) return
+    const state = regionStateOf(current(), region)
+    // Derive the runtime roster from the SAME rules the startup refresh uses,
+    // so a mid-session refresh and a restart land on the same catalog. Without
+    // this the two writers would disagree about the image seed and the `off`
+    // stamp, and which one you got would depend on whether you had pressed a
+    // button since starting the harness.
+    const next = withEffectiveOff(
+      withImageSelection(
+        deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
+        effectiveImageIds(state, models),
+      ),
+      new Set(savedOffModelIds(state, models)),
+    )
+    stacks[region].catalog.set(next)
+    invalidateCatalog()
+    // The DIRECTORY. `repairRegionCatalog` is the one writer that knows the
+    // merge (it preserves the other region and this slot's sibling fields,
+    // drops the never-persisted `busyLevel`, and skips the write when the
+    // fingerprint already agrees). Reusing it rather than writing here keeps
+    // one definition of "what a correct directory looks like".
+    //
+    // `strict` because THIS call is the answer to a user's click: the route
+    // reports the fresh prices on the strength of this write, so a swallowed
+    // failure would produce a 200 for a save that did not happen — the exact
+    // class of bug being fixed here.
+    await repairRegionCatalog(region, models, { strict: true })
   }
   /**
    * The region's MEDIA models, cached briefly for the card's read-only roster.
@@ -2696,6 +2790,11 @@ export function apply(ctx: Context, config: Config): void {
     // with what it will actually DISPATCH, not what the browser mirror says.
     defaultThinkingEfforts: region => regionStateOf(current(), region).defaultThinkingEfforts ?? {},
     discoverModels,
+    // Issue #214: the refresh route's answer is only useful if it is REMEMBERED.
+    // Without this the press repainted the response and nothing else, so the
+    // card — which renders `displayModels()` — kept showing the saved
+    // directory's prices while the reply carried the upstream's.
+    persistModels: persistRefreshedModels,
     /**
      * This region's first-sighting readout, the data behind the composer pill's
      * "· N 新模型" segment.

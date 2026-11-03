@@ -761,16 +761,28 @@ describe('registerWorkBuddyStatusRoute', () => {
     // The card overwrites its image checkboxes from this, so the refreshed
     // document must carry the upstream answer per model. `multimodal` stays
     // absent: the effective flag is the saved selection, not a live read.
+    //
+    // `persistModels` is part of the contract now (issue #214): a refresh whose
+    // answer is never recorded is the "the button does nothing" report, so the
+    // route refuses to run without one. Its own tests live in
+    // `tests/issue214-fallback-price.spec.ts`.
+    const persisted: { region: string, ids: string[] }[] = []
     const handler = await mountRefreshHandler({
       discoverModels: async () => [
         { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, supportsImages: true },
         { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, maxTokens: 50_000, supportsImages: false },
         { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
       ],
+      persistModels: async (region, models) => {
+        persisted.push({ region, ids: models.map(model => model.id) })
+      },
     })
     const { res, status, body } = response()
     await handler(request(), res)
     expect(status()).toBe(200)
+    // The rows are recorded BEFORE they are answered, and for the requested
+    // region — a write that lands after the reply is a race the card loses.
+    expect(persisted).toEqual([{ region: 'cn', ids: ['glm-5.3', 'deepseek-v4-pro', 'hy3'] }])
     const models = (body() as { models?: { id: string; supportsImages?: boolean }[] }).models ?? []
     expect(models.map(model => model.id)).toEqual(['glm-5.3', 'deepseek-v4-pro', 'hy3'])
     const [glm, deepseek, hy3] = models

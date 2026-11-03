@@ -156,7 +156,11 @@ Config:
 
 - 运行时目录 = `deriveCatalog(lastCatalog, enabledSet)`，与展示目录分离
 - 卡片永远展示**最新刷新的目录**，不是陈旧快照
-- 上游刷新是**草稿操作**，用户点保存才写入运行时目录
+- **目录与倍率**随刷新即刻落盘、即刻生效；**选择**（`enabledModelIds` /
+  `imageModelIds` / `contextBudgets` / `defaultThinkingEfforts`）仍是草稿，
+  点保存才提交（issue #214：刷新曾把答案丢掉，于是 `/models/refresh` 报
+  0.69、`/usage` 与文件仍是 0.79——一个刷新按钮不能有两种答案。反过来，
+  把用户的勾选也一起提交，等于替用户按了保存。）
 - 有 Discard / Save 两个按钮 + dirty 标记
 
 **上游数据完全撑得起**（实测 28 个模型 / 16 个 cli 模型）：

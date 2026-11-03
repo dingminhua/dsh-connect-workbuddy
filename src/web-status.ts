@@ -140,6 +140,31 @@ export interface WorkBuddyStatusRouteOptions {
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
   /**
+   * Record what a refresh just read, so the directory — and therefore every
+   * price on it — stops being a snapshot of an older day (issue #214).
+   *
+   * WHY THE REFRESH ROUTE NEEDS THIS. The button used to answer with the fresh
+   * rows and write nothing, so the same press produced two different answers on
+   * one host: `POST /models/refresh` said `glm-5.3` is x0.69 while `GET /usage`
+   * kept saying x0.79 and `cordis.patch.yml` never changed. The reporter's
+   * words: 「对用户来说『刷新』是个无效按钮」. A refresh whose answer is
+   * discarded is not a refresh.
+   *
+   * WHAT IT WRITES, AND WHAT IT MUST NOT. Only the DIRECTORY (`lastCatalog`)
+   * and only through the Host's merge (`writeRegionCatalog`), which preserves
+   * every sibling field of the region slot. It does NOT write the user's
+   * selection: `enabledModelIds` / `imageModelIds` / `contextBudgets` are the
+   * card's DRAFT until the user presses Save, and the reporter's own card shows
+   * unticked models in that draft. Writing them here would silently commit
+   * edits the user was still making.
+   *
+   * Optional: the route answers 503 for a Host that cannot persist, rather than
+   * half-performing the operation. The card relies on this — `refreshModels`
+   * paints its draft from the ANSWER, so a 503 leaves the draft untouched and
+   * the user sees a real error instead of a stale list that looks refreshed.
+   */
+  persistModels?(region: WorkBuddyRegion, models: readonly WorkBuddyModelInfo[]): Promise<void>
+  /**
    * Which ids of the requested region's roster THIS machine first saw inside the
    * new-model window (the "· N 新模型" segment), plus a note when the on-disk
    * first-sighting history is in a version this build cannot read.
@@ -1752,12 +1777,29 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
         if (!requireLoopback(req, res)) return
         if (deps.discoverModels === undefined) return json(res, 503, { error: 'model refresh unavailable' })
+        // A refresh that cannot be RECORDED is not a refresh (issue #214). The
+        // route used to answer with the fresh rows and drop them, so one press
+        // produced two answers on one host — this route said `glm-5.3` x0.69
+        // while `/usage` and the settings file kept saying x0.79. Refuse up
+        // front instead of returning a number nothing will remember: the card
+        // paints its draft from this answer, and a 200 would make the list look
+        // refreshed while the priced document stayed stale.
+        if (deps.persistModels === undefined) return json(res, 503, { error: 'model refresh cannot be persisted' })
         const region = requestRegion(req, res)
         if (region === undefined) return
         try {
+          const models = await deps.discoverModels(region)
+          // Persist BEFORE answering. The write is what the caller's next read
+          // depends on, and a failure must surface as a failure: an answer that
+          // arrives ahead of a write that then breaks is the exact
+          // "button does nothing" report this fixes, only harder to see.
+          //
+          // Only the DIRECTORY is written (`persistModels` owns the merge). The
+          // user's selection is the card's draft until they press Save; see the
+          // dependency's own note.
+          await deps.persistModels(region, models)
           // The refreshed catalog belongs to the requested region, so its
           // context budgets come from that same region's slot.
-          const models = await deps.discoverModels(region)
           json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets(region))) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })

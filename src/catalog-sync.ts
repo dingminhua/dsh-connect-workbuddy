@@ -256,9 +256,14 @@ export function isUnconfiguredFallbackSnapshot(
   const savedIds = saved.map(model => model.id)
   if (!fallbackIds.every((id, index) => id === savedIds[index])) return false
   // The fallback table declares no `reasoning` and no `creditMultiplier` for
-  // the CN roster, so a snapshot that ALSO carries those was not seeded from
-  // it — it is a real saved directory and must not be thrown away.
-  return saved.every(model => model.reasoning === undefined)
+  // EITHER roster now (issue #214 took the last captured rates off the global
+  // one), so a snapshot that carries those was not seeded from it — it is a
+  // real saved directory and must not be thrown away. `creditMultiplier` is
+  // checked explicitly, not inferred from `reasoning`: a directory the card
+  // saved from a live refresh has prices but may legitimately have no
+  // `reasoning` block at all, and calling that "the unconfigured placeholder"
+  // would delete every rate the user is depending on.
+  return saved.every(model => model.reasoning === undefined && model.creditMultiplier === undefined)
 }
 
 /**

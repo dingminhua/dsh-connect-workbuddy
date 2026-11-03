@@ -233,13 +233,27 @@ describe('fallbackModelsFor', () => {
     expect(cn.has('deepseek-v4-flash')).toBe(true)
   })
 
-  it('carries the captured credit multipliers on the global roster', () => {
+  it('asserts NO credit multipliers on the global roster (issue #214)', () => {
+    // This table used to carry a rate per model, captured 2026-09-11. Those
+    // rates aged into WRONG PRICES: the reporter measured `glm-5.3` at x0.69 and
+    // `hy4-preview` at x0.29 on 2026-11-04 against the x0.79 / x0.00 written
+    // here, and `deepseek-v4.1-flash` billing real credits while advertised
+    // "free". Because `overlayLiveCapabilities` lets the live side own
+    // `creditMultiplier`, this table OVERRODE the user's saved directory, which
+    // is why the card showed x0.79 while both the disk and the upstream said
+    // x0.69.
+    //
+    // A price is a fact about NOW, and a static module never learns "now". So
+    // the table asserts none, and an absent rate renders as "unknown". The ids,
+    // names and windows stay — those age far more slowly, and they are what
+    // keeps the provider non-empty before the first fetch lands.
     const global = fallbackModelsFor('global')
-    expect(global.find(model => model.id === 'gpt-5.6-sol')?.creditMultiplier).toBe(3.47)
-    expect(global.find(model => model.id === 'gpt-6-astra')?.creditMultiplier).toBe(6.67)
-    // Free promotional models report a real 0 rather than "no rate known".
-    expect(global.find(model => model.id === 'hy3')?.creditMultiplier).toBe(0)
-    expect(global.find(model => model.id === 'deepseek-v4.1-flash')?.creditMultiplier).toBe(0)
+    for (const model of global) {
+      expect(model.creditMultiplier, `${model.id} must not pin a price`).toBeUndefined()
+    }
+    // A wrongly-zero rate is not merely a wrong number: `pickFreeModel` treats
+    // `=== 0` as FREE and would spend real credits probing a paid model.
+    expect(global.some(model => model.creditMultiplier === 0)).toBe(false)
   })
 
   it('defaults to the CN roster only for the cn region', () => {
