@@ -2,6 +2,71 @@
 
 ## 未发布
 
+### 修复（issue #207：DSML 恢复的三处失效，标记会漏进可见正文）
+
+报告者给了非常完整的一份取证：三份发布产物（5.12.4 / 5.16.0 / 5.17.0）全部复现、`git worktree`
+上的未改动源码复现、以及一份**只 `tsc` 编译 `src/dsml-recovery.ts`、不加载宿主与任何插件**的隔离
+对照——同一份代码、同一次运行，**唯一变量是收尾标签写什么**，行为就翻转。三条都成立。
+
+#### A. 收尾标签缩写为 `calls` 时永不配对
+
+`CANONICAL_TAG_NAMES` 里没有 `calls`，而配对比较的是**归一化后**的名字，于是 `</…calls>` 永远配
+不上 `<…tool_calls>`：块被判未闭合（闸 1）→ 扣留到流末 → 闸 4 原样回滚成正文。
+
+这不是假想拼写：`docs/DSML-LEAK-RESEARCH.md` 记录的一次**真实捕获**，收尾正是
+`</｜｜DSML｜｜ calls>`。更值得注意的是同一个文件里 `KEYWORD_TAGS` **早就**包含 `calls`——
+两张表对同一个拼写的态度不一致，正是缺陷来源。`git log -S` 为空：这条映射从未存在过，不是回归。
+
+修法：加 `calls → tool_calls`，**同时**把 `calls` 列为 marker-only。第二步是必要的，不是美化：
+`calls` 是普通英文词，也会出现在 HTML 里，裸 `<calls>` 当协议处理会扩大误伤面。这是报告者的
+建议，也是我们采纳的边界。
+
+#### B. 孤立闭标签永远进不了清理路径
+
+`stripStray` 只在 `debris()` 为真时运行，而 `debris()` 要求「本响应扣留过块」。一个从头到尾没有
+任何块开头的响应因此永远不清理，`</parameter>`/`</invoke>`/`</calls>` 原样发给用户——正是报告者
+最初引用的那段。自相矛盾处在模块内部：`hasProse()` 早把这些字节算作**非正文**，分类器说「残留」，
+输出路径说「正文」。
+
+修法新增 `stripLoneClosers`，判据从「是否扣留过块」换成 **`openerSeen`：本响应是否出现过任何带
+marker 的**开**标签**。三个设计点：
+
+- **用 presence flag，不做按名字的深度配对。** 闸 4 拒掉的块，opener 可能是伪造名
+  （`<｜DSML｜ validate>`），与自己的 closer 按名字配不上，深度会提前归零并把**块自己的 closer
+  删掉**。报告者头两版实现正是这样被既有用例抓住的，我们按他第三版的结论实现。
+- **判据是「任何带 marker 的开标签」，不是块开标签。** `validate` 那个形态不是块开标签，只认块
+  开标签的话 `openerSeen` 不会置位——而它恰恰是必须保住 closer 的那一个。
+- **这个判据比现行逻辑更严，不是放宽。** 现行是「扣留过块 → 之后所有孤立标记一起删」，新的是
+  「出现过 opener → 一条都不删」；叠加场景下新规则少删。
+
+#### C. 原生调用之后，恢复整段关闭，文本也不再清洗
+
+`shim.ts` 用 `|| this.nativeCallsSeen` 让后续内容帧绕过 buffer。「不要再制造第二条调用通道」是对
+的，但它把「不再**恢复调用**」和「文本也**不用洗**」绑成了一件事：只要上游先发过一个原生调用，
+之后所有标记原样进正文。
+
+修法把两者拆开：新增 `DsmlStreamBuffer.standDown()` 进入 **scrub 模式**——块仍被定位并删除，
+`parseBlock` 绝不调用，所以不可能产生调用。`shim.ts` 改为调 `standDown()`，并从条件里去掉
+`nativeCallsSeen`。
+
+一处容易被忽略的细节（报告者特别提醒，已实现并钉住）：**scrub 模式下的删除不报 `residue`**。
+`residue` 会触发「整轮只有标记」的重发兜底，而重发会让上游**再执行一次**这次调用。
+
+#### 被改掉的既有测试
+
+`tests/shim-recovery.spec.ts` 的 `stops recovering once the upstream sends a native call`，最后
+一行原名 `expect(visibleText(body)).toContain(leakedCall())`——它把「把标记当正文发出去」写成了
+预期，与同仓库 `stripStray` 的 docblock 正相反。用例**意图**保留，断言反转为「可见文本不含标记」，
+并补两条：scrub 模式下正文仍完整、以及不触发重发。
+
+#### 验证
+
+新增 `tests/issue207-dsml-calls-and-standdown.spec.ts`（17 例）。变异验证三次：删掉 `calls`
+映射 → 5 红；去掉 `openerSeen` 的赋值 → 1 红；删掉 `standDown()` 调用 → 2 红。
+
+全量 **2986 passed + 2 skipped**，`typecheck` 干净（两个 tsconfig），`pnpm run build` 6 个声明
+产物齐全。四道闸与 fail-closed 取向均未改变。
+
 ### 修复（issue #199：#183 的权限加固会把用户锁在自己的凭据库外，修复来自 PR #200 by @yunyu-lu）
 
 **现象**：Windows 11 日常账户（非管理员）的账号池卡片显示「已保存的账号在本机已不存在」，

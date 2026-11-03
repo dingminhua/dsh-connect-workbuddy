@@ -324,3 +324,76 @@
 
 - `docs/CACHE_EVIDENCE.md`：原文写「插件是否重编码 SSE：❌ 无，字节直通（`body.pipe(res)`）」。结论（缓存字段不会丢）仍成立，但理由要从「没有翻译层」换成「逐帧原位替换、不重建帧」。
 - `scripts/probe-cache-convention.mjs`：文件头同样以「字节直通」为前提论证「不可能犯 trae 那个 bug」。
+
+---
+
+## 十三、2026-11-03 补记：issue #207 的三处失效（已修）
+
+外部报告（含真机取证、三份发布产物复现、以及一份**剥离宿主与全部插件**只编译
+`src/dsml-recovery.ts` 的对照——唯一变量是收尾标签写什么，行为就翻转）指出恢复层自己
+还剩两个洞，外加一处接线问题。三处都成立，均已修复，**四道闸与 fail-closed 取向不变**。
+
+### 13.1 收尾标签缩写为 `calls` 时永不配对
+
+`CANONICAL_TAG_NAMES` 里没有 `calls`，而配对比较的是**归一化后**的名字
+（`findMatchingClose`：`tag.name === open.name`）。于是 `</…calls>` 永远配不上
+`<…tool_calls>`：块被判未闭合（闸 1）→ 扣留到流末 → flush 时仍无配对 → 闸 4 原样回滚成正文。
+
+这不是假设拼写：`docs/DSML-LEAK-RESEARCH.md` 记录的一次**真实捕获**，收尾正是
+`</｜｜DSML｜｜ calls>`。而且同一文件里 `KEYWORD_TAGS` **早就**包含 `calls`——两张表对同一个
+拼写的态度不一致，就是缺陷来源。`git log -S` 为空，这条映射从未存在过，不是回归。
+
+修法：把 `calls → tool_calls` 加进 `CANONICAL_TAG_NAMES`，同时把 `calls` 加进
+`MARKER_ONLY_TAG_NAMES`。**第二步是必要的**：`calls` 是普通英文词，也会出现在 HTML 里，
+裸 `<calls>` 不能当协议处理，否则误伤面反而扩大。
+
+### 13.2 孤立闭标签永远进不了清理路径
+
+`stripStray` 只在 `debris()` 为真时运行，而 `debris()` 要求「本响应扣留过块」。一个从头到尾
+没有任何块开头的响应因此永远不清理，`</parameter>`/`</invoke>`/`</calls>` 原样发给用户。
+自相矛盾之处在模块内部：`hasProse()` 早把这些字节算作**非正文**（它走 `stripMarkup`），
+分类器说「残留」，输出路径说「正文」。
+
+修法新增 `stripLoneClosers`，判据从「是否扣留过块」换成 **`openerSeen`：本响应是否出现过
+任何带 marker 的**开**标签**。
+
+- **presence flag，不做按名字的深度配对。** 闸 4 拒掉的块，其 opener 可能是伪造名
+  （`<｜DSML｜ validate>`），与自己的 `</…calls>` 按名字根本配不上，深度会提前归零并把
+  **块自己的 closer 删掉**——报告者头两版实现正是这样被既有用例抓住的。
+- **判据是「任何带 marker 的开标签」，不是 `BLOCK_TAGS` 里的开标签。** `validate` 那个形态
+  不是块开标签，若只认块开标签，`openerSeen` 不会置位，而它恰恰是必须保住 closer 的那一个。
+  这个问题靠一条用例钉住（去掉 `hasMarkedOpener` 即打红）。
+- **这个判据比现行逻辑更严，不是放宽**：现行是「扣留过块 → 之后所有孤立标记一起删」，
+  新的是「出现过 opener → 一条都不删」。叠加场景下新规则少删。
+
+### 13.3 原生调用之后，恢复整段关闭，文本也不再清洗
+
+`shim.ts` 用 `|| this.nativeCallsSeen` 让后续所有内容帧绕过 buffer。「不要再制造第二条调用
+通道」是对的，但它把「不再**恢复调用**」和「文本也**不用洗**」绑成了一件事。
+
+修法把两者拆开：新增 `DsmlStreamBuffer.standDown()` 进入 **scrub 模式**——块仍被定位并删除，
+`parseBlock` 绝不调用，所以不可能产生调用。`shim.ts` 侧改为调 `standDown()`，
+并从那处条件里去掉 `nativeCallsSeen`。
+
+一条容易被忽略的细节，已按报告者的提醒实现并用例钉住：**scrub 模式下的删除不报 `residue`**。
+`residue` 会触发「整轮只有标记」的重发兜底，而重发会让上游**再执行一次**这次调用。
+（`does not retry when a native call already answered the turn` 断言上游只被调用一次。）
+
+### 13.4 被改掉的既有测试
+
+`tests/shim-recovery.spec.ts` 的 `stops recovering once the upstream sends a native call`，
+最后一行原名 `expect(visibleText(body)).toContain(leakedCall())`——它把「把标记当正文发出去」
+写成了预期，与同仓库 `stripStray` 的 docblock（「a lone marker tag has no content of its own
+to lose」）正相反。用例**意图**保留（不产生第二条调用通道），只把该断言反转为「可见文本不含
+标记」，并补两条：scrub 模式下正文仍完整、以及不触发重发。
+
+### 13.5 变异验证
+
+| 变异 | 结果 |
+|---|---|
+| 删掉 `['calls', 'tool_calls']` | 5 例红（含 `parseToolCalls` 与流式路径） |
+| 去掉 `openerSeen \|= hasMarkedOpener(...)` | 1 例红（伪造名 opener 的 verbatim 契约） |
+| 删掉 `shim.ts` 里的 `this.buffer?.standDown()` | 2 例红（清理与保留正文） |
+
+全量：**2986 passed + 2 skipped**（比 `main` 的 2967 + 2 多 19 条），`typecheck` 干净，
+`pnpm run build` 6 个声明产物齐全。

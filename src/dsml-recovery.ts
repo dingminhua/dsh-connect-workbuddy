@@ -135,14 +135,37 @@ const BLOCK_TAGS: readonly string[] = ['tool_calls', 'invoke']
  * should also remove everything up to its matching close. An INVENTED name is
  * not here on purpose: `<｜DSML｜ validate>` brackets nothing, so removing it
  * means removing the tag and nothing else.
+ *
+ * `calls` is here because a REAL capture wrote the wrapper's closer that way.
+ * See {@link CANONICAL_TAG_NAMES} for the defect that disagreement caused.
  */
 const KEYWORD_TAGS: readonly string[] = ['tool_calls', 'tool-calls', 'toolcalls', 'invoke', 'parameter', 'calls', 'tool']
 
-/** Tag names normalised to their canonical spelling. */
+/**
+ * Tag names normalised to their canonical spelling.
+ *
+ * WHY `calls` IS MAPPED HERE (issue #207). Pairing is decided by comparing the
+ * NORMALISED names ({@link findMatchingClose}: `tag.name === open.name`), so a
+ * closer spelled `calls` could never match an opener spelling `tool_calls`:
+ * the block read as never closed, was held to end of stream, and gate 4 then
+ * rolled the whole thing back into visible prose.
+ *
+ * That is not a hypothetical spelling. `docs/DSML-LEAK-RESEARCH.md` records a
+ * REAL captured block whose closing tag is `</｜DSML｜｜ calls>` — the document
+ * knew the closer could be abbreviated while this table did not. The two
+ * spellings are also inconsistent WITHIN this file: {@link KEYWORD_TAGS}
+ * already lists `calls`, because {@link stripMarkup} has to know it is markup,
+ * while pairing did not. Two tables disagreeing about one spelling was the
+ * whole defect.
+ *
+ * `git log -S"'calls', 'tool_calls'"` is empty: this mapping never existed, so
+ * no release ever behaved differently.
+ */
 const CANONICAL_TAG_NAMES: ReadonlyMap<string, string> = new Map([
   ['tool_calls', 'tool_calls'],
   ['tool-calls', 'tool_calls'],
   ['toolcalls', 'tool_calls'],
+  ['calls', 'tool_calls'],
   ['invoke', 'invoke'],
   ['parameter', 'parameter'],
 ])
@@ -152,8 +175,13 @@ const CANONICAL_TAG_NAMES: ReadonlyMap<string, string> = new Map([
  *
  * `<toolcalls>` without the marker is somebody's HTML, not the model's markup;
  * the marker is what makes the misspelling meaningful.
+ *
+ * `calls` belongs here for the same reason, and more strongly: it is an ordinary
+ * English word that also appears in HTML (`<calls>`) and in prose about
+ * telephones, so normalising a BARE `<calls>` would turn somebody's own text
+ * into the model's protocol and start deleting what follows it.
  */
-const MARKER_ONLY_TAG_NAMES: ReadonlySet<string> = new Set(['tool-calls', 'toolcalls'])
+const MARKER_ONLY_TAG_NAMES: ReadonlySet<string> = new Set(['tool-calls', 'toolcalls', 'calls'])
 
 /** Fence markers at the start of a line. */
 const FENCE_MARKERS: readonly string[] = ['```', '~~~']
@@ -1064,6 +1092,79 @@ function stripStray(text: string, seen: Partial<Withheld>): string {
 }
 
 /**
+ * Drop lone marker CLOSERS from a response that never opened a block
+ * (issue #207).
+ *
+ * THE DEFECT. `stripStray` runs only behind {@link DsmlStreamBuffer.debris()},
+ * and that flag means "this response WITHHELD a block". A response that never
+ * opened one therefore never reached the sweep, so the shape below — captured
+ * in the wild, and quoted verbatim in the issue — went out as prose:
+ *
+ * ```text
+ * </｜DSML｜ parameter>
+ * </｜DSML｜ invoke>
+ * </｜DSML｜ calls>
+ * ```
+ *
+ * The inconsistency was inside the module: {@link hasProse} already classified
+ * those bytes as NON-prose (it goes through `stripMarkup`), so the classifier
+ * said "residue" and the writer printed it.
+ *
+ * WHY PRESENCE, NOT DEPTH PAIRING. The first two attempts at this (both
+ * recorded in the issue) counted depth by tag name, and both deleted the
+ * CLOSER OF A BLOCK THAT WAS ONLY BEING SHOWN: a gate-4-refused block's opener
+ * can be a forged name (`<｜DSML｜ validate>`), which by name never matches its
+ * own `</｜DSML｜ calls>` closer, so the depth hit zero early. A presence flag
+ * cannot make that mistake: if ANY marked opener appeared in the response, not
+ * one lone closer is touched, and the whole gate-4 verbatim guarantee is kept.
+ *
+ * THE RESULT IS STRICTER THAN BEFORE, not looser. The old rule was "once a
+ * block was withheld, delete every stray tag afterwards"; this one is "delete
+ * nothing if any opener was ever seen". In the overlap — withheld block, then
+ * lone tags — the old code deleted and this one does not.
+ *
+ * Fences and code spans are still skipped (through `stripMarkup`), because a
+ * user asking what this markup means is quoting it on purpose.
+ */
+function stripLoneClosers(text: string, seen: Partial<Withheld>, openerSeen: boolean): string {
+  if (openerSeen) return text
+  const cleaned = stripMarkup(text)
+  if (cleaned !== text) seen.reason ??= 'stray-markup'
+  return cleaned
+}
+
+/**
+ * Does `text` contain any MARKED OPENING tag, whatever it is called?
+ *
+ * The question behind issue #207's presence flag. Keyed on the marker rather
+ * than on {@link BLOCK_TAGS}, because the shape that motivated it —
+ * `<｜DSML｜ validate>` — wears an invented name and is not a block opener, yet
+ * it opens a construct whose closer must survive.
+ *
+ * Scans outside fenced/inline-code spans, so a user quoting the markup inside a
+ * code block does not set the flag (and therefore does not disable the cleaning
+ * of real debris elsewhere in the same response).
+ */
+function hasMarkedOpener(text: string): boolean {
+  const spans = ignoredSpans(text)
+  const cursor = { at: 0 }
+  let index = 0
+  while (index < text.length) {
+    const skipped = skipIgnored(spans, index, cursor)
+    if (skipped !== index) {
+      index = skipped
+      continue
+    }
+    if (text.charAt(index) === '<') {
+      const tag = scanTag(text, index)
+      if (tag !== undefined && tag.marked && !tag.closing) return true
+    }
+    index += 1
+  }
+  return false
+}
+
+/**
  * Drop a marker-bearing tag fragment that the stream held and can never finish.
  *
  * {@link holdFrom} keeps back a tail that could still become a block opener, so
@@ -1259,10 +1360,54 @@ export class DsmlStreamBuffer {
   private withheldOnce = false
   /** Whether the one notice allowed per response has gone out. See `takeWithheld`. */
   private noticeSent = false
+  /**
+   * Whether this response has produced any MARKED opening tag, at any point
+   * (issue #207).
+   *
+   * Deliberately NOT the same flag as {@link withheldOnce}. `withheldOnce` means
+   * "a block was removed", and the debris sweep used it as a PROXY for "this
+   * response's marker text is protocol debris rather than the answer". The two
+   * are not the same question, and a response that leaked lone closers without
+   * ever withholding a block was the case that fell between them:
+   * `hasProse()` already counted those closers as non-prose (it runs
+   * `stripMarkup`), while the output path forwarded them — the classifier said
+   * "residue" and the writer said "text".
+   *
+   * Deliberately ANY marked opener rather than a {@link BLOCK_TAGS} one: the
+   * captured shape `<｜DSML｜ validate>` wears an invented name, so it is not a
+   * block opener and would not set a block-only flag — yet it is precisely the
+   * tag whose closer a name-based sweep would mutilate. "The model started
+   * writing protocol markup" is the question, and that is answered by the
+   * MARKER, not by the name.
+   *
+   * Tracked across chunks because a chunk boundary is not a response boundary.
+   */
+  private openerSeen = false
 
   constructor(gate: RecoveryGate) {
     this.gate = gate
   }
+
+  /**
+   * Stop recovering calls, but keep cleaning the text (issue #207).
+   *
+   * Called when the upstream has already produced a STRUCTURED call. The reason
+   * to stand down is sound — recovering markup into a second call channel after
+   * the client already got a real one hands it two answers to the same question
+   * — but the shim used to implement it by bypassing this buffer entirely, so
+   * "no more calls" silently became "no more cleaning either" and every marker
+   * after the native call went out as prose.
+   *
+   * Scrub mode keeps the text half: blocks are still located and removed, but
+   * {@link parseBlock} is never consulted, so no call can be produced. Removal
+   * is reported as debris rather than tallied as a withheld invocation — see
+   * {@link scrubPending}.
+   */
+  standDown(): void {
+    this.nativeCalls = true
+  }
+
+  private nativeCalls = false
 
   /** Feed one `delta.content` chunk; returns text and any call it completed. */
   add(chunk: string): BufferOutcome {
@@ -1278,9 +1423,30 @@ export class DsmlStreamBuffer {
       return { text, prose: hasProse(text), withheld: false }
     }
 
+    // Any MARKED opening tag counts, not only a block opener: the captured
+    // `<｜DSML｜ validate>` wears an invented name, is therefore not a block
+    // opener, and is still exactly the tag whose closer a sweep would mutilate.
+    this.openerSeen ||= hasMarkedOpener(this.pending)
+
     for (;;) {
       const found = findFirstOpener(this.pending, ignoredSpans(this.pending))
       if (found === undefined) break
+      // Recorded BEFORE any parse, so it covers refused and recovered blocks
+      // alike: this is "the response spoke the protocol", not "a block was
+      // removed".
+      this.openerSeen = true
+      // Scrub mode (issue #207) never examines a block. The block and its
+      // surrounding whitespace go, but no call is produced and the removal is
+      // NOT reported as a withheld invocation — reporting one would set
+      // `residueSeen`, and the shim's "the turn was markup only" retry would
+      // then re-run a call the upstream already answered.
+      if (this.nativeCalls) {
+        const head = stripMarkup(this.pending.slice(0, found.open.start)).trimEnd()
+        if (head !== '') parts.push(head)
+        this.pending = this.pending.slice(found.close === undefined ? found.open.start : found.close.end + 1)
+        if (found.close === undefined) return finish(parts, calls, this.takeWithheld())
+        continue
+      }
 
       const head = this.stripDebris(this.pending.slice(0, found.open.start))
       if (head !== '') parts.push(head)
@@ -1342,14 +1508,18 @@ export class DsmlStreamBuffer {
     }
 
     // The tail that `holdFrom` kept back can never become a tag now. Once this
-    // response has withheld a block, an unterminated marker fragment in that
-    // tail is the same debris — the `</｜DSML｜ invo` that trailed a killed
-    // stream. A response that withheld nothing keeps its tail: there a fragment
-    // like `<｜DSM` is a block that simply ran out of bytes, and gate 4 says it
-    // is shown rather than swallowed.
-    if (this.debris()) {
-      text = dropUnfinishedMarkerTail(text, this.withHeld)
-      text = stripStray(text, this.withHeld)
+    // response has spoken the protocol at all, an unterminated marker fragment
+    // in that tail is the same debris — the `</｜DSML｜ invo` that trailed a
+    // killed stream. A response that never opened a block keeps its tail: there
+    // a fragment like `<｜DSM` is a block that simply ran out of bytes, and gate
+    // 4 says it is shown rather than swallowed.
+    //
+    // `this.debris()` rather than `openerSeen` alone: a response that withheld
+    // nothing still sweeps once lone CLOSERS have been recognised as debris
+    // (issue #207, {@link stripLoneClosers}), which is a separate fact.
+    if (this.openerSeen || this.debris()) {
+      text = dropUnfinishedMarkerTail(text, this.nativeCalls ? {} : this.withHeld)
+      text = this.nativeCalls ? stripMarkup(text) : stripLoneClosers(text, this.withHeld, this.openerSeen)
     }
 
     const state = this.takeWithheld()
@@ -1359,13 +1529,26 @@ export class DsmlStreamBuffer {
   }
 
   /**
-   * Apply the debris sweep, but only to a response that has withheld something.
+   * Apply the debris sweep, but only where it is provably debris.
    *
-   * See {@link withheldOnce}: before the first withhold, marker text in the
-   * prose is the caller's to show, not this layer's to delete.
+   * Three states, in order:
+   *
+   *   - SCRUB MODE (issue #207): nothing is being recovered, so every
+   *     marker-bearing tag is debris by definition.
+   *   - A block was withheld: the text left around removed blocks is residue by
+   *     construction, so the full sweep applies.
+   *   - Nothing was withheld AND no opener ever appeared: only lone CLOSERS are
+   *     unambiguously debris — this is the case the issue reports, where the
+   *     old proxy (`debris()`) could never be true and the bytes went out raw.
+   *
+   * A response that never withheld anything but DID open a block keeps its text
+   * untouched: gate 4 promises the refused block is shown verbatim, and its
+   * forged-name opener is exactly the shape a name-based sweep would mutilate.
    */
   private stripDebris(text: string): string {
-    return this.debris() ? stripStray(text, this.withHeld) : text
+    if (this.nativeCalls) return stripMarkup(text)
+    if (this.debris()) return stripStray(text, this.withHeld)
+    return stripLoneClosers(text, this.withHeld, this.openerSeen)
   }
 
   /** Has anything been withheld from this response, yet or already? */

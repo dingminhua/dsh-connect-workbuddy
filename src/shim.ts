@@ -841,6 +841,13 @@ class RecoveryStream {
     const nativeCalls = delta['tool_calls']
     if (Array.isArray(nativeCalls) && nativeCalls.length > 0) {
       this.nativeCallsSeen = true
+      // Stand the buffer DOWN rather than bypass it (issue #207). "Do not
+      // recover a second call channel" and "forward whatever bytes follow" are
+      // two different decisions, and the old code made them one: after this
+      // point every content frame skipped the buffer, so marker text that
+      // arrived after a native call went out as prose. Scrub mode keeps the
+      // text half — blocks are still removed, no call is ever produced.
+      this.buffer?.standDown()
       this.windowOpened = true
       this.flushNotice()
       this.send(frame, false)
@@ -861,11 +868,16 @@ class RecoveryStream {
       return
     }
 
-    if (this.buffer === undefined || this.nativeCallsSeen) {
-      // Gate 3 (nothing declared) or a response that already carries real calls:
-      // nothing may be recovered, and the bytes go through untouched. The window
-      // is opened so that a later frame cannot start holding either — with no
-      // recovery there is nothing a hold could be waiting for.
+    if (this.buffer === undefined) {
+      // Gate 3 (nothing declared): nothing may be recovered, and the bytes go
+      // through untouched. The window is opened so that a later frame cannot
+      // start holding either — with no buffer there is nothing a hold could be
+      // waiting for.
+      //
+      // `nativeCallsSeen` is deliberately NOT in this condition (issue #207):
+      // that state still has a buffer, in scrub mode, and routing its content
+      // through this branch is what let markup after a native call through as
+      // prose. The buffer removes blocks and produces no calls there.
       this.windowOpened = true
       this.flushNotice()
       this.closeWindow()
