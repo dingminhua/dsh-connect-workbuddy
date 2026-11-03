@@ -82,6 +82,7 @@ import type {
   WorkBuddyTransferPreview,
   WorkBuddyWebAccount,
   WorkBuddyWebAccountCredit,
+  WorkBuddyWebAutoCheckinToday,
   WorkBuddyWebCredits,
   WorkBuddyWebPool,
   WorkBuddyWebPoolAccount,
@@ -495,6 +496,14 @@ export interface WorkBuddyPoolDeps {
      * ranking simply ignores it.
      */
     orderAccountIds?: readonly string[]
+    /**
+     * Whether the user asked for the automatic daily check-in (issue #191).
+     *
+     * Optional so a Host that predates the setting still satisfies this
+     * interface — its absence then reads as OFF, which is the truth for every
+     * profile until someone ticks it.
+     */
+    autoCheckin?: boolean
   }
   /** One region's CHECKED accounts, plus their credits and last measurements. */
   members(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolMember[]>
@@ -630,6 +639,20 @@ export interface WorkBuddyPoolDeps {
    * reports "unavailable" instead of appearing to succeed.
    */
   checkin?(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolCheckinRow[]>
+  /**
+   * What the automatic check-in has settled today, when it is switched on
+   * (issue #191).
+   *
+   * Optional so a Host that predates the feature still satisfies this
+   * interface: its absence then reads as "the switch is off", which is the
+   * truth for every profile until someone ticks it.
+   *
+   * Answers from the runner's own memory rather than recomputing: only the
+   * runner knows which accounts a previous tick already settled, and asking the
+   * route to guess is how the card's count would drift from what actually
+   * happened.
+   */
+  autoCheckinToday?(region: WorkBuddyRegion): WorkBuddyWebAutoCheckinToday | undefined
   /**
    * Test every account of one region against the resolved target model.
    *
@@ -1482,6 +1505,17 @@ async function workBuddyWebPool(
     // all. The route still refuses the action for an unsupported region, so a
     // stale page cannot reach it by calling the endpoint directly.
     checkinSupported: pool.checkinSupported?.(region) === true,
+    // The SAVED switch, not the running one: the card edits this field, and a
+    // draft-and-save cycle must show what is stored. Absent reads as OFF, which
+    // is the truth for every profile until someone ticks it.
+    ...preferences.autoCheckin !== true ? {} : { autoCheckin: true },
+    // Only when the runner has something to say. An object full of zeroes would
+    // make "nothing has run" indistinguishable from "ran and found nothing to
+    // do", and the card renders those differently.
+    ...(() => {
+      const today = pool.autoCheckinToday?.(region)
+      return today === undefined ? {} : { autoCheckinToday: today }
+    })(),
     ...target.modelId === undefined ? {} : { targetModelId: target.modelId },
     ...target.staleModelId === undefined ? {} : { staleTargetModelId: target.staleModelId },
     targetModelSource: target.source,

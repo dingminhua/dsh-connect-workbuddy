@@ -380,6 +380,15 @@ export const en = {
   'row.poolSavedStaleRefresh': 'Saved, but the panel could not re-read it. The value is stored; the next refresh will show it.',
   'row.poolDiscard': 'Discard changes',
   'row.poolDirty': '● Unsaved changes',
+  // The automatic daily check-in (issue #191). OFF by default, and the label
+  // says what it DOES rather than naming the feature: "automatic check-in" alone
+  // does not tell a user that a background job will write to their account.
+  'row.poolAutoCheckin': 'Check in automatically each day',
+  'row.poolAutoCheckinHint': 'On: the plugin claims the daily check-in for the accounts checked into this pool, once a day, in the background. It reads first and never re-claims an account already checked in, so a restart cannot double-claim. Off: nothing runs until you press the button. A missed day resets the streak.',
+  'row.poolAutoCheckinToday': 'Today: {done} of {total} checked in',
+  'row.poolAutoCheckinDone': 'Today: all {total} checked in',
+  'row.poolAutoCheckinPending': '{count} still to retry',
+  'row.poolAutoCheckinFailed': 'Last attempt failed: {message}',
   'row.poolManualUnlock': 'Turn off rotation',
   'row.poolLogTitle': 'Activity',
   'row.poolLogClear': 'Clear',
@@ -1041,6 +1050,13 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolSavedStaleRefresh': '已保存，但面板未能重新读取。设置已写入；下次刷新后会显示。',
   'row.poolDiscard': '放弃修改',
   'row.poolDirty': '● 有未保存的修改',
+  // 自动签到（issue #191）。默认关，且标题写的是「它会做什么」而不是功能名。
+  'row.poolAutoCheckin': '每天自动签到',
+  'row.poolAutoCheckinHint': '开启：插件在后台为勾选进池的账号领取每日签到，一天一次。它先读状态、已签到的不重复领取，所以重启也不会多领。关闭：不点按钮就什么都不会发生。漏一天会断连签。',
+  'row.poolAutoCheckinToday': '今日：已签 {done} / {total}',
+  'row.poolAutoCheckinDone': '今日：{total} 个全部已签',
+  'row.poolAutoCheckinPending': '待重试 {count} 个',
+  'row.poolAutoCheckinFailed': '上次尝试失败：{message}',
   'row.poolManualUnlock': '关闭自动轮换',
   'row.poolLogTitle': '活动记录',
   'row.poolLogClear': '清空',

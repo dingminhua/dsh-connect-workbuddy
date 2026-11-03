@@ -1865,6 +1865,24 @@ export interface WorkBuddyWebPoolAccount {
  * card must render it as "no free model" rather than silently substituting a
  * paid one.
  */
+/**
+ * What the automatic check-in has settled today (issue #191).
+ *
+ * Deliberately COUNTS rather than a sentence: both locales render it, and the
+ * card decides where it goes. `pending` is the number of accounts still owed an
+ * attempt, which is what distinguishes "done for today" (0) from "retrying" —
+ * the two states a user watching a background job actually cares about.
+ */
+export interface WorkBuddyWebAutoCheckinToday {
+  /** Accounts confirmed claimed or already-checked-in today. */
+  done: number
+  /** Accounts in scope today (pool members minus enterprise members). */
+  total: number
+  /** Accounts still owed an attempt; 0 means the day is finished. */
+  pending: number
+  /** Why the last attempt failed, when it did. */
+  lastError?: string
+}
 export interface WorkBuddyWebPool {
   enabled: boolean
   /**
@@ -1874,6 +1892,25 @@ export interface WorkBuddyWebPool {
    * button whose only outcome is a refusal.
    */
   checkinSupported: boolean
+  /**
+   * Whether the user asked the plugin to claim the daily check-in by itself
+   * (issue #191). Absent means OFF.
+   *
+   * The SAVED value, not the running one: the card's switch edits this field,
+   * and a draft-and-save cycle must show what is stored rather than what the
+   * runner happens to be doing with the previous value.
+   */
+  autoCheckin?: boolean
+  /**
+   * What the automatic check-in has done today, when it is switched on.
+   *
+   * Absent when the switch is off or the runner has not started — never an
+   * object full of zeroes, so the card can tell "nothing has run" apart from
+   * "ran and found nothing to do". Read from the runner's own memory rather
+   * than recomputed: the card cannot know which accounts the batch already
+   * settled, and asking it to guess is how the count would drift from the truth.
+   */
+  autoCheckinToday?: WorkBuddyWebAutoCheckinToday
   /** The model a test would use right now; absent when none can be resolved. */
   targetModelId?: string
   /**

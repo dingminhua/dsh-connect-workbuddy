@@ -717,6 +717,20 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-modebar-state{flex:none;padding:1px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.14);border:1px solid rgba(86,134,254,.3)}
 .dsm-workbuddy-pool-modebar .dsm-workbuddy-pool-dirty{margin-left:auto}
 .dsm-workbuddy-pool-modebar .dsm-workbuddy-pool-note{line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The automatic check-in block (issue #191): a switch, its hint, and — once it
+   has run — a one-line progress readout. Indented under the pool switch because
+   it is a second, narrower consent: the pool switch says "pick my account", this
+   one says "write to it every day". */
+.dsm-workbuddy-pool-auto-checkin{margin-top:10px;padding-left:2px;display:flex;flex-direction:column;gap:6px}
+.dsm-workbuddy-pool-auto-checkin-status{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The progress figure is the ANSWER to "did it work?", so it is the one part
+   that carries primary text colour rather than the muted note colour. */
+.dsm-workbuddy-pool-auto-checkin-line{color:var(--dsw-alias-label-primary,CanvasText);font-weight:500}
+.dsm-workbuddy-pool-auto-checkin-pending{color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* A failed attempt is a real condition the user may need to act on, so it is
+   not muted — but it is also not an error the plugin can fix, hence warn, not
+   the error red reserved for "this broke". */
+.dsm-workbuddy-pool-auto-checkin-error{color:var(--dsw-alias-label-warning,#d9822b)}
 /* Orthogonal concepts in one sentence when they collide ("in use" vs "in the
    pool"). A left rule marks it as an aside about the row above, not a warning. */
 .dsm-workbuddy-pool-serving-note{padding-left:10px;border-left:2px solid rgba(86,134,254,.5);color:var(--dsw-alias-label-secondary,#c6c9d0)}
