@@ -110,7 +110,8 @@
 
 import { execFile } from 'node:child_process'
 import { mkdir, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
+import { resolveDshHome } from './host-peers.ts'
 
 /**
  * Well-known SID for "the owner of this object".
@@ -186,6 +187,12 @@ const ACL_COMMAND_TIMEOUT_MS = 10_000
 export type CredentialAclOutcome =
   | { state: 'protected' }
   | { state: 'not-windows' }
+  /**
+   * Refused on purpose (issue #208): the target is the Harness home itself, or
+   * an ancestor of it. This is NOT a failure — nothing was attempted and nothing
+   * is wrong with the machine, so `doctor` must not print a recovery hint.
+   */
+  | { state: 'skipped', reason: string }
   | { state: 'failed', reason: string }
 
 /**
@@ -304,6 +311,8 @@ async function applyAcl(path: string, grants: readonly string[]): Promise<void> 
  */
 export async function protectCredentialDirectory(directory: string): Promise<CredentialAclOutcome> {
   if (!isWindows()) return { state: 'not-windows' }
+  const refusal = harnessHomeRefusal(directory)
+  if (refusal !== undefined) return { state: 'skipped', reason: refusal }
   if (protectedDirectories.has(directory)) return { state: 'protected' }
   const pending = inflightProtection.get(directory)
   if (pending !== undefined) return pending
@@ -314,6 +323,67 @@ export async function protectCredentialDirectory(directory: string): Promise<Cre
   } finally {
     inflightProtection.delete(directory)
   }
+}
+
+/**
+ * Why `directory` must NOT be hardened, or `undefined` when it may be
+ * (issue #208).
+ *
+ * THE DEFECT THIS CLOSES. Hardening drops inherited ACEs (`/inheritance:r`).
+ * Applied to `<DSH home>` itself that also drops what every OTHER directory
+ * under it inherits — `<DSH home>/attachments`, sessions, profile config —
+ * and a child whose DACL came purely from that inheritance becomes
+ * unreadable even to its owner. The reporter measured exactly that: after
+ * installing the plugin, sending an image failed with `EPERM: operation not
+ * permitted, scandir '<DSH home>/attachments'` while text messages were
+ * unaffected, and `icacls <DSH home>` itself printed "Access is denied". The
+ * UI showed the host's generic `prompt rejected (session/agent-busy)`, so the
+ * symptom pointed at sessions rather than at the DACL.
+ *
+ * HOW THIS PLUGIN COULD REACH IT. `writeVaultEntry` hardens `dirname(dir)`.
+ * For a region-scoped store that is `<DSH home>/workbuddy-vault` (correct), but
+ * the UNREGIONED store — which `doctor` builds via `makeAnyStore()` — keeps its
+ * vault AT `<DSH home>/workbuddy-vault` itself, so `dirname` resolves to
+ * `<DSH home>`. Reproduced here with a stubbed `icacls`: the argv target was
+ * the Harness home, and the three SIDs the reporter found on `<DSH home>` are
+ * exactly `directoryGrants()`'s.
+ *
+ * WHY REFUSE RATHER THAN SPECIAL-CASE THE CALLER. A guard at THIS layer also
+ * covers `<DSH home>/.dsh`-style ancestors, a future call site computing the
+ * root one level too high (the reporter's own third question), and a
+ * `WORKBUDDY_*` variable pointing the vault at `$HOME`. The blast radius of
+ * getting it wrong is the whole harness home, so the check belongs where the
+ * destructive operation is, not where its arguments are assembled.
+ *
+ * Ancestors are refused too, not just equality: hardening the PARENT of the
+ * harness home strips the inheritance the home itself relies on, which breaks
+ * it just as thoroughly and is even harder to recognise afterwards.
+ */
+function harnessHomeRefusal(directory: string): string | undefined {
+  let home: string
+  try {
+    home = resolve(resolveDshHome())
+  } catch {
+    // An unresolvable home cannot be compared, and guessing would risk the
+    // very defect this guard exists for: refuse rather than proceed blind.
+    return 'the Harness home could not be resolved, so this directory cannot be proven safe to harden'
+  }
+  // Equality is compared case-insensitively for the same reason as the
+  // containment check below: on Windows `C:\\Users\\x` IS `C:\\users\\x`, and
+  // missing that would let the exact defect through.
+  const target = resolve(directory)
+  if (target.toLowerCase() === home.toLowerCase()) {
+    return `refusing to harden the Harness home itself (${home}); /inheritance:r there would strip the ACEs every other directory under it inherits`
+  }
+  // Case-insensitive is the safe direction here: Windows paths are
+  // case-insensitive, so `C:\\USERS\\x` and `C:\\Users\\x` are the same directory,
+  // and a false POSITIVE only skips a hardening while a false NEGATIVE destroys
+  // the home. `toLowerCase` rather than a platform branch keeps one code path.
+  const foldedHome = `${home}${sep}`.toLowerCase()
+  if (foldedHome.startsWith(`${target}${sep}`.toLowerCase())) {
+    return `refusing to harden ${target}, which contains the Harness home (${home}); dropping inherited ACEs on an ancestor breaks the whole home tree`
+  }
+  return undefined
 }
 
 /**

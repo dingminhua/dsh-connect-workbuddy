@@ -107,6 +107,47 @@ owner=Administrators → 读写全拒，DACL 与事故现场一致），缺陷�
 「SID 解析不出来时宁可直接失败，也不加固」。另有「当前用户算 allowed，所以本 issue 的授权不会被
 报成 widening」与「失败不被记忆、成功被记忆」两条，钉的是上面两条设计选择。
 
+### 修复（issue #208：ACL 加固可能把 `$DSH_HOME` 自己的继承权限抹掉，导致附件目录读不了）
+
+**现象**：Windows 上装本插件后，任何图片都发不出去，文本消息正常。UI 只显示
+`prompt rejected (session/agent-busy)`——那是宿主对**未能识别的异常**的兜底包装，
+真实原因在 `details.reason` 里而界面不渲染它，于是这条报错误导到了会话/模型能力的方向。
+报告者自查发现 `<DSH_HOME>\attachments` 的 DACL 损坏（`icacls` 自己都 `Access is denied`，
+`scandir` 报 `EPERM`），而 `<DSH_HOME>` 本身丢掉了继承、只剩三条 ACE——恰好就是本插件
+`directoryGrants()` 的三个 principal。
+
+**根因**：`writeVaultEntry()` 加固的是 `dirname(dir)`（issue #183 要求加固 vault 根，
+不是 region 目录）。这对**按区域限定**的 store 正确（`<home>/workbuddy-vault/<region>`
+→ `<home>/workbuddy-vault`），但**未限定区域的 store**——`doctor` 用 `makeAnyStore()`
+建的那个——其 vault 目录**就是** `<home>/workbuddy-vault`，`dirname` 于是算出
+**`<DSH_HOME>` 本身**。`icacls <home> /inheritance:r` 会连带抹掉 home 下其它目录从 home
+继承来的 ACE，`attachments` 首当其冲。
+
+修复前用打桩 `icacls` 复现：argv 的目标路径正是 `DSH_HOME`，三条 SID 与报告者在 home 上
+测到的完全一致。
+
+**修法（两层，任一层单独都能挡住）**：
+
+1. `src/auth.ts` 新增 `vaultRootToHarden()`：仅当 `dirname(dir)` **不是** Harness home 时
+   用它；`dir` 本身就是 vault 根（未限定区域的 store）时改加固 `dir`。这里刻意不用
+   「`dirname` 是不是 home」去推断 store 形状，而是直接比较路径——注入的 `vaultDir`
+   与相对路径的 `DSH_HOME` 都不会漏过。
+2. `src/windows-acl.ts` 新增 `harnessHomeRefusal()`：`protectCredentialDirectory()` 对
+   Harness home **及其祖先**一律返回新的 `{ state: 'skipped', reason }`，**不起任何子进程**。
+   放进这一层而不是只修调用点，是因为误伤的半径是整个 home 树：祖先目录同样要拒
+   （抹掉 home 的父目录继承照样毁掉 home），而未来任何算高一层的新调用点也被覆盖。
+   等价拼写（尾分隔符、`.`、`sub/..`）先 `resolve` 再比较。
+
+`skipped` 与 `failed` 分开：拒绝是闸门在正常工作，不是机器坏了。`doctor` 把它报为
+`protectSkipped` 并单独打一行说明，**不**触发「用 takeown 修复」那句提示——对一个
+插件主动放过的目录给恢复指令只会把人带错方向。
+
+**验证**：新增 `tests/issue208-acl-harness-home-guard.spec.ts`（7 例），钉住：home 被拒且
+零子进程、祖先被拒、三种等价拼写被拒、**真实的 vault 根仍被加固**（防止这道闸静默关掉
+#183 的全部保护）、未限定区域与按区域限定的写入都只加固 vault 根、注入 `vaultDir` 为
+home 时同样被拒。变异验证两次：去掉 `harnessHomeRefusal()` → 4 红；把写入路径退回
+`dirname(dir)` → 1 红。
+
 ### 文档（安装章节加一节 `ERR_PNPM_IGNORED_BUILDS` 排障）
 
 issue #204 报「装本插件失败，`[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts:
