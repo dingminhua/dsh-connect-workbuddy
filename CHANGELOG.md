@@ -2,6 +2,39 @@
 
 ## 未发布
 
+### 修复（账号池卡片里两个开关的样式不一致）
+
+**现象**：「启用账号池」与「每天自动签到」两个开关并排在同一张卡里，但看起来像两种控件——
+前者是直接画在浅色模式栏上的开关，后者被画在一个**更小的嵌套深色方块**里，与上面的开关之间
+隔着一道很深的缝。用户截图圈出了这两处。
+
+**根因**：签到开关的 `<label>` 用了 `.dsm-workbuddy-pool-modebar` —— 那是样式化**整条模式栏卡片**
+的类（`padding:12px 14px` + 品牌渐变背景 + 自己的边框与圆角）。它本来是借这个类的 flex 行几何，
+结果把整张卡片也一起借过来了。
+
+**次因（截图里被主因盖住了）**：即使去掉卡片类，两个开关的 DOM 形状仍不同——账号池那个是
+`label.sw > input + span.sw-track`，签到那个是 `span.sw > input + span.sw-track`。`.sw` 规则本身
+带着 38×22 的盒子尺寸，所以包在 span 上**看着是对的**，但外层 label 仍是一个没有样式的第二点击面，
+两个开关在「点哪里会切换」上并不一致。
+
+**修法**：把行与卡片拆成两个类，并让两个开关共用同一份结构。
+
+- 新增 `.dsm-workbuddy-pool-switchrow`（与 `.dsm-workbuddy-pool-modebar-row` 几何完全相同），
+  只负责「一行里放一个开关和它的文字」。`.dsm-workbuddy-pool-modebar` 从此**只表示卡片**。
+  这样未来再加一个开关，拿到的是行而不是卡片——不可能再把卡片套进去。
+- 签到开关改为镜像账号池开关的 DOM：`label.sw > input + span.sw-track`，外面包一层 switchrow。
+
+**验证**：`tests/pool-render.spec.tsx` 新增 3 例，钉住的是**结构关系**而不是像素（jsdom 没有排版
+引擎，比几何等于什么都没测；比像素又会把一个允许改动的设计钉死）：
+
+1. 两个开关都渲染，且内部形状一致（`label` + 隐藏 checkbox + `.sw-track`，且 `input` 是 `.sw-track`
+   的前一个兄弟——`input + .sw-track` 正是 checked / disabled 规则的挂载点，中间插一个元素会
+   静默废掉那两个状态）。
+2. 签到开关的 label **不带** `.dsm-workbuddy-pool-modebar`（缺陷本身），且它的父元素带 switchrow。
+3. 整张卡里**只有一处** `.dsm-workbuddy-pool-modebar`，也就是模式栏自己——主控仍读作主控。
+
+变异验证：把签到开关改回 `label.dsm-workbuddy-pool-modebar` → **2 例红**。
+
 ### 修复（issue #207：DSML 恢复的三处失效，标记会漏进可见正文）
 
 报告者给了非常完整的一份取证：三份发布产物（5.12.4 / 5.16.0 / 5.17.0）全部复现、`git worktree`

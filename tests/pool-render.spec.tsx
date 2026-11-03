@@ -1546,3 +1546,90 @@ describe('ordering-rule disclosure in the settings panel', () => {
     await m.unmount()
   })
 })
+
+/**
+ * The two switches in the mode bar must LOOK the same (issue #191 follow-up).
+ *
+ * THE REPORT. A screenshot with both toggles circled: 「启用账号池」 drew as a
+ * large control directly on the tinted bar, 「每天自动签到」 as a smaller switch
+ * sitting in a second, darker nested card with a deep gap above it.
+ *
+ * THE CAUSE. The check-in `<label>` carried `.dsm-workbuddy-pool-modebar` — the
+ * class that styles the WHOLE mode BAR (12px/14px padding, brand gradient,
+ * border, radius). It was borrowed for its flex-row geometry, and brought the
+ * card with it. Nothing in the CSS was "wrong"; one element wore a class that
+ * means "I am a card" when it meant "I am a row".
+ *
+ * WHY THE ASSERTIONS ARE STRUCTURAL. Comparing computed geometry in jsdom would
+ * measure nothing (no layout engine), and comparing pixel values in a unit test
+ * would pin a design that is allowed to change. What must NOT change is the
+ * relationship: both switches are `label > .sw > input + .sw-track`, and neither
+ * label carries a class that also styles a card. That is what a future edit
+ * would break, and it is checkable here.
+ */
+describe('the mode bar draws both switches the same way', () => {
+  /** The props that render BOTH switches (check-in only exists on CN). */
+  function bothSwitches(): Record<string, unknown> {
+    return baseProps({
+      pool: poolOf({
+        checkinSupported: true,
+        autoCheckin: false,
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [GENUINE_ACCOUNT],
+      }),
+    })
+  }
+
+  it('renders two switches, and both use the same internal markup', async () => {
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, bothSwitches())
+    const switches = Array.from(m.container.querySelectorAll('.dsm-workbuddy-pool .sw'))
+    expect(switches, 'the pool switch AND the check-in switch').toHaveLength(2)
+    for (const sw of switches) {
+      // The shared shape is what makes them look alike: a hidden checkbox plus
+      // the styled track. A second switch drawn with a bare <input> would have
+      // no `.sw-track` and would come out at the host's default size.
+      // `label.sw` is the switch, in BOTH places: the label is the click target,
+      // and `.sw` (38x22) is the box. A span inside a separate label would put
+      // the box on the inner element and leave the outer one as an unstyled
+      // second click surface.
+      expect(sw.tagName).toBe('LABEL')
+      expect(sw.querySelector('input[type=checkbox]'), 'a switch holds a checkbox').not.toBeNull()
+      expect(sw.querySelector('.sw-track'), 'a switch draws the track pill').not.toBeNull()
+      // `input + .sw-track` is the selector the checked/disabled rules hang on,
+      // so a wrapper element between them would silently kill those states.
+      expect(sw.children[0]?.tagName).toBe('INPUT')
+      expect(sw.children[1]?.className).toBe('sw-track')
+    }
+    await m.unmount()
+  })
+
+  it('never styles the check-in label as the mode BAR (the nesting that caused it)', async () => {
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, bothSwitches())
+    const checkinLabel = m.container.querySelector('.dsm-workbuddy-pool-auto-checkin label.sw')
+    expect(checkinLabel, 'the check-in switch must render').not.toBeNull()
+    // The defect in one line: this label used to carry the CARD class.
+    expect(
+      checkinLabel!.classList.contains('dsm-workbuddy-pool-modebar'),
+      'the check-in switch must not reuse the mode BAR class — it draws a nested card',
+    ).toBe(false)
+    // …and it shares the ROW class with the pool switch's line, so their switch
+    // and label align on both axes.
+    // The switch row is the WRAPPER now (mirroring the pool switch), and the
+    // switch itself is the label — so one click surface, one shape.
+    expect(checkinLabel!.parentElement?.classList.contains('dsm-workbuddy-pool-switchrow')).toBe(true)
+    await m.unmount()
+  })
+
+  it('keeps the card styling on the mode bar itself, so the master control still reads as the master', async () => {
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, bothSwitches())
+    const bar = m.container.querySelector('.dsm-workbuddy-pool-modebar')
+    expect(bar, 'the mode bar is still a card').not.toBeNull()
+    // Exactly ONE element is the card, and it is the bar — not a switch row.
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-modebar')).toHaveLength(1)
+    await m.unmount()
+  })
+})

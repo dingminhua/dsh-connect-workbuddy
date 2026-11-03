@@ -711,6 +711,20 @@ export const WORKBUDDY_CARD_CSS = `
  */
 .dsm-workbuddy-pool-modebar{padding:12px 14px;gap:8px;border-color:rgba(86,134,254,.36);background:linear-gradient(180deg,rgba(86,134,254,.10),rgba(86,134,254,.02)),var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-workbuddy-pool-modebar-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* A ROW that holds one switch and its label — NOT a card.
+ *
+ * Split out from .dsm-workbuddy-pool-modebar (which is the tinted CARD) because
+ * the automatic check-in switch used to carry the card class by mistake: it was
+ * drawn as a second, nested card inside the mode bar, so the two switches came
+ * out at different sizes with a deep dark gap between them (issue #191
+ * follow-up).
+ *
+ * Keeping the row shape in its own class is what stops that from coming back: a
+ * switch row can never inherit a card's padding, border or background, because
+ * those live on a class this one does not share. Rendered geometry matches
+ * .dsm-workbuddy-pool-modebar-row exactly, so switches stacked in one bar line
+ * up on both axes. */
+.dsm-workbuddy-pool-switchrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dsm-workbuddy-pool-modebar-label{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 /* The mode in words. A switch's position is a 20px shape to decode; this says
    which of the two modes is in force, and therefore how to read the table. */
