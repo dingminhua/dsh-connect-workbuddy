@@ -28,7 +28,7 @@
 import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join, posix, resolve } from 'node:path'
 // Host-first with a local fallback: a static peer import here is a load-time
 // crash in the standalone CLI, because tsdown shares this module with
 // `bin.ts`'s chunk. See `src/host-peers.ts` and issue #47.
@@ -1156,6 +1156,9 @@ interface VaultEntry {
  * to persist a credential because an ACL call failed would turn it into an
  * outage. `doctor` reports the outcome so a machine where it failed is visible.
  * On POSIX this call is a no-op, and `mode` below carries the same intent.
+ *
+ * WHICH directory gets hardened is decided by {@link vaultRootToHarden}, not by
+ * a bare `dirname(dir)` — see the issue #208 note there.
  */
 async function writeVaultEntry(
   dir: string,
@@ -1164,31 +1167,48 @@ async function writeVaultEntry(
   refreshedFrom?: string,
 ): Promise<void> {
   const path = join(dir, `${accountId}.json`)
-  /**
-   * Harden the vault ROOT, which also hardens this region's directory and sweeps
-   * the files already inside (issue #183).
-   *
-   * The root, not just `dir`: `dir` is `<vault>/<region>`, and the root is what
-   * carries the inherited `Everyone: FullControl` from `~/.dsh`. Leaving the
-   * root widened would let any local process delete or replace the region
-   * directory itself, which defeats the file-level restriction inside it.
-   *
-   * BEFORE the write, so the commit's temp inode — and the file it is renamed
-   * over — inherit the hardened ACEs instead of the widened ones. A file-level
-   * pass AFTER the write would leave the pre-rename window open and would be
-   * lost by the next atomic replace, which creates a fresh inode each time.
-   *
-   * Memoized per directory per process, so the second account costs nothing: see
-   * the cost model in `src/windows-acl.ts` for why the per-write budget matters
-   * here.
-   */
-  await protectCredentialDirectory(dirname(dir))
+  await protectCredentialDirectory(vaultRootToHarden(dir))
   await withFileLock(path, async () => {
     await writeFileAtomic(path, `${JSON.stringify(vaultDocument(credential, accountId, refreshedFrom), null, 2)}\n`, {
       mode: 0o600,
       dirMode: 0o700,
     })
   })
+}
+
+/**
+ * The directory {@link writeVaultEntry} hardens: the vault ROOT, not this
+ * entry's own directory (issue #183), and never the Harness home (issue #208).
+ *
+ * WHY THE ROOT. `Everyone: FullControl` is inherited from `~/.dsh` onto
+ * `…/workbuddy-vault`; hardening only `<vault>/<region>` would leave the root
+ * writable, so any local process could replace the region directory itself and
+ * defeat the restriction inside it. Hardening the root propagates down the
+ * whole tree in one `icacls` call (measured on a real host: one call on the
+ * root left the root, both region directories AND the files inside with exactly
+ * the three intended ACEs).
+ *
+ * WHY NOT ALWAYS `dirname(dir)` — THE ISSUE #208 DEFECT. That shape assumes
+ * `dir` is `<vault>/<region>`. It is not for the UNREGIONED store, whose vault
+ * directory IS `<DSH home>/workbuddy-vault`; `dirname` then yields `<DSH home>`
+ * itself, and `/inheritance:r` there strips the ACEs every other directory
+ * under the home inherits. A reporter hit exactly that: `<DSH home>/attachments`
+ * became unreadable (EPERM on `scandir`) and every image send failed with the
+ * host's unrelated `prompt rejected (session/agent-busy)`. `doctor` reaches
+ * this path because it builds an unregioned store.
+ *
+ * So the parent is used only when it is genuinely a vault root — i.e. NOT the
+ * Harness home. When `dir` already IS the vault root, `dir` is the right
+ * target. `src/windows-acl.ts` independently refuses the home and its
+ * ancestors, which covers an injected `vaultDir` and any future call site that
+ * computes this one level too high; this function is what keeps the CORRECT
+ * call from relying on that backstop.
+ */
+function vaultRootToHarden(dir: string): string {
+  const parent = dirname(dir)
+  // Compared with `resolve` on both sides so a trailing separator or a relative
+  // `DSH_HOME` cannot slip past the equality check.
+  return resolve(parent) === resolve(resolveDshHome()) ? dir : parent
 }
 
 /**

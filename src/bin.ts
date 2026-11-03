@@ -63,6 +63,14 @@ interface CredentialAclEntry {
   unexpected?: string[]
   reason?: string
   protectError?: string
+  /**
+   * Why hardening refused this directory on purpose (issue #208).
+   *
+   * Kept apart from {@link protectError}: refusing to touch the Harness home is
+   * the guard working, not a broken machine, so it must not produce the
+   * "your vault could not be repaired, recover with takeown" hint.
+   */
+  protectSkipped?: string
 }
 
 type Action = 'doctor' | 'logout' | 'status'
@@ -335,14 +343,23 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     const rootOutcome = await protectCredentialDirectory(dirname(directory))
     const outcome = await protectCredentialDirectory(directory)
     const acl = await inspectCredentialDirectory(directory)
+    // Issue #208: a refusal is the guard working, so it is reported as
+    // `protectSkipped` and never as `protectError` — the latter drives the
+    // "recover with takeown" hint, which would be nonsense advice for a
+    // directory the plugin deliberately left alone.
+    const skipped = [rootOutcome, outcome].find(candidate => candidate.state === 'skipped')
+    const failed = [outcome, rootOutcome].find(candidate => candidate.state === 'failed')
     const entry: CredentialAclEntry = {
       directory: acl.directory,
       state: acl.state,
       ...acl.weak === undefined ? {} : { unexpected: acl.weak },
       ...acl.reason === undefined ? {} : { reason: acl.reason },
-      ...outcome.state === 'failed'
-        ? { protectError: outcome.reason }
-        : rootOutcome.state === 'failed' ? { protectError: rootOutcome.reason } : {},
+      ...failed !== undefined && failed.state === 'failed'
+        ? { protectError: failed.reason }
+        : {},
+      ...skipped !== undefined && skipped.state === 'skipped'
+        ? { protectSkipped: skipped.reason }
+        : {},
     }
     return [region, entry] as const
   }))
@@ -568,6 +585,10 @@ async function doctor(jsonOutput: boolean): Promise<number> {
         const why = entry.reason === undefined ? '' : ` Reason: ${entry.reason}`
         return [`The ${region} credential vault ACL could NOT be verified or repaired this run${why}: ${entry.directory}. If the directory is suddenly unreadable (EPERM on stat/readdir), its owner is probably not your user account — recover with (elevated): takeown /F "${entry.directory}" /R /D Y && icacls "${entry.directory}" /reset /T, then re-run doctor.`]
       }),
+      // Issue #208: a directory the guard REFUSED is reported, because a plugin
+      // that silently declines to harden something should say so. It gets no
+      // recovery instructions — nothing is broken and there is nothing to fix.
+      ...credentialAcl.flatMap(([, entry]) => entry.protectSkipped === undefined ? [] : [entry.protectSkipped]),
     ],
   }
   if (jsonOutput) {
