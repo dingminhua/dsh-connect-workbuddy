@@ -2,6 +2,46 @@
 
 ## 未发布
 
+### 修复（issue #199：#183 的权限加固会把用户锁在自己的凭据库外，修复来自 PR #200 by @yunyu-lu）
+
+**现象**：Windows 11 日常账户（非管理员）的账号池卡片显示「已保存的账号在本机已不存在」，
+钉住的账号消失，只剩桌面端扫到的那一个；用户被迫 `takeown` 才恢复。报告者给出了完整取证
+（A/B 受控复现、四角度来源验证、时间线重建）与修复，本条按他的实现记录。
+
+**根因**：`src/windows-acl.ts` 的 grant 列表**只授 `*S-1-3-4`（OWNER RIGHTS）**，注释里的理由是
+「创建文件的进程就是它的 owner，所以 OWNER RIGHTS 恰好授给将来读它的那个账户」，顺带省掉一次
+`whoami` 子进程。**这个前提在真机上会不成立**：vault 目录可以早于加固代码存在，也可以由**提权
+进程**创建或接管（报告者机器上有 `RunLevel=Highest` 的免 UAC 启动任务），此时 owner 是
+`BUILTIN\Administrators`。`/inheritance:r` 删光继承 ACE 之后，剩下的三条权限分别命中
+Administrators、SYSTEM、Administrators——**日常账户一条都不占**，`stat` / `readdir` / `mkdir` /
+`write` 全部 `EPERM`，连 `icacls <dir>` 查看都被拒。而 **`icacls` 退出码是 0**：它从未承诺过账户
+权限。所以这不是「加固失败」，是**加固成功而前提错了**——比失败更难发现，因为它一切正常。
+issue 的 A/B 实验**逐字使用同一条命令**，唯一变量是目录 owner（owner=用户 → 写入正常；
+owner=Administrators → 读写全拒，DACL 与事故现场一致），缺陷由此坐实，不是推断。
+
+**三条改动**：
+
+- **grant 改成显式授当前用户 SID**：`directoryGrants(userSid)` / `fileGrants(userSid)` 用
+  `*<userSid>:(OI)(CI)(F)` 取代 `*S-1-3-4`，SYSTEM 与 Administrators 保留。**授权对象不再依赖
+  谁是 owner**，所以提权进程创建的 vault 也仍对其用户可读。`resolveUserSid()` 走
+  `whoami.exe`（`/user /fo csv /nh`，按 `S-1-…` 文本匹配而非 CSV 列切分——账户名本地化、SID
+  不会），每进程只解析一次。
+- **`OWNER RIGHTS` 仍被读取侧接受**：`ALLOWED_SIDS` 保留 `S-1-3-4`，所以 5.x 加固过的旧仓库
+  （那时用户通常就是 owner、那条 ACE 是对的）不会在 `doctor` 里被误报成「权限过宽」。
+- **SID 解析失败不猜、直接失败**：不退回 `OWNER RIGHTS`（那正好会重新造出本 issue 的锁死），
+  而是返回 `failed` 并把原因上报，让下一次写入重试、让 `doctor` 把状态摆出来。
+  加固成功会被记忆、失败**不**被记忆，因此首次失败不会变成永久失败。
+
+**为什么不用「先读 owner 再决定」**：报告者实测 `whoami` 22–26 ms 对 PowerShell `Get-Acl` 133 ms，
+且按目录读 owner 会多一次子进程——它把 `tests/issue12-region-hiding.spec.ts` 的 1 s 轮询预算
+打破过一次（首次 vault 写入超预算，启动刷新的竞态输掉，全局区域继续广告回退模型）。而比较出来的
+结论只会决定「同一个授权用哪种写法」，不改变授给谁，所以省掉它。
+
+**测试**：`tests/issue183-credential-acl.spec.ts` 新增 5 例，其中三条是本 issue 的直接判据——
+「不再授予 OWNER RIGHTS」「加固完全不读目录 owner，因此一个 PowerShell 子进程都不起」
+「SID 解析不出来时宁可直接失败，也不加固」。另有「当前用户算 allowed，所以本 issue 的授权不会被
+报成 widening」与「失败不被记忆、成功被记忆」两条，钉的是上面两条设计选择。
+
 ### 文档（安装章节加一节 `ERR_PNPM_IGNORED_BUILDS` 排障）
 
 issue #204 报「装本插件失败，`[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts:
@@ -63,8 +103,13 @@ issue 结尾的要求补一条 DOM 存在性守卫作为前提。
 **又踩到仓库自己记录过的坑（一次）**：第一版把说明写进 `WORKBUDDY_CARD_CSS` 模板字符串**内部**的
 注释并用了反引号——字面量当场被截断，后面所有 CSS 消失。`tests/client-host-contract.spec.ts` 的
 「每个 class 都得有规则」守卫立刻咬住（那个文件里正写着「不要在这个字面量里用反引号」，且记录着
-它当年就是这样把一整块样式弄丢的）。本轮改动共被**既有守卫抓住 3 次**（另两次是 #199 里那个并发
-bug 与上面那个 `toContain('GetOwner')` 假绿），都不是靠人眼发现的。
+它当年就是这样把一整块样式弄丢的）。本轮改动共被**既有守卫抓住 1 次**，不是靠人眼发现的。
+
+> 合并期间曾有第二份同题实现（PR #205，含 #198 与一套更厚的 #199 加固）与本条并行。最终采用
+> PR #200：报告者在受影响机器上验证过，证据强于异地推断，且 #199 的验收依赖真机。那份实现里
+> 记录过的两处陷阱（`toContain('GetOwner')` 在方法名被改坏后照样绿、并发记忆写成「先置标志再
+> await」会让并发调用者拿到 `undefined`）**不适用于本实现**，此处不记为本条的历史——main 上
+> 不存在 `GetOwner` 断言，`protectCredentialDirectory` 记忆的是 in-flight promise 而非布尔标志。
 
 **变异验证**：3 个变异体，**3 个全部当场打红**（各 1 红 / 10 绿，跑 `tests/context-tiers.spec.tsx`）：
 模型行去掉 `flex-wrap:wrap`、预算组去掉 `flex-wrap:wrap`、删掉窄屏 `@media` 那条规则。第一条同时
