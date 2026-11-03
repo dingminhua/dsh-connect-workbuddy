@@ -282,7 +282,7 @@ describe('shim DSML recovery', () => {
     expect(body).toBe(chunks.join(''))
   })
 
-  it('stops recovering once the upstream sends a native call', async () => {
+  it('stops recovering once the upstream sends a native call, but keeps cleaning', async () => {
     shim = makeShim(() => ({ ok: true, response: streamOf([
       nativeCallFrame(),
       contentFrame(leakedCall()),
@@ -292,10 +292,53 @@ describe('shim DSML recovery', () => {
     await shim.ready
 
     const body = await post(shim, bodyWithTools())
-    // One call channel only: the native one. The later markup is left as the
-    // text it is, rather than becoming a second, competing call.
+    // One call channel only: the native one. The later markup must NOT become a
+    // second, competing call …
     expect(callsIn(body)).toEqual([{ name: 'bash', arguments: '{"command":"pwd"}' }])
-    expect(visibleText(body)).toContain(leakedCall())
+    // … and it must not become visible prose either (issue #207). The original
+    // assertion here was `toContain(leakedCall())`, which wrote the LEAK into the
+    // contract: this file's own `stripStray` says "a lone marker tag has no
+    // content of its own to lose", while that line demanded the marker be shown
+    // as text. Two contradictory positions in one repository needed no external
+    // observation to be wrong.
+    expect(visibleText(body)).not.toContain(MARK)
+    expect(visibleText(body)).not.toContain(MARKUP_TOKEN)
+  })
+
+  it('keeps the text that follows a native call, minus the markup', async () => {
+    // The scrub half must not swallow the answer: a response that uses BOTH
+    // channels still owes the user its prose.
+    shim = makeShim(() => ({ ok: true, response: streamOf([
+      nativeCallFrame(),
+      contentFrame(`第一句。${leakedCall()}第二句。`),
+      contentFrame('', 'stop'),
+      'data: [DONE]\n\n',
+    ]) }))
+    await shim.ready
+
+    const body = await post(shim, bodyWithTools())
+    expect(callsIn(body)).toEqual([{ name: 'bash', arguments: '{"command":"pwd"}' }])
+    expect(visibleText(body)).toBe('第一句。第二句。')
+  })
+
+  it('does not retry when a native call already answered the turn', async () => {
+    // Scrub-mode removals must NOT set `residueSeen`: the residue retry exists
+    // for the turn that produced markup and NOTHING else, and re-running a turn
+    // whose call the upstream already executed would execute it twice.
+    const seen: number[] = []
+    shim = makeShim(() => {
+      seen.push(Date.now())
+      return { ok: true, response: streamOf([
+        nativeCallFrame(),
+        contentFrame(leakedCall()),
+        contentFrame('', 'stop'),
+        'data: [DONE]\n\n',
+      ]) }
+    })
+    await shim.ready
+
+    await post(shim, bodyWithTools())
+    expect(seen, 'one upstream attempt, not two').toHaveLength(1)
   })
 
   it('shows an unclosed block as text and still terminates the stream', async () => {
