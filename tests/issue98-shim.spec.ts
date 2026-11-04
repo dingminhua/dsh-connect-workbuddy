@@ -315,9 +315,13 @@ describe('the reply reads the HOST body, per role (issue #98)', () => {
 
     const reply = await chat(shim, [{ role: 'system', content: NOVEL_OPENING }, { role: 'user', content: 'hi' }])
 
-    expect(reply.message).toContain(`「system：${NOVEL_OPENING}，共 59 字」（不在插件已知名单里，网关可能新增了词条）`)
+    expect(reply.message).toContain(`「system：${NOVEL_OPENING}，共 59 字」（不在插件已知名单里，仅指首行）`)
     // The gateway's shared tips sentence is NOT relayed as if it were a finding.
     expect(reply.message).not.toContain('可能不是官方客户端发出的。请用官方版本重新发送')
+    // The old guess — "the gateway may have added an entry" — is gone: reporters
+    // read it as "this opening went out verbatim", which is exactly the false
+    // lead issue #213 followed for a whole report.
+    expect(reply.message).not.toContain('网关可能新增了词条')
   })
 
   it('reports the host prompt rather than the plugin placeholder after normalisation', async () => {

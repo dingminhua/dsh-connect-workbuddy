@@ -1208,9 +1208,20 @@ function clippedUpstreamText(text: string, limit: number): string {
  * later turn will fail the same way until that line is changed.
  *
  * Each entry also says whether the plugin's own neutralisation already covers
- * it. An entry marked "not in the plugin's list" is the actionable one: that
- * opening goes on the wire verbatim, so either the host wrote it or the
- * gateway's list grew.
+ * it. An entry marked "not in the plugin's list" is the actionable one: either
+ * the host wrote it or the gateway's list grew.
+ *
+ * WHAT THAT MARKER MAY NOT SAY (issue #213). It used to read 「网关可能新增了
+ * 词条」, and a reporter read it as "this opening went out verbatim" — then
+ * reported that the three `assistant` openings the gate had named were never
+ * neutralised at all. They were: `forceNeutralHead` puts the head in front of
+ * every scanned opening regardless of the list (since 4.15.1), so the request
+ * that was refused for the third time had heads on all of them. The marker
+ * describes the FIRST attempt and only the opening's FIRST LINE; the gateway
+ * matches an exact substring anywhere in the text, so a first line that is
+ * absent from the snapshot says nothing about the message as a whole. Both of
+ * those are stated in the reply's closing sentence, which is the part a
+ * reporter actually quotes back at us.
  *
  * Capped at {@link CHANNEL_EVIDENCE_LIMIT} entries: a session can carry dozens
  * of system/assistant messages, and a wall of them would bury the one that
@@ -1224,7 +1235,7 @@ function channelEvidenceText(bodyJson: string): string {
     .map(entry => {
       const label = entry.neutralized
         ? '（插件已加中性头）'
-        : '（不在插件已知名单里，网关可能新增了词条）'
+        : '（不在插件已知名单里，仅指首行）'
       const span = entry.closing === undefined
         ? `，共 ${entry.textLength} 字`
         : `，首尾为「${entry.closing}」，共 ${entry.textLength} 字`
@@ -2162,9 +2173,13 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         const message =
           `workbuddy 上游失败：${failoverReasonText(result)}（http ${result.status}）${note}${stamp}。${memberNote}${evidence}` +
           '该请求被 WorkBuddy 网关的渠道校验拦截，上游把它描述成「不是官方客户端发出的」，但那是误导性文案：' +
-          '网关匹配的是每一条 system 与 assistant 消息的开头，与账号、积分、额度、网络都无关，换账号或换区域也不会改变结果。' +
+          '网关扫描每一条 system 与 assistant 消息（开头做前缀匹配，正文做精确子串匹配），与账号、积分、额度、网络都无关，换账号或换区域也不会改变结果。' +
           '插件已对已知的第三方 agent 指纹做归一化' + retryNote +
-          '；若上面标着「不在插件已知名单里」的开头来自宿主或其他插件，请修改该提示；新的指纹可反馈到 issue 里'
+          (retriedWithForcedHead
+            ? '；这次重试里每一条被扫描消息都已经加了中性头，仍然被拒，说明卡点不在这些开头本身'
+            : '') +
+          '。上面标着「不在插件已知名单里」的，只说明该消息的首行不是已知指纹，既不表示这条消息没被处理，也不表示它一定有问题；' +
+          '如果这些消息确实有问题，命中的更可能是中段的某一句。请把这条报错整段反馈到 issue 里——首行之外的线索只能从完整请求里找'
         writeOpenAIError(res, KIND_STATUS[result.kind], result.kind, message, hostErrorCode(result.kind))
         return
       }
