@@ -11,12 +11,12 @@
 
 | 事实 | 值 | 采集时间 |
 |---|---|---|
-| npm `latest` | **5.17.0** | 2026-11-02 03:11 +08:00 |
-| 5.17.0 发布时间 | 2026-11-01 04:44 UTC（北京时间 11-01 12:44） | 同上 |
-| 此前一版 | 5.16.0，2026-10-31 09:55 UTC | 同上 |
-| 再此前 | 5.15.2，2026-10-30 11:44 UTC | 同上 |
-| GitHub Releases | [v5.17.0](https://github.com/dingminhua/dsh-connect-workbuddy/releases/tag/v5.17.0)（Latest） | 同上 |
-| **5.18.0** | **tag 已推送（`06006e4`），npm 上还没有，Release 也没建** | 同上 |
+| npm `latest` | **5.18.1** | 2026-11-05 02:53 +08:00 |
+| 5.18.1 发布时间 | 2026-11-04 18:53 UTC（北京时间 11-05 02:53） | 同上 |
+| 此前一版 | 5.17.0，2026-11-01 04:44 UTC | 同上 |
+| 再此前 | 5.16.0，2026-10-31 09:55 UTC | 同上 |
+| GitHub Releases | [v5.18.1](https://github.com/dingminhua/dsh-connect-workbuddy/releases/tag/v5.18.1)（Latest） | 同上 |
+| **5.18.0** | **从未上架**——发布当天账号进入 72 小时只读冻结，该版本号被跳过，内容并入 5.18.1 | 同上 |
 | **市场索引里的本插件** | **本次未核对**（原因见下） | 同上 |
 
 > **为什么「市场索引里是几」这一行这次不用一个数字回答**：社区市场的索引源是**每份 profile 各自配置**的（`dsh-plugin-market` 的 `sources` 是设置项，不是硬编码常量），
@@ -35,8 +35,11 @@
 | 弹窗里「真实设备 Token」几乎看不见 / 派生值不显示 | **5.17.0** |
 | 状态读取失败永久卡在卡片上 | 5.14.0（#170） |
 | `doctor` 把活着的宿主报成 `stale` | 5.14.0（#174①） |
-| 鸿蒙上账号池恒为 0；生视频三个故障；想要侧边栏面板 | **5.18.0——npm 上还没有**，见 [#192](https://github.com/dingminhua/dsh-connect-workbuddy/issues/192) 的源码自编译 |
-| 没什么具体问题 | **直接上 5.17.0**，省得逐条对 |
+| 鸿蒙上账号池恒为 0；生视频三个故障；想要侧边栏面板；切换账号后档位标签跳回 | **5.18.1** |
+| 窄屏下模型行选不到第三档「上下文预算」（#198） | **5.18.1** |
+| 生图传多张参考图被静默切成文生图；参数类型写错却照常扣积分（`INVALID_ARGS`） | **5.18.1** |
+| 渠道校验报错把「首行不在名单里」说成「网关可能新增了词条」（#213） | **5.18.1** |
+| 没什么具体问题 | **直接上 5.18.1**，省得逐条对 |
 
 ## 1. 为什么市场里的版本会滞后
 
@@ -48,14 +51,15 @@
 | ② | **DSH 市场自己的「检查更新」** | npm 的 `latest` dist-tag，30 分钟缓存；桌面宿主还会把 24 小时内发布的版本标成「新版等待中」 | 版本对，但**按钮是灰的/标签是等待中**，看起来像「没有新版」 |
 | ③ | **pnpm 的新版本等待期**（`minimumReleaseAge`） | profile 的 pnpm 配置 | 浮动范围被**静默压回旧版**；写死精确版本号则直接报错拒绝 |
 
-> **③这条仍然成立，只是现在没有正在窗口内的新版本**：`5.17.0` 发布于 2026-11-01 04:44 UTC，
-> 它的 24 小时窗口在 2026-11-02 04:44 UTC（北京时间 11-02 12:44）结束。
+> **③这条现在正好在一个窗口里**：`5.18.1` 发布于 2026-11-04 18:53 UTC，
+> 它的 24 小时窗口在 2026-11-05 18:53 UTC（北京时间 11-06 02:53）结束——在此之前，配了
+> `minimumReleaseAge` 的 profile 会拒绝浮动范围、也可能拒绝精确版本号。
 > 实测过两种形态（隔离目录、pnpm 10.34.5、`--lockfile-only`，未触碰任何人的环境）：
 >
 > | 写法 | 设了 `minimumReleaseAge=1440` 的结果 |
 > |---|---|
-> | 浮动 `^5.16.0` | 解析到旧版本，不报错 ⚠️（「升级成功了，版本没变」） |
-> | 精确 `5.17.0` | `ERR_PNPM_NO_MATURE_MATCHING_VERSION`（明确拒绝，反而好判断） |
+> | 浮动 `^5.17.0` | 解析到旧版本，不报错 ⚠️（「升级成功了，版本没变」） |
+> | 精确 `5.18.1` | `ERR_PNPM_NO_MATURE_MATCHING_VERSION`（明确拒绝，反而好判断） |
 > | 不设该配置（pnpm 默认） | 浮动范围直接解析到最新版 ✅ |
 >
 > 也就是说：**窗口一旦被配置，浮动范围会骗你，精确版本号不会**——它会如实报错，而不是假装成功。
@@ -71,7 +75,7 @@
 
 ```sh
 # 1) 装精确版本号（不要用 ^ 或 latest，理由见 §1）
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.17.0
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.1
 
 # 2) 确认真的装上去了（见 §4，别凭感觉）
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
@@ -81,7 +85,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ```sh
 # A) 等窗口过去（默认 24 小时，从该版本发布时刻算）
-#    5.17.0 发布于 2026-11-01 04:44 UTC → 窗口约在 2026-11-02 04:44 UTC（北京时间 11-02 12:44）结束
+#    5.18.1 发布于 2026-11-04 18:53 UTC → 窗口约在 2026-11-05 18:53 UTC（北京时间 11-06 02:53）结束
 
 # B) 现在就装：告诉 pnpm 这个包不必等（写进 profile 的 pnpm-workspace.yaml）
 minimumReleaseAgeExclude:
@@ -115,7 +119,7 @@ minimumReleaseAgeExclude:
 ## 4. 怎么确认真的升上去了（这一节纠正两条旧口径）
 
 ```sh
-# 第一行就是版本：WorkBuddy Connect 5.17.0 on vX.Y.Z
+# 第一行就是版本：WorkBuddy Connect 5.18.1 on vX.Y.Z
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 # 或者看 JSON 顶层的 version 字段
@@ -139,7 +143,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy status --json
 
 ## 6. 相关置顶
 
-- [#192](https://github.com/dingminhua/dsh-connect-workbuddy/issues/192) — **当前版本状态与发布节奏**（npm 上是几、包发出去没有、急用怎么自己编译）；本篇只讲「怎么升上来」
+- [#192](https://github.com/dingminhua/dsh-connect-workbuddy/issues/192) — **当前版本状态与发布节奏**（npm 上是几、这一版修了什么）；本篇只讲「怎么升上来」
 - [#162](https://github.com/dingminhua/dsh-connect-workbuddy/issues/162) — 渠道校验 400（`11128`）的处置与改词表；本楼只负责「怎么升上来」
 - [#125](https://github.com/dingminhua/dsh-connect-workbuddy/issues/125) — 400 / 上游失败分类总表与报告模板
 - [#156](https://github.com/dingminhua/dsh-connect-workbuddy/issues/156) — WorkBuddy 用不了时的姊妹插件（Trae / Qoder）
