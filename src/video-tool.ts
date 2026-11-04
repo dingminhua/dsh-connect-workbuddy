@@ -443,7 +443,9 @@ export function createVideoTool(deps: VideoToolDeps): VideoToolDefinition {
     description:
       '用当前账号的 WorkBuddy 视频生成能力生成一段短视频。'
       + '不填 image 是文生视频（用该区带 text-to-video 标签的模型）；'
-      + '填了 image 是图生视频（用带 image-to-video 标签的模型）。'
+      + '填了 image 是图生视频（用带 image-to-video 标签的模型，只收一张输入图）。'
+      + '可选参数要么不填、要么类型正确；填错类型直接 INVALID_ARGS 且不发请求，'
+      + '不会静默丢参数或切换模式。'
       + '国内区与国际区都可用，模型取自该区产品配置'
       + '（国内区 kling-video-v3、minimax-video-h3；国际区 kling-video-v3，'
       + '两种 video tag 都有；以该区目录为准）。'
@@ -466,7 +468,9 @@ export function createVideoTool(deps: VideoToolDeps): VideoToolDefinition {
             + '接受本地绝对路径、file:// URL、http(s) URL、data URL 或裸 base64。'
             + '上限 8 MB，不做缩放或格式转换。'
             + '单元素字符串数组与字符串等价；图生视频只支持一张输入图，'
-            + '传多张会直接报错（不会静默改走文生视频）。',
+            + '传多张会直接报错（不会静默改走文生视频）。'
+            + '需要多图参考（如按模板换装）时，先用生图工具 workbuddy_draw_image 把参考'
+            + '合成一张成品图，再把这张图传进来。',
         },
         model: {
           type: 'string',
