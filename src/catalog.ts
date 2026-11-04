@@ -173,6 +173,34 @@ export function applyContextBudgets(
 }
 
 /**
+ * The tier one model currently RESOLVES TO, given the saved budgets.
+ *
+ * This is the rule the card's radio group has to agree with, so it lives next
+ * to {@link applyContextBudgets} rather than being re-derived in the browser —
+ * ONE definition, so the UI cannot drift from the backend again (issue #215).
+ *
+ * `undefined` means "no explicit budget" and answers the NATIVE window, which
+ * is exactly what {@link applyContextBudgets} does with an absent entry. The
+ * card used to default the 200K radio with `?? 200_000` instead, so a model
+ * with no stored budget showed "200K" selected while DSH was told 1,000,000 —
+ * the reporter's case. The radio was right there in the UI and wrong in the
+ * only place that matters.
+ *
+ * A budget ABOVE the native window answers the native window, because
+ * {@link applyContextBudgets} clamps with `Math.min`: a stored 1048576 for a 1M
+ * model genuinely resolves to the native tier, and that radio is the one that
+ * should be lit.
+ */
+export function effectiveContextBudget(
+  nativeContextWindow: number,
+  savedBudget: WorkBuddyContextBudget | undefined,
+): number {
+  return savedBudget === undefined
+    ? nativeContextWindow
+    : Math.min(nativeContextWindow, savedBudget)
+}
+
+/**
  * Derive the runtime catalog from the last-refreshed directory plus the user's
  * selection.
  *

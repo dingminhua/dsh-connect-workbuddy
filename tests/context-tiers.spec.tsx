@@ -115,14 +115,16 @@ describe('context-budget tiers', () => {
   })
 
   it('leaves the 500K radio unchecked when no budget is stored', async () => {
-    // No stored budget must not read as "500K selected": the default the card
-    // renders is the 200K tier, and `activeContextBudgets[id] === 500_000` is
-    // false for `undefined`.
+    // No stored budget must not read as "500K selected". What it DOES read as is
+    // the native tier — issue #215: the old version of this test asserted the
+    // 200K tier here, which was the bug rather than the contract. With no stored
+    // budget `applyContextBudgets` keeps the model's own 1M window, so 1M is the
+    // tier DSH is actually told and the only tier the card may light up.
     const m = await render(usageWithWindow(1_000_000))
     const radios = tierRadios(m.container)
     const checked = radios.filter(radio => radio.checked)
     expect(checked).toHaveLength(1)
-    expect(checked[0]?.nextElementSibling?.textContent).toBe('200K')
+    expect(checked[0]?.nextElementSibling?.textContent).toBe('1M')
   })
 
   it('keeps 500K selectable on a read-only card but not while saving', async () => {

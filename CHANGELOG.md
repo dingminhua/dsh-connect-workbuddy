@@ -2,6 +2,75 @@
 
 ## 未发布
 
+### 修复（issue #215：模型卡的「200K」单选框显示为选中，但 DSH 拿到的是 1M）
+
+报告者（StandGreat，Windows / Node 24.19.0 / 5.17.0 / 国内版 cn）核对上游
+`main` 后指出：`regions.cn.contextBudgets` 为 `{}` 时，模型管理页面把 **200K**
+单选框画成已选中，而 `deepseek-v4.1-flash` / `glm-5.3` / `glm-5.3-flash` 三个
+模型**实际向 DSH 声明的窗口都是 1,000,000**。他用已安装的客户端产物离线执行了
+真实的 `checked` 表达式，并调用同一插件导出的 `deriveCatalog` 对照：
+
+```text
+FAIL saved={}                        UI_200K_checked=true  backend_window=1000000
+PASS saved={"deepseek-v4.1-flash":200000}  UI_200K_checked=true  backend_window=200000
+PASS saved={"deepseek-v4.1-flash":500000}  UI_200K_checked=false backend_window=500000
+```
+
+**根因：浏览器里另有一份后端规则的副本。** 200K 那一档写的是
+`checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}` —— 那个
+`?? 200_000` 正是 issue #33 已经从后端删掉的默认值（`applyContextBudgets`
+现在「没有预算就保留原生窗口」），却留在了 UI 里。于是**两端各有一个默认值，
+而用户看到的那个是错的**。报告者还指出了二阶后果：既然 200K 已经「看起来选好
+了」，想要默认行为的用户就没有任何东西可点，空预算于是活过了每一次重新打开。
+
+**为什么这不是纯外观问题**：`contextWindow` 是 DSH 拿去宣称、并据此决定何时压缩
+的内容；卡片说「压到 200K」而宿主回答 1M，恰好在这个控件唯一存在的意义上误导。
+
+**修法（两半）**
+
+- **一条规则，一个定义**：新增 `effectiveContextBudget(nativeContextWindow,
+  savedBudget)`（`src/catalog.ts`，紧挨 `applyContextBudgets`）。卡片改成把
+  **每个档位**与这个值比较，所以**恰好一个**单选框被选中，且它就是 DSH 被告知的
+  那一档。规则不再有第二份副本，UI 与后端因此无法再次漂移。
+- **「原生窗口」这一档 = 不设上限**：选中它**删掉**该模型的预算条目，而不是写入
+  一个恰好等于窗口的数字。存 `1000000` 今天效果相同，但上游日后调大该模型窗口时
+  它就不再跟进了，而且让「没有上限」在设置文件里无法表达。删除 key 而不是赋
+  `undefined`：后者能活过 `structuredClone`，而设置写入的严格 JSON 编解码会因此
+  整单拒绝（与 `setDefaultThinkingEffort` 同一条规则、同一个理由）。
+- 顺带修掉一个此前不可见的缺陷：原生那一档原来是
+  `nativeContextWindow <= 200_000 || …`，对**小窗口模型**它永远为真，于是有预算时
+  会**同时有两个单选框被选中**——一个单选组没法表达「接下来会发生什么」。现在
+  ≤200K 的模型只有一个「原生窗口」档且为 `disabled`，因为它确实是唯一的选择。
+
+**测试**：新增 `tests/issue215-context-budget-radio.spec.tsx`（12 条，真实挂载
+卡片、真实点击、真实保存请求），覆盖报告者要求的四种状态 + 他提的两条路径：
+
+- 缺省 / 200K / 500K / 显式原生 —— 每种都**同时**断言「被选中的档位」与
+  「后端算出的窗口」，两边用同一个期望值（`labelFor(backendWindow(...))`）；
+- 一条把四种状态串起来的不变量：「亮着的那一档 == 有效窗口」；
+- 一条横向扫描（192K/200K/256K/500K/1M × 三种预算）：**任何组合下都只有一个
+  单选框被选中**；
+- 选「原生」后保存，断言发给宿主 `__save` 的请求体里 `contextBudgets` 是 `{}`、
+  该模型 key **不存在**（不是等于窗口的数字）；
+- 报告者的第 3 步（不动任何控件 → 保存 → 重开）：未编辑的卡片**不是 dirty**，
+  所以保存按钮为 `disabled` —— 无处可写，也就无从丢失；重开仍落在原生档、后端
+  仍是 1M。这条写明了「现在到底会发生什么」，而不是假装按钮可点。
+- 4 条 `effectiveContextBudget` 的单元断言，含「预算高于窗口时与
+  `applyContextBudgets` 的 `Math.min` 逐一致」以及一张 7 个取值的对照表——
+  这就是修复前为假的那条性质。
+
+变异验证：把 200K 档改回 `?? 200_000` → **6 条转红**（含 `tests/context-tiers.spec.tsx`
+里原先钉住缺陷本身的那一条，已按新契约改写）；把「原生」档改回写入窗口数字 →
+「保存要删 key」转红。全量 3041 passed + 2 skipped；两个 tsconfig 干净；build
+6 个产物齐全，`lib/client.js` 里 `effectiveContextBudget` 出现 4 次、旧的
+`?? 200000) === 200000` 表达式为 0 次。
+
+**顺带记录的教训**：`tests/context-tiers.spec.tsx` 里原有一条
+`leaves the 500K radio unchecked when no budget is stored`，断言「没预算时选中的是
+200K」——它钉住的正是缺陷本身。这与 #214 里 `catalog.spec.ts` 那条
+「兜底表带有抓取时的倍率」是同一类：**一条把 bug 写成期望的测试，会让修复看起来
+像回归**。已按契约改写，并在注释里点明它原来断言的是什么。
+
 ### 修复（issue #214：国际版卡片显示内置兜底表的旧价；`models/refresh` 不落盘）
 
 报告者（夜掌灯）在 DSH Desktop / Windows x64 / 插件 5.17.0 / 国际版
