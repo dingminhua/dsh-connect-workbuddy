@@ -116,6 +116,41 @@ function asNonEmptyString(value: unknown): string | undefined {
 }
 
 /**
+ * 把工具参数 `image` 规整成输入图列表。
+ *
+ * 返回 undefined 表示「没给图」（文生图）；单个字符串 → 一张；字符串数组 →
+ * 多张（多图参考，上游 `/v2/images/edits` 的 `image` 字段本来就收数组）。
+ *
+ * 畸形输入（数字 / 对象 / 布尔，或数组里混了非字符串 / 空串）抛 INVALID_ARGS——
+ * 绝不能像早先那样把「不是单个字符串」当「没给图」，那会让参考图被悄悄丢掉、
+ * 工具静默退回文生图，生成的画面跟 prompt 毫无关系。
+ */
+function asImageList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') {
+    return value.trim() === '' ? undefined : [value.trim()]
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return undefined
+    const items: string[] = []
+    for (const item of value) {
+      if (typeof item !== 'string' || item.trim() === '') {
+        throw inputImageError(
+          'workbuddy image: image 数组的每个元素都必须是非空字符串'
+          + '（本地路径 / file:// / http(s) / data URL / 裸 base64）。',
+        )
+      }
+      items.push(item.trim())
+    }
+    return items
+  }
+  throw inputImageError(
+    'workbuddy image: image 必须是字符串或字符串数组'
+    + '（本地路径 / file:// / http(s) / data URL / 裸 base64）。',
+  )
+}
+
+/**
  * 这些失败说明请求真的打到了上游、可能已经扣了积分，才值得进冷却。
  * 参数写错 / 未登录 / 目录里没有模型都还没花钱。
  */
@@ -318,11 +353,13 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
             + '用户要竖版 / 横版 / 手机壁纸 / 封面 / 高清大图时，改这里的宽高，不要只在 prompt 里说。',
         },
         image: {
-          type: 'string',
+          type: ['string', 'array'],
+          items: { type: 'string' },
           description:
             '输入图，可选。填了就是改图（image-to-image）；不填就是文生图。'
-            + '接受本地绝对路径、file:// URL、http(s) URL、data URL 或裸 base64。'
-            + '上限 8 MB，不做缩放或格式转换。',
+            + '接受本地绝对路径、file:// URL、http(s) URL、data URL 或裸 base64；'
+            + '也接受字符串数组（多张参考图，如 [模板图, 服装图]，按顺序当参考）。'
+            + '上限 8 MB/张，不做缩放或格式转换。',
         },
         model: {
           type: 'string',
@@ -382,7 +419,7 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
       const requestedModel = asNonEmptyString(record['model'])
       // 模式由「有没有给输入图」唯一决定：不新增 mode 参数，免得出现
       // 「mode=edit 但没图」这种自相矛盾的请求。
-      const image = asNonEmptyString(record['image'])
+      const images = asImageList(record['image'])
 
       const now = Date.now()
       if (now < cooldownUntil) {
@@ -415,18 +452,21 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
         const models = await listModels(credential, signal)
         // 先把输入图归一成 data URL：读文件 / 下载都在「发请求」之前，
         // 失败了不花积分、也不该触发冷却。
-        const input = image === undefined ? undefined : await resolveImageInput(image, signal)
-        const tag = input === undefined ? IMAGE_TAG_TEXT_TO_IMAGE : IMAGE_TAG_IMAGE_TO_IMAGE
+        // 多张参考图全部归一成 data URL（都发生在「发请求」之前，失败不花积分）。
+        const inputs = images === undefined
+          ? undefined
+          : await Promise.all(images.map(image => resolveImageInput(image, signal)))
+        const tag = inputs === undefined ? IMAGE_TAG_TEXT_TO_IMAGE : IMAGE_TAG_IMAGE_TO_IMAGE
         const model = pickMediaModel(models, requestedModel, tag)
         sent = true
-        const outcome = input === undefined
+        const outcome = inputs === undefined
           ? await deps.generateImage(credential, { model: model.id, prompt, size }, signal)
           : await deps.editImage(
             credential,
-            { model: model.id, prompt, size, image: [input] },
+            { model: model.id, prompt, size, image: inputs },
             signal,
           )
-        const mode = input === undefined ? 'generate' : 'edit'
+        const mode = inputs === undefined ? 'generate' : 'edit'
         const value: Record<string, unknown> = {
           mode,
           model: model.id,

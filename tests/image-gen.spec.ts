@@ -641,6 +641,60 @@ describe('createImageTool', () => {
       expect(blocks[0]?.text).toContain('改图')
       expect(blocks[0]?.text).toContain('hunyuan-image-alpha-edit')
     })
+
+    it('给 image 数组就走 editImage，多张参考图按顺序全部上传', async () => {
+      const editImage = vi.fn(async (
+        _credential: unknown,
+        request: {
+          readonly model: string
+          readonly prompt: string
+          readonly size: string
+          readonly image: readonly string[]
+        },
+      ) => ({ url: 'https://cos.example/edited.png', credit: 5.71 }))
+      const tool = createImageTool(deps({
+        listMediaModels: async () => [
+          { id: 'hunyuan-image-alpha', name: 'A', tags: [IMAGE_TAG_TEXT_TO_IMAGE] },
+          { id: 'hunyuan-image-alpha-edit', name: 'B', tags: [IMAGE_TAG_IMAGE_TO_IMAGE] },
+        ],
+        editImage,
+      }))
+      const template = imageDataUrl('image/png', Buffer.from('template').toString('base64'))
+      const outfit = imageDataUrl('image/png', Buffer.from('outfit').toString('base64'))
+      const value = await tool.execute(
+        { prompt: '按模板换装', image: [template, outfit] },
+        {},
+      )
+      expect(value['mode']).toBe('edit')
+      expect(value['model']).toBe('hunyuan-image-alpha-edit')
+      expect(editImage).toHaveBeenCalledTimes(1)
+      expect(editImage.mock.calls[0]?.[1]).toMatchObject({
+        model: 'hunyuan-image-alpha-edit',
+        prompt: '按模板换装',
+        image: [template, outfit],
+      })
+    })
+
+    it('数组里混了非字符串 → INVALID_ARGS，且不发请求', async () => {
+      const editImage = vi.fn()
+      const tool = createImageTool(deps({ editImage }))
+      await expect(tool.execute(
+        { prompt: '改', image: ['data:image/png;base64,AAAA', 42] },
+        {},
+      )).rejects.toMatchObject({ code: 'INVALID_ARGS' })
+      expect(editImage).not.toHaveBeenCalled()
+    })
+
+    it('image 是数字 / 对象 → INVALID_ARGS，而不是悄悄退回文生图', async () => {
+      // This pins the regression the multi-image fix addresses: a non-string,
+      // non-array image used to be read as undefined and silently flip the tool
+      // into generate mode, generating an unrelated image and burning credits.
+      const generateImage = vi.fn()
+      const tool = createImageTool(deps({ generateImage }))
+      await expect(tool.execute({ prompt: '改', image: 123 }, {}))
+        .rejects.toMatchObject({ code: 'INVALID_ARGS' })
+      expect(generateImage).not.toHaveBeenCalled()
+    })
   })
 
   it('上游失败后进入冷却，第二次调用直接 COOLDOWN', async () => {

@@ -109,7 +109,7 @@
 | 传了 `image`？ | 模式 | 走的端点 | 选模型用的标签 |
 | --- | --- | --- | --- |
 | 否 | 文生图 | `POST /v2/images/generations` | `text-to-image` |
-| 是 | 改图 | `POST /v2/images/edits` | `image-to-image` |
+| 是（单个字符串或数组） | 改图 | `POST /v2/images/edits` | `image-to-image` |
 
 `model` 的校验也按当次模式的标签组做：拿文生图模型去改图会直接报
 「目录里没有图生图模型「xxx」。可用：…」，不会把不匹配的 id 发上去换一个上游 404。
@@ -117,7 +117,11 @@
 ### `image` 收哪几种形态
 
 官方 CLI 的 `processImageInput` 收下面四种，这里全部支持；**一律先归一成
-`data:<mime>;base64,<b64>`** 再发上去（那是上游唯一接受的形态）：
+`data:<mime>;base64,<b64>`** 再发上去（那是上游唯一接受的形态）。
+`image` 除了单个字符串，**也收字符串数组**（多张参考图，按顺序当参考，如
+`[模板图, 服装图]`）——数组会逐张归一后按序传给上游 `/v2/images/edits` 的
+`image` 字段（那本来就是 data URL 数组）。数组里混了非字符串或空串、或传了
+数字 / 对象等畸形值，一律报 `INVALID_ARGS`，绝不悄悄退回文生图；
 
 | 形态 | 例子 | 说明 |
 | --- | --- | --- |
@@ -126,6 +130,7 @@
 | `http(s)` URL | `https://example.com/pic.jpg` | 宿主侧下载，30 秒超时 |
 | data URL | `data:image/png;base64,iVBOR…` | 校验 `data:image/*;base64,` 前缀后原样使用 |
 | 裸 base64 | `iVBORw0KGgo…` | 长度 ≥ 100、无路径分隔符、字符集合法才认，否则当成路径 |
+| 字符串数组 | `[path1, path2]` | 多张参考图，逐张按上表规则归一，按序上传 |
 
 **上限 8 MB**（`MAX_INPUT_IMAGE_BYTES`），超了报 `INVALID_ARGS` 并在消息里给出实际大小。
 体积按**解码后的字节数**算，不按 base64 字符串长度——base64 比原始字节长约 4/3，
