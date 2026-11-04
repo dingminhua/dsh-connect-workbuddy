@@ -171,12 +171,94 @@ function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 }
 
-function asNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+function describeArgType(value: unknown): string {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
 }
 
-function asBoolean(value: unknown): boolean | undefined {
-  return typeof value === 'boolean' ? value : undefined
+/**
+ * 可选参数的严格读取族：undefined/null/空串 → 未提供（走默认值）；
+ * 类型不对 → INVALID_ARGS，绝不静默丢掉。
+ *
+ * 旧行为（`asNumber`/`asBoolean` 式的"类型不对就当没给"）与生图工具
+ * `image: [...] 被丢掉切回文生图` 是同一族错误：`seconds: "10"` 安静地
+ * 出 5 秒的片、`model: ["kling-video-v3"]` 安静地换了模型扣积分。调用方
+ * 写了参数就要么被尊重、要么被明说——类型写错就报错，不要替它猜默认值。
+ * 这些校验都发生在「发请求」之前：不花积分、不进冷却。
+ */
+function strictString(value: unknown, name: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') {
+    throw new WorkBuddyVideoError(
+      `workbuddy video: 参数 ${name} 必须是字符串（或不填），实际是${describeArgType(value)}。`,
+      'INVALID_ARGS',
+    )
+  }
+  return value.trim() === '' ? undefined : value.trim()
+}
+
+function strictNumber(value: unknown, name: string): number | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new WorkBuddyVideoError(
+      `workbuddy video: 参数 ${name} 必须是有限数字（或不填），实际是${describeArgType(value)}。`,
+      'INVALID_ARGS',
+    )
+  }
+  return value
+}
+
+function strictBoolean(value: unknown, name: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'boolean') {
+    throw new WorkBuddyVideoError(
+      `workbuddy video: 参数 ${name} 必须是布尔值（或不填），实际是${describeArgType(value)}。`,
+      'INVALID_ARGS',
+    )
+  }
+  return value
+}
+
+/**
+ * 输入图参数：字符串 → 照旧；单元素字符串数组 → 解包（与字符串等价，宽容
+ * 模型侧常见的数组写法）；undefined/null/空串 → 未提供（文生视频）。
+ * 其余 → INVALID_ARGS。
+ *
+ * 为什么不收多图数组：图生视频上游只吃**单张** `image_url`，不像图生图的
+ * `/v2/images/edits` 收数组。调用方传多张时它以为自己在做多图参考——
+ * 静默取第一张或静默全丢都是撒谎，必须明说；生图工具那种「数组被丢掉、
+ * 模式悄悄切成文生」的 bug 在这里被钉死不再发生。
+ */
+function asVideoImageInput(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') {
+    return value.trim() === '' ? undefined : value.trim()
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return undefined
+    if (value.length > 1) {
+      throw new WorkBuddyVideoError(
+        `workbuddy video: 图生视频只支持一张输入图，收到 ${value.length} 张。`
+        + '需要多图参考时，先用生图工具把参考合成一张成品图，再把那张图传到这里。',
+        'INVALID_ARGS',
+      )
+    }
+    const item = value[0]
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new WorkBuddyVideoError(
+        'workbuddy video: image 数组的唯一元素必须是非空字符串'
+        + '（本地路径 / file:// / http(s) / data URL / 裸 base64）。',
+        'INVALID_ARGS',
+      )
+    }
+    return item.trim()
+  }
+  throw new WorkBuddyVideoError(
+    'workbuddy video: image 必须是字符串或单元素字符串数组'
+    + '（本地路径 / file:// / http(s) / data URL / 裸 base64）。',
+    'INVALID_ARGS',
+  )
 }
 
 /**
@@ -377,11 +459,14 @@ export function createVideoTool(deps: VideoToolDeps): VideoToolDefinition {
           description: '画面描述（中文或英文都可以），≤2500 字符。写清楚主体、动作、风格、镜头。',
         },
         image: {
-          type: 'string',
+          type: ['string', 'array'],
+          items: { type: 'string' },
           description:
             '输入图，可选。填了就是图生视频（image-to-video）；不填就是文生视频。'
             + '接受本地绝对路径、file:// URL、http(s) URL、data URL 或裸 base64。'
-            + '上限 8 MB，不做缩放或格式转换。',
+            + '上限 8 MB，不做缩放或格式转换。'
+            + '单元素字符串数组与字符串等价；图生视频只支持一张输入图，'
+            + '传多张会直接报错（不会静默改走文生视频）。',
         },
         model: {
           type: 'string',
@@ -482,14 +567,15 @@ export function createVideoTool(deps: VideoToolDeps): VideoToolDefinition {
           'INVALID_ARGS',
         )
       }
-      const requestedModel = asNonEmptyString(record['model'])
-      const requestedSeconds = asNumber(record['seconds'])
-      const requestedResolution = asNonEmptyString(record['resolution'])
-      const requestedAspectRatio = asNonEmptyString(record['aspect_ratio'])
-      const requestedNegativePrompt = asNonEmptyString(record['negative_prompt'])
-      const requestedEnableAudio = asBoolean(record['enable_audio'])
+      const requestedModel = strictString(record['model'], 'model')
+      const requestedSeconds = strictNumber(record['seconds'], 'seconds')
+      const requestedResolution = strictString(record['resolution'], 'resolution')
+      const requestedAspectRatio = strictString(record['aspect_ratio'], 'aspect_ratio')
+      const requestedNegativePrompt = strictString(record['negative_prompt'], 'negative_prompt')
+      const requestedEnableAudio = strictBoolean(record['enable_audio'], 'enable_audio')
       // 模式由「有没有给输入图」唯一决定（同生图工具的思路：不增加 mode 参数）。
-      const image = asNonEmptyString(record['image'])
+      // 类型不对的 image 必须报错而不是当成「没给图」——见 asVideoImageInput。
+      const image = asVideoImageInput(record['image'])
 
       const now = Date.now()
       if (now < cooldownUntil) {

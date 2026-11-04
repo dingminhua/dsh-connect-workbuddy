@@ -151,6 +151,26 @@ function asImageList(value: unknown): string[] | undefined {
 }
 
 /**
+ * 可选字符串参数（size / model）：undefined/null/空串 → 未提供；其它类型
+ * （数字 / 数组 / 对象 / 布尔）→ INVALID_ARGS。
+ *
+ * 旧行为把类型不对的值静默丢掉、回落到默认值：`model: ["hy-image-3.0"]`
+ * 会安静地用默认模型扣积分，`size: 1024` 安静地用默认尺寸——与 image 数组
+ * 被静默丢掉切回文生图是同一族错误，只是后果轻些。类型写错就明说，
+ * 不要替调用方猜一个默认值。
+ */
+function strictString(value: unknown, name: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') {
+    throw inputImageError(
+      `workbuddy image: 参数 ${name} 必须是字符串（或不填），实际是`
+      + `${Array.isArray(value) ? '数组' : typeof value}。`,
+    )
+  }
+  return value.trim() === '' ? undefined : value.trim()
+}
+
+/**
  * 这些失败说明请求真的打到了上游、可能已经扣了积分，才值得进冷却。
  * 参数写错 / 未登录 / 目录里没有模型都还没花钱。
  */
@@ -415,8 +435,8 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
           'INVALID_ARGS',
         )
       }
-      const size = asNonEmptyString(record['size']) ?? DEFAULT_IMAGE_SIZE
-      const requestedModel = asNonEmptyString(record['model'])
+      const size = strictString(record['size'], 'size') ?? DEFAULT_IMAGE_SIZE
+      const requestedModel = strictString(record['model'], 'model')
       // 模式由「有没有给输入图」唯一决定：不新增 mode 参数，免得出现
       // 「mode=edit 但没图」这种自相矛盾的请求。
       const images = asImageList(record['image'])

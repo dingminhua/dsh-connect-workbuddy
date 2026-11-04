@@ -505,6 +505,25 @@ describe('createImageTool', () => {
     expect(generateImage).not.toHaveBeenCalled()
   })
 
+  it('size 类型不对 → INVALID_ARGS，而不是静默用默认尺寸', async () => {
+    // 与 image 数组被丢掉是同一族 bug：类型不对的可选参数曾被静默丢弃、
+    // 回落到默认值。size: 1024 会安静地按 1024x1024 出图，调用方无从得知。
+    const generateImage = vi.fn()
+    const tool = createImageTool(deps({ generateImage }))
+    await expect(tool.execute({ prompt: '猫', size: 1024 }, {}))
+      .rejects.toMatchObject({ code: 'INVALID_ARGS' })
+    expect(generateImage).not.toHaveBeenCalled()
+  })
+
+  it('model 类型不对 → INVALID_ARGS，而不是静默换模型扣积分', async () => {
+    // 默认模型和被点名的模型可能单价不同：静默回落等于按错的模型扣积分。
+    const generateImage = vi.fn()
+    const tool = createImageTool(deps({ generateImage }))
+    await expect(tool.execute({ prompt: '猫', model: ['hunyuan-image-alpha'] }, {}))
+      .rejects.toMatchObject({ code: 'INVALID_ARGS' })
+    expect(generateImage).not.toHaveBeenCalled()
+  })
+
   describe('改图（带 image）', () => {
     /** A real data URL, so the input normalizer accepts it untouched. */
     const INPUT = imageDataUrl('image/png', Buffer.from('hello').toString('base64'))
