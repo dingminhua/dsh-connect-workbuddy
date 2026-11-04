@@ -325,3 +325,138 @@ describe('video tool timeout ordering (issue #187)', () => {
     expect(VIDEO_TOOL_TIMEOUT_MS - VIDEO_POLL_BUDGET_MS).toBeGreaterThanOrEqual(10_000)
   })
 })
+
+/**
+ * 参数类型的严格性——与生图工具同一族 bug 的钉死。
+ *
+ * 生图工具曾因 `image: [模板图, 服装图]` 被当成「没给图」而静默切回文生图，
+ * 当场烧积分生成毫不相关的画面（已修）。视频工具曾有一样的毛病：`image`
+ * 传数组/数字 → 静默切文生视频；`seconds: "10"`、`model: [...]`、
+ * `enable_audio: "true"` → 静默丢掉用默认值。
+ *
+ * 这组钉的是：宽容只给「单元素数组 = 字符串」这一种常见误写；其余一律
+ * INVALID_ARGS，并且一条请求都不发（不花积分、不进冷却）。null 仍算未提供。
+ */
+describe('video tool strict argument validation', () => {
+  /** 最小合法 PNG（1x1），与 issue #187 那组同一夹具。 */
+  const PNG_BYTES = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+
+  function captureDeps() {
+    const sent: Array<{ image: string | undefined, model: string }> = []
+    const tool = createVideoTool(deps({
+      submitVideo: async (_credential, request) => {
+        sent.push({ image: request.image, model: request.model })
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    return { tool, sent }
+  }
+
+  /** 断言 INVALID_ARGS 且一次请求都没发出去。 */
+  async function expectFreeRejection(tool: ReturnType<typeof createVideoTool>, args: Record<string, unknown>) {
+    const submittedBefore = submittedCount
+    const failure = await tool.execute(args, {}).then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(WorkBuddyVideoError)
+    expect((failure as WorkBuddyVideoError).code).toBe('INVALID_ARGS')
+    expect(submittedCount).toBe(submittedBefore)
+    return failure as WorkBuddyVideoError
+  }
+  let submittedCount = 0
+
+  it('单元素 image 数组与字符串等价，走图生视频', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(PNG_BYTES, { status: 200, headers: { 'content-type': 'image/png' } })) as typeof fetch
+    try {
+      const { tool, sent } = captureDeps()
+      const value = await tool.execute({ prompt: '猫', image: ['https://cos.example/a.png'] }, {})
+      expect(value['mode']).toBe('image-to-video')
+      expect(sent[0]?.image?.startsWith('data:image/png;base64,')).toBe(true)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('多元素 image 数组 → INVALID_ARGS，不发请求，并说清只支持一张', async () => {
+    submittedCount = 0
+    const counting = createVideoTool(deps({
+      submitVideo: async () => {
+        submittedCount += 1
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    const failure = await expectFreeRejection(counting, { prompt: '猫', image: ['a.png', 'b.png'] })
+    expect(failure.message).toContain('只支持一张输入图')
+    // 空数组仍算「没给图」：那是无害的缺省写法，不该拦。
+    const { tool, sent } = captureDeps()
+    const value = await tool.execute({ prompt: '猫', image: [] }, {})
+    expect(value['mode']).toBe('text-to-video')
+    expect(sent[0]?.image).toBeUndefined()
+  })
+
+  it('image 是数字 → INVALID_ARGS，而不是静默切文生视频', async () => {
+    // 钉回归（与生图工具的数组 bug 同族）：类型不对的 image 曾被读成
+    // 「没给图」，工具安静地改走文生视频，生成一段与参考毫无关系的片子。
+    submittedCount = 0
+    const counting = createVideoTool(deps({
+      submitVideo: async () => {
+        submittedCount += 1
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    await expectFreeRejection(counting, { prompt: '猫', image: 123 })
+  })
+
+  it('seconds 是字符串 → INVALID_ARGS，而不是静默用默认时长', async () => {
+    submittedCount = 0
+    const counting = createVideoTool(deps({
+      submitVideo: async () => {
+        submittedCount += 1
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    await expectFreeRejection(counting, { prompt: '猫', seconds: '10' })
+  })
+
+  it('model 是数组 → INVALID_ARGS，而不是静默换模型扣积分', async () => {
+    submittedCount = 0
+    const counting = createVideoTool(deps({
+      submitVideo: async () => {
+        submittedCount += 1
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    await expectFreeRejection(counting, { prompt: '猫', model: ['kling-video-v3'] })
+  })
+
+  it('enable_audio 是字符串 → INVALID_ARGS', async () => {
+    submittedCount = 0
+    const counting = createVideoTool(deps({
+      submitVideo: async () => {
+        submittedCount += 1
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    await expectFreeRejection(counting, { prompt: '猫', enable_audio: 'true' })
+  })
+
+  it('null 仍表示未提供，默认路径照常成功', async () => {
+    const { tool, sent } = captureDeps()
+    const value = await tool.execute(
+      { prompt: '猫', model: null, seconds: null, resolution: null, enable_audio: null },
+      {},
+    )
+    expect(value['mode']).toBe('text-to-video')
+    expect(sent[0]?.model).toBe('kling-video-v3')
+  })
+
+  it('schema 把 image 声明为字符串或数组，宿主才不会先于工具拒掉数组', async () => {
+    const tool = createVideoTool(deps())
+    const image = (tool.parameters['properties'] as Record<string, Record<string, unknown>>)['image']!
+    expect(image['type']).toEqual(['string', 'array'])
+    expect(image['items']).toEqual({ type: 'string' })
+    expect(image['description'] as string).toContain('只支持一张输入图')
+  })
+})

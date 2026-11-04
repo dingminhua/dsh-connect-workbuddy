@@ -2,6 +2,51 @@
 
 ## 未发布
 
+### 修复（`workbuddy_draw_image` 的 `image` 传数组会静默切回文生图，多图参考全部丢失）
+
+- **现场**：按模板换装时给 `image` 传了一个参考图数组（模板图 + 服装图），结果工具走了
+  文生图模式，生成了一张和参考毫无关系的新图——照常扣积分，且错误信息里没有任何线索。
+- **根因**：`src/image-tool.ts` 的 schema 把 `image` 声明成 `type: 'string'` 单值，而
+  `asNonEmptyString()` 对数组直接返回 `undefined`——数组被当成「没给图」，
+  `input === undefined` 让工具选了 `IMAGE_TAG_TEXT_TO_IMAGE` + `generateImage`。
+  上游 `/v2/images/edits` 的 `image` 字段本来就接受 data-URL 字符串数组，问题只在
+  参数校验层。
+- **修法**：schema 改成 `type: ['string', 'array']` + `items: { type: 'string' }`；
+  新增 `asImageList()`（字符串→单元素数组；数组逐项校验，混入非字符串/空串 →
+  `INVALID_ARGS`；数字/对象等其它类型同样 `INVALID_ARGS`，不再被静默当成「没给图」）；
+  执行层用 `Promise.all(images.map(resolveImageInput))` 解析出 data-URL 数组原样传给
+  `editImage`。
+- **验证**：`tests/image-gen.spec.ts` 62→67 条（数组→`editImage` 按序收到全部图；数组含
+  非字符串→`INVALID_ARGS` 且不发请求；数字 `image`→`INVALID_ARGS` 且不生成——钉死
+  「静默切文生图」这个回归）；`docs/IMAGE_GEN.md` 更新模式表与说明。
+
+### 修复（生图/生视频工具的错型参数不再静默降级：一律 `INVALID_ARGS` 且不发请求）
+
+- **同一族问题的其余半**：上一条修了 `image` 数组，但静默降级的模式本身还留着——
+  `asNonEmptyString` / `asNumber` / `asBoolean` 对类型不对的值一律返回
+  `undefined`，工具当成「没填」继续用默认值跑。实测会烧积分的形态：
+  `image: 123` → 生图/生视频静默切文生模式；`seconds: "10"`、`model: [...]` →
+  静默用默认时长/默认模型，出片后看不出参数被丢了。上游对视频只收**一张**
+  `image_url`，所以数组传两张在生图里是合法多图参考、在生视频里必须拒绝而不是
+  静默取第一张或切模式。
+- **修法**（`src/video-tool.ts` + `src/image-tool.ts`）：新增严格读取器——
+  `strictString` / `strictNumber` / `strictBoolean`（省略、`null`、空串仍算「未填」；
+  类型不对直接抛 `INVALID_ARGS`，文案点名参数名、期望类型与实际类型），
+  视频侧再加 `asVideoImageInput`（单元素字符串数组与字符串等价；两张及以上 →
+  `INVALID_ARGS` 并提示「先用生图工具把参考合成一张成品图」）。视频工具的
+  `model` / `seconds` / `resolution` / `aspect_ratio` / `negative_prompt` /
+  `enable_audio` / `image` 与生图工具的 `size` / `model` 全部换用严格读取器；
+  视频 schema 的 `image` 同步声明 `type: ['string', 'array']`。
+- **工具描述同步**：生图工具描述写明「改图支持多图参考：`image` 传字符串数组」；生视频工具写明「只收一张输入图，需要多图参考先用生图工具合成一张成品图」；两者都声明「可选参数要么不填、要么类型正确，错型 `INVALID_ARGS` 且不发请求」——让模型在调用前就看到新契约，而不是靠报错文案事后学习。
+- **原则**：宽容只留给两种无歧义写法——`null`/空串（算未填）和单元素字符串数组
+  （算字符串）；其余错型一律当场报错、**一条请求都不发**（不花积分、不进冷却），
+  因为静默降级的产物看起来像成功，用户无从发现参数被丢了。
+- **验证**：`tests/video-tool.spec.ts` 新增 8 条（单元素数组解包走图生视频、两元素数组
+  报错且不发请求、`image: 123` / `seconds: "10"` / `model: [...]` /
+  `enable_audio: "true"` 各 `INVALID_ARGS` 且提交计数为 0、全 `null` 参数照常走默认、
+  schema 断言）；`tests/image-gen.spec.ts` 新增 2 条（`size: 1024`、`model: [...]`）。
+  全量 `vitest run` 182 文件 / **3044 条**通过，两套 `tsc` 配置 0 error，`tsdown`
+  构建通过；`docs/VIDEO_GEN.md`、`docs/IMAGE_GEN.md` 参数表同步。
 ### 修复（issue #215：模型卡的「200K」单选框显示为选中，但 DSH 拿到的是 1M）
 
 报告者（StandGreat，Windows / Node 24.19.0 / 5.17.0 / 国内版 cn）核对上游
