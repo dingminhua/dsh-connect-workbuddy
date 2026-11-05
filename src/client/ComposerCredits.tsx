@@ -130,15 +130,14 @@ export interface ComposerCreditsProps extends Partial<ComposerCreditsInjected> {
    */
   settingsScope?: WorkBuddyCardInjected['settingsScope']
   /**
-   * Open this plugin's settings page, or answer `false` when the host offers no
-   * route to it.
+   * Open this plugin's FULL page, or answer `false` when the host offers no route
+   * to it.
    *
-   * A CALLBACK rather than a panel id, for two reasons. The route is a Host
-   * service (`pluginNavigation`, falling back to `layout`) that only the entry
-   * can probe — this module must not import browser-only DSH packages. And the
-   * probe has to happen at PRESS time, not at registration time: the plugin
-   * providing it may apply after this one, so an answer captured in `apply`
-   * would be a dead button for the whole session (see `settings-route.ts`).
+   * A CALLBACK rather than a panel id, because the route is a Host service
+   * (`layout.selectPanel`) that only the entry may touch — this module must not
+   * import browser-only DSH packages. The target is the plugin's own `main`
+   * panel, so the call needs no other bundle's private key, and the entry
+   * registers that panel unconditionally for exactly this button.
    *
    * Absent means "no route known", and the button is not rendered at all: a menu
    * entry that cannot do what it says is worse than one that is not there.
@@ -301,12 +300,11 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [testError, setTestError] = useState<string | undefined>(undefined)
   const [failed, setFailed] = useState(false)
   /**
-   * The settings button could not reach a page on this host.
+   * The full-page button could not reach the page on this host.
    *
    * Its own flag, not `failed`, because the two render DIFFERENT sentences: this
-   * one says the host offers no route to the settings page, which is not the same
-   * claim as "the credits read failed", and sharing a flag would print one over
-   * the other.
+   * one says the host offers no route to the page, which is not the same claim as
+   * "the credits read failed", and sharing a flag would print one over the other.
    */
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
@@ -642,7 +640,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   }, [activeRegion, fetchUsage, fetchAccountCredits, t])
 
   /**
-   * The header's settings control: open this plugin's page, then close.
+   * The header's page control: open this plugin's full page, then close.
    *
    * CLOSING IS PART OF THE JOB. The panel is portaled to `document.body` and
    * floats over the composer; navigating the centre column does not remove it, so
@@ -904,6 +902,12 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                 )}
             </span>
           </div>
+          {settingsFailed
+            ? <p className="dsm-workbuddy-composer-panel-error" role="status">{t('composer.openSettingsFailed')}</p>
+            : null}
+          {testError === undefined
+            ? null
+            : <p className="dsm-workbuddy-composer-panel-error" role="status">{testError}</p>}
           {signedOut
             ? <p className="dsm-workbuddy-composer-panel-empty">{t('composer.signedOut')}</p>
             : rows.length === 0
@@ -1072,9 +1076,6 @@ export function ComposerCredits(props: ComposerCreditsProps) {
           {testError === undefined
             ? null
             : <p className="dsm-workbuddy-composer-panel-error" role="status">{testError}</p>}
-          {settingsFailed
-            ? <p className="dsm-workbuddy-composer-panel-error" role="status">{t('composer.openSettingsFailed')}</p>
-            : null}
         </div>,
         document.body,
       )}

@@ -37,7 +37,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-btn-outline:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed);background:rgba(255,255,255,.04)}
 .dsm-btn-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
 .dsm-btn-primary:hover:not(:disabled){opacity:.9}
-.dsm-workbuddy-usage{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px}
+.dsm-workbuddy-usage{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px;background:var(--dsw-alias-bg-layer-1,#17181b);border-radius:12px}
 /* The provider bar: one CARD per region, side by side.
  *
  * COPIED FROM dsh-connect-trae, rule for rule, because an approximation of it
@@ -104,12 +104,22 @@ export const WORKBUDDY_CARD_CSS = `
  * inactive panel out of the accessibility tree, which is exactly what
  * role="tabpanel" wants — unlike display:none reached by a CSS class, it
  * cannot be overridden by a later rule. */
-.dsm-workbuddy-panels{display:flex;align-items:stretch;gap:2px;margin:16px 0 0;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24))}
+/* No top margin: this row is a flex child of .dsm-workbuddy-usage, whose
+ * column gap already separates it from the paragraph above. The margin stacked
+ * ON TOP of that gap and doubled the distance (measured: 32px where the rhythm
+ * is 16px).
+ *
+ * The bottom rule stays: it is the tabs' underline, not spacing. */
+.dsm-workbuddy-panels{display:flex;align-items:stretch;gap:2px;margin:0;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24))}
 .dsm-workbuddy-panel-tab{appearance:none;font:inherit;cursor:pointer;border:0;background:transparent;padding:7px 11px;margin-bottom:-1px;border-bottom:2px solid transparent;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:600;line-height:20px;white-space:nowrap;transition:color .15s,border-color .15s}
 .dsm-workbuddy-panel-tab:hover:not(.dsm-workbuddy-panel-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-panel-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 .dsm-workbuddy-panel-tab-active{color:var(--dsw-alias-label-primary,#e6e6e6);border-bottom-color:var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-workbuddy-panel{margin-top:12px}
+/* Same rule as the tab row above: the usage column's gap is the only spacing
+ * between a tab row and the panel under it. This margin used to add 12px on top
+ * of the 16px gap, and the panel's first block (the pool, with its own 16px top
+ * padding) added a third layer. */
+.dsm-workbuddy-panel{margin:0}
 /* DIAGNOSTICS: a two-column fact table rather than prose. Each row is one thing
  * the card actually READ, so a bug report can quote a line instead of
  * paraphrasing the UI. No control lives here on purpose — a diagnostics panel
@@ -283,7 +293,22 @@ export const WORKBUDDY_CARD_CSS = `
 /* A plain header now: the section does not fold, so it is neither clickable nor
    focusable, and the list-marker rules that hid the native <details> triangle are
    gone with it. */
-.dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+/* WRAPS, and the title column may shrink.
+ *
+ * In the Settings panel this header has ~538px for a title, a count line and
+ * FOUR buttons (refresh + two availability sweeps + the speed sweep), whose
+ * Chinese labels are long (一键测速启用模型). Without wrapping the flex line
+ * never breaks, so the buttons keep their intrinsic width and the title column
+ * is squeezed until 「已启用 3 个」 breaks mid-phrase — the header grows a second
+ * line while the buttons stay put, which reads as a layout accident.
+ *
+ * row-gap is smaller than gap: a wrapped row is a continuation of the same
+ * header, not a new section. */
+.dsm-workbuddy-models-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px 12px;flex-wrap:wrap}
+/* The title column must be allowed to shrink below its content (min-width:0),
+   or wrapping does not help — a flex item defaults to min-width:auto and would
+   still push the buttons onto their own line at full width. */
+.dsm-workbuddy-models-head>div:first-child{min-width:0}
 .dsm-workbuddy-models-title-row{display:flex;align-items:center;gap:6px;min-width:0}
 .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
 /* Unsaved-changes marker. It sits in the HEADER rather than beside the save
@@ -301,7 +326,19 @@ export const WORKBUDDY_CARD_CSS = `
    colour: it has to stand out from the three lines around it WITHOUT reading as
    an error banner, because the fact it states is normal product behaviour
    rather than a failure. Weight is the only signal it needs. */
-.dsm-workbuddy-free-quota-warn{font-weight:600}
+/* 这两句现在连在一起读：先说这两个 tab 是什么，再说它们的免费额度有限。
+ * 所以两行之间不要段落间距（上一条 .dsm-workbuddy-tab-hint 的下边距已经给
+ * 足了），否则会读成两段互不相干的话。 */
+.dsm-workbuddy-free-quota-warn{font-weight:600;margin-top:-10px}
+/* The line that explains the REGION pair, directly under it.
+ *
+ * It used to be a .dsm-workbuddy-models-summary inside the accounts panel,
+ * borrowing a class named for the model list. It describes the two provider
+ * cells above it, so it gets its own name and its own margin: the summary's
+ * margin:2px 0 0 was tuned to sit under a section heading, and here the line
+ * follows a row of boxed cells and needs more air, plus it precedes the section
+ * tabs whose own top margin would otherwise crowd it. */
+.dsm-workbuddy-tab-hint{margin:10px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* Every model is laid out in full — NO inner scroll box.
  *
  * The previous rule capped this at max-height 520px with overflow-y auto, so a
@@ -344,7 +381,23 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-model-off input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-model-off-blocked{cursor:not-allowed;opacity:.75}
 .dsm-workbuddy-model-off-flag{margin-left:2px;padding:0 4px;border-radius:4px;background:var(--dsw-alias-label-caution-background,#4a3a1f);color:var(--dsw-alias-label-caution,#e8b34b);font-size:10px;line-height:14px;white-space:nowrap}
-.dsm-workbuddy-model-copy{display:flex;align-items:baseline;gap:8px;min-width:0}
+/* The name and its chips share one line, and WHICH ONE gives way matters.
+ *
+ * The chips are flex:none (a half-drawn pill reads as a rendering bug), so the
+ * only shrinkable item is the name — and it is also the one thing a reader
+ * needs. Left alone, a long name plus two or three chips squeezes the name down
+ * to a few characters: 「GLM-5.」 with nothing after it, which is exactly the
+ * report this fixes.
+ *
+ * So the chips wrap among themselves when the line is tight, and the name gets a
+ * floor. It may still ellipsize — a name longer than the whole row cannot fit —
+ * but it never collapses to a stub while a badge sits whole beside it. */
+.dsm-workbuddy-model-copy{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;min-width:0}
+.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name{flex:1 1 auto;min-width:9em}
+/* Below the panel's own width the floor is too greedy: 9em plus two chips is
+   wider than the line, and the NAME would force the wrap it is meant to avoid.
+   Give it less and let the chips take the second line. */
+
 .dsm-workbuddy-model-name{display:inline-flex;align-items:baseline;gap:7px;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;font-weight:500;line-height:19px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-workbuddy-model-name-rate{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:400;line-height:16px;flex:none}
 /* The upstream's own promotion badge ("限时免费" / "Free now" / "Pro Only").
@@ -423,7 +476,11 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-usage-cheer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
 
 /* ---- Account pool ---- */
-.dsm-workbuddy-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:16px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+/* No top rule any more. It separated the 「免费模型并非无限量」 warning from the
+ * pool; that warning moved up beside the region hint it belongs with, so the
+ * line now had nothing above it to separate and only added a seam between the
+ * section tabs and the first thing they contain. */
+.dsm-workbuddy-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:0 0 4px}
 /* The block's heading: title on the left, serving-account badge on the right.
  *
  * It used to hold a THIRD child — the credit-readout switch, slotted in between
@@ -454,7 +511,7 @@ export const WORKBUDDY_CARD_CSS = `
  * a sentence: it is read as a shape first, a word second. The border keeps the
  * pill from bleeding into the row tint if a theme remaps success to something
  * dark. */
-.dsm-workbuddy-pool-current-badge{margin-left:auto;padding:2px 10px;border-radius:999px;background:var(--dsw-alias-state-success-primary,#22c55e);border:1px solid rgba(34,197,94,.55);color:#fff;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
+.dsm-workbuddy-pool-current-badge{margin-left:auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:2px 10px;border-radius:999px;background:var(--dsw-alias-state-success-primary,#22c55e);border:1px solid rgba(34,197,94,.55);color:#fff;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 /* Sits under the header block, before the batch buttons: account discovery is
    the first step of using the pool, so it reads above the actions it enables. */
 /* THE HEAD SLOT — one place that answers "who is serving?".
@@ -489,7 +546,24 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-ghost-remove:hover:not(:disabled){background:rgba(245,158,11,.2)}
 .dsm-workbuddy-pool-ghost-remove:disabled{cursor:default;opacity:.5}
 .dsm-workbuddy-pool-error{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary,#ef4444);white-space:pre-line}
-.dsm-workbuddy-pool-table{border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
+/* CONTAINMENT ROOT for the row breakpoints below.
+ *
+ * The card now renders in three places whose WIDTHS have nothing to do with the
+ * window: the composer card, the full page (capped at 860px), and the Settings
+ * panel's content column (~560px on a 1400px screen). Every @media breakpoint
+ * in this file measures the VIEWPORT, so inside the Settings panel they never
+ * fire — a 564px column got the five-column desktop table and each cell clipped.
+ *
+ * container-type: inline-size lets the breakpoints below measure the TABLE
+ * instead, which is the width the rows actually have to fit into.
+ *
+ * Deliberately on the table and NOT on an ancestor: container-type makes the
+ * element the containing block for position:fixed descendants, and the busy
+ * veils and the device dialog are siblings of this table inside
+ * .dsm-workbuddy-pool. Putting the containment here leaves them on the
+ * viewport, which is where a full-screen overlay belongs. The table itself
+ * contains only the header and member rows — no fixed-position descendants. */
+.dsm-workbuddy-pool-table{container-type:inline-size;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-workbuddy-pool-row{display:grid;grid-template-columns:1.6fr 1fr 1.3fr .9fr .8fr;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 /* No check-in column (the international region): the freed track goes to the actions. */
 .dsm-workbuddy-pool-table:not(.dsm-workbuddy-pool-table-checkin) .dsm-workbuddy-pool-row{grid-template-columns:1.6fr 1fr 1.3fr 1.7fr}
@@ -696,7 +770,12 @@ export const WORKBUDDY_CARD_CSS = `
    heading floated under the table with nothing marking the change of subject. */
 .dsm-workbuddy-pool-settings-wrap{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
 .dsm-workbuddy-pool-dirty{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
-.dsm-workbuddy-pool-settings{display:flex;flex-direction:column;gap:1px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
+/* Second containment root, for the settings rows. They are NOT inside
+ * .dsm-workbuddy-pool-table (that is the member table only), so the table's
+ * container query cannot reach them. This element holds just the stacked
+ * setting rows — no position:fixed descendants, so containment here cannot move
+ * an overlay's containing block. */
+.dsm-workbuddy-pool-settings{container-type:inline-size;display:flex;flex-direction:column;gap:1px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
 /* THE MODE BAR — the page's master control, directly under the title.
  *
  * It reuses the .dsm-workbuddy-pool-settings class for the bordered, stacked
@@ -815,6 +894,52 @@ export const WORKBUDDY_CARD_CSS = `
 /* This account's own test model (issue #61). Narrower than the section-level
    picker so a long model name cannot push the two buttons out of the row. */
 @media (max-width:760px){.dsm-workbuddy-pool-row{grid-template-columns:1fr 1fr;row-gap:6px}.dsm-workbuddy-pool-select{max-width:180px}}
+/* The settings rows (target model, probe size) are flex with a content column
+ * that grows and a control that does not. In the Settings panel the control was
+ * squeezed to a sliver: max-width:260px caps it but nothing gives it a floor,
+ * and the copy beside it takes everything else. Stacking is the same move the
+ * table makes at this width — one fact per line rather than two columns of
+ * clipped text. */
+@container (max-width:620px){.dsm-workbuddy-pool-set{flex-direction:column;align-items:stretch;gap:8px}
+.dsm-workbuddy-pool-set-ctl{flex:1 1 auto;justify-content:flex-start}
+.dsm-workbuddy-pool-select{max-width:none;width:100%}}
+/* THE TABLE'S NARROW FORM, measured against the table rather than the window.
+ *
+ * Every breakpoint in this file up to here is a @media query, and those
+ * measure the VIEWPORT. The same card now renders in the Settings panel's
+ * content column (~564px on a 1400px screen), where a media query never fires:
+ * a five-column table was laid into 564px and every cell clipped.
+ *
+ * ONE threshold, not two. An earlier revision had a 720px band that merely
+ * dropped one track, on the theory that "slightly narrower" still wants a grid
+ * — but the Settings column lands at ~564px, i.e. INSIDE that band, so the
+ * reader got a 2x2 grid whose cells no longer lined up with their headers and
+ * whose rows were twice as tall as the wide ones. A table has no "slightly
+ * narrower" form worth having: either there is room for the columns or there
+ * is not.
+ *
+ * Below the threshold each row becomes a STACKED CARD: the same five facts, in
+ * the same order they read left to right when wide, now top to bottom. That is
+ * what keeps a narrow row legible instead of merely fitting. */
+@container (max-width:700px){
+  /* THREE LINES, not five. A plain flex-direction:column stacked every cell
+     onto its own line, which doubled the row height and read as a form rather
+     than an account. Wrapping is what keeps the row a CARD: the account and the
+     actions own a full line each (they are the identify-it and act-on-it ends),
+     while the three facts in between share the middle line and wrap among
+     themselves only when they genuinely do not fit. */
+  .dsm-workbuddy-pool-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:10px 12px}
+  .dsm-workbuddy-pool-table:not(.dsm-workbuddy-pool-table-checkin) .dsm-workbuddy-pool-row{display:flex;flex-wrap:wrap;align-items:baseline}
+  /* The column headers describe tracks that no longer exist. */
+  .dsm-workbuddy-pool-row-head{display:none}
+  .dsm-workbuddy-pool-account{flex:1 1 100%;align-items:center}
+  /* The three middle facts, laid out as one line of the same sentence. */
+  .dsm-workbuddy-pool-credits{flex:0 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+  .dsm-workbuddy-pool-probe{flex:1 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+  .dsm-workbuddy-pool-checkin{flex:none}
+  .dsm-workbuddy-pool-row-actions{flex:1 1 100%;justify-content:flex-start;padding-top:4px}
+}
+
 /* ISSUE #198, the same breakpoint the pool row already uses. On a phone the model
    row's budget group takes the WHOLE line and left-aligns: right-justified, a
    wrapped two-tier group reads as a stray fragment under the buttons, and the tier
@@ -926,7 +1051,13 @@ export const WORKBUDDY_CARD_CSS = `
 @keyframes dsm-workbuddy-veil-dash{0%{stroke-dasharray:12 150;stroke-dashoffset:0}50%{stroke-dasharray:24 150;stroke-dashoffset:-6}to{stroke-dasharray:12 150;stroke-dashoffset:0}}
 @media (prefers-reduced-motion: reduce){.dsm-workbuddy-veil-spinner{animation:none}.dsm-workbuddy-veil-spinner-arc{animation:none;stroke-dasharray:18 150;stroke-dashoffset:-3}}
 .dsm-workbuddy-page{box-sizing:border-box;height:100%;display:flex;flex-direction:column;align-items:center;gap:20px;padding:28px clamp(24px,4vw,48px) 48px;overflow:auto;color:var(--dsw-alias-label-primary,#e6e6e6)}
-.dsm-workbuddy-page>*{width:100%;max-width:860px}
+/* 1120px, not 860: the page is the WIDE layout — that is the whole reason the
+ * sidebar row and the readout's button exist — so capping it at 860 left a third
+ * of a 1440px window empty while the table inside still had five columns to
+ * place. The cap still matters: past ~1120 a five-column row of short figures
+ * starts to read as scattered, and a line of prose runs longer than the eye
+ * likes to track. */
+.dsm-workbuddy-page>*{width:100%;max-width:1120px}
 .dsm-workbuddy-page-head{display:flex;flex-direction:column;gap:6px}
 .dsm-workbuddy-page-back{appearance:none;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-1,#17181b);color:var(--dsw-alias-label-secondary,#c7c7c7);border-radius:8px;padding:5px 12px;display:inline-flex;align-items:center;gap:6px;align-self:flex-start;font-size:13px;line-height:20px}
 .dsm-workbuddy-page-back:hover{color:var(--dsw-alias-label-primary,#e6e6e6);border-color:var(--dsw-alias-label-dimmed,#777)}
@@ -935,7 +1066,38 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-page-title{margin:0;font-size:20px;font-weight:600;line-height:1.4}
 .dsm-workbuddy-page-desc{margin:0;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-workbuddy-page-body .dsm-workbuddy-usage{padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
-.dsm-workbuddy-panel-icon{display:block;border-radius:4px;flex:none}
+/* ---- 设置面板里的一节（settings.section，5.19.0）------------------------
+   面板内容列本来就窄（800px 面板减 188px 导航），而且它自己滚动。所以这一页
+   不去抢整页的高度与居中：height:100% 会在列里撑出第二根滚动条，860px 的
+   居中上限又会让内容缩在左边。改成从上往下排、宽度交给列，只有内边距是本插件
+   自己的；卡片边框也去掉——它现在是页面内容，不再是别人列表里的一行。 */
+.dsm-workbuddy-settings{height:auto;min-height:0;padding:0;gap:14px;overflow:visible}
+
+.dsm-workbuddy-settings>*{max-width:none}
+/* 顶部那块自报家门：图标与标题同排，简介独占一行。面板已有一层标题栏，这里
+   不再叠一个大标题，只把"这是什么"说清楚。 */
+.dsm-workbuddy-settings .dsm-workbuddy-settings-head{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:10px;row-gap:2px;align-items:center}
+.dsm-workbuddy-settings .dsm-workbuddy-page-icon{width:28px;height:28px;border-radius:6px;margin-top:0;grid-row:1}
+.dsm-workbuddy-settings .dsm-workbuddy-page-title{font-size:15px;line-height:22px;grid-row:1;min-width:0}
+.dsm-workbuddy-settings .dsm-workbuddy-page-desc{grid-column:1/-1;font-size:12px;line-height:18px}
+/* 内容块不再是一张浮在页面上的卡：去掉边框与底色，内边距改成横向对齐列边。
+ *
+ * 但那是「外壳那一列是实底色」时的结论。issue #209：换上个性化壁纸后，外壳的列
+ * 是半透明的，这一页自己又没有任何底色，于是壁纸整片透过内容区——标题、说明段落、
+ * 标签栏、账号池 全部直接压在壁纸上。这台机器上其余内容块各自有实底
+ * （表格、设置组），唯独它们之间的留白与正文没有，所以只有「什么都没有」的地方在
+ * 透。修复是给内容区自己一层底，取外壳的 layer 色；实底主题上与原来看不出差别。 */
+/* 页头那两行（标题、一句简介）在内容区外面，壁纸下同样没有承托。
+ *
+ * 补一块底而不是把它并进内容区：面板自己已经有一层标题栏，页头与正文之间要
+ * 留出间隔，两块底拼成一片会让页头看起来属于正文。取同一个 layer 色，实底主题
+ * 上与原来看不出差别。
+ *
+ * 这一条同时作用于整页（侧边栏入口那个宽页面），它同样没有底色。 */
+.dsm-workbuddy-settings .dsm-workbuddy-settings-head,
+.dsm-workbuddy-page .dsm-workbuddy-page-head{background:var(--dsw-alias-bg-layer-1,#17181b);border-radius:12px;padding:10px 12px}
+/* 这一页的内容区不能有内边距，否则底色会缩进一截，与页头对不齐。 */
+.dsm-workbuddy-settings .dsm-workbuddy-page-body .dsm-workbuddy-usage{padding:0;border:0;border-radius:0;background:var(--dsw-alias-bg-layer-1,#17181b)}.dsm-workbuddy-panel-icon{display:block;border-radius:4px;flex:none}
 /* ---- 设备头档位与逐账号参数弹窗 ------------------------------------------
    档位那一行贴着账号表：它同时决定"这台机器对外声称自己是谁"和"每行的齿轮能
    不能用"，埋进「更多设置」会让齿轮看起来时好时坏。
@@ -1188,6 +1350,15 @@ export const WORKBUDDY_COMPOSER_CSS = `
   .dsm-workbuddy-composer-panel-refresh-icon-spin{animation:none;opacity:.55}
 }
 
+/* The header's right-hand control: the link to this plugin's settings.
+   A wrapper rather than an auto margin on the button, because the button is NOT
+   always rendered (a host with no route renders none) and a wrapper that is
+   always present keeps the header layout identical either way. */
+.dsm-workbuddy-composer-panel-actions{flex:none;margin-left:auto;display:flex;align-items:center}
+/* The header holds ONE control (refresh) now that the settings page lives in
+   the Settings panel: the gear pill that navigated to the Plugins page retired
+   with the page it pointed at. margin-left:auto on the wrapper keeps the
+   control pinned right regardless of how many buttons the actions row holds. */
 /* The header's right-hand control: the link to this plugin's settings.
    A wrapper rather than an auto margin on the button, because the button is NOT
    always rendered (a host with no route renders none) and a wrapper that is

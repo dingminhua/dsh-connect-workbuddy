@@ -665,8 +665,8 @@ export const en = {
   // title onto two lines. The panel is unmistakably this plugin's, and the
   // tooltip names the page, so nothing is lost by the short word.
   'composer.openSettings': 'Settings',
-  'composer.openSettingsHint': 'Open this plugin\'s settings page (accounts, models, switches)',
-  'composer.openSettingsFailed': 'This host offers no route to the plugin settings page',
+  'composer.openSettingsHint': 'Open this plugin\'s full page (accounts, models, switches)',
+  'composer.openSettingsFailed': 'This host offers no route to the plugin page',
   // The header's REFRESH control (left of settings). Named for what the reader
   // gets — this table brought up to date — rather than for the mechanism, which
   // is a probe batch. The hint has to say the mechanism out loud, because
@@ -1300,12 +1300,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'composer.current': '当前选用',
   'composer.noAccounts': '该区域暂无账号',
   'composer.signedOut': '未登录',
-  // 面板里通往本插件自身设置的入口。措辞取短（「设置」而不是「WorkBuddy 设置」）：
+  // 面板里通往本插件自身页面的入口。措辞取短（「设置」而不是「WorkBuddy 设置」）：
   // 这个浮层只有约 250px 宽，头部还要放区域标题和一键测试，长标签会把标题挤成
   // 两行。面板本身就只属于这个插件，去处由 tooltip 说明，短词不丢信息。
   'composer.openSettings': '设置',
-  'composer.openSettingsHint': '打开本插件的设置页（账号、模型、各项开关）',
-  'composer.openSettingsFailed': '这台宿主没有通往插件设置页的入口',
+  'composer.openSettingsHint': '打开本插件的完整页面（账号、模型、各项开关）',
+  'composer.openSettingsFailed': '这台宿主没有通往插件页面的入口',
   // 头部的刷新按钮（在「设置」左侧）。按读者拿到的东西命名——这张表变成最新的
   // ——而不是按机制命名（机制是一批探测）。提示必须把机制说出来：「刷新」听起来
   // 是免费重读，而这个要花积分、要跑一分钟；让人意外掏钱的控件，比标签长一点的

@@ -994,3 +994,58 @@ describe('issue #108: a long reason mark must not be clipped mid-sentence', () =
     expect(rule, 'and must break inside a CJK run').toContain('overflow-wrap:anywhere')
   })
 })
+
+/**
+ * THE HEADER'S PAGE BUTTON.
+ *
+ * It opens this plugin's own `main` panel — the WIDE layout — because that is
+ * the layout the accounts table needs. (An earlier 5.19.0 revision removed the
+ * button on the belief that no public API could land on a configuration
+ * surface; the wide page is reachable through `layout.selectPanel`, and the
+ * entry registers it unconditionally, so the button is back.)
+ */
+describe('the panel header\'s page button', () => {
+  it('is absent when the entry offers no route', async () => {
+    // A control that cannot do what it says is worse than one that is not there.
+    stubFetch(() => ({ body: usageOf('cn', 100) }))
+    const m = await render({ provider: 'workbuddy' })
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+    expect(document.body.querySelector('.dsm-workbuddy-composer-panel-settings')).toBeNull()
+  })
+
+  it('calls the route and closes the panel on success', async () => {
+    stubFetch(() => ({ body: usageOf('cn', 100) }))
+    let opened = 0
+    const m = await render({ provider: 'workbuddy', onOpenSettings: () => { opened += 1; return true } })
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+
+    const button = document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-settings')
+    expect(button, 'the page button is not rendered').not.toBeNull()
+    button?.click()
+    await m.settle()
+
+    expect(opened, 'the route was never asked').toBe(1)
+    // The panel is portaled and floats over the composer; navigating does not
+    // remove it, so leaving it open would park this table on the page the user
+    // just asked for.
+    expect(document.body.querySelector('.dsm-workbuddy-composer-panel'), 'the panel stayed open over the page')
+      .toBeNull()
+  })
+
+  it('reports a host with no route instead of silently doing nothing', async () => {
+    stubFetch(() => ({ body: usageOf('cn', 100) }))
+    const m = await render({ provider: 'workbuddy', onOpenSettings: () => false })
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+
+    document.body.querySelector<HTMLButtonElement>('.dsm-workbuddy-composer-panel-settings')?.click()
+    await m.settle()
+
+    expect(panelText(), 'a press that changes nothing reads as a broken button')
+      .toContain('composer.openSettingsFailed')
+    // And the panel stays open: the user needs to see the explanation.
+    expect(document.body.querySelector('.dsm-workbuddy-composer-panel')).not.toBeNull()
+  })
+})

@@ -30,11 +30,16 @@
 ## 这一版改了什么（5.18.3）
 
 宿主 0.2.2 起新增「组合包详细介绍文档」：找不到 `locale/<语言>.json` 的 `meta.detail` 时，
-会把包里的 README **整篇**渲染进插件页的 560px 滚动框（本仓库 README 有 743 行）。本版给
+会把包里的 README **整篇**渲染进插件页的 560px 滚动框（本仓库 README 有 748 行）。本版给
 `locale/zh.json` / `locale/en.json` 各补一个 `meta.detail`，分别指向新建的
 [`docs/DETAIL.zh.md`](DETAIL.zh.md)（92 字符）与 [`docs/DETAIL.md`](DETAIL.md)（96 字符），
 两份文件加进 `package.json` 的 `files` 白名单；README 保持完整，npm / GitHub / 市场页面不受影响。
 做法与五个坑见 [`docs/PLUGIN-DETAIL-GUIDE.md`](PLUGIN-DETAIL-GUIDE.md)（可整篇转发给其他插件作者）。
+
+> **5.19.0 已撤销这一套。** 配置界面搬去设置页后，插件详情页只剩「这是什么」，而 `meta.detail`
+> 的唯一作用就是缩短显示文本；它依赖「路径与语言链同时正确」这类隐式约定，失败时静默回落、
+> 界面看不出问题。现在两份 `DETAIL` 文档、两行 `meta.detail` 与 4 条守卫单测都已移除，
+> 详情页回到宿主默认行为：渲染完整 README。下面这几条只作为当时的设计记录保留。
 
 - **不含实现细节、issue 编号、内部路径**；100 字按字符总数算（汉字、标点、字母、空格全算）。
 - **没有开关能关掉整个区块**，删 README 会连带弄空 npm / GitHub / 市场页面。
@@ -141,7 +146,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ## English summary
 
-**Current installable version: `5.18.3`.** This is a **packaging-only, non-breaking change with no new features**: the plugin detail page (DSH 0.2.2+) no longer renders the whole README — each `locale/*.json` now has a `meta.detail` pointing at a short Markdown document (92 / 96 characters). The README stays intact, so npm / GitHub / marketplace pages are unaffected. The host has no switch to hide the section. See `docs/PLUGIN-DETAIL-GUIDE.md`.
+**Current installable version: `5.19.0`.** 5.18.3 was a **packaging-only, non-breaking change with no new features**: the plugin detail page (DSH 0.2.2+) no longer rendered the whole README — each `locale/*.json` carried a `meta.detail` pointing at a short Markdown document (92 / 96 characters). **5.19.0 reverses that**: those documents and both `meta.detail` lines are gone, and the detail page renders the full README again by host default. The configuration page moved to Settings → WorkBuddy in the same release, so the detail page no longer has a card to show. See `docs/PLUGIN-DETAIL-GUIDE.md` for the mechanism.
 
 The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `size`, and `image` must be an array (`["/abs/a.png"]` even for a single image). Old forms fail with `INVALID_ARGS` before any request is sent. See PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217).
 

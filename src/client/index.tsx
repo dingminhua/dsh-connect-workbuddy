@@ -22,7 +22,7 @@
  * @module dsh-connect-workbuddy/client
  */
 
-import { WORKBUDDY_CARD_KEYS, WORKBUDDY_SETTINGS_NAMESPACE_CANDIDATES, WORKBUDDY_SETTINGS_NS, WORKBUDDY_USAGE_PATH, withWorkBuddyRegion } from '../status-paths.ts'
+import { WORKBUDDY_SETTINGS_NAMESPACE_CANDIDATES, WORKBUDDY_SETTINGS_NS, WORKBUDDY_SETTINGS_SECTION_ID, WORKBUDDY_SETTINGS_SECTION_ORDER, WORKBUDDY_USAGE_PATH, withWorkBuddyRegion } from '../status-paths.ts'
 import { createElement as h } from 'react'
 import type { JSX } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
@@ -44,10 +44,10 @@ import { selectQuotaNoticeClaim, WorkBuddyQuotaNotice } from './WorkBuddyQuotaNo
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
-import { openPluginSettingsPage } from './settings-route.ts'
 import {
   setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted,
 } from './panel-switch.ts'
+import { openWorkBuddySettingsSection } from './settings-jump.ts'
 
 /**
  * The browser-side plugin context this entry needs.
@@ -101,15 +101,32 @@ export function apply(ctx: WorkBuddyClientContext): void {
     const softGet = (name: string): unknown => (ctx as unknown as { get(name: string): unknown }).get(name)
 
     /**
-     * Open this plugin's settings page, as the credits panel's header control
-     * asks for it.
+     * The credits popover's header button: open 设置 → WorkBuddy.
      *
-     * Defined here because this is the only place with a service probe into the
-     * Host; the whole route lives in `settings-route.ts` so it has one home and
-     * its own test. The probe runs per press, which is why this is a function
-     * and not a captured answer.
+     * ALWAYS A FUNCTION, never `undefined`. It drives the shell's real chrome
+     * (see `settings-jump.ts`) rather than asking a host service, so it has a
+     * definite value from the moment `apply` runs. That matters because the
+     * readout only renders the button when this is present, and the first
+     * `registerAllSlots()` happens before most of `apply` has finished — a
+     * route captured from `ctx.get('layout')` at that moment is `undefined` on
+     * a host whose layout plugin applies later, and the renderer caches
+     * `inject()` results by entry identity, so nothing would ever correct it.
+     *
+     * The `onGiveUp` fallback asks the plugin manager for this bundle's page,
+     * so an unrecognisable shell still lands somewhere useful.
      */
-    const onOpenSettings = (): boolean => openPluginSettingsPage(softGet)
+    const openSettingsSection = (): boolean => openWorkBuddySettingsSection({
+      label: () => t('nav.panel'),
+      onGiveUp: () => {
+        // Last resort: the plugin manager's bundle page, which at least names
+        // the plugin and offers install/uninstall. Soft-probed, and its absence
+        // is simply a no-op.
+        const navigation = softGet('pluginNavigation') as { openBundle?: (name: string) => void } | undefined
+        if (navigation !== undefined && typeof navigation.openBundle === 'function') {
+          try { navigation.openBundle('dsh-connect-workbuddy') } catch { /* fallback failed: no-op */ }
+        }
+      },
+    })
 
     let settingsScope: WorkBuddyCardInjected['settingsScope'] | undefined
     const forms = softGet('configForms') as
@@ -127,33 +144,111 @@ export function apply(ctx: WorkBuddyClientContext): void {
     // there is no fallback to bind.
 
     /**
-     * Register one card slot; returns its disposer, or undefined if it failed.
+     * Register this plugin's page — and its nav glyph — in the Settings panel.
      *
-     * `ctx.slots.inject(name, …)` resolves as soon as the slot is DECLARED (the
-     * Plugins page declares all three ledgers — `plugins.item`,
-     * `plugins.bundle.config`, `plugins.row.config` — as children of its own
-     * registration), and is otherwise queued until a later declaration. So a
-     * registration here is not lost just because the page has not mounted yet.
+     * ## Why one callback rather than two
+     *
+     * `settings.section` drives the nav row; `settings.section.icon` is rendered
+     * by the shell as `renderSlot('settings.section.icon', …, { only: row.id })`,
+     * so the glyph's cell is only meaningful while the page's id exists.
+     * Registering both from the same `inject` callback makes the pairing
+     * structural: the page's declaration is what makes the glyph addressable at
+     * all, and Cordis disposes both with this fiber.
+     *
+     * ## Why there is NO capability probe
+     *
+     * `ctx.slots.inject(name, …)` already IS the probe. It waits for the
+     * declaration and runs its callback once the slot exists; on a host that
+     * never declares `settings.section` it does nothing at all — no throw, no
+     * queued-forever registration. A probe built on anything else (a version
+     * string, an accessor the service may not expose) turns "not supported
+     * here" into "never registers anywhere", which is how a page nobody can see
+     * ships with no error at all. Let the host answer.
+     *
+     * `WorkBuddyCard` is registered with `surface: 'settings'`: the shell owns
+     * the panel chrome (title, close), so the card drops its own collapse and
+     * back affordances and keeps only its content.
      */
-    const registerCard = (slotName: string, key: string): (() => void) | undefined => {
+    const registerSettingsSection = (): (() => void) | undefined => {
       try {
-        return ctx.slots.inject(slotName as never, () => (ctx.slots as unknown as {
-          register(
-            options: { name: string; key: string; priority: number; inject: () => WorkBuddyCardInjected },
-            component: unknown,
-          ): () => void
-        }).register({
-          name: slotName,
-          key,
-          priority: 30,
-          inject: () => settingsScope === undefined
-            ? { t }
-            : { t, settingsScope },
-        }, WorkBuddyCard))
+        return ctx.slots.inject('settings.section' as never, () => {
+          const disposers: Array<() => void> = []
+          const injected = (): WorkBuddyCardInjected & { surface: 'settings' } =>
+            settingsScope === undefined
+              ? { t, surface: 'settings' as const }
+              : { t, settingsScope, surface: 'settings' as const }
+
+          disposers.push((ctx.slots as unknown as {
+            register(
+              options: {
+                name: string
+                id: string
+                order: number
+                label: () => string
+                locale: string
+                inject: () => WorkBuddyCardInjected & { surface: 'settings' }
+              },
+              component: unknown,
+            ): () => void
+          }).register({
+            name: 'settings.section',
+            id: WORKBUDDY_SETTINGS_SECTION_ID,
+            order: WORKBUDDY_SETTINGS_SECTION_ORDER,
+            label: () => t('nav.panel'),
+            locale: namespace,
+            inject: injected,
+          }, WorkBuddyCard))
+
+          // The glyph, addressed by the SAME id. A separate `inject` call is
+          // correct here (its own slot, its own declaration); the pairing that
+          // matters is the id, and it is the same constant in both.
+          try {
+            const iconInject = ctx.slots.inject('settings.section.icon' as never, () => {
+              const iconDisposer = (ctx.slots as unknown as {
+                register(options: { name: string; id: string; locale: string }, component: unknown): () => void
+              }).register({
+                name: 'settings.section.icon',
+                id: WORKBUDDY_SETTINGS_SECTION_ID,
+                locale: namespace,
+              }, (iconProps: { size?: number; active?: boolean } | undefined) => {
+                // The shell asks for a square edge and passes whether this row
+                // is the selected one; honouring both keeps the glyph on the
+                // same rhythm as the built-in rows' own icons.
+                const edge = typeof iconProps?.size === 'number' ? iconProps.size : 16
+                return h('img', {
+                  src: WORKBUDDY_PLUGIN_ICON,
+                  alt: '',
+                  width: edge,
+                  height: edge,
+                  className: 'dsm-workbuddy-nav-icon',
+                  style: {
+                    width: `${edge}px`,
+                    height: `${edge}px`,
+                    borderRadius: '4px',
+                    display: 'block',
+                    objectFit: 'contain',
+                    opacity: iconProps?.active === false ? 0.75 : 1,
+                  },
+                })
+              })
+              disposers.push(iconDisposer)
+              return iconDisposer
+            })
+            if (typeof iconInject === 'function') disposers.push(iconInject)
+          } catch (error: unknown) {
+            // The page is the feature; the glyph is decoration. A host that
+            // declares the section but not its icon seat must still get a page.
+            console.error('[dsh-connect-workbuddy] settings nav icon failed to register (page unaffected):', error)
+          }
+
+          return () => {
+            for (const dispose of disposers) {
+              try { dispose() } catch { /* already disposed by the slot service */ }
+            }
+          }
+        })
       } catch (error: unknown) {
-        // Isolated per slot on purpose: a failed registration must never take
-        // the other slots down with it.
-        console.error(`[dsh-connect-workbuddy] card slot "${slotName}" failed to register (host provider unaffected):`, error)
+        console.error('[dsh-connect-workbuddy] settings section failed to register (host provider unaffected):', error)
         return undefined
       }
     }
@@ -200,15 +295,16 @@ export function apply(ctx: WorkBuddyClientContext): void {
           order: 4,
           locale: namespace,
           // `settingsScope` rides along so the gate can honor the card's
-          // per-region switch without a second writer.
-          //
-          // `onOpenSettings` is a THUNK, not the answer: the service it reaches
-          // (`pluginNavigation`) belongs to the Plugins bundle, which may apply
-          // after this one, so the probe must run when the user presses and not
-          // when this slot registers. See `settings-route.ts`.
-          inject: () => settingsScope === undefined
-            ? { t, position: 'composer' as const, onOpenSettings }
-            : { t, position: 'composer' as const, settingsScope, onOpenSettings },
+          // per-region switch without a second writer. `onOpenSettings` is the
+          // popover's header button: it opens the plugin's own `main` panel, so
+          // the reader reaches the WIDE layout from wherever they are instead of
+          // being sent to a second, differently-shaped copy in Settings.
+          inject: () => ({
+            t,
+            position: 'composer' as const,
+            ...settingsScope === undefined ? {} : { settingsScope },
+            onOpenSettings: openSettingsSection,
+          }),
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-workbuddy] composer credits slot failed to register (host provider unaffected):', error)
@@ -309,13 +405,88 @@ export function apply(ctx: WorkBuddyClientContext): void {
      * affordance instead of blocking the whole plugin (the same degradation the
      * card already promises for a missing settings form).
      */
-    const registerPanel = (): Array<() => void> => {
-      const PANEL_ID = 'dsh-connect-workbuddy'
-      const disposers: Array<() => void> = []
-      const backToConversation = (): void => {
-        const layout = softGet('layout') as { selectPanel?: (id: string | null) => void } | undefined
-        if (layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(null)
+    /**
+     * The `main` key this plugin's full page is registered under.
+     *
+     * Also the id the composer readout asks `layout.selectPanel` for, so the two
+     * cannot drift: a rename here that missed `openFullPage` below would leave a
+     * button that throws "main panel is not registered".
+     */
+    const PANEL_ID = 'dsh-connect-workbuddy'
+
+    /** Hand the centre column back to the conversation. */
+    const backToConversation = (): void => {
+      const layout = softGet('layout') as { selectPanel?: (id: string | null) => void } | undefined
+      if (layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(null)
+    }
+
+    /**
+     * Open the FULL page from anywhere in the plugin (the composer readout's
+     * button, and anything else that wants to send the reader there).
+     *
+     * The page is a `main` panel, so `layout.selectPanel` is the supported route
+     * and needs no private key of another bundle — unlike the old
+     * `openBundle('/plugins/…')` approach, which asked the Plugins page to
+     * select a bundle and only worked while that page's own service existed.
+     *
+     * IT THROWS WHEN THE KEY IS UNREGISTERED, by the host's own rule
+     * (`layout.selectPanel: main panel "…" is not registered`). That is why the
+     * `main` registration below is UNCONDITIONAL while the sidebar ROW is
+     * optional: the row claims a global nav seat and is off by default, but the
+     * page behind it has to exist for this function to be callable at all. The
+     * catch is here rather than in the caller so a stripped profile degrades to
+     * "the button does nothing" instead of an error inside a click handler.
+     *
+     * @returns whether the page was opened.
+     */
+    const openFullPage = (): boolean => {
+      const layout = softGet('layout') as { selectPanel?: (id: string | null) => void } | undefined
+      if (layout === undefined || typeof layout.selectPanel !== 'function') return false
+      try {
+        layout.selectPanel(PANEL_ID)
+        return true
+      } catch {
+        return false
       }
+    }
+
+    /**
+     * The full page: a `main` panel keyed by {@link PANEL_ID}.
+     *
+     * Registered ALWAYS, independently of the sidebar row. They used to share one
+     * lifetime, which made the page reachable only while the optional nav row was
+     * switched on — and the nav row is a global seat, off by default, that most
+     * users never turn on. The page is what the composer readout's button opens,
+     * so tying the two together meant that button could not exist.
+     */
+    const registerMainPage = (): (() => void) | undefined => {
+      try {
+        return ctx.slots.inject('main' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; key: string; locale: string; inject: () => WorkBuddyCardInjected & { surface: 'page'; backToConversation: () => void } }, component: unknown): () => void
+        }).register({
+          name: 'main',
+          key: PANEL_ID,
+          locale: namespace,
+          inject: () => settingsScope === undefined
+            ? { t, surface: 'page' as const, backToConversation }
+            : { t, settingsScope, surface: 'page' as const, backToConversation },
+        }, WorkBuddyCard))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] full page failed to register (host provider unaffected):', error)
+        return undefined
+      }
+    }
+
+    /**
+     * The OPTIONAL sidebar nav row that points at {@link registerMainPage}'s page.
+     *
+     * Separate from the page for the reason above: `sidebar.panellist` builds its
+     * rows from ENTRY METADATA (`usePanels`), so this is the only half that has to
+     * come and go with the switch. Registering the row is what makes the page
+     * reachable from the sidebar; the page itself exists either way.
+     */
+    const registerPanelRow = (): Array<() => void> => {
+      const disposers: Array<() => void> = []
       try {
         disposers.push(ctx.slots.inject('sidebar.panellist' as never, () => (ctx.slots as unknown as {
           register(options: { name: string; id: string; order: number; label: () => string; locale: string }, component: unknown): () => void
@@ -328,20 +499,6 @@ export function apply(ctx: WorkBuddyClientContext): void {
         }, WorkBuddyPanelIcon)))
       } catch (error: unknown) {
         console.error('[dsh-connect-workbuddy] sidebar panel row failed to register (host provider unaffected):', error)
-      }
-      try {
-        disposers.push(ctx.slots.inject('main' as never, () => (ctx.slots as unknown as {
-          register(options: { name: string; key: string; locale: string; inject: () => WorkBuddyCardInjected & { surface: 'page'; backToConversation: () => void } }, component: unknown): () => void
-        }).register({
-          name: 'main',
-          key: PANEL_ID,
-          locale: namespace,
-          inject: () => settingsScope === undefined
-            ? { t, surface: 'page' as const, backToConversation }
-            : { t, settingsScope, surface: 'page' as const, backToConversation },
-        }, WorkBuddyCard)))
-      } catch (error: unknown) {
-        console.error('[dsh-connect-workbuddy] sidebar panel page failed to register (host provider unaffected):', error)
       }
       return disposers
     }
@@ -375,7 +532,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
       }
       panelDisposers = []
       if (!sidebarPanelWanted()) return
-      panelDisposers = registerPanel()
+      panelDisposers = registerPanelRow()
     }
 
     /**
@@ -409,9 +566,16 @@ export function apply(ctx: WorkBuddyClientContext): void {
           id: 'dsh-connect-workbuddy-stats-credits',
           order: 10,
           locale: namespace,
-          inject: () => settingsScope === undefined
-            ? { t, position: 'stats' as const, onOpenSettings }
-            : { t, position: 'stats' as const, settingsScope, onOpenSettings },
+          // The SAME injection as the composer seat, minus the position: both
+          // seats render the same component, so a prop wired into one and not
+          // the other makes a control appear or vanish depending on a setting
+          // that has nothing to do with it.
+          inject: () => ({
+            t,
+            position: 'stats' as const,
+            ...settingsScope === undefined ? {} : { settingsScope },
+            onOpenSettings: openSettingsSection,
+          }),
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-workbuddy] stats credits slot failed to register (host provider unaffected):', error)
@@ -525,24 +689,25 @@ export function apply(ctx: WorkBuddyClientContext): void {
      * late-arriving namespace has to produce fresh registrations rather than a
      * mutated closure.
      *
-     * The card registers under EVERY spelling of its package name (see
-     * {@link WORKBUDDY_CARD_KEYS}): the Plugins page looks a
-     * configuration up by exact `key` equality against the inventory's package
-     * name, and a deployment is free to name the install row whatever it likes
-     * — issue #55 is exactly that mismatch, which renders an empty page and
-     * reports nothing at all.
+     * The configuration page is `settings.section` — ONE registration under an
+     * id this plugin owns, so there is no inventory name to match and no
+     * spelling to get wrong (see {@link WORKBUDDY_SETTINGS_SECTION_ID}). The
+     * former `plugins.bundle.config` / `plugins.row.config` pair is GONE with
+     * 5.19.0: the same configuration must not have two editing entries.
      */
     const registerAllSlots = (): Array<() => void> => [
-      ...WORKBUDDY_CARD_KEYS.map(key => registerCard('plugins.bundle.config', key)),
-      ...WORKBUDDY_CARD_KEYS.map(key => registerCard('plugins.row.config', `${key}#${key}`)),
+      registerSettingsSection(),
       registerComposerCredits(),
       registerStatsCredits(),
       registerCliLive(),
       registerQuotaNotice(),
       registerModelLabel(),
-      // `registerPanel()` deliberately does NOT belong here: it is the one seat
-      // that is only registered while its opt-in switch is on, so it is owned by
-      // {@link syncPanelRegistration} instead of the always-on set above.
+      // The full PAGE is always-on: the composer readout's button opens it, and a
+      // `main` panel has to exist for `layout.selectPanel` to accept the key.
+      registerMainPage(),
+      // The sidebar NAV ROW alone is conditional, so it is owned by
+      // {@link syncPanelRegistration} rather than this list. It registers the row
+      // that points at the page above; the page does not depend on it.
     ].filter((disposer): disposer is () => void => disposer !== undefined)
 
     /**
@@ -583,8 +748,8 @@ export function apply(ctx: WorkBuddyClientContext): void {
       // did. A single line naming the count and where the settings form came
       // from turns the next occurrence into a one-look diagnosis:
       //
-      //   [dsh-connect-workbuddy] registered 5 slots (settings form: dsh-connect-workbuddy)
-      //   [dsh-connect-workbuddy] registered 5 slots (settings form: none — card is read-only)
+      //   [dsh-connect-workbuddy] registered 6 slots (settings form: bound, sidebar panel: off)
+      //   [dsh-connect-workbuddy] registered 6 slots (settings form: none — page is read-only, ...)
       //
       // Deliberately `console.info`, not `warn`/`error`: this is the healthy
       // path, and a warning-per-page-load would train users to ignore the one
@@ -592,7 +757,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
       try {
         console.info(
           `[dsh-connect-workbuddy] registered ${String(liveDisposers.length)} slots `
-          + `(settings form: ${settingsScope === undefined ? 'none — card is read-only' : 'bound'}, `
+          + `(settings form: ${settingsScope === undefined ? 'none — page is read-only' : 'bound'}, `
           + `sidebar panel: ${sidebarPanelWanted() ? 'on' : 'off'})`,
         )
       } catch { /* a host without console must still get its slots */ }

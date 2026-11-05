@@ -874,11 +874,11 @@ const regionStateConfig = z.object({
    * single shared switch would force them to either show a permanently empty
    * row or lose the one that works.
    *
-   * ON by default (opt-out). The plugin card is not reachable in every host —
-   * a market plugin can own the Plugins tab and never render
-   * `plugins.bundle.config` — so a feature that is off until discovered would be
-   * off forever for those users. The line carries its own `×` in the sidebar,
-   * which is reachable exactly where the feature renders.
+   * ON by default (opt-out). The configuration page is not reachable in every
+   * host — a composition can omit the Settings shell, and even where it exists
+   * the user has to know the page is there — so a feature that is off until
+   * discovered would be off forever for those users. The line carries its own
+   * `×` in the sidebar, which is reachable exactly where the feature renders.
    */
   showCreditsInMainUi: z.boolean().default(true).description('Show this region\'s remaining credits at the DSH sidebar foot (opt-out; the line carries its own hide button)'),
   creditPosition: z.union([z.const('composer'), z.const('stats')]).default('composer').description('Where the credit readout sits: "composer" = the composer tool row (default), "stats" = the ambient row below the composer card, next to the shell\'s own token pills. Choose "stats" if another plugin occupies the composer row.'),

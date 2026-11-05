@@ -121,10 +121,13 @@ function applyBinding(ctx: any): {
   const namespace = 'settings.workbuddy'
 
   const registerAllSlots = (): Array<() => void> => {
-    // The real entry registers three slots; one suffices to observe the
+    // The real entry registers several slots; one suffices to observe the
     // re-registration contract, and the scope each one captured is the point.
-    ctx.slots.register('plugins.bundle.config', 'dsh-connect-workbuddy', () => settingsScope === undefined ? {} : { settingsScope })
-    registrations.push({ slot: 'plugins.bundle.config', scope: settingsScope })
+    // The Settings section stands in for all of them: it is the seat whose
+    // `inject` result the shell caches by entry identity, which is exactly why
+    // a late namespace has to produce a FRESH registration.
+    ctx.slots.register('settings.section', 'dsh-connect-workbuddy', () => settingsScope === undefined ? {} : { settingsScope })
+    registrations.push({ slot: 'settings.section', scope: settingsScope })
     return [() => { registrations.push({ slot: 'disposed', scope: settingsScope }) }]
   }
 
@@ -223,7 +226,7 @@ describe('issue #46: the settings namespace is followed, not guessed', () => {
     // NOTHING was registered before, which is the whole point of the fix: the
     // old code registered against the guessed name and never revisited it.
     expect(stub.minted).toEqual(['dsh-connect-workbuddy'])
-    expect(registrations.map(r => r.slot)).toEqual(['plugins.bundle.config'])
+    expect(registrations.map(r => r.slot)).toEqual(['settings.section'])
     expect((registrations.at(-1) as any).scope.getSnapshot().status).toBe('ready')
   })
 
@@ -288,7 +291,7 @@ describe('issue #46: the settings namespace is followed, not guessed', () => {
     const stub = formsStub({ served: ['dsh-connect-workbuddy'] })
     const ctx = contextWith(stub.forms)
     const { registrations, dispose } = applyBinding(ctx)
-    expect(registrations.some(r => r.slot === 'plugins.bundle.config')).toBe(true)
+    expect(registrations.some(r => r.slot === 'settings.section')).toBe(true)
 
     const before = registrations.filter(r => r.slot === 'disposed').length
     stub.land([])

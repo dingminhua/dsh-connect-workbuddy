@@ -133,11 +133,12 @@ export interface ComposerCreditsGateProps {
   /** Settings scope from the configForms mirror; the card writes the same field. */
   settingsScope?: WorkBuddyCardInjected['settingsScope']
   /**
-   * Open this plugin's settings page; see `ComposerCreditsProps.onOpenSettings`.
+   * Open this plugin's FULL page from the readout's header button.
    *
-   * Passed straight through: the gate is a visibility decision and has no
-   * business probing Host services, but it is the only component the entry
-   * registers, so the callback has to travel through it.
+   * Passed straight through from the entry's injection: the entry owns the
+   * `layout` probe because this module must stay free of browser-only DSH
+   * packages. Undefined means the button is not rendered at all — a control that
+   * cannot do what it says is worse than one that is absent.
    */
   onOpenSettings?: () => boolean
   /**

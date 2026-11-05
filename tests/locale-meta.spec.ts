@@ -56,7 +56,6 @@ function manifest(): Manifest {
 interface Meta {
   title?: string
   description?: string
-  detail?: string
 }
 
 /** The `meta` object of one locale file, as the host reads it. */
@@ -225,69 +224,5 @@ describe('locale metadata', () => {
     const descriptions = draftDescriptions(draft)
     expect(descriptions.en).toBe(metaOf('en').description)
     expect(descriptions.zh).toBe(metaOf('zh').description)
-  })
-})
-
-/**
- * Plugin detail page (DSH 0.2.2+).
- *
- * The host reads `meta.detail` from `locale/<lang>.json` and renders the
- * Markdown file it points at. If NO locale carries a detail, it falls back to
- * the WHOLE package README (700+ lines) inside a 560px scroll box; if a detail
- * points at a file that is not in the tarball, the page shows an error plus a
- * "retry" button instead. So all three of these must hold at once:
- *
- *   1. every locale file has a `meta.detail` (en.json is the language-chain
- *      fallback, so it MUST be there);
- *   2. the path is package-root-relative, `/`-separated, ends in `.md`, and the
- *      file actually exists;
- *   3. the file is listed in `package.json` `files`, and its body is <= 100
- *      characters (the host's short-document budget).
- *
- * Nothing fails loudly when one of these drifts — a deleted file or a widened
- * `files` glob just makes the card regress to the full README — so pin it here.
- * See `docs/PLUGIN-DETAIL-GUIDE.md`.
- */
-describe('plugin detail documents (DSH 0.2.2+)', () => {
-  const locales = ['en', 'zh']
-
-  it('gives every locale a meta.detail, including the en.json fallback', () => {
-    for (const language of locales) {
-      const detail = metaOf(language).detail
-      expect(typeof detail, `locale/${language}.json meta.detail`).toBe('string')
-      expect(detail?.trim()).not.toBe('')
-    }
-  })
-
-  it('points detail at a real, package-root-relative .md file', () => {
-    for (const language of locales) {
-      const detail = metaOf(language).detail ?? ''
-      // No URL scheme, no backslash, no empty/. /.. segments, must end in .md.
-      expect(detail).toMatch(/^(?!\/$)[A-Za-z0-9._\-/]+\.md$/)
-      expect(detail).not.toMatch(/(\/\/|\/\\|\.\.|\/\.\/|\/\.$)/)
-      expect(detail.startsWith('/')).toBe(false)
-      // Read it: a missing file throws here instead of showing a "retry" button
-      // in the plugin page.
-      expect(() => read(detail)).not.toThrow()
-    }
-  })
-
-  it('publishes every detail file in the package files whitelist', () => {
-    const { files } = manifest()
-    for (const language of locales) {
-      const detail = metaOf(language).detail ?? ''
-      expect(files, `package.json files must list ${detail}`).toContain(detail)
-    }
-  })
-
-  it('keeps each detail document within the 100-character budget', () => {
-    for (const language of locales) {
-      const detail = metaOf(language).detail ?? ''
-      // Same measure as the guide: total characters (Han, punctuation, letters,
-      // spaces all count), trailing newline excluded, <= 100.
-      const length = read(detail).replace(/\s+$/, '').length
-      expect(length, `${detail} has ${length} chars`).toBeLessThanOrEqual(100)
-      expect(length).toBeGreaterThan(0)
-    }
   })
 })

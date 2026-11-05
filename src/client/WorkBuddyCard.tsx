@@ -109,18 +109,34 @@ export interface WorkBuddyCardInjected {
 }
 
 /**
- * Props delivered by the Plugin configuration slot.
+ * Which of the three surfaces this component is drawing.
  *
- * The slot keys this card registers against (`plugins.bundle.config` /
- * `plugins.row.config`) are not enumerated in the 0.1.7 `SlotMap` types —
- * they exist at runtime, but the shipped type table does not list them — so
- * the props are typed from the injected surface rather than
- * `PropsRuntime<'…'>`. The card also receives the host's `view`
- * ('summary' | 'page').
+ * - `card` — the collapsed plugin card on the Plugins page (`view` toggles it).
+ * - `page` — the optional sidebar panel's full page: the card with its own
+ *   back-to-conversation control.
+ * - `settings` — a section inside the Settings panel. The shell owns the panel
+ *   chrome (title, close button, scrolling column), so this surface drops BOTH
+ *   the collapse affordance and the back control; only the content remains.
+ *
+ * The three differ in chrome, never in data: the same stores, the same polling
+ * and the same four sub-tabs serve all of them, so a behaviour can never drift
+ * between surfaces.
+ */
+export type WorkBuddySurface = 'card' | 'page' | 'settings'
+
+/**
+ * Props delivered by the Plugin configuration slot / the Settings section.
+ *
+ * The slot keys this card registers against (`settings.section`, `main`,
+ * `sidebar.panellist`) are not enumerated in the 0.1.7 `SlotMap` types — they
+ * exist at runtime, but the shipped type table does not list them — so the
+ * props are typed from the injected surface rather than `PropsRuntime<'…'>`.
+ * The card also receives the host's `view` ('summary' | 'page') where the slot
+ * projects one.
  */
 export type WorkBuddyCardProps =
   Partial<WorkBuddyCardInjected>
-  & { view?: string; surface?: 'card' | 'page'; backToConversation?: () => void }
+  & { view?: string; surface?: WorkBuddySurface; backToConversation?: () => void }
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -608,11 +624,15 @@ export function WorkBuddyCard(props: WorkBuddyCardProps) {
 function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation }: WorkBuddyCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
   const pageSurface = surface === 'page'
+  // The Settings shell owns the panel chrome, so this surface is content only:
+  // no collapse header (the reader arrived at a page, not a card) and no back
+  // control (there is no conversation panel to go back to behind a dialog).
+  const settingsSurface = surface === 'settings'
   // A page surface is always expanded; only the card chrome toggles. The
   // collapse button is not rendered in page mode, so `setCardOpen` is unused there
   // — keeping a single `open` value lets the polling effects stay untouched.
   const [cardOpen, setCardOpen] = useState(view === 'page')
-  const open = pageSurface || cardOpen
+  const open = pageSurface || settingsSurface || cardOpen
   /** The region whose tab is on screen; each tab is its own provider stack. */
   const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
   /**
@@ -2993,9 +3013,18 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     </div>
   )
 
-  const pageHead = pageSurface ? (
-    <div className="dsm-workbuddy-page-head">
-      {backToConversation !== undefined
+  /**
+   * The page header: the sidebar panel's own page, and the Settings section.
+   *
+   * Both are "a page about WorkBuddy" rather than a row in someone else's list,
+   * so both say what this is in one line. They differ in exactly one control:
+   * the sidebar page needs a way back to the conversation, while the Settings
+   * section is inside a dialog the shell closes for you — a back arrow there
+   * would point at a place the reader did not come from.
+   */
+  const pageHead = pageSurface || settingsSurface ? (
+    <div className={settingsSurface ? 'dsm-workbuddy-page-head dsm-workbuddy-settings-head' : 'dsm-workbuddy-page-head'}>
+      {pageSurface && backToConversation !== undefined
         ? (
             <button type="button" className="dsm-workbuddy-page-back" onClick={backToConversation}>
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3052,6 +3081,31 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                   )
                 })}
               </div>
+              {/* What the two cells above ARE, stated once, directly under them.
+                  It used to sit inside the accounts panel — below the section
+                  tabs — where it read as a caption for 「账号 / 模型 / 能力」,
+                  the row that is not what it describes. A description of the
+                  region pair belongs against the region pair; and because it
+                  now lives outside every panel it stays readable from all five
+                  sections instead of disappearing with the first one. */}
+              <p className="dsm-workbuddy-models-summary dsm-workbuddy-tab-hint">{t('row.tabHint')}</p>
+              {/* Its OWN paragraph rather than a clause appended to the hint
+                  above: this one is BOLD and is the only sentence here that
+                  corrects a wrong assumption rather than describing a fact.
+                  Appending it in the same grey run is what let the ×0 tiers
+                  read as "unlimited" in the first place (issue #56's reporter
+                  lost 30 minutes to exactly that reading).
+
+                  It belongs HERE, with the region pair and its explanation, and
+                  not inside the accounts panel where it used to sit: the two
+                  sentences answer the same question ("what am I looking at, and
+                  what are its limits"), and separating them by the section tabs
+                  put a rule and three tabs between a statement and its caveat.
+                  Living outside every panel also keeps it readable from the
+                  model section, which is where the ×0 tiers actually appear. */}
+              <p className="dsm-workbuddy-models-summary dsm-workbuddy-free-quota-warn">
+                {t('row.tabFreeQuotaWarn')}
+              </p>
               {/* THE CARD'S THREE SECTIONS. Above them, the region pair is the
                   SCOPE (which provider's data this whole panel is about) and
                   scrolls with the content like any other header row. */}
@@ -3132,16 +3186,6 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                    state the user cannot see or change. */
                 hidden={signedIn && panel !== 'accounts'}
               >
-              <p className="dsm-workbuddy-models-summary">{t('row.tabHint')}</p>
-              {/* Its OWN paragraph rather than a clause appended to the hint
-                  above: this one is BOLD and is the only sentence here that
-                  corrects a wrong assumption rather than describing a fact.
-                  Appending it in the same grey run is what let the ×0 tiers
-                  read as "unlimited" in the first place (issue #56's reporter
-                  lost 30 minutes to exactly that reading). */}
-              <p className="dsm-workbuddy-models-summary dsm-workbuddy-free-quota-warn">
-                {t('row.tabFreeQuotaWarn')}
-              </p>
               {!activeRegionOn
                 ? <p className="dsm-workbuddy-tab-off-notice">{t('row.tabOffNotice')}</p>
                 : null}
@@ -3938,9 +3982,9 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
           </CardBodyBoundary>
   )
 
-  if (pageSurface) {
+  if (pageSurface || settingsSurface) {
     return (
-      <div className="dsm-workbuddy-page">
+      <div className={settingsSurface ? 'dsm-workbuddy-page dsm-workbuddy-settings' : 'dsm-workbuddy-page'}>
         {pageHead}
         <div className="dsm-workbuddy-page-body">{cardBody}</div>
       </div>

@@ -41,6 +41,7 @@ function apply(ctx: any): void {
     // name is LAST: it is the only spelling that is not a real Loader entry id.
     const candidates = ['dsh-connect-workbuddy', 'include:dsh-connect-workbuddy', 'workbuddy']
 
+    /** A generic seat registration, mirroring the entry's per-slot try/catch. */
     const registerCard = (slotName: string, key: string): (() => void) | undefined => {
       try {
         return ctx.slots.inject(slotName, () => ctx.slots.register({
@@ -55,15 +56,31 @@ function apply(ctx: any): void {
       }
     }
 
+    /**
+     * Mirror of `registerSettingsSection`: ONE registration into the list slot,
+     * under an id this plugin owns. `slots.inject()` is the whole probe — it
+     * waits for the declaration and never throws for a host that does not
+     * declare it — so there is nothing to guard against except a service that
+     * rejects the registration itself.
+     */
+    const registerSettingsSection = (): (() => void) | undefined => {
+      try {
+        return ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'dsh-connect-workbuddy',
+          order: 35,
+          label: () => 'WorkBuddy',
+          inject: () => ({ t, settingsScope, surface: 'settings' }),
+        }, {}))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-workbuddy] settings section failed to register (host provider unaffected):', error)
+        return undefined
+      }
+    }
+
     const registerAllSlots = (): Array<() => void> => [
-      // Every package-name spelling, because the Plugins page looks a card up
-      // by EXACT `key` equality against the inventory's package name (issue
-      // #55) — see `WORKBUDDY_CARD_KEYS` in `src/status-paths.ts`.
-      ...['dsh-connect-workbuddy', 'include:dsh-connect-workbuddy']
-        .map(key => registerCard('plugins.bundle.config', key)),
-      ...['dsh-connect-workbuddy', 'include:dsh-connect-workbuddy']
-        .map(key => registerCard('plugins.row.config', `${key}#${key}`)),
-      registerCard('settings.plugin.item', 'workbuddy'),
+      registerSettingsSection(),
+      registerCard('conversation.input.right', 'workbuddy'),
     ].filter((disposer): disposer is () => void => disposer !== undefined)
 
     let liveDisposers: Array<() => void> = []
@@ -112,8 +129,8 @@ describe('client card fallback', () => {
       get: (name: string) => name === 'settingsScope' ? { bind: () => ({}) } : undefined,
       slots: {
         inject: (slotName: string) => {
-          if (slotName === 'plugins.row.config') {
-            throw new Error('keyed slot "plugins.row.config" already has an entry with id "x"')
+          if (slotName === 'settings.section') {
+            throw new Error('settings.section is not declared on this host')
           }
           registered.push(slotName)
         },
@@ -122,17 +139,10 @@ describe('client card fallback', () => {
     }
 
     expect(() => apply(fakeCtx)).not.toThrow()
-    // The broken slot is logged per-slot; every OTHER registration still landed.
-    expect(registered).toEqual([
-      'plugins.bundle.config',
-      'plugins.bundle.config',
-      'settings.plugin.item',
-    ])
-    // One line per failed keyed registration: the row slot is tried twice (once
-    // per package-name spelling), so both failures are reported.
-    expect(errors).toHaveLength(2)
-    expect(String(errors[0])).toContain('plugins.row.config')
-    expect(String(errors[0])).toContain('already has an entry')
+    // The broken seat is logged per-slot; every OTHER registration still landed.
+    expect(registered).toEqual(['conversation.input.right'])
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toContain('settings section failed to register')
 
     spy.mockRestore()
   })
@@ -156,7 +166,8 @@ describe('client card fallback', () => {
     }
 
     expect(() => apply(fakeCtx)).not.toThrow()
-    expect(registered).toHaveLength(5)
+    // Two always-on seats now: the Settings section and the composer readout.
+    expect(registered).toHaveLength(2)
     expect(errors).toHaveLength(0)
 
     spy.mockRestore()

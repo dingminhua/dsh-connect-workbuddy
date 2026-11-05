@@ -499,7 +499,347 @@ describe('the free-model quota warning', () => {
       join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
       'utf8',
     )
+    // The DECLARATION, not the whole rule: the selector also carries spacing now
+    // that this line reads as the second half of the region hint, and pinning
+    // the full rule text made an unrelated margin change look like a lost weight.
     expect(css, 'the bold rule is missing from the stylesheet')
-      .toContain('.dsm-workbuddy-free-quota-warn{font-weight:600}')
+      .toMatch(/\.dsm-workbuddy-free-quota-warn\{[^}]*font-weight:600/u)
+  })
+})
+
+/**
+ * WHERE the region hint lives.
+ *
+ * The hint explains the pair of provider cells at the top of the card. It used
+ * to be rendered inside the accounts panel — below the section tabs — so it read
+ * as a caption for 「账号 / 模型 / 能力」, the row it does not describe, and it
+ * vanished whenever the user picked any other section.
+ *
+ * These two cases pin the position rather than the wording: the text is chosen
+ * by key (`t` returns the key here), so rewording stays a locale-only change.
+ */
+describe('the region-pair hint', () => {
+  it('sits directly under the region tabs and above the section tabs', async () => {
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+
+    const hint = m.container.querySelector('.dsm-workbuddy-tab-hint')
+    expect(hint, 'the region hint is not rendered').not.toBeNull()
+    expect(hint?.textContent).toContain('row.tabHint')
+
+    const html = m.html()
+    const regions = html.indexOf('class="dsm-workbuddy-tabs"')
+    const hintAt = html.indexOf('class="dsm-workbuddy-models-summary dsm-workbuddy-tab-hint"')
+    const sections = html.indexOf('class="dsm-workbuddy-panels"')
+    expect(regions, 'no region tab row').toBeGreaterThan(-1)
+    expect(sections, 'no section tab row').toBeGreaterThan(-1)
+    expect(hintAt, 'the hint is not between the two tab rows').toBeGreaterThan(regions)
+    expect(hintAt, 'the hint is below the section tabs').toBeLessThan(sections)
+    await m.unmount()
+  })
+
+  it('stays visible from every section, not only the accounts one', async () => {
+    // Living inside the accounts panel meant `hidden` took it with that panel.
+    // Outside every panel there is no state in which it is hidden.
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+
+    const hint = m.container.querySelector('.dsm-workbuddy-tab-hint')
+    expect(hint, 'the region hint is not rendered').not.toBeNull()
+    // No ancestor of the hint may be a hideable panel.
+    let node: Element | null = hint
+    while (node !== null && node !== m.container) {
+      expect(node.classList.contains('dsm-workbuddy-panel'),
+        'the hint is inside a section panel and will disappear with it').toBe(false)
+      node = node.parentElement
+    }
+    await m.unmount()
+  })
+})
+
+/**
+ * THE POOL TABLE MUST FIT ITS COLUMN, NOT THE WINDOW.
+ *
+ * The card renders in three places with unrelated widths: the composer card, the
+ * full page (capped at 860px) and the Settings panel's content column (~560px on
+ * a 1400px screen). Every breakpoint this file used was a viewport media query,
+ * so inside the Settings panel none of them fired and the five-column table was
+ * laid into a 560px box.
+ *
+ * jsdom does not lay out, so these cases pin the CONTRACT the browser needs —
+ * that the tracks may shrink, and that the collapse is measured against the
+ * table. A layout assertion here would pass no matter what the CSS said.
+ */
+describe('the pool table fits the Settings panel width', () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
+    'utf8',
+  )
+
+  it('leaves the grid tracks as bare fr, because minmax was measured and changed nothing', () => {
+    // Tracks are NOT the constraint here. Measured in headless Chrome at the
+    // Settings column width (564px), swapping `1.6fr` for `minmax(0,1.6fr)`
+    // moved the overflowing-cell count 1 -> 1 in both cases: the row's own
+    // width (530) never exceeded the table's (532). What overflows is a CELL,
+    // and `.dsm-workbuddy-pool-benefit` already carries the `min-width:0` that
+    // fixes it (see the sibling case in tests/pool-e2e.spec.ts, which records
+    // the same result and exists so nobody re-tries this).
+    //
+    // Pinned here too, from the opposite direction: the collapse below is
+    // supposed to happen through @container, so if the tracks ever grow a
+    // minmax minimum that conclusion has been revisited and this note is stale.
+    const row = /\.dsm-workbuddy-pool-row\{display:grid;grid-template-columns:([^;]+);/.exec(css)?.[1] ?? ''
+    expect(row, 'the pool row grid rule is missing').not.toBe('')
+    expect(row, 'the tracks were measured as not being the constraint').not.toContain('minmax(')
+  })
+
+  it('measures the collapse against the table, not the viewport', () => {
+    // `container-type: inline-size` is what makes @container work at all; without
+    // it the queries below are inert and the media query is all that is left.
+    expect(css).toContain('.dsm-workbuddy-pool-table{container-type:inline-size;')
+    // ONE threshold, and it must sit ABOVE the Settings column's ~564px. An
+    // earlier revision had a 720px band that only dropped a track, and the
+    // Settings column landed INSIDE it: readers got a 2x2 grid whose cells no
+    // longer lined up with their headers. The single breakpoint has to fire for
+    // that column, which is the whole point of measuring the table.
+    const threshold = /@container \(max-width:(\d+)px\)\{[\s\S]*?\.dsm-workbuddy-pool-row\{display:flex/u.exec(css)
+    expect(threshold, 'no @container breakpoint scoped to the pool row').not.toBeNull()
+    expect(Number(threshold?.[1]), 'the breakpoint must fire for the ~564px Settings column')
+      .toBeGreaterThan(564)
+    // And it must stack rather than re-grid: a table has no useful "slightly
+    // narrower" form, so the narrow form is a card.
+    expect(threshold?.[1], 'the narrow form must stack, not re-grid').toBeDefined()
+  })
+
+  it('keeps containment off every element that holds a fixed-position overlay', () => {
+    // `container-type` makes the element the containing block for position:fixed
+    // descendants, which would anchor the busy veils and the device dialog to a
+    // table instead of the viewport. Only the two content-only elements may
+    // carry it.
+    const roots = Array.from(css.matchAll(/\.([\w-]+)\{container-type:/g)).map(m => m[1])
+    expect(roots.sort()).toEqual(['dsm-workbuddy-pool-settings', 'dsm-workbuddy-pool-table'])
+  })
+})
+
+/**
+ * NO TEXT MAY SIT DIRECTLY ON A WALLPAPER (issue #209).
+ *
+ * With a custom wallpaper the shell's centre column is TRANSLUCENT. Every
+ * surface in this card assumed an opaque column behind it, and only some of them
+ * painted their own fill: the content area and the page header carried none, so
+ * 「账号池」, the hint line and the tab row rendered straight over the picture.
+ *
+ * jsdom paints nothing, so this cannot be a rendering assertion. What IS
+ * checkable is the property that failed: these surfaces must declare an opaque
+ * background drawn from the theme's own layer tokens.
+ */
+describe('surfaces stay readable over a wallpaper (issue #209)', () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
+    'utf8',
+  )
+
+  /**
+   * The LAST rule declaring `selector`.
+   *
+   * Last, not first: these selectors are refined further down the sheet, and the
+   * fill lives on the later rule. Reading the first match reported "no
+   * background" for a stylesheet that does paint one — which is how this test
+   * caught its OWN bug rather than the CSS's.
+   */
+  function ruleFor(selector: string): string {
+    let found = ''
+    for (const line of css.split('\n')) {
+      const at = line.indexOf(`${selector}{`)
+      if (at >= 0) found = line.slice(at)
+    }
+    return found
+  }
+
+  it('gives EVERY content area an opaque fill', () => {
+    // `.dsm-workbuddy-usage` is the same class on three surfaces — the card, the
+    // sidebar page and the Settings section — and each has its own later rule.
+    // Checking only ONE of them is not enough: the Settings rule paints a fill,
+    // so a case that accepted any match stayed green while the card's own
+    // surface went back to transparent (verified by mutation). Every rule that
+    // sets this class as its final selector must paint.
+    const own = css.split('\n')
+      .filter(line => /(^|[\s>])\.dsm-workbuddy-usage\{/u.test(line))
+      .filter(line => !/background:transparent/u.test(line))
+    expect(own.length, 'no content-area rule found').toBeGreaterThan(1)
+    for (const rule of own) {
+      expect(rule, `this content area lost its fill: ${rule.slice(0, 80)}`)
+        .toMatch(/background:var\(--dsw-alias-bg-/u)
+    }
+  })
+
+  it('gives the page header an opaque fill', () => {
+    // The title and the one-line description sit ABOVE the content area, so
+    // fixing `.dsm-workbuddy-usage` alone left them over the picture. Both the
+    // Settings section and the sidebar page header must carry it.
+    const rule = ruleFor('.dsm-workbuddy-page .dsm-workbuddy-page-head')
+    expect(rule, 'the page header has no fill').not.toBe('')
+    expect(rule, 'the header must paint an opaque surface')
+      .toMatch(/background:var\(--dsw-alias-bg-/u)
+  })
+
+  it('keeps the settings surface itself free of a translucent base', () => {
+    // The panel column is the shell's; this page must not add a second
+    // translucent layer of its own on top of it.
+    const rule = ruleFor('.dsm-workbuddy-settings .dsm-workbuddy-page-body .dsm-workbuddy-usage')
+    expect(rule, 'the settings content rule is missing').not.toBe('')
+    expect(rule, 'the settings content area must not be rewritten to transparent')
+      .toMatch(/background:var\(--dsw-alias-bg-/u)
+  })
+})
+
+/**
+ * THE MODEL NAME MUST SURVIVE ITS OWN BADGES (the Settings panel, DSH 0.2.2).
+ *
+ * A model row is one line of: name, optional rate, the upstream's promotion
+ * chip, the "new" marker, then three controls, three budget radios and two
+ * buttons. Every chip is `flex:none` — a half-drawn pill reads as a rendering
+ * bug — so the ONLY shrinkable item is the name, and it is also the one thing a
+ * reader needs. Left alone, a long name plus two chips squeezed the name down to
+ * a stub (「GLM-5.」 with nothing after it).
+ *
+ * jsdom does no layout, so this pins the CONTRACT the browser needs rather than
+ * a measured width: the copy line wraps, and the name has a floor.
+ */
+describe('the model name survives its badges', () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
+    'utf8',
+  )
+  const ruleFor = (selector: string): string => {
+    let found = ''
+    for (const line of css.split('\n')) {
+      const at = line.indexOf(`${selector}{`)
+      if (at >= 0) found = line.slice(at)
+    }
+    return found
+  }
+
+  it('lets the chips wrap instead of squeezing the name', () => {
+    const copy = ruleFor('.dsm-workbuddy-model-copy')
+    expect(copy, 'the copy rule is missing').not.toBe('')
+    expect(copy, 'without wrapping, every chip holds its width and the name gives way')
+      .toContain('flex-wrap:wrap')
+  })
+
+  it('gives the name a floor so it cannot collapse to a stub', () => {
+    const name = ruleFor('.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name')
+    expect(name, 'the name has no rule of its own').not.toBe('')
+    expect(name, 'the name must keep a minimum width').toMatch(/min-width:\d+em/u)
+    // It must still be allowed to grow, or the floor would cap it.
+    expect(name, 'the name must be able to take the leftover space').toMatch(/flex:1 1 auto/u)
+  })
+
+  it('lets the models header wrap instead of squeezing the title', () => {
+    // Four long Chinese button labels and a title column do not fit the panel's
+    // ~538px; without wrapping, 「已启用 3 个」 broke mid-phrase while the buttons
+    // stayed at full width.
+    const head = ruleFor('.dsm-workbuddy-models-head')
+    expect(head, 'the models header rule is missing').not.toBe('')
+    expect(head, 'the header must wrap').toContain('flex-wrap:wrap')
+    // And the title column must be allowed to shrink, or wrapping does nothing.
+    const titleCol = ruleFor('.dsm-workbuddy-models-head>div:first-child')
+    expect(titleCol, 'the title column has no min-width:0').toContain('min-width:0')
+  })
+})
+
+/**
+ * The free-quota warning travels with the region hint.
+ *
+ * The two sentences answer one question: "what am I looking at, and what are its
+ * limits". The warning used to sit INSIDE the accounts panel, so the section
+ * tabs and the rule above the pool came between a statement and its caveat — and
+ * it disappeared on the model section, which is exactly where the ×0 tiers the
+ * warning is about are shown.
+ */
+describe('the free-quota warning travels with the region hint', () => {
+  it('sits directly under the hint, above the section tabs', async () => {
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+
+    const html = m.html()
+    const hint = html.indexOf('dsm-workbuddy-tab-hint')
+    const warn = html.indexOf('dsm-workbuddy-free-quota-warn')
+    const sections = html.indexOf('class="dsm-workbuddy-panels"')
+    expect(hint, 'no region hint').toBeGreaterThan(-1)
+    expect(warn, 'no free-quota warning').toBeGreaterThan(-1)
+    expect(sections, 'no section tabs').toBeGreaterThan(-1)
+    expect(warn, 'the warning must follow the hint it belongs to').toBeGreaterThan(hint)
+    expect(warn, 'the warning must sit above the section tabs').toBeLessThan(sections)
+    await m.unmount()
+  })
+
+  it('stays outside every section panel, so the model view shows it too', async () => {
+    routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+
+    const warn = m.container.querySelector('.dsm-workbuddy-free-quota-warn')
+    expect(warn, 'the warning is not rendered').not.toBeNull()
+    let node: Element | null = warn
+    while (node !== null && node !== m.container) {
+      expect(node.classList.contains('dsm-workbuddy-panel'),
+        'the warning is inside a section panel and will disappear with it').toBe(false)
+      node = node.parentElement
+    }
+    await m.unmount()
+  })
+})
+
+/**
+ * ONE SPACING SOURCE, NOT THREE (the Settings panel).
+ *
+ * `.dsm-workbuddy-usage` is a flex column with `gap`, so its children are
+ * already separated. Three of them added their own margin or padding on top,
+ * and the gaps stacked: the section tabs landed 32px under the hint (16 gap +
+ * 16 margin), and the pool 28px under the tabs (16 gap + 12 margin + 16 padding
+ * of its own). On a narrow panel that reads as two accidental blank bands.
+ *
+ * Measured in headless Chrome at the panel's width: both gaps are 16px once the
+ * stacking is gone, which is the rhythm the rest of the card uses.
+ */
+describe('the panel adds no spacing on top of the column gap', () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
+    'utf8',
+  )
+  const ruleFor = (selector: string): string => {
+    let found = ''
+    for (const line of css.split('\n')) {
+      const at = line.indexOf(`${selector}{`)
+      if (at >= 0) found = line.slice(at)
+    }
+    return found
+  }
+
+  it('keeps the section tab row margin-free', () => {
+    const tabs = ruleFor('.dsm-workbuddy-panels')
+    expect(tabs, 'the tab row rule is missing').not.toBe('')
+    // `margin:0` — NOT `margin-top`, which would still stack on the gap.
+    expect(tabs, 'the tab row must not add a top margin over the column gap')
+      .toContain('margin:0')
+    // The bottom rule is the tabs' underline, not spacing: it must stay.
+    expect(tabs, 'the tabs lost their underline').toContain('border-bottom')
+  })
+
+  it('keeps the panel margin-free', () => {
+    const panel = ruleFor('.dsm-workbuddy-panel')
+    expect(panel, 'the panel rule is missing').not.toBe('')
+    expect(panel, 'the panel must not add a top margin over the column gap').toBe('.dsm-workbuddy-panel{margin:0}')
+  })
+
+  it('keeps the pool free of top padding', () => {
+    const pool = ruleFor('.dsm-workbuddy-pool')
+    expect(pool, 'the pool rule is missing').not.toBe('')
+    expect(pool, 'the pool must not add top padding under the tab row')
+      .toMatch(/padding:0 0 \d+px/u)
   })
 })
