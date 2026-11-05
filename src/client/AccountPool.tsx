@@ -1598,7 +1598,13 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
         h('div', { className: 'dsm-workbuddy-pool-row dsm-workbuddy-pool-row-head' },
-          h('span', null, t('row.poolColumnAccount')),
+          // The first track is labelled 账号, but the account cell begins with a
+          // checkbox, so the NAME starts 38px into it (measured at 1120px). A
+          // header flush with the cell edge therefore hangs in the margin and
+          // labels nothing — the reader has to guess where the column starts.
+          // The offset is carried by the class, not by inline padding, so the
+          // narrow (stacked) form can drop it along with the header itself.
+          h('span', { className: 'dsm-workbuddy-pool-col-account' }, t('row.poolColumnAccount')),
           h('span', null, t('row.poolColumnCredits')),
           h('span', null, t('row.poolColumnProbe')),
           pool.checkinSupported ? h('span', null, t('row.poolColumnCheckin')) : null,

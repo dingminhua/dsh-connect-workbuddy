@@ -37,7 +37,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-btn-outline:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed);background:rgba(255,255,255,.04)}
 .dsm-btn-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
 .dsm-btn-primary:hover:not(:disabled){opacity:.9}
-.dsm-workbuddy-usage{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px;background:var(--dsw-alias-bg-layer-1,#17181b);border-radius:12px}
+.dsm-workbuddy-usage{--dsm-workbuddy-surface:var(--dsw-alias-bg-layer-1,#17181b);display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px;background:var(--dsw-alias-bg-layer-1,#17181b);border-radius:12px}
 /* The provider bar: one CARD per region, side by side.
  *
  * COPIED FROM dsh-connect-trae, rule for rule, because an approximation of it
@@ -109,8 +109,33 @@ export const WORKBUDDY_CARD_CSS = `
  * ON TOP of that gap and doubled the distance (measured: 32px where the rhythm
  * is 16px).
  *
- * The bottom rule stays: it is the tabs' underline, not spacing. */
-.dsm-workbuddy-panels{display:flex;align-items:stretch;gap:2px;margin:0;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24))}
+ * The bottom rule stays: it is the tabs' underline, not spacing.
+ *
+ * STICKY, so the strip cannot be scrolled away from the sections it switches
+ * (learned from dsh-connect-trae 4.9.0, same migration). This is NOT a decision
+ * to take over scrolling: the Settings panel's own .options column scrolls, and
+ * the card must not add a second scroller inside it — so there is no height:100%
+ * and no overflow here either. But "not scrolling" is not the same as "may
+ * disappear": the pool sits below the fold, and by the time the reader scrolls
+ * down to it the five tabs are off the top, so switching sections means
+ * scrolling the whole page back up first.
+ *
+ * The background is not decoration: it is what stops the rows sliding under a
+ * transparent strip and showing through the gaps between the labels — and under
+ * a wallpaper (issue #209) a transparent one would be unreadable outright.
+ *
+ * It paints --dsm-workbuddy-surface, NOT a hard-coded layer. That variable is
+ * declared beside the fill on every surface's own .dsm-workbuddy-usage rule
+ * (card / page / settings), which is the element whose opaque area the strip sits
+ * inside. The three do not agree — the page paints layer-3 while the other two
+ * paint layer-1 — so a strip pinned to either constant becomes a visibly lighter
+ * bar over the other. One variable, declared where the fill is declared, is what
+ * keeps the two from drifting; a test requires every declarer to declare it.
+ *
+ * top:-1px rather than 0, because the strip's own border-bottom is drawn
+ * OUTSIDE the box and 0 leaves a 1px slit for the scrolling rows to show
+ * through. */
+.dsm-workbuddy-panels{position:sticky;top:-1px;z-index:2;display:flex;align-items:stretch;gap:2px;margin:0;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));background:var(--dsm-workbuddy-surface,var(--dsw-alias-bg-layer-1,#17181b))}
 .dsm-workbuddy-panel-tab{appearance:none;font:inherit;cursor:pointer;border:0;background:transparent;padding:7px 11px;margin-bottom:-1px;border-bottom:2px solid transparent;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:600;line-height:20px;white-space:nowrap;transition:color .15s,border-color .15s}
 .dsm-workbuddy-panel-tab:hover:not(.dsm-workbuddy-panel-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-panel-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
@@ -569,6 +594,20 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-table:not(.dsm-workbuddy-pool-table-checkin) .dsm-workbuddy-pool-row{grid-template-columns:1.6fr 1fr 1.3fr 1.7fr}
 .dsm-workbuddy-pool-row:first-child{border-top:0}
 .dsm-workbuddy-pool-row-head{padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
+/* WHERE THE LABELED COLUMN ACTUALLY STARTS (learned from dsh-connect-trae, which
+   carries the same rule for the same reason).
+ *
+ * The account cell's first element is the membership checkbox, so the account
+ * NAME begins well inside the track. Measured at the plugin page's 1120px: the
+ * header cell starts at x=65 and the name at x=103 — a 38px gap. Flush to the
+ * cell edge, the word 「账号」 floated in the padding and pointed at nothing.
+ *
+ * 38px is the checkbox (13px) plus the cell's 8px gap plus the vertical
+ * centring slack of an 18px glyph in a 20px label; rounded to the value that
+ * measured flush rather than derived, because the two cells do not share a
+ * box. The narrow form hides the whole header row, so this offset never has to
+ * be re-tuned for the stacked layout. */
+.dsm-workbuddy-pool-col-account{padding-inline-start:38px}
 .dsm-workbuddy-pool-row-current{background:rgba(86,134,254,.07)}
 /* The serving row, made findable at a glance: a left accent bar plus the tint.
    The bar is what distinguishes it in a long table, where a 7%-opacity wash
@@ -891,9 +930,18 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-row-actions{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex:none}
 .dsm-workbuddy-pool-row-actions .dsm-workbuddy-pool-small-btn{white-space:nowrap}
 .dsm-workbuddy-pool-row-actions .dsm-workbuddy-pool-small-btn{padding:2px 10px;font-size:12px}
-/* This account's own test model (issue #61). Narrower than the section-level
-   picker so a long model name cannot push the two buttons out of the row. */
-@media (max-width:760px){.dsm-workbuddy-pool-row{grid-template-columns:1fr 1fr;row-gap:6px}.dsm-workbuddy-pool-select{max-width:180px}}
+/* The picker's cap, narrowed on a phone. NOTE this @media measures the VIEWPORT,
+   which is why it is the only rule left here that is allowed to: it exists for
+   the Plugins page at phone width, where the viewport IS the constraint. The
+   ROW's own narrow form is the @container block further down — a media query
+   cannot express it, because inside the Settings panel the viewport is 1400px
+   while the table gets 564px.
+ *
+ * The row's re-grid that used to live here was the source of that panel's
+ * 2x2 defect: it fired at phone widths only, so the 564px column kept the
+ * five-track desktop grid and clipped every cell. Removed rather than left
+ * behind, because a second, half-correct narrow form is worse than none. */
+@media (max-width:760px){.dsm-workbuddy-pool-select{max-width:180px}}
 /* The settings rows (target model, probe size) are flex with a content column
  * that grows and a control that does not. In the Settings panel the control was
  * squeezed to a sliver: max-width:260px caps it but nothing gives it a floor,
@@ -933,6 +981,34 @@ export const WORKBUDDY_CARD_CSS = `
   /* The column headers describe tracks that no longer exist. */
   .dsm-workbuddy-pool-row-head{display:none}
   .dsm-workbuddy-pool-account{flex:1 1 100%;align-items:center}
+  /* THE ACCOUNT CELL'S OWN COLUMN, collapsed the same way — and this is the
+     rule that actually decides the row height (learned from dsh-connect-trae
+     4.9.0, which shipped the outer half of this fix and measured 138px rows).
+   *
+   * Collapsing only .dsm-workbuddy-pool-account above is NOT enough: that is
+   * just a flex wrapper. The cells that stack are one level deeper, inside
+   * .dsm-workbuddy-pool-account-name, which declares flex-direction:column so
+   * that the name, the rank badge with its ↑/↓ arrows, the 「当前使用」 pill and
+   * the 「测试于 …」 line read as a small card when the table is WIDE.
+   *
+   * In the Settings column they have no reason to keep one line each: measured
+   * at 549px, that block was 81px of the row's 157px — five lines (name, rank +
+   * arrows, current badge, tested-at), while the three facts beside it sat on
+   * one 18px line. The row therefore read as "one tall account block and three
+   * strays", and every extra row cost the reader two thirds of a screen.
+   *
+   * Read as a sentence it is one line — 「用户7520607992 · 第 1 位 ↑↓ · 当前使用 ·
+   * 测试于 11/06, 03:57」 — so it wraps among itself instead of stacking. The
+   * margins the wide form needs (2px above the badge, 2px above the current pill)
+   * go away with the stacking: in a wrapped row they become uneven leading. */
+  .dsm-workbuddy-pool-account-name{flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+  .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-order{margin-top:0}
+  .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-current-tag{align-self:center;margin-top:0}
+  /* The name still has to be allowed to SHRINK. The <b> carries nowrap + ellipsis,
+     whose whole point is that a long account name ends in "…" rather than
+     pushing the line — but as a flex item it defaults to min-width:auto, i.e.
+     its content width, and then the ellipsis can never engage. */
+  .dsm-workbuddy-pool-account-name b{min-width:0;max-width:100%}
   /* The three middle facts, laid out as one line of the same sentence. */
   .dsm-workbuddy-pool-credits{flex:0 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
   .dsm-workbuddy-pool-probe{flex:1 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
@@ -1065,7 +1141,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-page-icon{width:40px;height:40px;border-radius:9px;align-self:flex-start;margin-top:14px}
 .dsm-workbuddy-page-title{margin:0;font-size:20px;font-weight:600;line-height:1.4}
 .dsm-workbuddy-page-desc{margin:0;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#999)}
-.dsm-workbuddy-page-body .dsm-workbuddy-usage{padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
+.dsm-workbuddy-page-body .dsm-workbuddy-usage{--dsm-workbuddy-surface:var(--dsw-alias-bg-layer-3,#202126);padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
 /* ---- 设置面板里的一节（settings.section，5.19.0）------------------------
    面板内容列本来就窄（800px 面板减 188px 导航），而且它自己滚动。所以这一页
    不去抢整页的高度与居中：height:100% 会在列里撑出第二根滚动条，860px 的
@@ -1097,7 +1173,7 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-settings .dsm-workbuddy-settings-head,
 .dsm-workbuddy-page .dsm-workbuddy-page-head{background:var(--dsw-alias-bg-layer-1,#17181b);border-radius:12px;padding:10px 12px}
 /* 这一页的内容区不能有内边距，否则底色会缩进一截，与页头对不齐。 */
-.dsm-workbuddy-settings .dsm-workbuddy-page-body .dsm-workbuddy-usage{padding:0;border:0;border-radius:0;background:var(--dsw-alias-bg-layer-1,#17181b)}.dsm-workbuddy-panel-icon{display:block;border-radius:4px;flex:none}
+.dsm-workbuddy-settings .dsm-workbuddy-page-body .dsm-workbuddy-usage{--dsm-workbuddy-surface:var(--dsw-alias-bg-layer-1,#17181b);padding:0;border:0;border-radius:0;background:var(--dsw-alias-bg-layer-1,#17181b)}.dsm-workbuddy-panel-icon{display:block;border-radius:4px;flex:none}
 /* ---- 设备头档位与逐账号参数弹窗 ------------------------------------------
    档位那一行贴着账号表：它同时决定"这台机器对外声称自己是谁"和"每行的齿轮能
    不能用"，埋进「更多设置」会让齿轮看起来时好时坏。

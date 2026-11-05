@@ -103,6 +103,8 @@ A machine usually carries more than one WorkBuddy sign-in. The **account pool** 
 
 **Each region (domestic / international) has its own independent pool** — membership and target model never affect the other side, because the two sides' accounts belong to different upstream stacks.
 
+> **In a narrow column this table becomes stacked cards.** The configuration page lives inside the Settings panel, whose content column is **564px** (800px panel minus a 188px nav rail) — five columns do not fit, so when the TABLE itself is narrower than 700px (a container query, not the viewport) each row turns into three lines: the account and its actions get a full line each, and the three facts between them share one. Measured in that column: **96px** per row (was 157px, with the account name clipped to "用户75"), and the name no longer truncates. The wide layout is unchanged.
+
 ### The two batch actions
 
 - **Check in selected** — signs in account by account. It **reads today's status first**, so an account that is already checked in is marked as such and receives **no write request at all** (idempotent — no duplicate claims); a single account failing marks only that row and **never aborts the batch**.

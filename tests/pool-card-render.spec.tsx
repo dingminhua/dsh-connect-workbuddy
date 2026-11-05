@@ -613,6 +613,70 @@ describe('the pool table fits the Settings panel width', () => {
     expect(threshold?.[1], 'the narrow form must stack, not re-grid').toBeDefined()
   })
 
+  it('collapses the account cell OWN inner column, not just its wrapper', () => {
+    // THE HALF THAT DECIDES ROW HEIGHT (learned from dsh-connect-trae 4.9.0,
+    // which shipped the outer half and measured 138px rows).
+    //
+    // `.dsm-workbuddy-pool-account` is only a flex wrapper. The cells that stack
+    // live one level deeper, in `.dsm-workbuddy-pool-account-name`, which
+    // declares `flex-direction:column` so name / rank+arrows / current pill /
+    // tested-at read as a small card when the table is wide. Collapsing the
+    // wrapper alone left that block stacking four deep inside the narrow form:
+    // measured at 549px it was 81px of the row's 157px, and the row read as one
+    // tall account block beside three one-line facts.
+    const narrow = /@container \(max-width:700px\)\{([\s\S]*?)\n\}/u.exec(css)?.[1] ?? ''
+    expect(narrow, 'the pool narrow form is missing').not.toBe('')
+    expect(narrow, 'the account name block must stop stacking in the narrow form')
+      .toMatch(/\.dsm-workbuddy-pool-account-name\{[^}]*flex-direction:row/u)
+    // ...and the margins that only make sense while it stacks must go with it,
+    // or the wrapped line gains uneven leading between the pills.
+    expect(narrow, 'the current badge keeps a stacking margin')
+      .toMatch(/\.dsm-workbuddy-pool-account-name \.dsm-workbuddy-pool-current-tag\{[^}]*margin-top:0/u)
+    // The ellipsis cannot engage on a flex item left at min-width:auto.
+    expect(narrow, 'a long account name can still push the line instead of clipping')
+      .toMatch(/\.dsm-workbuddy-pool-account-name b\{[^}]*min-width:0/u)
+  })
+
+  it('labels the account column where the account NAME starts, not at the cell edge', () => {
+    // Measured at the plugin page's 1120px: the header cell starts at x=65 and
+    // the name at x=103. The account cell leads with the membership checkbox, so
+    // a header flush to the cell edge floated 38px into the margin and pointed
+    // at nothing. dsh-connect-trae carries the same offset for the same reason.
+    const rule = /(\.dsm-workbuddy-pool-col-account\{[^}]*\})/u.exec(css)?.[1] ?? ''
+    expect(rule, 'the account header cell has no class to indent').not.toBe('')
+    expect(rule, 'the header must be pushed to the name, not left at the checkbox')
+      .toMatch(/padding-inline-start:\s*\d+px/u)
+  })
+
+  it('keeps the section strip visible while the sections scroll', () => {
+    // The pool sits below the fold. Before this, reaching it scrolled the five
+    // tabs off the top, so switching sections meant scrolling the whole page
+    // back up first (dsh-connect-trae 4.9.0 hit the identical thing).
+    //
+    // Sticky, NOT a second scroller: the Settings panel's column already
+    // scrolls, so `height:100%` / `overflow:auto` here would add a second one.
+    const rule = /(^|\n)(\.dsm-workbuddy-panels\{[^}]*\})/u.exec(css)?.[2] ?? ''
+    expect(rule, 'the section strip rule is missing').not.toBe('')
+    expect(rule, 'the strip must stay visible while the sections scroll')
+      .toMatch(/position:sticky/u)
+    expect(rule, 'the strip must not add a second scroll container')
+      .not.toMatch(/overflow:\s*(auto|scroll)/u)
+    // Opaque, or the rows scroll through the gaps between the labels. It
+    // paints the SURFACE variable rather than a hard-coded layer, so the strip
+    // and the content area behind it can never drift apart: the page surface
+    // repaints its fill with layer-3, and a strip stuck on layer-1 would then
+    // read as a lighter second bar sliding over a darker card.
+    expect(rule, 'the strip must paint, or rows show through it')
+      .toMatch(/background:var\(--dsm-workbuddy-surface,/u)
+    // ...and every surface must therefore declare it beside its own fill.
+    const declarers = css.split('\n').filter(line => /\.dsm-workbuddy-usage\{/u.test(line))
+    expect(declarers.length, 'no content-area rules found').toBeGreaterThan(1)
+    for (const decl of declarers) {
+      expect(decl, `this surface paints a fill the strip cannot follow: ${decl.slice(0, 70)}`)
+        .toMatch(/--dsm-workbuddy-surface:/u)
+    }
+  })
+
   it('keeps containment off every element that holds a fixed-position overlay', () => {
     // `container-type` makes the element the containing block for position:fixed
     // descendants, which would anchor the busy veils and the device dialog to a
