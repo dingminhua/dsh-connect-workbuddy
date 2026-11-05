@@ -177,6 +177,44 @@ function describeArgType(value: unknown): string {
   return typeof value
 }
 
+/** 本工具真正认的参数——与 `parameters.properties` 一一对应。 */
+const ALLOWED_ARGS: ReadonlySet<string> = new Set([
+  'prompt',
+  'image',
+  'model',
+  'seconds',
+  'resolution',
+  'aspect_ratio',
+  'negative_prompt',
+  'enable_audio',
+])
+
+/**
+ * 拒掉 schema 里没有的参数。
+ *
+ * `additionalProperties: false` 只是写在 schema 里给模型看的：宿主把 `parameters`
+ * 原样投影、不代校验，execute 照样会收到从别的生图工具串过来的字段——
+ * `size: '1024x1024'`（生图的）、`ratio` / `n` / `return_base64`（agnes 的）、
+ * `quality` / `style` 之类。静默忽略的后果是模型以为横竖版生效了，实际出的是
+ * 默认 16:9，而视频按次扣积分、一次几十秒，错一次代价很高。
+ *
+ * 注意 `aspect_ratio` 是本工具**真有**的参数，与生图的 `size` 是同一件事的两种
+ * 写法：不要因为生图没有 `aspect_ratio` 就把它也拒掉。
+ */
+function rejectUnknownArgs(record: Record<string, unknown>): void {
+  const unknown = Object.keys(record).filter(key => !ALLOWED_ARGS.has(key))
+  if (unknown.length === 0) return
+  throw new WorkBuddyVideoError(
+    `workbuddy video: 本工具没有 ${unknown.map(key => `「${key}」`).join('、')} 参数，`
+    + '只有 prompt、image、model、seconds、resolution、aspect_ratio、'
+    + 'negative_prompt、enable_audio 八个。'
+    + '横竖比例用 aspect_ratio（16:9 / 9:16 / 1:1，仅文生视频）；'
+    + '尺寸 / 清晰度用 resolution（如 720P / 1080P）；'
+    + '不需要 size、ratio、n、return_base64、quality 之类的字段。',
+    'INVALID_ARGS',
+  )
+}
+
 /**
  * 可选参数的严格读取族：undefined/null/空串 → 未提供（走默认值）；
  * 类型不对 → INVALID_ARGS，绝不静默丢掉。
@@ -444,11 +482,16 @@ export function createVideoTool(deps: VideoToolDeps): VideoToolDefinition {
       '用当前账号的 WorkBuddy 视频生成能力生成一段短视频。'
       + '不填 image 是文生视频（用该区带 text-to-video 标签的模型）；'
       + '填了 image 是图生视频（用带 image-to-video 标签的模型，只收一张输入图）。'
+      + '本工具只有 prompt、image、model、seconds、resolution、aspect_ratio、'
+      + 'negative_prompt、enable_audio 八个参数：没有 size / ratio / n / return_base64 / '
+      + 'quality / style 之类的字段，塞进来会直接报错。'
+      + '时长用 seconds、横竖用 aspect_ratio（16:9 / 9:16 / 1:1）、清晰度用 resolution'
+      + '——用户提这类要求时改这些参数，不要只在 prompt 里写「横版」「竖版」。'
       + '可选参数要么不填、要么类型正确；填错类型直接 INVALID_ARGS 且不发请求，'
       + '不会静默丢参数或切换模式。'
-      + '国内区与国际区都可用，模型取自该区产品配置'
-      + '（国内区 kling-video-v3、minimax-video-h3；国际区 kling-video-v3，'
-      + '两种 video tag 都有；以该区目录为准）。'
+      + '国内区与国际区都可用，模型取自该区产品配置里带 video tag 的条目。'
+      + 'model 默认留空：留空才走「用户在卡片上钉住的模型 → 该区目录第一个」这条链，'
+      + '不要凭印象猜模型 id，名称不对会直接报错并列出可用 id。'
       + '视频是异步任务：先提交、再轮询到完成、最后把视频下载到本地，单次可能要几十秒到几分钟。'
       + '每次生成会真实消耗 WorkBuddy 积分，单价随区域与模型不同，以返回结果里的 credit 为准；'
       + '不要在没必要时调用，也不要为了试错连续调用。'
@@ -564,6 +607,9 @@ export function createVideoTool(deps: VideoToolDeps): VideoToolDefinition {
     timeoutMs: VIDEO_TOOL_TIMEOUT_MS,
     async execute(args: unknown, exec: VideoToolExec): Promise<Record<string, unknown>> {
       const record = asRecord(args)
+      // 先挡串参：宿主把 parameters 原样投影、不代校验，生图工具那套
+      // size / ratio / n / return_base64 会原样落到这里，不挡就被静默忽略。
+      rejectUnknownArgs(record)
       const prompt = asNonEmptyString(record['prompt'])
       if (prompt === undefined) {
         throw new WorkBuddyVideoError(

@@ -452,6 +452,47 @@ describe('video tool strict argument validation', () => {
     expect(sent[0]?.model).toBe('kling-video-v3')
   })
 
+  it('把生图工具的参数串进来（size / ratio / n / return_base64）→ INVALID_ARGS', async () => {
+    // 宿主把 parameters 原样投影、不代校验：additionalProperties:false 只是
+    // 写给模型看的。会话里同时挂着生图工具（size）与 agnes（ratio / n /
+    // return_base64）时，这些字段会原样落到 execute 里，静默忽略的话模型
+    // 以为自己改了横竖版，实际出的是默认 16:9——而视频按次扣积分。
+    submittedCount = 0
+    const counting = createVideoTool(deps({
+      submitVideo: async () => {
+        submittedCount += 1
+        return { taskId: 'task-1', warnings: [] }
+      },
+    }))
+    for (const extra of [
+      { size: '1024x1536' },
+      { ratio: '9:16' },
+      { n: 2 },
+      { return_base64: true },
+      { quality: 'high' },
+    ]) {
+      const failure = await expectFreeRejection(counting, { prompt: '猫', ...extra })
+      const name = Object.keys(extra)[0]!
+      expect(failure.message).toContain(name)
+    }
+  })
+
+  it('aspect_ratio 是本工具真有的参数，不能被当成串参拒掉', async () => {
+    const { tool, sent } = captureDeps()
+    const value = await tool.execute({ prompt: '猫', aspect_ratio: '9:16' }, {})
+    expect(value['mode']).toBe('text-to-video')
+    expect(sent[0]?.model).toBe('kling-video-v3')
+  })
+
+  it('工具描述只讲参数纪律，不点名具体模型 id', async () => {
+    const tool = createVideoTool(deps())
+    expect(tool.description).not.toContain('kling-video-v3')
+    expect(tool.description).not.toContain('minimax-video-h3')
+    expect(tool.description).toContain('model 默认留空')
+    expect(tool.description).toContain('八个参数')
+    expect(tool.description).toContain('不要只在 prompt 里写')
+  })
+
   it('schema 把 image 声明为字符串或数组，宿主才不会先于工具拒掉数组', async () => {
     const tool = createVideoTool(deps())
     const image = (tool.parameters['properties'] as Record<string, Record<string, unknown>>)['image']!

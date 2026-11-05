@@ -43,7 +43,7 @@
 | 项 | 值 |
 | --- | --- |
 | 名称 | `workbuddy_draw_video` |
-| 参数 | `prompt`（必填，非空字符串、≤2500 字）、`image`（可选，见「图生视频」）、`model`（可选）、`seconds`（可选，默认 5、须在模型 `[min,max]` 内）、`resolution`（可选，须在模型 `resolutions` 内）、`aspect_ratio`（可选，仅文生视频，`16:9`/`9:16`/`1:1`）、`negative_prompt`（可选，≤2500 字）、`enable_audio`（可选，默认 true）。除 `prompt` 外的可选参数一律「不填（省略/null/空串）或类型正确」：填错类型（`seconds: "10"`、`model: [...]`、`enable_audio: "true"`、`image: 123`）直接 `INVALID_ARGS` 且**一条请求都不发**，不会静默丢参、回落默认或切换模式——`image` 的单元素字符串数组与字符串等价是唯一例外 |
+| 参数 | `prompt`（必填，非空字符串、≤2500 字）、`image`（可选，见「图生视频」）、`model`（可选）、`seconds`（可选，默认 5、须在模型 `[min,max]` 内）、`resolution`（可选，须在模型 `resolutions` 内）、`aspect_ratio`（可选，仅文生视频，`16:9`/`9:16`/`1:1`）、`negative_prompt`（可选，≤2500 字）、`enable_audio`（可选，默认 true）。除 `prompt` 外的可选参数一律「不填（省略/null/空串）或类型正确」：填错类型（`seconds: "10"`、`model: [...]`、`enable_audio: "true"`、`image: 123`）直接 `INVALID_ARGS` 且**一条请求都不发**，不会静默丢参、回落默认或切换模式——`image` 的单元素字符串数组与字符串等价是唯一例外。**schema 里没有的字段同样 `INVALID_ARGS`**（`size` / `ratio` / `n` / `return_base64` / `quality` 这类从生图工具、agnes 串过来的写法）：`additionalProperties: false` 只是写给模型看的，宿主把 `parameters` 原样投影、不代校验，执行层必须自己挡（`rejectUnknownArgs`） |
 | 输出 | `videos`（本地 `file://` 路径数组）、`mode`、`model`、`prompt`、`seconds`、`resolution`、`hint` 必填；`credit` 可选 |
 | 超时 | 570 000 ms（`VIDEO_TOOL_TIMEOUT_MS`）。**必须小于宿主的 600 000 ms 工具上限**，见下面「超时的层级」 |
 | 执行模式 | 独占（不声明 `isConcurrencySafe`） |
