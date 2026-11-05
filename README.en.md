@@ -194,7 +194,7 @@ One class of state in the pool **does not go through a draft**: probe results, c
 >
 > ⚠️ **Do not treat the marketplace's "latest" as the schedule — it reads an index that lags.** The community marketplace serves a periodically built snapshot, collected per package: at the 2026-10-30 15:00 observation this plugin still listed only 5.13.1 while npm `latest` was already 5.14.1, and a desktop host separately flags any release under 24 hours old as "waiting". Trust `npm view dsh-connect-workbuddy version` and [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases), and follow [Update](#update) below (pin the **exact version**); or hand [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 to an AI and let it run.
 >
-> The other thing that stops people from upgrading: **pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.19.0`.
+> The other thing that stops people from upgrading: **pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.19.1`.
 
 ### Supported host range
 
@@ -258,7 +258,7 @@ Once installed, the configuration lives in the **WorkBuddy page of the Settings 
 > | exact `5.14.1` + `minimumReleaseAgeExclude: [dsh-connect-workbuddy]` in the profile's `pnpm-workspace.yaml` | **5.14.1** ✅ |
 > | setting absent (pnpm default) | floating `^5.13.1` → **5.14.1** ✅ |
 >
-> To pick up a new release right away, pin it: `dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0`; if the window refuses it, see [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 for the two routes (wait out the window, or add that exclude line). A floating range catches up once the window elapses.
+> To pick up a new release right away, pin it: `dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1`; if the window refuses it, see [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 for the two routes (wait out the window, or add that exclude line). A floating range catches up once the window elapses.
 
 The plugin also runs under **Web** and **TUI**; pick the command matching your profile:
 
@@ -275,7 +275,7 @@ dsh plugin --profile dsh-tui add dsh-connect-workbuddy # TUI
 **Manual update (one command)**:
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # first line carries the version
 ```
 

@@ -1,37 +1,77 @@
-# 【置顶】当前版本：npm `latest` 是 **5.19.0**（2026-11-06 上架）
+# 【置顶】当前版本：npm `latest` 是 **5.19.1**（2026-11-06 上架）
 
-> **一句话**：`5.19.0` 是**入口迁移的破坏性变更** —— 配置界面从「插件市场详情页里的卡片」
-> 搬到**设置面板左侧导航的独立页面**（设置 → WorkBuddy）。插件市场那一页不再显示这张卡，
-> 但也不需要你改任何配置或脚本：所有设置都在，只是换了个门。
+> **一句话**：`5.19.1` 是**纯显示修复**，无破坏性变更 —— 修掉账号池在设置面板 564px 窄栏里
+> 三处「上一版只修了一半」的显示问题，并补上一份能把它们量出来的工装。
 >
-> 同一版把插件详情页**恢复成渲染完整 README**（撤销 5.18.3 的 100 字短文档），并修了四处
-> 「内容第一次被放进 564px 窄栏」才显形的布局缺陷，其中一条是 issue #209 的壁纸透明底问题。
+> 三处修复（都照同族 `dsh-connect-trae` 4.9.0 的同一次迁移）：
+> ① 账号格内层仍竖排五行，单行 **157px → 96px**，账号名不再被压成「用户75」；
+> ② 宽版「账号」表头浮在留白里，不指着它标注的那一列（**偏移 38px → 0**）；
+> ③ 滚到账号池时分栏条已经滚走，改 sticky（仍不接管滚动）。
+> 另删掉一条永远不会触发的 `@media` 分栏规则。
 >
-> 5.18.2 的两处生图参数破坏性变更（`size` 必填、`image` 纯数组）**依然有效**，见下面那一节。
+> **5.19.0 的入口迁移依然有效**：配置在「设置 → WorkBuddy」，那一版把配置从插件市场详情页
+> 搬进了设置面板（**这是破坏性变更**，只是换了个门、不需要改任何配置或脚本）。
+> 5.18.2 的两处生图参数破坏性变更（`size` 必填、`image` 纯数组）**也依然有效**，见下面那一节。
 >
 > `5.18.0` 那一版从未在 npm 上存在过（当时账号被安全冻结，包没发出去），所以版本号从 5.17.0
-> 直接跳到 5.18.1、5.18.2、5.18.3、再到现在的 5.19.0 —— 那不是漏发。
+> 直接跳到 5.18.1、5.18.2、5.18.3、5.19.0、5.19.1 —— 那不是漏发。
 >
 > 升级命令（**写精确版本号**，原因见「怎么升级」）：
 >
 > ```sh
-> dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
+> dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
 > ```
 
 ## 现在的状态
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.19.0** | `latest`，发布于 2026-11-05 21:49 UTC（北京时间 11-06 05:49） |
-| 前一版 | 5.18.3 | 发布于 2026-11-05（插件详情页改用短文档，本版已撤销） |
-| GitHub Releases | v5.19.0 | 与本版同时创建 |
-| git tag `v5.19.0` | `c1a3f27` | 与 npm 上的包同源 |
+| npm `dsh-connect-workbuddy` | **5.19.1** | `latest`，发布于 2026-11-05 23:42 UTC（北京时间 11-06 07:42） |
+| 前一版 | 5.19.0 | 入口迁移（配置搬进设置面板），本版的显示修复在它之上 |
+| GitHub Releases | v5.19.1 | 与本版同时创建 |
+| git tag `v5.19.1` | `2dd64d2` | 与 npm 上的包同源（shasum 已核对一致） |
+| git tag `v5.19.0` | `c1a3f27` | 与 npm 上 5.19.0 的包同源 |
 | git tag `v5.18.3` | `e5ab115` | 版本 bump 提交 |
 | git tag `v5.18.2` | `2c25e45` | 版本 bump 提交 |
 | git tag `v5.18.0` | `06006e4` | 代码仍在历史里，但**这个版本从未发布到 npm** |
 | 市场索引里的本插件 | 未核对 | 市场读的是会滞后的快照，判断口径永远是 `npm view` |
 
-## 这一版改了什么（5.19.0）
+## 这一版改了什么（5.19.1）
+
+### 账号池在 564px 窄栏里的三处显示修复
+
+上一版（5.19.0）已经给账号表加了 `@container` 堆叠卡片，但**只塌缩了行包装，真正竖排的单元格还在里面**。
+这一版补上剩下的一半，做法照同族 `dsh-connect-trae` 4.9.0 的同一次迁移（它在同一个位置踩过同样三颗坑，
+其中第一颗它自己也是先发了一半、被用户截图发现后才补齐的）。
+
+1. **账号格内层仍竖排五行**。`.dsm-workbuddy-pool-account-name` 自己带 `flex-direction:column`
+   （宽版下名字 / 名次+↑↓ / 当前使用 / 测试于 各占一行）。窄列里它们本来就是一句话，改成横排并
+   允许自己换行；顺带给名字补 `min-width:0`——`<b>` 带 nowrap+ellipsis，但作为 flex 项默认
+   `min-width:auto`，省略号永远咬不住。
+   实测（549px 列）：账号格 **81px → 20px**，单行 **157px → 96px**，表格 **420px → 287px**。
+2. **「账号」表头浮在留白里**。账号格以勾选框开头，名字比单元格左边缘缩进。实测（1120px）：
+   表头 x=65、名字 x=103，差 **38px**。补上这个偏移后归 **0**。
+3. **滚到账号池就看不见分栏条**。改成 `position:sticky`；**仍然不接管滚动**（不写 `height:100%`
+   与 `overflow`，那是第二根滚动条）。底色走新变量 `--dsm-workbuddy-surface`，由三个面各自的
+   `.dsm-workbuddy-usage` 规则声明——这三个面的底色本来就不相同。
+
+顺带删掉 `@media (max-width:760px)` 里给账号表重新分栏的 2×2 分支：它量的是视口，设置面板里
+永不成立，而它的形态正是 5.19.0 记录的那个缺陷本身。
+
+### 新增：`pnpm section:shot`
+
+按**真实外壳尺寸**（800px 面板 − 188px 导航 − 48px 内边距 = **564px 内容列**）渲染设置页，
+并输出几何审计（轨道、每格宽高、溢出元素、首个可点控件距顶像素）。同一份渲染还会写一份宽版预览，
+用来证明窄版规则在宽版上不生效。
+
+上一版那三处布局缺陷全是**靠读代码推断**才漏掉的——仓库里所有断点都在测视口，而设置面板的内容列
+只有 564px，那些分支在开发者自己的浏览器里永远不会触发。
+
+### 保留：5.19.0 的入口迁移（破坏性变更，仍然有效）
+
+配置在「设置 → WorkBuddy」。它把配置从插件市场详情页搬进了设置面板，插件市场那一页不再显示配置卡片。
+
+## 上一版改了什么（5.19.0）
 
 ### 入口：配置从插件详情页搬进设置面板
 
@@ -131,7 +171,7 @@
 
 ```sh
 dsh plugin --profile desktop remove dsh-connect-workbuddy   # 之前自己编译 / link 装过的先移除
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
 ```
 
 **写精确版本号，别用 `^` 或 `latest`**：如果你的 profile 配了 pnpm 的 `minimumReleaseAge`（新版本等待期），浮动范围会被**静默压回旧版**，症状恰好是「升级命令跑完了、版本没变」；写死精确版本号则会明确报 `ERR_PNPM_NO_MATURE_MATCHING_VERSION`，反而好判断。要立刻装就在 profile 的 `pnpm-workspace.yaml` 里加 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]`。
@@ -153,8 +193,9 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 **Q：我还停在 `5.17.0` / `5.18.1` / `5.18.2` / `5.18.3`，必须升吗？**
 没有安全修复，所以不存在「必须」。但 **5.19.0 之后配置的位置变了**：设置 → WorkBuddy，
-插件市场那一页不再有配置卡片。如果你装了带自定义壁纸的主题（issue #209），或把面板宽度调窄过，
-这一版修的就是那两类显示问题。
+插件市场那一页不再有配置卡片。如果你装了带自定义壁纸的主题（issue #209）、把面板宽度调窄过，
+或者在设置面板里看过账号池觉得很挤——**5.19.0 修的是壁纸透明底，5.19.1 修的是账号池在窄栏里的
+行高与表头对齐**，这两类显示问题都在那两版里。
 如果你是**模型自主生图**的重度用户，5.18.2 值得升——
 它专门修的就是「模型乱填参数、静默出错图还扣积分」这一族问题。你撞到下面任一条更该升：
 鸿蒙上账号池为空（#190）、生视频三个故障（#187）、想用侧边栏面板（#188）、
@@ -182,7 +223,9 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ## English summary
 
-**Current installable version: `5.19.0`.** 5.18.3 was a **packaging-only, non-breaking change with no new features**: the plugin detail page (DSH 0.2.2+) no longer rendered the whole README — each `locale/*.json` carried a `meta.detail` pointing at a short Markdown document (92 / 96 characters). **5.19.0 reverses that**: those documents and both `meta.detail` lines are gone, and the detail page renders the full README again by host default. The configuration page moved to Settings → WorkBuddy in the same release, so the detail page no longer has a card to show. See `docs/PLUGIN-DETAIL-GUIDE.md` for the mechanism.
+**Current installable version: `5.19.1`.** It is a **display-only release with no breaking changes**: three rendering fixes in the account pool as it appears in the Settings panel's 564px content column — the account cell's inner column still stacked five rows (**157px → 96px** per row, and the name no longer clips), the wide-layout 账号 header sat 38px left of the names it labels (**offset 38px → 0**), and the section strip scrolled out of reach (now sticky, still not a second scroller). One never-firing `@media` re-grid rule was deleted. A new `pnpm section:shot` renders the page at the shell's real column width and dumps its geometry, because every breakpoint in this repository measures the viewport and so never fired inside that column.
+
+**5.19.0** moved the configuration page to Settings → WorkBuddy — a **breaking change of entry**, still in force. 5.18.3 was a **packaging-only, non-breaking change with no new features**: the plugin detail page (DSH 0.2.2+) no longer rendered the whole README — each `locale/*.json` carried a `meta.detail` pointing at a short Markdown document (92 / 96 characters). **5.19.0 reverses that**: those documents and both `meta.detail` lines are gone, and the detail page renders the full README again by host default. The configuration page moved to Settings → WorkBuddy in the same release, so the detail page no longer has a card to show. See `docs/PLUGIN-DETAIL-GUIDE.md` for the mechanism.
 
 The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `size`, and `image` must be an array (`["/abs/a.png"]` even for a single image). Old forms fail with `INVALID_ARGS` before any request is sent. See PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217).
 
@@ -191,7 +234,7 @@ The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `s
 Install with an exact version (a floating range can be silently pinned back by pnpm's `minimumReleaseAge`):
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
 ```
 
 Restart or reload DSH afterwards (the host loads the plugin's bundles at start-up), and update any script or prompt template that calls `workbuddy_draw_image` (the 5.18.2 contract).
