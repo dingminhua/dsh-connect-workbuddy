@@ -197,6 +197,19 @@ describe('the plugin claims a closed, documented set of host slots', () => {
 })
 
 describe('the rc.5 review stays reachable from the code that depends on it', () => {
+  it('keeps the 0.2.2 review, and it names the deprecation and the type gap', () => {
+    // Same POLICY idea as the rc.5 case below: the 0.2.2 review concludes "no
+    // change needed" and records the two things a future upgrade must not
+    // forget — the deprecated `stateOf` read and the two profile fields the
+    // 0.2.2 type surface made required. If the document disappears, the only
+    // place that says so goes with it.
+    const doc = readFileSync(fileURLToPath(new URL('docs/DSH-0.2.2-RC1-FOLLOWUP.md', repoRoot)), 'utf8')
+    expect(doc).toContain('无需改动')
+    expect(doc).toContain('stateOf')
+    expect(doc).toContain('maxRequestImages')
+    expect(doc).toContain('snapshot(session, [\'workingDirectory\'])')
+  })
+
   it('keeps the rc.5 follow-up document, and it names the reasoning-body change', () => {
     // POLICY assertion, not a behaviour one: nothing fails at runtime if the
     // review is deleted, so the only way it stays findable is that something

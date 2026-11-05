@@ -1,5 +1,37 @@
 # Changelog
 
+## 5.18.3 (2026-11-06)
+
+### 改进
+
+- **插件详情页不再把整篇 README 塞进 560px 滚动框（DSH 0.2.2+）**：宿主 0.2.2 新增「组合包详细介绍文档」，
+  找不到 `locale/<语言>.json` 的 `meta.detail` 时**回落渲染包内 README 全文**——本仓库的
+  `README.md` 有 743 行，于是插件页出现一大段带反引号、issue 编号与内部路径的长文。本版给
+  `locale/zh.json` / `locale/en.json` 各补一个 `meta.detail`，分别指向新建的
+  [`docs/DETAIL.zh.md`](docs/DETAIL.zh.md) 与 [`docs/DETAIL.md`](docs/DETAIL.md)（**92 / 96 字符**，
+  均 ≤100），只讲用户能感知的能力，不含实现细节；两份文件加入 `package.json` 的 `files` 白名单。
+  README 继续保持完整，npm / GitHub / 市场索引不受影响；宿主没有开关可关掉这个区块，详情页必须靠
+  `meta.detail` 接管。做法与完整坑位见 [`docs/PLUGIN-DETAIL-GUIDE.md`](docs/PLUGIN-DETAIL-GUIDE.md)
+  （可转发给其他插件作者照做）。
+- **新增 [`tests/locale-meta.spec.ts`](tests/locale-meta.spec.ts) 的 4 条守卫**：每个 locale 都有
+  `meta.detail`（`en.json` 是语言链最终兜底，必须写）、路径合法且指向的文件真实存在、文件在
+  `files` 白名单内、正文按字符总数 ≤100。任一漂移都会让详情页静默退回 README 全文或显示
+  「错误 + 重试」，所以钉成测试而不是文档约定。
+
+### Docs
+
+- **新增 [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md)**：0.2.1-rc.5 → 0.2.2-rc.1
+  的完整兼容复核（2623 个提交、vendor 全线升版）。结论是 **0.2.2-rc.1 无需改动代码**：本机实测
+  8 个槽位里 6 处在位、16 条 Web 路由 200/405 符合预期，`doctor` 认出宿主 bundle 在跑。记录在案的
+  三件事：`sessionProjections.stateOf(session, key)` 已弃用（仍返回值，只多一条一次性告警，建议下个
+  功能版换成 `snapshot(session, ['workingDirectory'])`）、`ResolvedPiAiProviderProfile` 新增两个必填
+  字段（运行时容忍缺省，只有升 devDeps 到 0.2.2 线时才会编译报错）、以及 `LlmModelInfo.badge` /
+  `llm/models-updated` 两个可选增强面。
+- **新增 [`docs/PLUGIN-DETAIL-GUIDE.md`](docs/PLUGIN-DETAIL-GUIDE.md)**：给其他 DSH 插件作者照做的
+  100 字以内详情页写法（现象原因、5 步操作、字数算法、5 个坑、核对清单）。
+- **[`tests/host-slot-surface.spec.ts`](tests/host-slot-surface.spec.ts) 补 1 条策略守卫**，钉住
+  `docs/DSH-0.2.2-RC1-FOLLOWUP.md` 仍可达、仍写着 `stateOf` 与 `maxRequestImages`。
+
 ## 5.18.2 (2026-11-05)
 
 > **本版有破坏性变更**：`workbuddy_draw_image` 的 `size` 从可选改成**必填**，`image` 从
