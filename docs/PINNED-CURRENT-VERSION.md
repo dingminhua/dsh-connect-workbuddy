@@ -1,52 +1,84 @@
-# 【置顶】当前版本：npm `latest` 是 **5.18.3**（2026-11-06 上架）
+# 【置顶】当前版本：npm `latest` 是 **5.19.0**（2026-11-06 上架）
 
-> **一句话**：`5.18.3` 是**包内容变更、非破坏性、无新功能**的一版 —— 插件详情页（DSH 0.2.2+）
-> 从「整篇 README」改成一段 100 字以内的短文档。升级不用改任何配置或脚本；
-> 但**必须发新版本才对真实用户生效**，宿主没有开关能关掉这个区块。
+> **一句话**：`5.19.0` 是**入口迁移的破坏性变更** —— 配置界面从「插件市场详情页里的卡片」
+> 搬到**设置面板左侧导航的独立页面**（设置 → WorkBuddy）。插件市场那一页不再显示这张卡，
+> 但也不需要你改任何配置或脚本：所有设置都在，只是换了个门。
+>
+> 同一版把插件详情页**恢复成渲染完整 README**（撤销 5.18.3 的 100 字短文档），并修了四处
+> 「内容第一次被放进 564px 窄栏」才显形的布局缺陷，其中一条是 issue #209 的壁纸透明底问题。
 >
 > 5.18.2 的两处生图参数破坏性变更（`size` 必填、`image` 纯数组）**依然有效**，见下面那一节。
 >
 > `5.18.0` 那一版从未在 npm 上存在过（当时账号被安全冻结，包没发出去），所以版本号从 5.17.0
-> 直接跳到 5.18.1、5.18.2、再到现在的 5.18.3 —— 那不是漏发。
+> 直接跳到 5.18.1、5.18.2、5.18.3、再到现在的 5.19.0 —— 那不是漏发。
 >
 > 升级命令（**写精确版本号**，原因见「怎么升级」）：
 >
 > ```sh
-> dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.3
+> dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
 > ```
 
 ## 现在的状态
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.18.3** | `latest`，发布于 2026-11-05 17:35 UTC（北京时间 11-06 01:35） |
-| 前一版 | 5.18.2 | 发布于 2026-11-05（有生图参数破坏性变更） |
-| GitHub Releases | v5.18.3 | 与本版同时创建 |
-| git tag `v5.18.3` | `e5ab115` | 版本 bump 提交，tag 与 npm 上的包同源 |
+| npm `dsh-connect-workbuddy` | **5.19.0** | `latest`，发布于 2026-11-05 21:49 UTC（北京时间 11-06 05:49） |
+| 前一版 | 5.18.3 | 发布于 2026-11-05（插件详情页改用短文档，本版已撤销） |
+| GitHub Releases | v5.19.0 | 与本版同时创建 |
+| git tag `v5.19.0` | `c1a3f27` | 与 npm 上的包同源 |
+| git tag `v5.18.3` | `e5ab115` | 版本 bump 提交 |
 | git tag `v5.18.2` | `2c25e45` | 版本 bump 提交 |
 | git tag `v5.18.0` | `06006e4` | 代码仍在历史里，但**这个版本从未发布到 npm** |
 | 市场索引里的本插件 | 未核对 | 市场读的是会滞后的快照，判断口径永远是 `npm view` |
 
-## 这一版改了什么（5.18.3）
+## 这一版改了什么（5.19.0）
 
-宿主 0.2.2 起新增「组合包详细介绍文档」：找不到 `locale/<语言>.json` 的 `meta.detail` 时，
-会把包里的 README **整篇**渲染进插件页的 560px 滚动框（本仓库 README 有 748 行）。本版给
-`locale/zh.json` / `locale/en.json` 各补一个 `meta.detail`，分别指向新建的
-[`docs/DETAIL.zh.md`](DETAIL.zh.md)（92 字符）与 [`docs/DETAIL.md`](DETAIL.md)（96 字符），
-两份文件加进 `package.json` 的 `files` 白名单；README 保持完整，npm / GitHub / 市场页面不受影响。
-做法与五个坑见 [`docs/PLUGIN-DETAIL-GUIDE.md`](PLUGIN-DETAIL-GUIDE.md)（可整篇转发给其他插件作者）。
+### 入口：配置从插件详情页搬进设置面板
 
-> **5.19.0 已撤销这一套。** 配置界面搬去设置页后，插件详情页只剩「这是什么」，而 `meta.detail`
-> 的唯一作用就是缩短显示文本；它依赖「路径与语言链同时正确」这类隐式约定，失败时静默回落、
-> 界面看不出问题。现在两份 `DETAIL` 文档、两行 `meta.detail` 与 4 条守卫单测都已移除，
-> 详情页回到宿主默认行为：渲染完整 README。下面这几条只作为当时的设计记录保留。
+配置界面现在注册在宿主的 `settings.section` 槽位，与「账号与余额 / 通用设置 / 模型 / 插件」
+并列，位置 `order: 35`（内置页 20 之后、插件市场 40 之前）。插件详情页现在只回答「这是什么」，
+不再兼任一整页配置。
 
-- **不含实现细节、issue 编号、内部路径**；100 字按字符总数算（汉字、标点、字母、空格全算）。
-- **没有开关能关掉整个区块**，删 README 会连带弄空 npm / GitHub / 市场页面。
-- 新增 4 条守卫单测（每个 locale 都有 detail、`en.json` 必写、路径合法且文件存在、文件在白名单、正文 ≤100）。
-- 附带 `docs/DSH-0.2.2-RC1-FOLLOWUP.md`（0.2.2-rc.1 兼容复核，结论：无需改代码）与上面那份可转发指南。
+顺带消掉一整类缺陷：旧入口是 keyed 槽位，宿主拿 inventory 的 `pkg.name` 做**精确字符串相等**
+比较，部署完全可以把同一份代码挂在 `include:` 前缀的 Loader entry id 下，于是 key 对不上就
+什么都不渲染、也不报错（issue #55）。新槽位由本插件自己的 id 索引，没有别人的名字要对齐。
 
-## ⚠️ 生图工具的两个参数（5.18.2 的破坏性变更，5.18.3 仍沿用）
+### 插件详情页恢复完整 README
+
+`locale/*.json` 的 `meta.detail`、两份 `docs/DETAIL*.md` 与 4 条守卫单测全部移除。
+理由：`meta.detail` 依赖「路径正确 + 语言链命中」这类隐式约定，失败时静默回落到 README、
+界面看不出问题，而它唯一的作用只是缩短显示文本。**`locale/` 目录保留**——它还承担市场卡片的
+标题与描述。
+
+### 四处窄栏布局缺陷
+
+都不是新代码写坏的，而是同一份内容第一次被放进 564px 宽的列之后才显形（旧入口从不窄于 ~800px）：
+
+1. **账号表被压成 2×2**：断点原是 `@media(max-width:760px)`，量的是**视口**；设置面板里视口
+   1400px、内容列 564px，那个分支永不成立。改成 `container-type` + `@container` 量表格自身，
+   窄形态从「重新分栏」改成堆叠成卡片。
+2. **模型名被自己的徽章吃掉**：徽章都是 `flex:none`，唯一能收缩的就是名字（`GLM-5.` 后面什么都
+   不剩）。给名字 9em 下限并独占伸缩权，徽章行内换行；模型区头部加 `flex-wrap`。
+3. **壁纸下整片内容压在图片上（issue #209）**：内容区与页头都没有自己的底色，外壳的列在壁纸
+   主题下是半透明的。补一层外壳 layer 色，实底主题上看不出差别。
+4. **两处双重留白**：`.dsm-workbuddy-usage` 已有 `gap`，标签栏、面板、账号池又各自加了边距，
+   叠出 32px 与 44px 两条空带。归零，让 `gap` 成为唯一间距来源。
+
+### 文案位置
+
+「免费模型并非无限量」跟着区域说明走 —— 两句回答的是同一个问题，原本被分栏和一条分割线隔开。
+
+### 历史记录：5.18.3 的短文档机制（本版已撤销）
+
+5.18.3 曾给 `locale/*.json` 补 `meta.detail`，指向两份 ≤100 字符的 Markdown，让插件详情页
+显示一段短简介而不是整篇 README（本仓库 README 有 748 行）。5.19.0 把这套机制整体移除：
+设置页接管配置之后，详情页只剩「这是什么」，正文本身就是回答，缩短它反而把唯一的内容删掉了；
+而 `meta.detail` 依赖「路径与语言链同时正确」这类隐式约定，失败时静默回落、界面看不出问题。
+
+[`docs/PLUGIN-DETAIL-GUIDE.md`](PLUGIN-DETAIL-GUIDE.md) 保留 —— 它讲的是宿主机制，对其他插件
+作者仍然有效，开头已注明本插件不再使用。
+
+## ⚠️ 生图工具的两个参数（5.18.2 的破坏性变更，5.19.0 仍沿用）
 
 来自 PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217)（感谢 @eghrhegpe）。
 如果你有脚本、prompt 模板或别的工具在调 `workbuddy_draw_image`，这两处要改：
@@ -89,7 +121,9 @@
   #191 每日自动签到（默认关）、积分面板「刷新 / 设置」、#212 / #215 / #214 / #213 / #193 / #195
   等一批修复。
 - **来自 5.18.2**：上面那两处破坏性变更与工具契约重写。
-- **来自 5.18.3**：插件详情页改用短文档（本版唯一变化；无新功能、无配置改动）。
+- **来自 5.18.3**：插件详情页曾改用短文档（**5.19.0 已撤销**，恢复整篇 README）。
+- **来自 5.19.0**：配置入口搬进「设置 → WorkBuddy」（**破坏性：入口位置变了**）、插件详情页恢复完整 README、
+  四处窄栏布局缺陷（账号表栅格、模型名被徽章挤掉、issue #209 壁纸透明底、两处双重留白）。
 
 升级不会动你已有的账号池、模型勾选、积分设置、思考强度默认值。
 
@@ -97,14 +131,14 @@
 
 ```sh
 dsh plugin --profile desktop remove dsh-connect-workbuddy   # 之前自己编译 / link 装过的先移除
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.3
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
 ```
 
 **写精确版本号，别用 `^` 或 `latest`**：如果你的 profile 配了 pnpm 的 `minimumReleaseAge`（新版本等待期），浮动范围会被**静默压回旧版**，症状恰好是「升级命令跑完了、版本没变」；写死精确版本号则会明确报 `ERR_PNPM_NO_MATURE_MATCHING_VERSION`，反而好判断。要立刻装就在 profile 的 `pnpm-workspace.yaml` 里加 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]`。
 
 一直用 npm 版、没自己编译过的，**不需要 `remove`**，直接 `add` 即可（`add` 到已存在的包名就是升级）。
 
-装完请**重启或重载 DSH**（bundle 的 host 半边在启动时加载；`meta.detail` 也是宿主读 locale JSON 时取的），并留意 5.18.2 起生图工具的参数契约变了。
+装完请**重启或重载 DSH**（bundle 的 host 半边在启动时加载；插件的客户端半边也是启动时加载的），并留意 5.18.2 起生图工具的参数契约变了。
 
 ## 怎么确认自己到底是哪个版本
 
@@ -117,8 +151,10 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ## 常见问题
 
-**Q：我还停在 `5.17.0` / `5.18.1` / `5.18.2`，必须升吗？**
-没有「必须升」的硬理由：这一版没有安全修复、没有新功能。想让插件详情页不再是整篇 README 就升 5.18.3。
+**Q：我还停在 `5.17.0` / `5.18.1` / `5.18.2` / `5.18.3`，必须升吗？**
+没有安全修复，所以不存在「必须」。但 **5.19.0 之后配置的位置变了**：设置 → WorkBuddy，
+插件市场那一页不再有配置卡片。如果你装了带自定义壁纸的主题（issue #209），或把面板宽度调窄过，
+这一版修的就是那两类显示问题。
 如果你是**模型自主生图**的重度用户，5.18.2 值得升——
 它专门修的就是「模型乱填参数、静默出错图还扣积分」这一族问题。你撞到下面任一条更该升：
 鸿蒙上账号池为空（#190）、生视频三个故障（#187）、想用侧边栏面板（#188）、
@@ -135,11 +171,11 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 市场索引是一份会滞后的快照，桌面宿主还会把发布 24 小时内的版本标成「新版等待中」。判断标准永远只有 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases)。
 
 **Q：我在鸿蒙上，账号池是空的。**
-升到 5.18.3（修复自 5.18.1 起就有）。临时绕过（不升级时）：设环境变量 `WORKBUDDY_AUTH_FILE`（或 `WORKBUDDY_USER_HOME`）指向你机器上真实的那份 `workbuddy-desktop.info`。
+升到 5.19.0（修复自 5.18.1 起就有）。临时绕过（不升级时）：设环境变量 `WORKBUDDY_AUTH_FILE`（或 `WORKBUDDY_USER_HOME`）指向你机器上真实的那份 `workbuddy-desktop.info`。
 
-**Q：升到 5.18.3 后插件详情页还是一长段 README，是不是没生效？**
-先确认装的是 5.18.3（`doctor` 第一行）并**重启/重载 DSH**——`meta.detail` 是宿主读 locale JSON 时取的，
-不重载就还是旧值。`link:` 本地目录安装的开发者 `git pull` 后重载即可，不用发版；npm 安装的用户要等 5.18.3 上架。
+**Q：插件详情页现在显示整篇 README，是不是坏了？**
+不是，那是 5.19.0 的预期行为。5.18.3 曾用 `meta.detail` 把它缩短成一段 100 字以内的简介，
+5.19.0 撤销了那套机制。升级后请**重启/重载 DSH**：详情页文档由宿主在读取包时取，不重载还是旧值。
 
 **Q：`doctor` 说 SDK 是 `ready`，但界面里说没取过 token。**
 真实设备 SDK 现在是**默认关**的。要真实设备值，先在卡片「SDK」页把「启用真实设备 SDK」打开。macOS 上「真实值」这一档本身是禁用的（它要 dispatch_sync 到主队列，会和宿主互相等死），卡片上会写明原因。
@@ -155,7 +191,7 @@ The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `s
 Install with an exact version (a floating range can be silently pinned back by pnpm's `minimumReleaseAge`):
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.3
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.0
 ```
 
-Restart or reload DSH afterwards (the host reads `meta.detail` at load time), and update any script or prompt template that calls `workbuddy_draw_image` (the 5.18.2 contract).
+Restart or reload DSH afterwards (the host loads the plugin's bundles at start-up), and update any script or prompt template that calls `workbuddy_draw_image` (the 5.18.2 contract).
