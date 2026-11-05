@@ -1,12 +1,12 @@
 # Changelog
 
-## 未发布
+## 5.18.2 (2026-11-05)
 
-> **⚠️ 破坏性变更**：`workbuddy_draw_image` 的 `size` 从可选改成**必填**，`image` 从
+> **本版有破坏性变更**：`workbuddy_draw_image` 的 `size` 从可选改成**必填**，`image` 从
 > `string | array` 收敛成**纯数组**（单图也要写成 `["/abs/a.png"]`）；旧写法
 > `image: "a.png"` 现在直接 `INVALID_ARGS`。这两处是为了堵住「不填尺寸就静默出方图」
 > 与「参考图被静默丢掉、还照扣积分」两族问题。下面是这一轮工具描述打磨的完整记录，
-> 随下一个版本一起发布。
+> 合并自 PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217)（感谢 @eghrhegpe）。
 
 ### 改进（第二十二轮第三批：多图三态脱离张数门、改图台词二义、4K 话术收窄）
 
