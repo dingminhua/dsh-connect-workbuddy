@@ -1,60 +1,71 @@
-# 【置顶】当前版本：npm `latest` 是 **5.18.1**（2026-11-05 02:53 +08:00 上架）
+# 【置顶】当前版本：npm `latest` 是 **5.18.2**（2026-11-05 上架）
 
-> **一句话**：`5.18.0` 与 `5.18.1` 的内容已经**合并成 5.18.1** 发布。`5.18.0` 那一版从未在 npm 上存在过
-> （当时账号被安全冻结，包没发出去），所以你会看到版本号从 5.17.0 直接跳到 5.18.1 —— 那不是漏发，是跳过了那个从未上架的号。
+> **一句话**：`5.18.2` 是**有破坏性变更**的一版 —— `workbuddy_draw_image` 的 `size` 变成必填、
+> `image` 收敛成纯数组。升级前先看「破坏性变更」那一节，别只按老习惯装完就走。
 >
-> 升级只需一条命令（**写精确版本号**，原因见「怎么升级」）：
+> `5.18.0` 那一版从未在 npm 上存在过（当时账号被安全冻结，包没发出去），所以版本号从 5.17.0
+> 直接跳到 5.18.1、再到现在的 5.18.2 —— 那不是漏发。
+>
+> 升级命令（**写精确版本号**，原因见「怎么升级」）：
 >
 > ```sh
-> dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.1
+> dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.2
 > ```
 
 ## 现在的状态
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.18.1** | `latest`，发布于 2026-11-04 18:53 UTC（北京时间 11-05 02:53） |
-| 前一版 | 5.17.0 | 发布于 2026-11-01 04:44 UTC |
-| GitHub Releases | v5.18.1 | 与本版同时创建 |
-| git tag `v5.18.1` | `2b9d457` | 版本 bump 提交，tag 与 npm 上的包同源 |
+| npm `dsh-connect-workbuddy` | **5.18.2** | `latest`，发布于 2026-11-05（见下方发布时间） |
+| 前一版 | 5.18.1 | 发布于 2026-11-04 18:53 UTC（北京时间 11-05 02:53） |
+| GitHub Releases | v5.18.2 | 与本版同时创建 |
+| git tag `v5.18.2` | `2c25e45` | 版本 bump 提交，tag 与 npm 上的包同源 |
 | git tag `v5.18.0` | `06006e4` | 代码仍在历史里，但**这个版本从未发布到 npm** |
 | 市场索引里的本插件 | 未核对 | 市场读的是会滞后的快照，判断口径永远是 `npm view` |
 
-## 为什么版本号跳过了 5.18.0
+## ⚠️ 破坏性变更：生图工具的两个参数（5.18.2）
 
-`5.18.0` 的代码 11 月 2 日就并进 `main`、tag 也推了，但发布当天用了**恢复码**登录 npm，
-触发了官方的预防性冻结：账号进入 **72 小时只读**（不能发布、不能改包设置），冻结期到
-**2026-11-04 18:43 UTC**（北京时间 11-05 02:43）。冻结期间 `npm publish` 表现为
-`PUT 403 ... temporarily suspended`，包一个字节都没上传。
+来自 PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217)（感谢 @eghrhegpe）。
+如果你有脚本、prompt 模板或别的工具在调 `workbuddy_draw_image`，这两处要改：
 
-冻结解除后重发，为了不和「可能存在过的暂存版本」纠缠，直接取了 `5.18.1`，
-并在 `CHANGELOG.md` 的 5.18.1 一节写明「本版包含 5.18.0 一节的全部内容」。
-从 5.17.0 升上来，拿到的是两版的全部东西。
+| 参数 | 以前 | 现在 | 旧写法会怎样 |
+| --- | --- | --- | --- |
+| `size` | 可选，不填默认 `1024x1024` | **必填**，写「宽x高」或 `auto` | 不填直接 `INVALID_ARGS`，不再悄悄出方图 |
+| `image` | `string \| array` 都收 | **纯数组**，单图也要写 `["/abs/a.png"]` | `image: "a.png"` 直接 `INVALID_ARGS` |
 
-## 这一版里有什么
+**为什么改**：不填尺寸时模型学会了「什么都不写、让它自己猜」，用户要竖版壁纸也出方图，还看不出
+是哪一步丢的；`image` 的联合类型在只认单 type 的 function-calling 上游会被压平或丢掉，
+参考图被静默丢弃后工具静默切回文生图，出的图和 prompt 毫无关系、积分照扣。
+现在这两类路径都在**发请求之前**以 `INVALID_ARGS` 拦下（本地免费、不扣积分）。
 
-### 来自 5.18.0
+**这一版还做了什么**（都是围绕「让模型能一次填对参数」）：
 
-1. **侧边栏面板（#188，新功能，默认关）**：卡片「能力」栏多一行「在侧边栏显示 WorkBuddy」。勾上后侧边栏多一个 WorkBuddy 行，点开是同一张卡片的**整页版**（账号表格、模型目录、诊断原文都摊到整栏，页头带「返回会话」）。**不勾就升级，侧边栏一行都不会多** —— 这一行占的是所有插件共用的全局侧边栏座位。
-2. **鸿蒙（HarmonyOS）上检测不到桌面账号（#190，修）**：`defaultDesktopAuthDirs()` 原来只有 darwin / win32 / linux 三个分支，鸿蒙的 `process.platform` 是 `"openharmony"`，候选路径为空 → 账号池恒为 0。现在补上固定挂载点（可用 `WORKBUDDY_USER_HOME` 覆盖），顺带给 Linux 加了 `$XDG_DATA_HOME` 候选（只做加法）。
-3. **生视频三个独立故障（#187，修）**：http(s) 输入改为 GET 下载后编码成 data URI（COS 签名只覆盖 GET，旧实现的 HEAD 探活必然 403）；内部超时预算收紧到**严格早于宿主工具上限**，超时后能拿到带 task id 的结构化报错；上游 `failed` 时带出原始字段。
-4. **真实设备 SDK 有了总开关（行为变更，默认关）**：此前无条件启动预热链（每 10 分钟起一次子进程取设备 token），哪怕你只用「虚拟值」档、这个 token 一次都不发。现在默认关：不发现目录、不起子进程、不预热。
+- `size` 越界不再报错：`fitIntoRange()` 按「长边 2560」与「面积 ≤ 4,194,304」中更严的约束
+  等比缩放，改动写进 `hint` 并用 `requestedSize` 回带原值。
+- 改图写 `size: "auto"`：工具自己解析 PNG / JPEG / GIF / WEBP 头拿到第一张输入图的宽高，
+  按同比例定画布，模型不必知道原图尺寸。
+- 视频工具补 `rejectUnknownArgs()`：`size` / `ratio` / `n` / `return_base64` 这类从别的生图
+  工具串进来的字段一律 `INVALID_ARGS`，不再静默忽略让模型以为横竖版生效了。
+- 输出 schema 把 `region` 与 `size` 列进 `required`，报价与后处理不用靠运气。
+- 工具描述整段重写成「画什么 / 花多少 / 走哪个区 / size 怎么填」四段问答，`size` 写成
+  八阶优先级链（具体像素 → 比例词 → 档位词 → 改图 auto → 用途 → 表外比例 → 只提方向 → 默认档），
+  命中即停；删掉硬编码的两区模型 id 与「不要做什么」的否定清单。
+- `tests/image-gen.spec.ts` 从 62 条涨到 104 条。完整打磨记录见 `CHANGELOG.md` 的 5.18.2 一节。
 
-### 5.18.1 新增的修复
+> **视频工具不受影响**：`workbuddy_draw_video` 的 `image` 仍是字符串或单元素字符串数组、
+> 只收一张，与生图的「纯数组、可多张」不同。
 
-- **生图多图参考**：`image` 传数组不再被当成「没给图」而静默切回文生图；数组逐项校验，混入非字符串 / 空串一律 `INVALID_ARGS`。
-- **错型参数不再静默降级**：`seconds: "10"`、`model: [...]`、`image: 123` 这类以前会被当成「没填」、用默认值跑完还照扣积分的形态，现在直接 `INVALID_ARGS` 且**不发请求**；生视频只收一张输入图，两张及以上明确拒绝。
-- **#198**：窄屏下模型行第三档「上下文预算」被裁掉、只能选到 200K / 500K。
-- **#199**：权限加固把用户锁在自己凭据库外（修复来自社区 PR #200 by @yunyu-lu）。
-- **#208**：同类加固路径会把 `$DSH_HOME` 自己的继承权限抹掉，导致附件目录读不了。
-- **#207**：DSML 恢复的三处失效（`calls` 缩写永不配对、孤立闭标签进不了清理、原生调用后文本不再清洗）。
-- **#191**：国内版账号池可选「每日自动签到」（新增，默认关）。
-- **积分面板**：头部加「刷新」与「设置」，「一键测试」改名为「刷新」（它确实会花积分）；**#212** 两个开关的样式统一。
-- **#215**：预算单选框按后端实际窗口选中，选「原生」即删除预算。
-- **#214**：国际版兜底表不再声称价格，`models/refresh` 立刻落盘并生效。
-- **#213**：渠道校验报错不再说「网关可能新增了词条」，并把「首行」与「整条消息」分开表述。
-- **#193 / #195**：传输失败（status 0）不再落盘为账号测量，探测超时 10 s → 30 s（PR #194 by @Antony232）；另外两条「非账号事件被写成账号测量」的路径一并修掉。
-- 默认思考强度：没声明默认档的模型落到自己声明的中档，不再是最弱的一档。
+## 从 5.17.0 升上来的人
+
+`5.18.1` 已经把 `5.18.0` 与之后 30 个提交一起发过一次，所以你一次拿到的是三版的全部内容：
+
+- **来自 5.18.0**：可选侧边栏面板（#188，默认关）、鸿蒙上检测不到桌面账号（#190）、
+  生视频三个独立故障（#187）、真实设备 SDK 总开关（默认关）。
+- **来自 5.18.1**：生图多图参考、错型参数不再静默降级、#198 窄屏第三档上下文预算被裁、
+  #199 权限加固锁死用户、#208 ACL 抹掉 `$DSH_HOME`、#207 DSML 恢复三处失效、
+  #191 每日自动签到（默认关）、积分面板「刷新 / 设置」、#212 / #215 / #214 / #213 / #193 / #195
+  等一批修复。
+- **来自 5.18.2**：上面那两处破坏性变更与工具契约重写。
 
 升级不会动你已有的账号池、模型勾选、积分设置、思考强度默认值。
 
@@ -62,12 +73,14 @@
 
 ```sh
 dsh plugin --profile desktop remove dsh-connect-workbuddy   # 之前自己编译 / link 装过的先移除
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.2
 ```
 
 **写精确版本号，别用 `^` 或 `latest`**：如果你的 profile 配了 pnpm 的 `minimumReleaseAge`（新版本等待期），浮动范围会被**静默压回旧版**，症状恰好是「升级命令跑完了、版本没变」；写死精确版本号则会明确报 `ERR_PNPM_NO_MATURE_MATCHING_VERSION`，反而好判断。要立刻装就在 profile 的 `pnpm-workspace.yaml` 里加 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]`。
 
 一直用 npm 版、没自己编译过的，**不需要 `remove`**，直接 `add` 即可（`add` 到已存在的包名就是升级）。
+
+装完请**重启或重载 DSH**（bundle 的 host 半边在启动时加载），并留意生图工具的参数契约变了。
 
 ## 怎么确认自己到底是哪个版本
 
@@ -80,8 +93,15 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ## 常见问题
 
-**Q：我还停在 `5.17.0`，必须升吗？**
-没有「必须升」的硬理由：这一版没有安全修复，全部是功能与体验问题。你撞到下面任一条就该升：鸿蒙上账号池为空（#190）、生视频三个故障（#187）、想用侧边栏面板（#188）、窄屏选不到第三档上下文预算（#198）、生图想传多张参考图（5.18.1）、被「参数类型写错却照常扣积分」坑过（5.18.1）。
+**Q：我还停在 `5.17.0` / `5.18.1`，必须升吗？**
+没有「必须升」的硬理由：这一版没有安全修复。但如果你是**模型自主生图**的重度用户，5.18.2 值得升——
+它专门修的就是「模型乱填参数、静默出错图还扣积分」这一族问题。你撞到下面任一条更该升：
+鸿蒙上账号池为空（#190）、生视频三个故障（#187）、想用侧边栏面板（#188）、
+窄屏选不到第三档上下文预算（#198）、生图想传多张参考图、被「参数类型写错却照常扣积分」坑过。
+
+**Q：升级后生图工具报错 `size 必填` / `image 必须是字符串数组`，是不是坏了？**
+不是，是 5.18.2 的破坏性变更生效了。把调用改成 `size: "1024x1024"`（或按工具描述选档）、
+`image: ["/abs/a.png"]` 即可。写 `size: "auto"` 可以让工具按输入图比例自己定画布（仅改图、需给 `image`）。
 
 **Q：`5.18.0` 那个 tag 还有用吗？**
 只作为历史参照点。它对应的代码已经在 `5.18.1` 里，**不要**再按旧文档从那个 tag 自己编译——那时还缺 #199 / #198 / #213 等一批修复。
@@ -90,19 +110,21 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 市场索引是一份会滞后的快照，桌面宿主还会把发布 24 小时内的版本标成「新版等待中」。判断标准永远只有 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases)。
 
 **Q：我在鸿蒙上，账号池是空的。**
-升到 5.18.1。临时绕过（不升级时）：设环境变量 `WORKBUDDY_AUTH_FILE`（或 `WORKBUDDY_USER_HOME`）指向你机器上真实的那份 `workbuddy-desktop.info`。
+升到 5.18.2。临时绕过（不升级时）：设环境变量 `WORKBUDDY_AUTH_FILE`（或 `WORKBUDDY_USER_HOME`）指向你机器上真实的那份 `workbuddy-desktop.info`。
 
 **Q：`doctor` 说 SDK 是 `ready`，但界面里说没取过 token。**
 真实设备 SDK 现在是**默认关**的。要真实设备值，先在卡片「SDK」页把「启用真实设备 SDK」打开。macOS 上「真实值」这一档本身是禁用的（它要 dispatch_sync 到主队列，会和宿主互相等死），卡片上会写明原因。
 
 ## English summary
 
-**Current installable version: `5.18.1`** (published 2026-11-04 18:53 UTC). `5.18.0` never reached npm — the account was in a 72-hour read-only security suspension, so that number was skipped. `5.18.1` contains everything from the never-published `5.18.0` plus 30 subsequent commits.
+**Current installable version: `5.18.2`.** This is a **breaking change**: `workbuddy_draw_image` now requires `size`, and `image` must be an array (`["/abs/a.png"]` even for a single image). Old forms fail with `INVALID_ARGS` before any request is sent — silently wrong images that still cost credits are no longer possible. The tool also gained automatic size fitting, `size: "auto"` for edits (parses PNG/JPEG/GIF/WEBP dimensions), unknown-argument rejection for the video tool, and a rewritten decision-chain description. See PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217).
 
-Highlights: an **optional sidebar panel** (#188, off by default), **HarmonyOS credential detection** (#190), **three video-generation fixes** (#187), an **off-by-default real-device SDK switch**, **multi-image reference support** for image generation, and **strict argument types** — wrong-typed tool arguments now fail with `INVALID_ARGS` instead of silently falling back to defaults and spending credits.
+`5.18.0` never reached npm — the account was in a 72-hour read-only security suspension, so that number was skipped. `5.18.1` carried everything from the never-published `5.18.0` plus 30 subsequent commits (optional sidebar panel, HarmonyOS credential detection, three video-generation fixes, strict argument types, and many fixes).
 
 Install with an exact version (a floating range can be silently pinned back by pnpm's `minimumReleaseAge`):
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.2
 ```
+
+Restart or reload DSH afterwards, and update any script or prompt template that calls `workbuddy_draw_image`.

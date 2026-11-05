@@ -11,13 +11,18 @@
 
 | 事实 | 值 | 采集时间 |
 |---|---|---|
-| npm `latest` | **5.18.1** | 2026-11-05 02:53 +08:00 |
-| 5.18.1 发布时间 | 2026-11-04 18:53 UTC（北京时间 11-05 02:53） | 同上 |
-| 此前一版 | 5.17.0，2026-11-01 04:44 UTC | 同上 |
-| 再此前 | 5.16.0，2026-10-31 09:55 UTC | 同上 |
-| GitHub Releases | [v5.18.1](https://github.com/dingminhua/dsh-connect-workbuddy/releases/tag/v5.18.1)（Latest） | 同上 |
+| npm `latest` | **5.18.2** | 2026-11-05 +08:00 |
+| 5.18.2 发布时间 | 2026-11-05（见 registry `time`） | 同上 |
+| 此前一版 | 5.18.1，2026-11-04 18:53 UTC | 同上 |
+| 再此前 | 5.17.0，2026-11-01 04:44 UTC | 同上 |
+| GitHub Releases | [v5.18.2](https://github.com/dingminhua/dsh-connect-workbuddy/releases/tag/v5.18.2)（Latest） | 同上 |
 | **5.18.0** | **从未上架**——发布当天账号进入 72 小时只读冻结，该版本号被跳过，内容并入 5.18.1 | 同上 |
 | **市场索引里的本插件** | **本次未核对**（原因见下） | 同上 |
+
+> **⚠️ 5.18.2 有破坏性变更**：`workbuddy_draw_image` 的 `size` 变成必填、`image` 收敛成纯数组
+> （单图也要写 `["/abs/a.png"]`）。有脚本或 prompt 模板在调生图工具的，升级后要改参数；
+> 旧写法现在直接 `INVALID_ARGS`（本地免费、不扣积分）。详见
+> [#192](https://github.com/dingminhua/dsh-connect-workbuddy/issues/192) 与 `CHANGELOG.md` 的 5.18.2 一节。
 
 > **为什么「市场索引里是几」这一行这次不用一个数字回答**：社区市场的索引源是**每份 profile 各自配置**的（`dsh-plugin-market` 的 `sources` 是设置项，不是硬编码常量），
 > 本机 profile 没有覆盖它，页面接口又要鉴权。**判断该不该升级，永远用 `npm view` 和 Release，不要看市场里的版本号。**
@@ -39,7 +44,8 @@
 | 窄屏下模型行选不到第三档「上下文预算」（#198） | **5.18.1** |
 | 生图传多张参考图被静默切成文生图；参数类型写错却照常扣积分（`INVALID_ARGS`） | **5.18.1** |
 | 渠道校验报错把「首行不在名单里」说成「网关可能新增了词条」（#213） | **5.18.1** |
-| 没什么具体问题 | **直接上 5.18.1**，省得逐条对 |
+| 没什么具体问题 | **直接上 5.18.2**，省得逐条对 |
+| 升级 5.18.2 后生图报 `size 必填` / `image 必须是字符串数组` | **不是坏了，是破坏性变更**——改写成 `size: "1024x1024"` 与 `image: ["/abs/a.png"]` |
 
 ## 1. 为什么市场里的版本会滞后
 
@@ -51,15 +57,15 @@
 | ② | **DSH 市场自己的「检查更新」** | npm 的 `latest` dist-tag，30 分钟缓存；桌面宿主还会把 24 小时内发布的版本标成「新版等待中」 | 版本对，但**按钮是灰的/标签是等待中**，看起来像「没有新版」 |
 | ③ | **pnpm 的新版本等待期**（`minimumReleaseAge`） | profile 的 pnpm 配置 | 浮动范围被**静默压回旧版**；写死精确版本号则直接报错拒绝 |
 
-> **③这条现在正好在一个窗口里**：`5.18.1` 发布于 2026-11-04 18:53 UTC，
-> 它的 24 小时窗口在 2026-11-05 18:53 UTC（北京时间 11-06 02:53）结束——在此之前，配了
-> `minimumReleaseAge` 的 profile 会拒绝浮动范围、也可能拒绝精确版本号。
+> **③这条现在正好在一个窗口里**：`5.18.2` 发布于 2026-11-05（北京时间下午），
+> `5.18.1` 发布于 2026-11-04 18:53 UTC —— 两者的 24 小时窗口分别延伸到 11-06 / 11-05 的对应时刻。
+> 在此之前，配了 `minimumReleaseAge` 的 profile 会拒绝浮动范围、也可能拒绝精确版本号。
 > 实测过两种形态（隔离目录、pnpm 10.34.5、`--lockfile-only`，未触碰任何人的环境）：
 >
 > | 写法 | 设了 `minimumReleaseAge=1440` 的结果 |
 > |---|---|
 > | 浮动 `^5.17.0` | 解析到旧版本，不报错 ⚠️（「升级成功了，版本没变」） |
-> | 精确 `5.18.1` | `ERR_PNPM_NO_MATURE_MATCHING_VERSION`（明确拒绝，反而好判断） |
+> | 精确 `5.18.2` | `ERR_PNPM_NO_MATURE_MATCHING_VERSION`（明确拒绝，反而好判断） |
 > | 不设该配置（pnpm 默认） | 浮动范围直接解析到最新版 ✅ |
 >
 > 也就是说：**窗口一旦被配置，浮动范围会骗你，精确版本号不会**——它会如实报错，而不是假装成功。
@@ -75,7 +81,7 @@
 
 ```sh
 # 1) 装精确版本号（不要用 ^ 或 latest，理由见 §1）
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.18.2
 
 # 2) 确认真的装上去了（见 §4，别凭感觉）
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
@@ -85,7 +91,7 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ```sh
 # A) 等窗口过去（默认 24 小时，从该版本发布时刻算）
-#    5.18.1 发布于 2026-11-04 18:53 UTC → 窗口约在 2026-11-05 18:53 UTC（北京时间 11-06 02:53）结束
+#    5.18.2 发布于 2026-11-05 → 窗口约在 2026-11-06 同一时刻结束（以 registry 的 time 为准）
 
 # B) 现在就装：告诉 pnpm 这个包不必等（写进 profile 的 pnpm-workspace.yaml）
 minimumReleaseAgeExclude:
@@ -119,7 +125,7 @@ minimumReleaseAgeExclude:
 ## 4. 怎么确认真的升上去了（这一节纠正两条旧口径）
 
 ```sh
-# 第一行就是版本：WorkBuddy Connect 5.18.1 on vX.Y.Z
+# 第一行就是版本：WorkBuddy Connect 5.18.2 on vX.Y.Z
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 # 或者看 JSON 顶层的 version 字段
