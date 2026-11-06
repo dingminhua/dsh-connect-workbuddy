@@ -55,14 +55,14 @@
   ],
   "scripts": {
     "prepare": "npm run build",
-    "prepack": "node scripts/check-pii.mjs && npm run build",
+    "prepack": "npm run build && node scripts/check-pii.mjs",
     "build": "tsdown && node scripts/verify-entry-artifacts.mjs",
     "verify:entries": "node scripts/verify-entry-artifacts.mjs",
     "check:pii": "node scripts/check-pii.mjs",
     "test": "vitest run",
     "section:shot": "vitest run --config vitest.card.config.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run check:pii && pnpm run build"
+    "check": "pnpm run typecheck && pnpm run build && pnpm run check:pii && pnpm run test"
   },
   "dsh": {
     "bundle": {

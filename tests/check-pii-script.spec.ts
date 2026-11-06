@@ -68,6 +68,14 @@ describe.each([
   ['real-home-path', '日志在 /Users/zhangsan/log.txt'],
   ['uin', "account: { uin: '177888899990' }"],
   ['session-id', 'session-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b'],
+  // Added after a second audit found real leaks sitting in the gaps these
+  // three shapes cover. Each one below is a shape that actually shipped.
+  ['phone-masked', '当前账号 158****6420 余额 1522'],
+  ['known-nickname', '显示为 用户7520607992，排行第 1'],
+  ['known-nickname', '昵称：张三丰'],
+  // A real uin in PROSE, not in a `uin:` fixture — this is how it leaked.
+  ['uin', '账号名却读不出来而回退成一串 uin 数字（330105772757）'],
+  ['access-token', 'key sk-abcdefghijklmnopqrstuvwx'],
 ])('check-pii catches %s', (ruleId, line) => {
   it('reports it and exits non-zero', () => {
     const dir = makeRepo({ 'leak.md': line + '\n' })
@@ -77,6 +85,39 @@ describe.each([
     expect(result.stderr).toContain(`rule   ${ruleId}`)
     // `files: ["."]` means everything ships, so the marker must be present.
     expect(result.stderr).toContain('[SHIPS TO NPM]')
+  })
+})
+
+describe('check-pii scans build output', () => {
+  it('flags a leak that is only in a JSDoc comment of a built bundle', () => {
+    // tsdown keeps JSDoc, so a real nickname written in a source comment ends
+    // up verbatim in `lib/client.js` — which is exactly how `用户7520607992`
+    // reached the published package. The first version of the scanner listed
+    // `lib` in SKIP_DIRS, so it reported "23 of 29 files ship" and never looked
+    // at the six files users actually download.
+    const dir = makeRepo({
+      'lib/client.js': '/* Read as: 「用户7520607992 · 第 1 位」 */\nexport const x = 1\n',
+    })
+    const result = runScanner(dir)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain('lib/client.js')
+    expect(result.stderr).toContain('known-nickname')
+  })
+})
+
+describe('check-pii does not exempt whole files', () => {
+  it('flags a masked number in the demo page', () => {
+    // The demo page used to be exempt by filename, so a real number pasted
+    // there later would have passed. Only the exact invented values pass now.
+    const dir = makeRepo({ 'docs/assets/account-pool-demo.html': '<td>159****1234</td>\n' })
+    const result = runScanner(dir)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain('phone-masked')
+  })
+
+  it('flags a real number in the policy document too', () => {
+    const dir = makeRepo({ 'docs/PRIVACY.md': '例如 158****6420 这种掩码也是敏感信息\n' })
+    expect(runScanner(dir).code).toBe(1)
   })
 })
 
@@ -97,10 +138,17 @@ describe('check-pii leaves obvious fixtures alone', () => {
     expect(result.code).toBe(0)
   })
 
-  it('does not flag its own policy documents', () => {
-    // PRIVACY.md has to spell the forbidden shapes out to be useful.
+  it('lets the policy document use obviously-fake placeholders', () => {
+    // PRIVACY.md must spell the forbidden shapes out to be useful, and it was
+    // exempt from scanning for exactly that reason — which is how a real masked
+    // account number lived in it, in the published tarball, for a whole release.
+    // It is scanned now; the escape hatch is the placeholder values, not the
+    // filename.
     const dir = makeRepo({
-      'docs/PRIVACY.md': '完整手机号如 13912345678 不许出现，本机路径 /Users/zhangsan 也不行。\n',
+      'docs/PRIVACY.md': [
+        '完整手机号如 1XX****XXXX 不许出现，本机路径 /Users/<you> 也不行。',
+        '测试里可以用 13800000000 和 someone@example.com。',
+      ].join('\n'),
     })
     expect(runScanner(dir).code).toBe(0)
   })

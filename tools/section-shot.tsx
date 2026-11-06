@@ -50,7 +50,7 @@ function usageDocument(): Record<string, unknown> {
   const accounts = [
     {
       accountId: 'acc-1',
-      accountName: '用户7520607992',
+      accountName: '账号A',
       current: true,
       member: true,
       credits: 1620.37,
@@ -92,7 +92,7 @@ function usageDocument(): Record<string, unknown> {
   return {
     status: 'signed-in',
     accountId: 'acc-1',
-    accountName: '用户7520607992',
+    accountName: '账号A',
     region: 'cn',
     domain: 'www.workbuddy.cn',
     tokenExpiresAtMs: Date.now() + 3_600_000,

@@ -1125,8 +1125,8 @@ export const WORKBUDDY_CARD_CSS = `
    * one 18px line. The row therefore read as "one tall account block and three
    * strays", and every extra row cost the reader two thirds of a screen.
    *
-   * Read as a sentence it is one line — 「用户7520607992 · 第 1 位 ↑↓ · 当前使用 ·
-   * 测试于 11/06, 03:57」 — so it wraps among itself instead of stacking. The
+   * Read as a sentence it is one line — 「账号A · 第 1 位 ↑↓ · 当前使用 ·
+   * 测试于 00/00, 00:00」 — so it wraps among itself instead of stacking. The
    * margins the wide form needs (2px above the badge, 2px above the current pill)
    * go away with the stacking: in a wrapped row they become uneven leading. */
   .dsm-workbuddy-pool-account-name{flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}

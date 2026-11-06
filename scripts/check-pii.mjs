@@ -39,9 +39,17 @@ const QUIET = args.includes('--quiet')
 const TARGET = args.find(a => !a.startsWith('--'))
 const ROOT = resolve(TARGET ?? process.cwd())
 
-/** Directories that are never ours to police. */
+/**
+ * Directories that are never ours to police.
+ *
+ * `lib` is deliberately NOT here. It is a build product, but it is also the
+ * single largest slice of what npm actually ships — and tsdown keeps JSDoc
+ * comments, so a real nickname written in a source comment ends up verbatim in
+ * `lib/client.js`. Excluding it made the scanner report "23 of 29 files ship"
+ * while the six it skipped were the ones users download.
+ */
 const SKIP_DIRS = new Set([
-  'node_modules', 'lib', 'coverage', '.git', '.dsh-vision-router',
+  'node_modules', 'coverage', '.git', '.dsh-vision-router',
   '.dsh-npm-cache', '.pnpm-store', 'dist',
 ])
 
@@ -68,13 +76,21 @@ const GENERIC_USER = new Set([
   'you', 'runner', 'example', 'someone', 'username', 'name', 'x', 'xxx', '...',
 ])
 
-/** Fictional account data in the hand-written demo page. */
-const DEMO_FILE = 'docs/assets/account-pool-demo.html'
-
-/** Numbers that exist only to prove the real one is *not* written. */
+/**
+ * Fictional account data. The demo page is hand-written and normally holds
+ * invented numbers — but "normally" is not a guarantee, and a whole-file
+ * exemption is how a real number gets past the gate later. So the demo is
+ * scanned like everything else; only the exact invented values below pass.
+ */
 const FIXTURE_PHONES = new Set([
-  '13800000000', '138****0000', '139****0001', '139****0002',
-  '137****0003', '136****0004',
+  // 13800000000 is the classic fixture: it appears in an assertion that PROVES
+  // the real number is never written to disk.
+  '13800000000',
+  // The invented numbers in `docs/assets/account-pool-demo.html` (there since
+  // 3.0.0, verified different from every real account number in this repo).
+  '138****6621', '189****3302', '152****7788',
+  // Obviously-fake masked placeholders used in prose and mock-ups.
+  '138****0000', '139****0001', '139****0002', '137****0003', '136****0004',
 ])
 
 const RULES = [
@@ -90,7 +106,7 @@ const RULES = [
     pattern: /(?<![0-9])1[0-9]{2}\*{3,6}[0-9]{2,4}(?![0-9])/g,
     why: '掩码手机号（与余额、过期时间组合后可指纹化账号）',
     fix: '正文里写成 1XX****XXXX；截图里打成实心块',
-    allow: (m, file) => FIXTURE_PHONES.has(m) || file === DEMO_FILE,
+    allow: (m) => FIXTURE_PHONES.has(m),
   },
   {
     id: 'email',
@@ -147,21 +163,57 @@ const RULES = [
   },
   {
     id: 'uin',
-    pattern: /(?<!\d)(?:uin|uid)['"]?\s*[:=]\s*['"]?([0-9]{11,12})(?!\d)/g,
+    // Real uins leak in prose far more often than in `uin: '…'` fixtures — the
+    // CHANGELOG had one sitting inside Chinese parentheses ("回退成一串 uin
+    // 数字（330105772757）"), which the old `uin[:=]` shape could not see.
+    // So: a 9-13 digit run is suspicious when the word uin/uid appears within
+    // 30 characters of it, in either order.
+    pattern: new RegExp(
+      [
+        String.raw`(?<!\d)(?:ent)?u(?:in|id)['"]?\s*[:=]\s*['"]?([0-9]{9,13})(?!\d)`,
+        String.raw`(?<!\d)([0-9]{9,13})(?!\d)(?=[^\n]{0,30}?\bu(?:in|id)\b)`,
+        String.raw`\bu(?:in|id)\b[^\n]{0,30}?(?<!\d)([0-9]{9,13})(?!\d)`,
+      ].join('|'),
+      'gi',
+    ),
     why: '疑似真实 uin / uid（账号级持久标识）',
     fix: '测试用 1 或 100000000001；真机日志里的数字不要粘',
-    allow: (m) => /^1000000000\d{2}$/.test(m),
+    // The suite's fixtures, plus obviously-fake monotone values.
+    allow: (m) => /^(?:1?0{8,12}|1000000000\d{2}|10000000000\d)$/.test(m),
+  },
+  {
+    // Account display names are unconstrained text, so a shape-based rule would
+    // fire on ordinary prose. This catches the shape that actually leaked: the
+    // auto-generated "用户 + digits" name.
+    //
+    // `LaoDing` / the Chinese short form are deliberately NOT flagged: that is
+    // the MIT copyright holder, spelled out in LICENSE, README,
+    // THIRD_PARTY_NOTICES and package.json. It is public by design, so
+    // flagging it would only teach people to widen the rule. The
+    // auto-generated name is different — nobody chose it, the upstream just
+    // numbered an account.
+    id: 'known-nickname',
+    pattern: /(?:用户\s*\d{6,}|昵称[:：]\s*[^\s，。、）)]{2,20})/g,
+    why: '上游返回的真实账号昵称（等于公开「哪个账号在做测试」）',
+    fix: '截图里盖掉；正文、注释与工装固件里写成「账号A」',
+    allow: () => false,
   },
 ]
 
 /**
  * Files whose whole point is to contain the patterns being searched for.
- * The policy states them, the scanner implements them, and the mutation test
- * feeds them in to prove the scanner still bites. Scanning these would make
- * every rule match itself.
+ *
+ * Only the scanner itself and its mutation test are here — code that must spell
+ * a phone number out to have a rule about it at all.
+ *
+ * `docs/PRIVACY.md` is deliberately NOT exempt, even though it also needs
+ * examples. The first version did exempt it, and that is exactly how a real
+ * masked account number survived in the published policy document for a whole
+ * release: the file was in `files`, shipped to npm, and skipped by the gate. An
+ * exemption that follows the file into the tarball is not an exemption, it is a
+ * blind spot. The policy therefore uses obviously-fake placeholders.
  */
 const POLICY_FILES = [
-  'docs/PRIVACY.md',
   'scripts/check-pii.mjs',
   'tests/check-pii-script.spec.ts',
 ]
@@ -253,7 +305,11 @@ function scanText(file, shippedSet) {
     const rx = new RegExp(rule.pattern.source, rule.pattern.flags)
     let m
     while ((m = rx.exec(text)) !== null) {
-      const value = rule.id === 'uin' ? m[1] : m[0]
+      const value = rule.id === 'uin'
+        // Alternation means the digits may land in any group; take the first one
+        // that actually matched.
+        ? (m.slice(1).find(g => g !== undefined) ?? m[0])
+        : m[0]
       if (rule.allow(value, repoPath, text, m.index)) continue
       const lineNo = text.slice(0, m.index).split('\n').length
       problems.push({
