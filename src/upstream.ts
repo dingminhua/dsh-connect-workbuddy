@@ -526,6 +526,51 @@ const CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
 const PRODUCT_UA = 'WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0'
 
 /**
+ * The GLOBAL gateway's app channel: `WorkBuddy/<version>` with no CLI segment.
+ *
+ * This exists because the paragraph above is only true for the CN gateway.
+ * Measured on the global gateway on 2026-11-06, same token, same URL, only
+ * this header differing, each shape read 3–30 times with identical results:
+ *
+ *   | User-Agent                                     | global `/v3/config` answer                       |
+ *   | ---                                            | ---                                              |
+ *   | `WorkBuddy/5.8.3`                               | 23 models, 1 agent (`cli` roster of 21),         |
+ *   |                                                | `hy-image-3.5` + `kling-video-v3`,                |
+ *   |                                                | `max-model` / `hy4free` / `hy4std` present       |
+ *   | `WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0`  | 39 models, 14 agents, NO `cli` roster,           |
+ *   |                                                | `hy-image-3.5` GONE,                             |
+ *   |                                                | `max-model` / `hy4free` / `hy4std` GONE          |
+ *   | `CLI/2.63.2 CodeBuddy/2.63.2`                  | 28 models, 16 agents (`cli` roster of 26),       |
+ *   |                                                | `deepseek-v4.1-flash` at `x0.00`                 |
+ *
+ * So on the global gateway a trailing `CLI/…` segment selects a THIRD
+ * document — the poorest of the three — while on the CN gateway that same
+ * composite string is the richest one (62 models + 8 promos). The two
+ * gateways genuinely disagree, which is why {@link PRODUCT_UA} must NOT be
+ * "fixed" globally: doing so collapses CN from 61 models + a 17-row `cli`
+ * roster down to 39 models with no roster at all (measured, same token).
+ */
+const APP_CHANNEL_UA = 'WorkBuddy/5.8.3'
+
+/**
+ * The CLI channel's product identity, used to read the SECOND global document.
+ *
+ * Deliberately not a reference to {@link CLIENT_UA} even though the strings are
+ * equal today: that constant is a CHAT contract pinned to the versions the
+ * conversation-identity triple was verified against, while this one only
+ * selects a catalog. A future chat-contract bump must not silently move the
+ * discovery channel with it.
+ *
+ * Why read it at all: the plugin CHATS as the CLI agent, and the global CLI
+ * document publishes eight chat models the app document does not mention —
+ * `fast-model`, `balanced-model`, `primary-model`, `deepseek-v4.1-flash`,
+ * `hy4-preview`, `gpt-5.5`, `gpt-5.4`, `glm-5.2`. Reading only the app
+ * document hid the CLI's own `x0.00` DeepSeek row while that row answered
+ * HTTP 200 over the plugin's own chat channel. See {@link mergeModelRosters}.
+ */
+const CATALOG_CLI_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
+
+/**
  * The app version inside {@link PRODUCT_UA}, for headers that need it alone.
  *
  * Derived from the UA instead of repeated as a literal: the `X-IDE-Version`
@@ -3986,6 +4031,45 @@ export function selectCliModels(
 }
 
 /**
+ * Merge two rosters by model id, keeping the PRIMARY entry for every id both
+ * documents publish.
+ *
+ * Exists because the global `/v3/config` answers a different roster per client
+ * channel and NEITHER channel is a superset of the other — measured on a real
+ * global account 2026-11-06:
+ *
+ *   - desktop-only: `max-model`, `hy4free`, `hy4std`
+ *   - CLI-only:     `fast-model`, `balanced-model`, `primary-model`,
+ *                   `deepseek-v4.1-flash`, `hy4-preview`, `gpt-5.5`, `gpt-5.4`,
+ *                   `glm-5.2`
+ *   - common (20):  `deepseek-v4.1-flash-sg` is priced differently per channel
+ *                   (desktop `x0.11`, CLI `x0.03`); the other 18 agree.
+ *
+ * The caller passes the CLI roster as PRIMARY because the plugin chats as the
+ * CLI agent, so the CLI document is the one whose prices are actually settled
+ * when a request is made. Rows only the app document carries are appended, so
+ * the desktop-only `hy4free`/`hy4std` keep working — both answer HTTP 200 over
+ * the CLI chat channel.
+ *
+ * `max-model` is appended too even though the provider rejects it for personal
+ * accounts (`11133`): that veto belongs to the upstream at request time, and
+ * hiding a row the user can see in the app is the defect this merge fixes.
+ */
+export function mergeModelRosters(
+  primary: readonly WorkBuddyUpstreamModel[],
+  secondary: readonly WorkBuddyUpstreamModel[],
+): WorkBuddyUpstreamModel[] {
+  const merged = [...primary]
+  const seen = new Set(primary.map(model => model.id))
+  for (const model of secondary) {
+    if (seen.has(model.id)) continue
+    seen.add(model.id)
+    merged.push(model)
+  }
+  return merged
+}
+
+/**
  * The roster plus the promotion badges the SAME document carries.
  *
  * `data.modelPromotions` and `data.modelTiers` sit beside `data.models` in
@@ -4375,30 +4459,72 @@ export class WorkBuddyUpstreamClient {
     const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
     const global = regionOf(credential.domain) === 'global'
     if (global) {
-      const response = await fetch(`${globalBase(credential.domain)}${GLOBAL_CONFIG_PATH}`, {
-        headers: {
-          'Authorization': `Bearer ${credential.accessToken}`,
-          'Accept': 'application/json',
-          ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
-          ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
-          // 这一处**刻意不统一**。`/v3/config` 不是"客户端在替用户做事"，而是
-          // 读一份产品配置：它的字节是 2026-10-21 逐条实测过的（UA 选通道，
-          // 其余头固定），而 P0.5 的收益是在 chat 上量的。给一次元数据读加上
-          // 归属头，只会多几个能被比对的落点，换不来任何东西——与
-          // `fetchModelBusy`（`:4188` 起）同一条规则。
-          'X-Product': 'SaaS',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Connection': 'close',
-          'User-Agent': PRODUCT_UA,
-        },
-        signal: timeout,
-      })
-      const envelope = await readEnvelope(response)
-      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
-      const data = typeof envelope.data === 'object' && envelope.data !== null
-        ? envelope.data as Record<string, unknown>
-        : {}
-      return withPromos(selectCliModels(data['models'], data['agents'], keepModelIds), data)
+      /**
+       * Read the global product configuration ONCE per client channel, then
+       * merge. Both reads are the same endpoint and differ ONLY in
+       * `User-Agent`, which is the header that selects the channel; both are
+       * read-only GETs that spend no credits.
+       *
+       * Neither document is a superset of the other (see
+       * {@link mergeModelRosters}), so reading one of them is what left the
+       * CLI's own free `deepseek-v4.1-flash` row invisible while it was
+       * perfectly usable through this plugin's chat path.
+       */
+      const readChannel = async (userAgent: string): Promise<readonly WorkBuddyUpstreamModel[]> => {
+        const response = await fetch(`${globalBase(credential.domain)}${GLOBAL_CONFIG_PATH}`, {
+          headers: {
+            'Authorization': `Bearer ${credential.accessToken}`,
+            'Accept': 'application/json',
+            ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
+            ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
+            // 这一处**刻意不统一**。`/v3/config` 不是"客户端在替用户做事"，而是
+            // 读一份产品配置：它的字节是逐条实测过的（UA 选通道，
+            // 其余头固定），而 P0.5 的收益是在 chat 上量的。给一次元数据读加上
+            // 归属头，只会多几个能被比对的落点，换不来任何东西——与
+            // `fetchModelBusy` 同一条规则。
+            'X-Product': 'SaaS',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Connection': 'close',
+            'User-Agent': userAgent,
+          },
+          signal: timeout,
+        })
+        const envelope = await readEnvelope(response)
+        if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+        const data = typeof envelope.data === 'object' && envelope.data !== null
+          ? envelope.data as Record<string, unknown>
+          : {}
+        return withPromos(selectCliModels(data['models'], data['agents'], keepModelIds), data)
+      }
+      /**
+       * Fail-soft in ONE direction only. If the CLI read fails the app document
+       * alone is still a usable roster, so fall back to it rather than
+       * disarming the provider. If the APP read fails the CLI roster is already
+       * a complete answer and is returned as-is — reported through
+       * `onFallback` rather than swallowed, because the desktop-only rows then
+       * disappear from the picker and that is worth a log line.
+       */
+      let cliRoster: readonly WorkBuddyUpstreamModel[]
+      try {
+        cliRoster = await readChannel(CATALOG_CLI_UA)
+      } catch (error: unknown) {
+        this.onFallback?.(
+          `global CLI catalog ${GLOBAL_CONFIG_PATH} failed; using the app document only: `
+          + (error instanceof Error ? error.message : String(error)),
+        )
+        return await readChannel(APP_CHANNEL_UA)
+      }
+      let appRoster: readonly WorkBuddyUpstreamModel[]
+      try {
+        appRoster = await readChannel(APP_CHANNEL_UA)
+      } catch (error: unknown) {
+        this.onFallback?.(
+          `global app catalog ${GLOBAL_CONFIG_PATH} failed; using the CLI document only: `
+          + (error instanceof Error ? error.message : String(error)),
+        )
+        return cliRoster
+      }
+      return mergeModelRosters(cliRoster, appRoster)
     }
     const readCatalog = async (path: string): Promise<readonly WorkBuddyUpstreamModel[]> => {
       const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${path}`, {
@@ -4499,6 +4625,18 @@ export class WorkBuddyUpstreamClient {
     credential: WorkBuddyCredential,
     signal?: AbortSignal,
   ): Promise<readonly WorkBuddyMediaModel[]> {
+    /**
+     * The media roster is read from the APP document, so it must use that
+     * document's own channel per region.
+     *
+     * This was a single constant, and the global read silently lost
+     * `hy-image-3.5` as a result: on the global gateway {@link PRODUCT_UA}
+     * answers the 39-model third document, which carries `kling-video-v3` but
+     * NOT the image model — so the image tool reported "this gateway publishes
+     * no image model" for an account whose app offers one. CN keeps
+     * {@link PRODUCT_UA} untouched; there it is the correct app channel.
+     */
+    const mediaChannelUA = regionOf(credential.domain) === 'global' ? APP_CHANNEL_UA : PRODUCT_UA
     const readMedia = async (path: string): Promise<readonly WorkBuddyMediaModel[]> => {
       const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${path}`, {
         headers: {
@@ -4506,7 +4644,7 @@ export class WorkBuddyUpstreamClient {
           'Accept': 'application/json',
           'Origin': originReferer(credential),
           'Referer': `${originReferer(credential)}/`,
-          'User-Agent': PRODUCT_UA,
+          'User-Agent': mediaChannelUA,
         },
         signal: signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS),
       })
