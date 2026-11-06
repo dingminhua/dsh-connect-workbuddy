@@ -404,3 +404,66 @@ describe('the readout renders as preference lines, not as the pool heading\'s ex
     expect(creditSwitches(cn.container)[0]?.label).toBe('row.showCreditsCn')
   })
 })
+
+describe('the new-model segment switch (opt-in, default off)', () => {
+  /** The new-models switch's input, which must NOT share the credit class. */
+  const newModelsSwitchOf = (container: HTMLElement): HTMLInputElement | null =>
+    container.querySelector<HTMLInputElement>('.dsm-workbuddy-new-models-check')
+
+  it('renders unchecked when the stored flag is absent', async () => {
+    // Default OFF. This is what makes the whole feature opt-in: an install that
+    // has never heard of the flag must not be announcing "N new models".
+    const { m } = await render(usageOf('cn'), { regions: { cn: { enabled: true } } })
+    const box = newModelsSwitchOf(m.container)
+    expect(box).not.toBeNull()
+    expect(box?.checked).toBe(false)
+  })
+
+  it('renders checked once the Host reports it on', async () => {
+    // The Host's answer is the authority (the browser mirror is stale for this
+    // namespace), so `showNewModelsInMainUi` on the usage document wins.
+    const body = { ...usageOf('cn'), showNewModelsInMainUi: true }
+    const { m } = await render(body, { regions: { cn: { enabled: true } } })
+    expect(newModelsSwitchOf(m.container)?.checked).toBe(true)
+  })
+
+  it('is disabled for a region that is switched off', async () => {
+    const { m } = await render(usageOf('cn'), { regions: { cn: { enabled: false } } })
+    expect(newModelsSwitchOf(m.container)?.disabled).toBe(true)
+  })
+
+  it('falls back to the settings mirror when the Host does not answer the flag', async () => {
+    // The Host's answer is preferred, but a Host line that predates this field
+    // cannot answer at all. The mirror then decides — and it reads the flag
+    // OPT-IN, so a stored `true` is what a user who turned it on would see.
+    // Without this, an older Host would silently keep the feature off forever.
+    const { m } = await render(usageOf('cn'), {
+      regions: { cn: { enabled: true, showNewModelsInMainUi: true } },
+    })
+    expect(newModelsSwitchOf(m.container)?.checked).toBe(true)
+  })
+
+  it('reads the mirror OPT-IN: any non-true stored value is off', async () => {
+    // The default in the other direction would announce the whole roster on a
+    // fresh install. `undefined`, `false` and a junk string must all read OFF.
+    for (const stored of [undefined, false, 'yes']) {
+      const { m } = await render(usageOf('cn'), {
+        regions: { cn: { enabled: true, showNewModelsInMainUi: stored } },
+      })
+      expect(newModelsSwitchOf(m.container)?.checked).toBe(false)
+      await m.unmount()
+    }
+  })
+
+  it('commits the flag through the host save endpoint when ticked', async () => {
+    const { m, calls } = await render(usageOf('cn'), { regions: { cn: { enabled: true } } })
+    await m.click(newModelsSwitchOf(m.container) as Element)
+    const saves = calls.filter(call => call.url.includes('__save'))
+    expect(saves).toHaveLength(1)
+    // The whole region slot travels: the landed check reads the flag back, and
+    // dropping the sibling fields would erase the region's other settings.
+    // The payload rides on `init`, not on the recorded call object.
+    const written = String(saves[0]?.init?.body ?? '')
+    expect(written).toContain('showNewModelsInMainUi')
+  })
+})

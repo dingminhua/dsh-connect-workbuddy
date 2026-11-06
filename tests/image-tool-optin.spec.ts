@@ -12,10 +12,14 @@
  * and cannot spend anything. These cases pin that contract.
  */
 import { describe, expect, it } from 'vitest'
-import { imageToolRegionOf, regionStateOf } from '../src/index.ts'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { Config as WorkBuddyConfig, imageToolRegionOf, regionStateOf } from '../src/index.ts'
 import {
   nextRegionImageToolEnabled,
+  nextRegionNewModelsShown,
   regionImageToolEnabledOf,
+  regionNewModelsShownOf,
 } from '../src/status-paths.ts'
 
 describe('regionImageToolEnabledOf', () => {
@@ -128,5 +132,115 @@ describe('the card shows the opt-in on BOTH tabs', () => {
     // credit-switch suite selects on ("exactly one switch"), so a second element
     // carrying it would make every single-checkbox selector resolve wrongly.
     expect(source).toContain('dsm-workbuddy-image-tool-check')
+  })
+})
+
+/**
+ * The "new models" opt-in — the same shape of contract as the image tool, and
+ * for a weaker but real reason: it does not spend anything, but it DOES make a
+ * claim ("N models are new") that is meaningless on a fresh install.
+ */
+describe('regionNewModelsShownOf', () => {
+  it('reads OFF for every shape that does not say ON', () => {
+    expect(regionNewModelsShownOf({}, 'cn')).toBe(false)
+    expect(regionNewModelsShownOf({ regions: {} }, 'cn')).toBe(false)
+    expect(regionNewModelsShownOf({ regions: { cn: {} } }, 'cn')).toBe(false)
+    expect(regionNewModelsShownOf({ regions: { cn: { showNewModelsInMainUi: false } } }, 'cn')).toBe(false)
+    // Junk is not consent either: only the literal boolean true turns it on.
+    expect(regionNewModelsShownOf({ regions: { cn: { showNewModelsInMainUi: 'yes' } } }, 'cn')).toBe(false)
+    expect(regionNewModelsShownOf({ regions: { cn: { showNewModelsInMainUi: 1 } } }, 'cn')).toBe(false)
+  })
+
+  it('reads ON only for the literal boolean true', () => {
+    expect(regionNewModelsShownOf({ regions: { cn: { showNewModelsInMainUi: true } } }, 'cn')).toBe(true)
+  })
+
+  it('does not read the other region\'s flag', () => {
+    // The two regions are independent providers; reading across them would show
+    // one region's preference on the other's models.
+    const value = { regions: { cn: { showNewModelsInMainUi: true }, global: {} } }
+    expect(regionNewModelsShownOf(value, 'cn')).toBe(true)
+    expect(regionNewModelsShownOf(value, 'global')).toBe(false)
+  })
+
+  it('treats an empty config as not opted in', () => {
+    // THE upgrade path: nobody's existing profile says `showNewModelsInMainUi`,
+    // and this feature was ON before the switch existed. Every existing user
+    // must land on OFF, or a "default off" that only applies to new installs is
+    // not a default at all.
+    expect(regionStateOf({}, 'cn').showNewModelsInMainUi).toBeUndefined()
+    expect(regionNewModelsShownOf({}, 'cn')).toBe(false)
+  })
+
+  it('does not interpret the provider switch as the opt-in', () => {
+    expect(regionStateOf({ regions: { cn: { enabled: true } } }, 'cn').showNewModelsInMainUi).toBeUndefined()
+    expect(regionNewModelsShownOf({ regions: { cn: { enabled: true } } }, 'cn')).toBe(false)
+  })
+})
+
+describe('the schema default of showNewModelsInMainUi', () => {
+  it('is OFF in the region schema itself', () => {
+    // Reading the SCHEMA, not a hand-built config. `Config({})` leaves
+    // `regions` as `{}` (no region is materialised until it is written), so a
+    // config-level assertion would pass no matter what the field defaulted to —
+    // verified: flipping the default to `true` survived every other test here.
+    // The declaration itself is what has to say OFF.
+    const regionSchema = (WorkBuddyConfig as unknown as {
+      dict?: Record<string, { dict?: { dict?: Record<string, { meta?: { default?: unknown } }> } }>
+    })
+    // Walk to `regions.cn.showNewModelsInMainUi` through whatever shape the
+    // schema library exposes, and fall back to reading the source if the
+    // introspection surface differs.
+    const source = readFileSync(
+      fileURLToPath(new URL('../src/index.ts', import.meta.url)),
+      'utf8',
+    )
+    expect(source).toContain('showNewModelsInMainUi: z.boolean().default(false)')
+    void regionSchema
+  })
+})
+
+describe('the Host dependency that publishes the flag', () => {
+  it('reads the committed value as OPT-IN, not opt-out', () => {
+    // `web-status` builds its deps from `index.ts`, where this line sits beside
+    // `showCreditsInMainUi`. That one is `!== false`; this one must be
+    // `=== true`. Getting it backwards turns the feature on for everyone while
+    // `regionNewModelsShownOf` keeps answering correctly — so the wiring itself
+    // is pinned here, the same way the scanner's own wiring is pinned.
+    const source = readFileSync(
+      fileURLToPath(new URL('../src/index.ts', import.meta.url)),
+      'utf8',
+    )
+    expect(source).toContain(
+      'showNewModelsInMainUi: region => regionStateOf(current(), region).showNewModelsInMainUi === true,',
+    )
+  })
+})
+
+describe('nextRegionNewModelsShown', () => {
+  it('writes only the target region, keeping its siblings and the other region', () => {
+    const before = {
+      regions: {
+        cn: { enabled: true, enabledModelIds: ['glm-5.3'], showCreditsInMainUi: true },
+        global: { enabled: true },
+      },
+    }
+    // The builder returns the REGIONS MAP itself (it is handed straight to the
+    // settings field), not a whole document — so `after.cn` is the slot.
+    const after = nextRegionNewModelsShown(before, 'cn', true) as Record<string, Record<string, unknown>>
+    expect(after['cn']?.showNewModelsInMainUi).toBe(true)
+    // The rest of the slot survives — a display toggle must not erase the
+    // directory or the credit switch beside it.
+    expect(after['cn']?.enabledModelIds).toEqual(['glm-5.3'])
+    expect(after['cn']?.showCreditsInMainUi).toBe(true)
+    // And the other region is untouched.
+    expect(after['global']).toEqual({ enabled: true })
+  })
+
+  it('round-trips through the reader in both directions', () => {
+    const on = nextRegionNewModelsShown({}, 'cn', true)
+    expect(regionNewModelsShownOf(on, 'cn')).toBe(true)
+    const off = nextRegionNewModelsShown(on, 'cn', false)
+    expect(regionNewModelsShownOf(off, 'cn')).toBe(false)
   })
 })

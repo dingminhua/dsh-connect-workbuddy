@@ -130,7 +130,10 @@ async function statusNow(region: WorkBuddyWebRegion): Promise<StatusSnapshot | u
       busyLevels?: Record<string, WorkBuddyBusyLevel>
       models?: readonly WorkBuddyWebModel[]
       newModelIds?: unknown
+      showNewModelsInMainUi?: unknown
     }
+    // Absent means OFF (opt-in), matching the host's own `=== true` reading.
+    const showNewModels = body.showNewModelsInMainUi === true
     // Missing levels are an empty set, not an error: the promotions often ride
     // along on a response whose probe has not run, and losing them because the
     // probe is cold would be a second, unrelated failure.
@@ -144,7 +147,11 @@ async function statusNow(region: WorkBuddyWebRegion): Promise<StatusSnapshot | u
       levels: body.busyLevels ?? {},
       promos,
       rates,
-      newModelIds: normalizeNewModelIds(body.newModelIds),
+      // Same opt-in as the composer segment (`showNewModelsInMainUi`): the two
+      // surfaces read ONE snapshot, so turning the switch off must silence the
+      // per-row mark too, or the picker would keep claiming "新" for a feature
+      // the user turned off.
+      newModelIds: showNewModels ? normalizeNewModelIds(body.newModelIds) : [],
     }
     caches.set(region, { snapshot, at: Date.now() })
     return snapshot

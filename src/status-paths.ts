@@ -964,6 +964,35 @@ export function nextRegionCreditsShown(
 }
 
 /**
+ * Build the next `regions` settings value for the new-model-segment opt-in.
+ *
+ * Same merge rule as everything else here: ONLY the target region's flag
+ * changes, so the directory, the model selection, the credit switches and the
+ * sibling region all survive the write.
+ */
+export function nextRegionNewModelsShown(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  shown: boolean,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    showNewModelsInMainUi: shown,
+  })
+}
+
+/**
+ * Read the new-model-segment opt-in: ON only when explicitly `true`.
+ *
+ * The mirror image of {@link regionCreditsShownOf}, and deliberately so. That
+ * one is opt-OUT (`!== false`), this one is opt-IN (`=== true`), because
+ * announcing "N new models" on a fresh install announces the entire roster.
+ */
+export function regionNewModelsShownOf(value: unknown, region: WorkBuddyWebRegion): boolean {
+  return regionSlotOf(value, region)['showNewModelsInMainUi'] === true
+}
+
+/**
  * Build the next `regions` settings value for the image-tool opt-in.
  *
  * Same merge rule: ONLY the target region's flag changes, so the directory,
@@ -1286,6 +1315,7 @@ export type WorkBuddyWebUsage =
      * "关闭不了" report.
      */
     showCreditsInMainUi?: boolean
+    showNewModelsInMainUi?: boolean
     /**
      * Whether the model may call the image-generation tool here (opt-in).
      *
@@ -1435,6 +1465,12 @@ export type WorkBuddyWebUsage =
      * settings mirror.
      */
     showCreditsInMainUi?: boolean
+    /**
+     * Whether this region's composer pill shows its "· N 新模型" segment
+     * (opt-IN; absent means off). See the signed-out variant above for why
+     * this travels on the Host's answer rather than the settings mirror.
+     */
+    showNewModelsInMainUi?: boolean
     /**
      * Whether the model may call the image-generation tool here (opt-in).
      *

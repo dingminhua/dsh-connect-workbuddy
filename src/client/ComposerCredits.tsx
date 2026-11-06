@@ -209,6 +209,23 @@ export function hostCreditsShownOf(usage: WorkBuddyWebUsage | undefined): boolea
 }
 
 /**
+ * Whether this region's usage document allows the "· N 新模型" segment.
+ *
+ * OPT-IN, so this is the mirror image of {@link hostCreditsShownOf}: absent
+ * means NO. "New" means first seen by this machine, not newly listed upstream,
+ * so on a fresh install it would announce the entire roster — a number that is
+ * true by construction and reads as a defect. See `showNewModelsInMainUi` in the
+ * schema for the full argument.
+ *
+ * The `error` variant answers `false` rather than `undefined`: with no document
+ * there is no roster, hence no new models, hence nothing to announce anyway.
+ */
+export function hostNewModelsShownOf(usage: WorkBuddyWebUsage | undefined): boolean {
+  if (usage === undefined || usage.status === 'error') return false
+  return usage.showNewModelsInMainUi === true
+}
+
+/**
  * A same-day instant, as the READER's locale writes it.
  *
  * The locale is `undefined` — the reader's, not a fixed one — so an English UI
@@ -699,7 +716,14 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   // first saw inside the new-model window, as names. Rendered ONLY when
   // non-empty — a permanently-on "0 新模型" is background noise, and the value
   // is entirely in the rounds where there is something to say.
-  const newModelIds = newModelIdsOf(usage)
+  // GATED AT THE SOURCE, not at each render site: the pill segment, the panel
+  // section and the note all read these three values, so an empty list here
+  // turns the whole feature off in one place and leaves no surface able to
+  // disagree with another. `rosterSeenNote` is gated too — it exists only to
+  // explain the history behind this segment, so it is noise when the segment
+  // itself is off.
+  const newModelsShown = hostNewModelsShownOf(usage)
+  const newModelIds = newModelsShown ? newModelIdsOf(usage) : []
   const newModelNames = newModelIds.map(id => modelNameOf(signedIn?.models ?? [], id))
   // The trigger's hover answer: the first few names, then an ellipsis. Names,
   // not ids, because the count in the pill is a number and this is the one place
@@ -710,7 +734,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   // Present only when the on-disk first-sighting history is in a version this
   // build cannot read, so "no new models" is never the story for a file that was
   // simply not read.
-  const rosterSeenNote = signedIn?.rosterSeenVersionNote
+  const rosterSeenNote = newModelsShown ? signedIn?.rosterSeenVersionNote : undefined
 
   /**
    * The table's rows: every account in this region, with its balance.

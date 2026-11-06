@@ -31,12 +31,14 @@ import {
   nextRegionCnBase,
   nextRegionCreditPosition,
   nextRegionCreditsShown,
+  nextRegionNewModelsShown,
   nextRegionEnabled,
   nextRegionImageToolEnabled,
   nextRegionPreferredVideoModels,
   nextRegionVideoToolEnabled,
   regionCnBaseOf,
   regionCreditsShownOf,
+  regionNewModelsShownOf,
   regionEnabledOf,
   regionImageToolEnabledOf,
   regionPreferredVideoModelsOf,
@@ -66,7 +68,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
 import { resolveCnGateway } from '../cn-gateway.ts'
 import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
@@ -722,6 +724,15 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [togglingCredits, setTogglingCredits] = useState<WorkBuddyWebRegion | undefined>(undefined)
   /**
+   * Which region's new-model-segment flag is being written right now.
+   *
+   * Tracked separately from {@link togglingCredits} for the same reason those
+   * are separate from `togglingRegion`: they are different fields of one region
+   * slot, so one in-flight write must not disable the other control while both
+   * stay serialized against the SAVE writers.
+   */
+  const [togglingNewModels, setTogglingNewModels] = useState<WorkBuddyWebRegion | undefined>(undefined)
+  /**
    * Which video-model pin is being written right now: the tag string, or
    * undefined.
    *
@@ -1233,6 +1244,21 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   }
 
   /**
+   * Whether this region's composer pill may show its "· N 新模型" segment.
+   *
+   * Host answer first, settings mirror second — same measured reason as
+   * {@link creditsShownOn}. Both sources read this flag OPT-IN (`=== true`):
+   * "new" means first seen by THIS machine, so on a fresh install it would
+   * announce the entire roster, and an absent value must not become consent.
+   * See `showNewModelsInMainUi` in the schema.
+   */
+  const newModelsShownOn = (item: WorkBuddyWebRegion): boolean => {
+    const usage = statusByRegion[item] as { showNewModelsInMainUi?: unknown } | undefined
+    if (typeof usage?.showNewModelsInMainUi === 'boolean') return usage.showNewModelsInMainUi
+    return regionNewModelsShownOf(settingsScope?.getSnapshot().value, item)
+  }
+
+  /**
    * Whether the model may call the image tool in this region.
    *
    * Read off the Host's answer first, like {@link creditsShownOn} and for the
@@ -1374,6 +1400,29 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setTogglingCredits(undefined)
+    }
+  }
+
+  const toggleNewModels = async (item: WorkBuddyWebRegion, shown: boolean): Promise<void> => {
+    if (settingsScope === undefined) return
+    setTogglingNewModels(item)
+    try {
+      const regions = nextRegionNewModelsShown(settingsScope.getSnapshot().value, item, shown) as Record<string, unknown>
+      const slot = regions[item]
+      await writeRegionNewModelsShown(
+        settingsScope,
+        item,
+        shown,
+        typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
+      )
+      // Re-read for the same measured reason as `toggleCredits`: the checkbox
+      // renders the Host's answer, and the browser mirror is stale for this
+      // namespace on the affected deployments.
+      await refreshUsage(item)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setTogglingNewModels(undefined)
     }
   }
 
@@ -3136,6 +3185,29 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
             {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
           </span>
           <span className="dsm-workbuddy-pref-hint">{t('row.showCreditsHintInline')}</span>
+        </span>
+      </label>
+      <label
+        className="dsm-workbuddy-pref"
+        title={t('row.showNewModelsHint')}
+      >
+        {/* A DISTINCT class, not `dsm-workbuddy-pref-check`: the credit-switch
+            suite uses that class as its "the one per-region credit switch"
+            selector, so a second element carrying it would make every
+            single-checkbox selector in that suite resolve wrongly. Same rule
+            the CLI bridge switch follows (see its own comment). */}
+        <input
+          type="checkbox"
+          className="dsm-workbuddy-new-models-check"
+          checked={activeRegionOn ? newModelsShownOn(activeRegion) : false}
+          disabled={!activeRegionOn || togglingNewModels === activeRegion || !canWrite || saving || poolBusy}
+          onChange={(event: { target: { checked: boolean } }) => {
+            void toggleNewModels(activeRegion, event.target.checked)
+          }}
+        />
+        <span className="dsm-workbuddy-pref-copy">
+          <span className="dsm-workbuddy-pref-label">{t('row.showNewModels')}</span>
+          <span className="dsm-workbuddy-pref-hint">{t('row.showNewModelsHintInline')}</span>
         </span>
       </label>
       {/* Indented to the checkbox's LABEL (15px box + 10px row gap), not to the

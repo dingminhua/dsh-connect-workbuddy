@@ -14,7 +14,7 @@
  *    which reads the SAME ids.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ComposerCredits } from '../src/client/ComposerCredits.tsx'
+import { ComposerCredits, hostNewModelsShownOf } from '../src/client/ComposerCredits.tsx'
 import { mount, t } from './pool-render-helpers.tsx'
 
 afterEach(() => {
@@ -24,7 +24,15 @@ afterEach(() => {
 })
 
 /** A signed-in usage body for one region, optionally with first-seen ids. */
-function usageOf(region: string, total: number, newModelIds?: string[]): Record<string, unknown> {
+function usageOf(
+  region: string,
+  total: number,
+  newModelIds?: string[],
+  // The segment is opt-IN, so a test that wants to see it has to turn it on the
+  // same way the settings card would. Passing ids alone no longer renders
+  // anything — see `showNewModelsInMainUi` and the first `describe` below.
+  showNewModels = true,
+): Record<string, unknown> {
   return {
     status: 'signed-in',
     region,
@@ -41,6 +49,7 @@ function usageOf(region: string, total: number, newModelIds?: string[]): Record<
     imageModelIds: [],
     contextBudgets: {},
     credits: { total, expiringSoon: 0, packages: [] },
+    showNewModelsInMainUi: showNewModels,
     ...newModelIds === undefined ? {} : { newModelIds },
   }
 }
@@ -52,9 +61,67 @@ const render = async (body: Record<string, unknown>) => {
   return m
 }
 
+const buttonsOf = (container: HTMLElement): HTMLButtonElement[] =>
+  Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+
 /** The "· N 新模型" button, if the readout rendered one. */
 const segmentOf = (buttons: HTMLButtonElement[]): HTMLButtonElement | undefined =>
   buttons.find(button => button.className.includes('dsm-workbuddy-composer-credits-new'))
+
+describe('hostNewModelsShownOf', () => {
+  it('reads OFF for every shape that does not say ON', () => {
+    // OPT-IN, the mirror image of `hostCreditsShownOf` next to it. This is the
+    // single decision that makes the feature default-off, so it is asserted
+    // directly rather than only through a render that could pass for another
+    // reason (e.g. an empty id list).
+    expect(hostNewModelsShownOf(undefined)).toBe(false)
+    expect(hostNewModelsShownOf({ status: 'error' } as never)).toBe(false)
+    expect(hostNewModelsShownOf({ status: 'signed-in' } as never)).toBe(false)
+    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: false } as never)).toBe(false)
+    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: 'yes' } as never)).toBe(false)
+    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: 1 } as never)).toBe(false)
+  })
+
+  it('reads ON only for the literal boolean true', () => {
+    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: true } as never)).toBe(true)
+  })
+})
+
+describe('the "· N 新模型" opt-in switch', () => {
+  it('renders NOTHING when the switch is absent from the usage document', async () => {
+    // Default OFF. The document is the authority and an absent field must read
+    // as "not enabled", never as consent — same rule as `imageToolEnabled`.
+    const m = await render(usageOf('cn', 100, ['m1'], false))
+    expect(segmentOf(buttonsOf(m.container))).toBeUndefined()
+    await m.unmount()
+  })
+
+  it('tips the panel open with the new-model row already revealed', async () => {
+    const m = await render(usageOf('cn', 100, ['m1'], true))
+    const segment = segmentOf(buttonsOf(m.container))
+    if (segment === undefined) throw new Error('expected a new-model segment')
+    segment.click()
+    await m.settle()
+    const row = document.body.querySelector('.dsm-workbuddy-composer-panel-new-row-revealed')
+    expect(row).not.toBeNull()
+    await m.unmount()
+  })
+
+  it('shows the note explaining what "new" means, only while the switch is on', async () => {
+    const off = await render(usageOf('cn', 100, ['m1'], false))
+    expect(document.body.querySelector('.dsm-workbuddy-composer-panel-new')).toBeNull()
+    await off.unmount()
+    const on = await render(usageOf('cn', 100, ['m1'], true))
+    const segment = segmentOf(buttonsOf(on.container))
+    if (segment === undefined) throw new Error('expected a new-model segment')
+    segment.click()
+    await on.settle()
+    // The test double `t` returns the KEY, so this asserts that the note is the
+    // new-model one rather than pinning the Chinese wording in two places.
+    expect(document.body.textContent).toContain('composer.newModelsNote')
+    await on.unmount()
+  })
+})
 
 describe('the "· N 新模型" segment', () => {
   it('is its own button beside the trigger, named by its text', async () => {

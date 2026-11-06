@@ -907,6 +907,25 @@ export async function writeRegionCreditsShown(
 }
 
 /**
+ * Write one region's new-model-segment opt-in, verifying it landed.
+ *
+ * Sibling of {@link writeRegionCreditsShown}: same whole-slot merge, same
+ * landed check. The landed check reads `=== shown`, so an explicit `false`
+ * (the default) verifies just as strictly as a `true`.
+ */
+export async function writeRegionNewModelsShown(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  shown: boolean,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['showNewModelsInMainUi'] === shown
+  })
+}
+
+/**
  * Write one region's credit SEAT (issue #62), verifying it landed.
  *
  * Sibling of {@link writeRegionCreditsShown}: same whole-slot merge, same

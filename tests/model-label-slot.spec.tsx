@@ -217,7 +217,7 @@ describe('the "本机首次见到" marker in the host picker', () => {
     vi.stubGlobal('fetch', async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ ...usageWithLevels({}), newModelIds: ['model-a'] }),
+      json: async () => ({ ...usageWithLevels({}), showNewModelsInMainUi: true, newModelIds: ['model-a'] }),
     }))
     const view = await mount(WorkBuddyModelLabel, { ...props, placement: 'option' })
     await view.settle()
@@ -231,7 +231,24 @@ describe('the "本机首次见到" marker in the host picker', () => {
     vi.stubGlobal('fetch', async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ ...usageWithLevels({}), newModelIds: ['model-z'] }),
+      json: async () => ({ ...usageWithLevels({}), showNewModelsInMainUi: true, newModelIds: ['model-z'] }),
+    }))
+    const view = await mount(WorkBuddyModelLabel, { ...props, placement: 'option' })
+    await view.settle()
+    expect(view.text()).toContain('Model A')
+    expect(view.html()).not.toContain('dsm-workbuddy-model-label-new')
+    await view.unmount()
+  })
+
+  it('draws NOTHING while the opt-in switch is off, even with ids present', async () => {
+    // The switch defaults OFF and both surfaces read one snapshot. Without this,
+    // turning it off would silence the composer segment while the picker kept
+    // marking rows "新" — the same feature disagreeing with itself.
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      // No `showNewModelsInMainUi`: absent must read as OFF, never as consent.
+      json: async () => ({ ...usageWithLevels({}), newModelIds: ['model-a'] }),
     }))
     const view = await mount(WorkBuddyModelLabel, { ...props, placement: 'option' })
     await view.settle()
@@ -246,7 +263,7 @@ describe('the "本机首次见到" marker in the host picker', () => {
     vi.stubGlobal('fetch', async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ ...usageWithLevels({}), newModelIds: ['model-a', 'model-a'] }),
+      json: async () => ({ ...usageWithLevels({}), showNewModelsInMainUi: true, newModelIds: ['model-a', 'model-a'] }),
     }))
     const view = await mount(WorkBuddyModelLabel, { ...props, placement: 'option' })
     await view.settle()

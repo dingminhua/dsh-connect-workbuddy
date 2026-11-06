@@ -211,6 +211,14 @@ export interface WorkBuddyStatusRouteOptions {
    */
   showCreditsInMainUi?(region: WorkBuddyRegion): boolean
   /**
+   * Whether the composer pill shows its "· N 新模型" segment (opt-IN).
+   *
+   * Optional, and ABSENT reads as OFF — the opposite of the two switches above,
+   * and deliberately so: this one is opt-in, so a Host too old to answer must
+   * not be read as consent. Same reasoning as `imageToolEnabled`.
+   */
+  showNewModelsInMainUi?(region: WorkBuddyRegion): boolean
+  /**
    * WHERE this region's credit readout sits (issue #62).
    *
    * Optional, and absent reads as `composer` — the only seat before the setting
@@ -1162,6 +1170,9 @@ export async function workBuddyWebStatus(
   // after a successful write — the switch looked impossible to turn off
   // ("关闭不了"). Absent means ON, matching the schema's `default(true)`.
   const showCreditsInMainUi = deps.showCreditsInMainUi?.(region) ?? true
+  // `?? false`, unlike the line above: showing "N new models" is a claim the
+  // user has to opt into, so an older Host that cannot answer is not consent.
+  const showNewModelsInMainUi = deps.showNewModelsInMainUi?.(region) ?? false
   const creditPosition = deps.creditPosition?.(region) ?? 'composer'
   // `?? false`, unlike the two above: the image tool lets the MODEL spend,
   // so an older Host that cannot answer must not be read as consent.
@@ -1205,7 +1216,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, sidebarPanelEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, sidebarPanelEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
   }
   let credential
   try {
@@ -1236,6 +1247,7 @@ export async function workBuddyWebStatus(
       selectionExplicit,
       enabled,
       showCreditsInMainUi,
+    showNewModelsInMainUi,
       creditPosition,
       imageToolEnabled,
       videoToolEnabled,

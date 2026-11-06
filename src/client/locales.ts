@@ -647,6 +647,13 @@ export const en = {
   // creditPositionHintInline, which explains the picker beside it — one
   // sentence per control.
   'row.showCreditsHintInline': 'The balance for the account currently serving this tab. Click for per-account balances; it also refreshes every 5 minutes.',
+  // The new-model segment (opt-IN, off by default). The wording has to carry
+  // the one thing that makes "new" honest: it is FIRST SEEN BY THIS MACHINE, not
+  // newly listed upstream. On a fresh install every id is first-seen, so the
+  // switch is off until someone asks for it.
+  'row.showNewModels': 'Show newly seen models',
+  'row.showNewModelsHint': 'Adds a "· N new models" segment beside the credit readout, and a "new" mark on those rows in the model picker. "New" means this machine recorded the model id for the first time — it says nothing about when the upstream listed it. Off by default: on a new install the whole roster is "new".',
+  'row.showNewModelsHintInline': 'First seen by this machine, not newly listed upstream. Off by default — on a new install the whole roster counts as new.',
   // The supplement to a quota failure (issue #63), rendered as an INLINE
   // PARENTHETICAL in the conversation — one short clause, no dialog, no button.
   // The plugin no longer claims the `shell.quota-notice` chain seat, so this is
@@ -1306,6 +1313,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 这一行讲「读数是什么」；下面 creditPositionHintInline 讲「选位置是什么意思」。
   // 一个控件一句说明。
   'row.showCreditsHintInline': '当前为本 tab 服务的那个账号的余额。点一下能看各账号明细，另外每 5 分钟自动刷新一次。',
+  // 「新模型」段（opt-IN，默认关闭）。措辞必须带住那个让「新」站得住的前提：
+  // 它是「本机首次见到」，不是「上游新上架」。全新安装时每个 id 都是首见，
+  // 所以这个开关默认关着，等有人主动要才开。
+  'row.showNewModels': '显示新出现的模型',
+  'row.showNewModelsHint': '在积分读数旁多加一段「· N 新模型」，并在模型选择器里给这些行标一个「新」。这里的「新」指**本机首次记到这个模型 id**，与上游何时上架无关。默认关闭：全新安装时整个目录都算「新」，那个数字说明不了任何事。',
+  'row.showNewModelsHintInline': '指本机首次见到，不是上游新上架。默认关闭——全新安装时整个目录都算新。',
   // 额度失败的补充（issue #63），渲染成**对话里的行内括号**——一句短话，没有对话框、
   // 没有按钮。插件**不再**占用宿主的 `shell.quota-notice` 链座位，所以这句不再由本插件
   // 拼在宿主句子后面（那次占用才是把无样式 span 留在 overlay 左上角的原因）；宿主自己画

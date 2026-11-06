@@ -391,6 +391,13 @@ export interface WorkBuddyRegionState {
    */
   showCreditsInMainUi?: boolean
   /**
+   * Whether the composer pill shows its "· N 新模型" segment (opt-IN).
+   *
+   * Absent means OFF: "new" means first seen by this machine, so on a fresh
+   * install the whole roster qualifies and the number means nothing.
+   */
+  showNewModelsInMainUi?: boolean
+  /**
    * Whether the model may call the image-generation tool here (opt-IN).
    *
    * The only switch in this interface where an ABSENT value means OFF. Every
@@ -905,6 +912,29 @@ const regionStateConfig = z.object({
    * `×` in the sidebar, which is reachable exactly where the feature renders.
    */
   showCreditsInMainUi: z.boolean().default(true).description('Show this region\'s remaining credits at the DSH sidebar foot (opt-out; the line carries its own hide button)'),
+  /**
+   * Whether the composer pill carries its "· N 新模型" segment (opt-IN, default
+   * off).
+   *
+   * WHY OFF BY DEFAULT. "New" here means *first seen by this machine*, not *new
+   * upstream* — the plugin cannot observe when the upstream listed a model, only
+   * when its own roster history first recorded the id. On a fresh install every
+   * id is first-seen, so the very first refresh announces the entire roster as
+   * new: a number that is true by construction, says nothing about the upstream,
+   * and reads as a defect.
+   *
+   * It is a genuinely useful signal ONCE history exists, and it WAS already on,
+   * so the people who want it would lose it to a silent change. Hence opt-in
+   * rather than removal: the segment is worth having, it is just not worth
+   * showing to someone who never asked for it. The same switch governs the "新"
+   * mark on individual picker rows — both read one snapshot (see
+   * `WorkBuddyModelLabel`), so the two surfaces cannot disagree.
+   */
+  showNewModelsInMainUi: z.boolean().default(false).description(
+    'Show the "· N 新模型" segment (and the per-row "新" mark) in the composer. '
+    + '"New" means first seen BY THIS MACHINE, not newly listed upstream — on a fresh '
+    + 'install that is the whole roster. Off by default.',
+  ),
   creditPosition: z.union([z.const('composer'), z.const('stats')]).default('composer').description('Where the credit readout sits: "composer" = the composer tool row (default), "stats" = the ambient row below the composer card, next to the shell\'s own token pills. Choose "stats" if another plugin occupies the composer row.'),
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
@@ -2909,6 +2939,15 @@ export function apply(ctx: Context, config: Config): void {
      * which made the switch look unable to turn the line off ("关闭不了").
      */
     showCreditsInMainUi: region => regionStateOf(current(), region).showCreditsInMainUi !== false,
+    /**
+     * The region's committed new-model-segment flag, read from the same config
+     * the card writes.
+     *
+     * `=== true`, the opposite reading to the line above and for the same reason
+     * `imageToolEnabled` uses it: this one is opt-IN, so a missing or unreadable
+     * value must mean "do not show it", never "assume the user wanted it".
+     */
+    showNewModelsInMainUi: region => regionStateOf(current(), region).showNewModelsInMainUi === true,
     /**
      * Whether the model may call the image tool here. Read from the committed
      * value like the flag above, and deliberately `=== true`: an absent setting

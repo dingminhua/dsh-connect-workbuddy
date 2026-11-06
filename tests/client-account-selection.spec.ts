@@ -6,6 +6,7 @@ import {
   writeAccountSlot,
   writeRegionEnabled,
   writeRegionModels,
+  writeRegionNewModelsShown,
   writePoolPreferences,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
@@ -461,5 +462,68 @@ describe('coexisting writers on one region slot', () => {
     })
     const regions = document()['regions'] as Record<string, Record<string, unknown>>
     expect(regions.global).toEqual({ lastCatalog: [{ id: 'g' }], pool: { enabled: false } })
+  })
+})
+
+/**
+ * The new-model-segment opt-in write.
+ *
+ * Two properties matter here and nowhere else. First, the landed check is
+ * `=== shown`, so a write of `false` verifies just as strictly as a `true` —
+ * which is what makes "turn it off and have it stay off" true. Second, the
+ * whole region slot travels, because a write that dropped its siblings would
+ * erase the user's model picks along with a display preference.
+ */
+describe('writeRegionNewModelsShown', () => {
+  /** The region's whole slot, as the card builds it from one snapshot read. */
+  const slot = (shown: boolean): Record<string, unknown> => ({
+    showNewModelsInMainUi: shown,
+    lastCatalog: [{ id: 'glm-5.3' }],
+    enabledModelIds: ['glm-5.3'],
+  })
+
+  it('verifies the flag actually landed instead of trusting a resolved set()', async () => {
+    // Store the OPPOSITE of what is being written, so a no-op `set` leaves a
+    // mismatch behind. (Writing the value already stored would "land" trivially
+    // and prove nothing — which is exactly how this assertion first went green
+    // against a locked scope.)
+    const { scope } = scopeWith({ regions: { cn: slot(true) } }, { locked: true })
+    await expect(writeRegionNewModelsShown(scope, 'cn', false, slot(false)))
+      .rejects.toThrow(WorkBuddySettingsWriteError)
+  })
+
+  it('names the field it failed on', async () => {
+    const { scope } = scopeWith({}, { locked: true })
+    await expect(writeRegionNewModelsShown(scope, 'cn', true, slot(true)))
+      .rejects.toMatchObject({ field: 'regions' })
+  })
+
+  it('accepts a write that lands, in both directions', async () => {
+    const on = scopeWith({ regions: { cn: slot(false) } })
+    await expect(writeRegionNewModelsShown(on.scope, 'cn', true, slot(true))).resolves.toBeUndefined()
+    const regions = on.document()['regions'] as Record<string, { showNewModelsInMainUi?: boolean }>
+    expect(regions.cn?.showNewModelsInMainUi).toBe(true)
+
+    const off = scopeWith({ regions: { cn: slot(true) } })
+    await expect(writeRegionNewModelsShown(off.scope, 'cn', false, slot(false))).resolves.toBeUndefined()
+    const after = off.document()['regions'] as Record<string, { showNewModelsInMainUi?: boolean }>
+    expect(after.cn?.showNewModelsInMainUi).toBe(false)
+  })
+
+  it('carries the rest of the slot through, so a display toggle keeps the directory', async () => {
+    const { scope, document } = scopeWith({ regions: {} })
+    await writeRegionNewModelsShown(scope, 'cn', true, slot(true))
+    const regions = document()['regions'] as Record<string, { lastCatalog?: unknown, enabledModelIds?: unknown }>
+    expect(regions.cn?.lastCatalog).toEqual([{ id: 'glm-5.3' }])
+    expect(regions.cn?.enabledModelIds).toEqual(['glm-5.3'])
+  })
+
+  it('rejects a slot that exists but carries the WRONG flag', async () => {
+    const scope: WorkBuddyAccountScope = {
+      getSnapshot: () => ({ value: { regions: { cn: { showNewModelsInMainUi: false } } } }),
+      set: async () => {},
+    }
+    await expect(writeRegionNewModelsShown(scope, 'cn', true, { showNewModelsInMainUi: false }))
+      .rejects.toThrow(WorkBuddySettingsWriteError)
   })
 })
