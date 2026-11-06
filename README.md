@@ -694,7 +694,9 @@ else { await envelope.response.text() /* 或者按 SSE 消费 */ }
 
 ## 隐私与脱敏
 
-本插件**不收集、不上传任何数据**：凭据只落在本机的 `$DSH_HOME/workbuddy-vault/`，token 只在进程内存里交给 loopback shim。**这一节说的是另一件事——仓库自己不许留下能反查到具体账号、机器或会话的痕迹**（截图里的账号名、文档里的手机号与 uin、日志里的本机路径）。
+本插件**没有遥测、没有统计上报，也不向本仓库作者或任何第三方服务器发送数据**。凭据只落在本机的 `$DSH_HOME/workbuddy-vault/`，token 只在进程内存里交给 loopback shim。**唯一离开这台机器的东西，就是发往 WorkBuddy 上游网关的请求本身**——那是插件的全部功能，发给你自己账号所属的 `copilot.tencent.com`（国内版）或 `www.workbuddy.ai` / `www.codebuddy.ai`（国际版）；生图/视频工具还会去读取你**显式传给它的**图片 URL。除此之外没有别的出站连接。
+
+**这一节说的是另一件事——仓库自己不许留下能反查到具体账号、机器或会话的痕迹**（截图里的账号名、文档里的手机号与 uin、日志里的本机路径）。
 
 这条规则并非可有可无的礼貌：**一张没打码的截图、一行粘进 CHANGELOG 的真机号码，一旦推上 GitHub 或被 `npm publish` 打包，就再也收不回来了**（npm 的旧 tarball 永久可下载，git 历史任何人都能 clone）。所以它被写成了流程，而不是习惯：
 

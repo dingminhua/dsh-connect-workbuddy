@@ -603,7 +603,9 @@ Marketplace screenshots and GitHub README badges are two separate mechanisms:
 
 ## Privacy and redaction
 
-The plugin **collects and uploads nothing**: credentials stay on your machine under `$DSH_HOME/workbuddy-vault/`, and tokens only ever reach the loopback shim in process memory. **This section is about a different thing — the repository must not keep anything that points back to a specific account, machine or session**: account names in screenshots, phone numbers and uins in prose, home paths in pasted logs.
+The plugin has **no telemetry and no analytics, and sends nothing to the author of this repository or to any third-party server**. Credentials stay on your machine under `$DSH_HOME/workbuddy-vault/`, and tokens only ever reach the loopback shim in process memory. **The only thing that leaves your machine is the request to the WorkBuddy upstream gateway itself** — that is the plugin's entire purpose — going to `copilot.tencent.com` (domestic) or `www.workbuddy.ai` / `www.codebuddy.ai` (global) for the account you configured; the image/video tools additionally read **the URLs you explicitly hand them**. There are no other outbound connections.
+
+**This section is about a different thing — the repository must not keep anything that points back to a specific account, machine or session**: account names in screenshots, phone numbers and uins in prose, home paths in pasted logs.
 
 This is not politeness. **A screenshot that was never redacted, or one real account number pasted into the CHANGELOG, cannot be taken back once it reaches GitHub or the npm tarball** — old npm tarballs stay downloadable forever and anyone can clone the git history. So it is enforced as a process, not a habit:
 
