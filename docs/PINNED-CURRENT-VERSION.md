@@ -1,42 +1,77 @@
-# 【置顶】当前版本：npm `latest` 是 **5.19.1**（2026-11-06 上架）
+# 【置顶】当前版本：npm `latest` 是 **5.20.0**（2026-11-06 上架）
 
-> **一句话**：`5.19.1` 是**纯显示修复**，无破坏性变更 —— 修掉账号池在设置面板 564px 窄栏里
-> 三处「上一版只修了一半」的显示问题，并补上一份能把它们量出来的工装。
+> **一句话**：`5.20.0` **新增一项设置，默认行为一个字节都没变** —— 在企业网络按 TLS SNI
+> 拦截 CN 网关时，可以把网关主机指到 `wb.tencentbuddy.com`（issue #220）。
+> 没有破坏性变更：不填就跟以前完全一样。
 >
-> 三处修复（都照同族 `dsh-connect-trae` 4.9.0 的同一次迁移）：
-> ① 账号格内层仍竖排五行，单行 **157px → 96px**，账号名不再被压成「用户75」；
-> ② 宽版「账号」表头浮在留白里，不指着它标注的那一列（**偏移 38px → 0**）；
-> ③ 滚到账号池时分栏条已经滚走，改 sticky（仍不接管滚动）。
-> 另删掉一条永远不会触发的 `@media` 分栏规则。
+> **为什么需要它**：那种网络会让 `copilot.tencent.com` 在握手阶段就被重置（毫秒级失败），
+> 而同一台机器上的 WorkBuddy 桌面端正常——客户端读自己 `failover.json` 的 `trustedOrigins`，
+> 里面还有 `wb.tencentbuddy.com`。插件把这个主机**写死**了，于是在那种网络里完全不可用，
+> 且看起来像插件自己坏了。现在「设置 → WorkBuddy → 能力 → CN 网关主机」可填，留空即内置。
 >
-> **5.19.0 的入口迁移依然有效**：配置在「设置 → WorkBuddy」，那一版把配置从插件市场详情页
-> 搬进了设置面板（**这是破坏性变更**，只是换了个门、不需要改任何配置或脚本）。
-> 5.18.2 的两处生图参数破坏性变更（`size` 必填、`image` 纯数组）**也依然有效**，见下面那一节。
+> **跟着走的不只是 chat**：模型目录、签到、积分、生图全部改用该主机——只修 chat 的半个修复
+> 比不修更糟（聊天通了会让人以为好了，而签到和积分仍然打在被拦的主机上）。
+> **国际版不受影响**（全球 token 按品牌绑定，换主机只会 401）。
+>
+> **只接受 https + 四个 CN 品牌的子域**。这个值会拼在每一条带 `Authorization: Bearer`
+> 的请求前面，允许任意 URL 等于允许把 token 转发到任意主机。
+>
+> **5.19.0 的入口迁移依然有效**：配置在「设置 → WorkBuddy」（**破坏性变更**，只是换了个门）。
+> 5.19.1 是账号池窄栏显示修复。5.18.2 的两处生图参数破坏性变更（`size` 必填、`image` 纯数组）
+> **也依然有效**，见下面那一节。
 >
 > `5.18.0` 那一版从未在 npm 上存在过（当时账号被安全冻结，包没发出去），所以版本号从 5.17.0
-> 直接跳到 5.18.1、5.18.2、5.18.3、5.19.0、5.19.1 —— 那不是漏发。
+> 直接跳到 5.18.1、5.18.2、5.18.3、5.19.0、5.19.1、5.20.0 —— 那不是漏发。
 >
 > 升级命令（**写精确版本号**，原因见「怎么升级」）：
 >
 > ```sh
-> dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
+> dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.0
 > ```
 
 ## 现在的状态
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.19.1** | `latest`，发布于 2026-11-05 23:42 UTC（北京时间 11-06 07:42） |
-| 前一版 | 5.19.0 | 入口迁移（配置搬进设置面板），本版的显示修复在它之上 |
-| GitHub Releases | v5.19.1 | 与本版同时创建 |
-| git tag `v5.19.1` | `2dd64d2` | 与 npm 上的包同源（shasum 已核对一致） |
+| npm `dsh-connect-workbuddy` | **5.20.0** | `latest`，发布于 2026-11-06 07:09 UTC（北京时间 11-06 15:09） |
+| 前一版 | 5.19.1 | 账号池窄栏显示修复（157px → 96px 等三处） |
+| GitHub Releases | v5.20.0 | 与本版同时创建 |
+| git tag `v5.20.0` | `5f2cacd` | 与 npm 上的包同源（shasum 已核对一致） |
+| git tag `v5.19.1` | `2dd64d2` | 与 npm 上 5.19.1 的包同源 |
 | git tag `v5.19.0` | `c1a3f27` | 与 npm 上 5.19.0 的包同源 |
 | git tag `v5.18.3` | `e5ab115` | 版本 bump 提交 |
 | git tag `v5.18.2` | `2c25e45` | 版本 bump 提交 |
 | git tag `v5.18.0` | `06006e4` | 代码仍在历史里，但**这个版本从未发布到 npm** |
 | 市场索引里的本插件 | 未核对 | 市场读的是会滞后的快照，判断口径永远是 `npm view` |
 
-## 这一版改了什么（5.19.1）
+## 这一版改了什么（5.20.0）
+
+### 新增：CN 网关主机可配置（issue #220）
+
+卡片的「能力」栏多了一个「CN 网关主机」输入框。留空即内置；填上则 chat、模型目录、busy 探测、
+生图 / 生视频、签到、积分、领取权益**全部**改走那台主机。
+
+设计上只有三件事需要知道：
+
+1. **允许清单，不是任意 URL。** 值必须是 https，主机属 `copilot.tencent.com` / `tencentbuddy.com` /
+   `workbuddy.cn` / `codebuddy.cn` 的可注册域。这不是刁难：该值会拼在每一条带
+   `Authorization: Bearer` 的请求前面（含 refresh token 交换），自由填值就是凭据外泄通道。
+   `Origin` / `Referer` 不跟着变——它们回答的是「来自哪个网页应用」。
+2. **每次请求现读。** `regions` 是 volatile 字段，保存后不重启插件；构造期采样会让「填了没反应」。
+3. **诊断栏报告解析后生效的值**，不是保存的原文——保存了但校验失败的值仍走内置网关。
+
+`doctor` 跑在独立进程、读不到插件设置，那条路上用环境变量：
+
+```sh
+WORKBUDDY_CN_BASE=https://wb.tencentbuddy.com \
+  dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
+```
+
+完整实测与设计依据见 [`CN_GATEWAY_FALLBACK.md`](CN_GATEWAY_FALLBACK.md)。
+
+### 上一版：5.19.1（账号池窄栏显示修复）
+
+## 上一版改了什么（5.19.1）
 
 ### 账号池在 564px 窄栏里的三处显示修复
 
@@ -71,7 +106,7 @@
 
 配置在「设置 → WorkBuddy」。它把配置从插件市场详情页搬进了设置面板，插件市场那一页不再显示配置卡片。
 
-## 上一版改了什么（5.19.0）
+## 更早：5.19.0（入口迁移，破坏性变更）
 
 ### 入口：配置从插件详情页搬进设置面板
 
@@ -118,7 +153,7 @@
 [`docs/PLUGIN-DETAIL-GUIDE.md`](PLUGIN-DETAIL-GUIDE.md) 保留 —— 它讲的是宿主机制，对其他插件
 作者仍然有效，开头已注明本插件不再使用。
 
-## ⚠️ 生图工具的两个参数（5.18.2 的破坏性变更，5.19.0 仍沿用）
+## ⚠️ 生图工具的两个参数（5.18.2 的破坏性变更，至今沿用）
 
 来自 PR [#217](https://github.com/dingminhua/dsh-connect-workbuddy/pull/217)（感谢 @eghrhegpe）。
 如果你有脚本、prompt 模板或别的工具在调 `workbuddy_draw_image`，这两处要改：
@@ -171,7 +206,7 @@
 
 ```sh
 dsh plugin --profile desktop remove dsh-connect-workbuddy   # 之前自己编译 / link 装过的先移除
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.0
 ```
 
 **写精确版本号，别用 `^` 或 `latest`**：如果你的 profile 配了 pnpm 的 `minimumReleaseAge`（新版本等待期），浮动范围会被**静默压回旧版**，症状恰好是「升级命令跑完了、版本没变」；写死精确版本号则会明确报 `ERR_PNPM_NO_MATURE_MATCHING_VERSION`，反而好判断。要立刻装就在 profile 的 `pnpm-workspace.yaml` 里加 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]`。
@@ -196,6 +231,8 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 插件市场那一页不再有配置卡片。如果你装了带自定义壁纸的主题（issue #209）、把面板宽度调窄过，
 或者在设置面板里看过账号池觉得很挤——**5.19.0 修的是壁纸透明底，5.19.1 修的是账号池在窄栏里的
 行高与表头对齐**，这两类显示问题都在那两版里。
+如果你在**公司网络里所有模型都超时、而 WorkBuddy 桌面端正常**，那是 5.20.0 要解决的
+（按 SNI 拦截 CN 网关）：升级后在「能力」栏把网关主机改成 `https://wb.tencentbuddy.com` 即可。
 如果你是**模型自主生图**的重度用户，5.18.2 值得升——
 它专门修的就是「模型乱填参数、静默出错图还扣积分」这一族问题。你撞到下面任一条更该升：
 鸿蒙上账号池为空（#190）、生视频三个故障（#187）、想用侧边栏面板（#188）、
@@ -223,7 +260,9 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor
 
 ## English summary
 
-**Current installable version: `5.19.1`.** It is a **display-only release with no breaking changes**: three rendering fixes in the account pool as it appears in the Settings panel's 564px content column — the account cell's inner column still stacked five rows (**157px → 96px** per row, and the name no longer clips), the wide-layout 账号 header sat 38px left of the names it labels (**offset 38px → 0**), and the section strip scrolled out of reach (now sticky, still not a second scroller). One never-firing `@media` re-grid rule was deleted. A new `pnpm section:shot` renders the page at the shell's real column width and dumps its geometry, because every breakpoint in this repository measures the viewport and so never fired inside that column.
+**Current installable version: `5.20.0`.** It **adds one setting and changes nothing by default** — with the field empty the behaviour is byte-for-byte what 5.19.x did. **CN gateway host** (Settings → WorkBuddy → Capabilities) lets you point the CN gateway at `wb.tencentbuddy.com` when a corporate network filters `copilot.tencent.com` by TLS SNI (issue #220). Chat, the model catalog, check-in, credits, image and video generation all follow it — a chat-only fix is worse than none, because the user concludes it works while check-in and credits keep hitting the blocked host. The international region is unaffected (its tokens are brand-bound, so a different host only ever 401s). Only https on a subdomain of one of four CN brand domains is accepted: the value is prefixed onto every request carrying `Authorization: Bearer`, so an arbitrary URL would mean an arbitrary destination for the token. `doctor` reaches the same setting through `WORKBUDDY_CN_BASE`, since it runs in its own process and never loads plugin settings.
+
+**5.19.1** was a **display-only release with no breaking changes**: three rendering fixes in the account pool as it appears in the Settings panel's 564px content column — the account cell's inner column still stacked five rows (**157px → 96px** per row, and the name no longer clips), the wide-layout 账号 header sat 38px left of the names it labels (**offset 38px → 0**), and the section strip scrolled out of reach (now sticky, still not a second scroller). One never-firing `@media` re-grid rule was deleted. A new `pnpm section:shot` renders the page at the shell's real column width and dumps its geometry, because every breakpoint in this repository measures the viewport and so never fired inside that column.
 
 **5.19.0** moved the configuration page to Settings → WorkBuddy — a **breaking change of entry**, still in force. 5.18.3 was a **packaging-only, non-breaking change with no new features**: the plugin detail page (DSH 0.2.2+) no longer rendered the whole README — each `locale/*.json` carried a `meta.detail` pointing at a short Markdown document (92 / 96 characters). **5.19.0 reverses that**: those documents and both `meta.detail` lines are gone, and the detail page renders the full README again by host default. The configuration page moved to Settings → WorkBuddy in the same release, so the detail page no longer has a card to show. See `docs/PLUGIN-DETAIL-GUIDE.md` for the mechanism.
 
@@ -234,7 +273,7 @@ The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `s
 Install with an exact version (a floating range can be silently pinned back by pnpm's `minimumReleaseAge`):
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.19.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.0
 ```
 
 Restart or reload DSH afterwards (the host loads the plugin's bundles at start-up), and update any script or prompt template that calls `workbuddy_draw_image` (the 5.18.2 contract).
