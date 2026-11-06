@@ -45,6 +45,16 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # A DEDICATED STEP, not just the one `npm pack` happens to trigger below.
+      #
+      # `prepack` already runs the scanner, so the pack step would catch a leak
+      # today — but it shows up as a failed `npm pack` with the real reason
+      # buried in the log, and it disappears entirely the moment someone edits
+      # `prepack`. This step makes the gate a first-class CI result: its name is
+      # the rule it enforces, and a red X on it needs no interpretation.
+      - name: Privacy scan (no real account data may reach the tarball)
+        run: pnpm run check:pii
+
       - name: Verify package contents
         run: npm pack --dry-run
 

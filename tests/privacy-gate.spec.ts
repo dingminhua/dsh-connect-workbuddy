@@ -40,6 +40,34 @@ describe('the privacy gate is still wired in', () => {
     expect(manifest.files).toContain('docs/PRIVACY.md')
   })
 
+  it('is a named CI step, so a leak fails a check rather than a pack log', () => {
+    // `prepack` already covers the publish path, but it surfaces as a failed
+    // `npm pack` with the real reason buried in the output — and it vanishes if
+    // anyone edits `prepack`. A dedicated CI step makes the gate a first-class
+    // result, and its absence is visible in the Actions tab rather than in a
+    // wall of npm notices.
+    const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
+    expect(ci).toContain('check:pii')
+  })
+
+  it('is written down where a contributor will see it before writing code', () => {
+    // The gate catches a leak at pack time — but the expensive mistakes happen
+    // while WRITING: a real nickname pasted into a JSDoc comment (tsdown keeps
+    // it, and `lib/` ships) or a screenshot redacted with a translucent overlay.
+    // A rule nobody reads before touching the code is enforced too late.
+    const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8')
+    const contributing = readFileSync(join(root, 'CONTRIBUTING.md'), 'utf8')
+    for (const doc of [agents, contributing]) {
+      // Each must point at the authoritative policy and name the command,
+      // rather than restating the rules and drifting out of sync with it.
+      expect(doc).toContain('docs/PRIVACY.md')
+      expect(doc).toContain('scripts/check-pii.mjs')
+    }
+    // The one fact that actually caused a leak: comments ship.
+    expect(agents).toContain('JSDoc')
+    expect(contributing).toContain('JSDoc')
+  })
+
   it('actually passes right now', () => {
     // Runs the real script, so this test fails if the repository is dirty —
     // which is the whole point of wiring it in.
