@@ -704,7 +704,7 @@ else { await envelope.response.text() /* 或者按 SSE 消费 */ }
 node scripts/check-pii.mjs     # 退出码非 0 就不许发布
 ```
 
-- 规则全文见 **[`docs/PRIVACY.md`](docs/PRIVACY.md)**（**随包发布**，因为它是对使用者的承诺）。它列了五类暴露面、截图必须用实心块覆盖而不能用马赛克/模糊、以及「被裁切不等于被脱敏」这条曾经的翻车记录。
+- 规则全文见 **[`docs/PRIVACY.md`](docs/PRIVACY.md)**（**随包发布**，因为它是对使用者的承诺）。它列了五类暴露面、截图必须用实心块覆盖而不能用马赛克/模糊、以及「被裁切不等于被脱敏」这条容易踩的坑。
 - 该脚本已接进 `prepack` 与 `pnpm run check`，**npm 打包前会先跑一遍**，命中即中止发布。
 - `tests/privacy-gate.spec.ts` 钉住这三处接线（`prepack` / `check` / `files` 白名单），`tests/check-pii-script.spec.ts` 则用反例证明扫描器**真的会报错**——只会输出「干净」的扫描器比没有扫描器更糟。
 

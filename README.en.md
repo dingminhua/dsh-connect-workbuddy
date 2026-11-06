@@ -613,7 +613,7 @@ This is not politeness. **A screenshot that was never redacted, or one real acco
 node scripts/check-pii.mjs     # non-zero exit blocks the release
 ```
 
-- The full rules live in **[`docs/PRIVACY.md`](docs/PRIVACY.md)** (**shipped in the package**, because it is a promise to users). It lists the five surfaces, requires solid fills rather than mosaic/blur in screenshots, and records the "cropped is not redacted" incident that motivated it.
+- The full rules live in **[`docs/PRIVACY.md`](docs/PRIVACY.md)** (**shipped in the package**, because it is a promise to users). It lists the five surfaces, requires solid fills rather than mosaic/blur in screenshots, and spells out why "cropped is not redacted".
 - The script is wired into both `prepack` and `pnpm run check`, so **npm runs it before packing** and stops on a hit.
 - `tests/privacy-gate.spec.ts` pins that wiring (`prepack` / `check` / the `files` whitelist), and `tests/check-pii-script.spec.ts` feeds in counter-examples to prove the scanner **still bites** — a scanner that only ever prints "clean" is worse than none.
 
