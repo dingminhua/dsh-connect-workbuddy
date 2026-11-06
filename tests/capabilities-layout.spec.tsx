@@ -200,3 +200,60 @@ describe('the lead line reads as a heading, not as body text', () => {
     }
   })
 })
+
+describe('a hidden panel stays hidden (5.20.1 regression)', () => {
+  it('lets the hidden attribute beat the panel own display value', () => {
+    // THE BUG THIS PINS. Giving the panel `display:flex` under an ID selector
+    // outranked the UA sheet's `[hidden]{display:none}` on specificity, so the
+    // capabilities panel ignored its own hidden attribute: it painted
+    // permanently and covered the diagnostics and SDK panels, whose tabs then
+    // appeared to do nothing.
+    //
+    // jsdom computes no layout, so this asserts the RULE rather than a computed
+    // style; the browser half of the proof is a 6-line HTML in the commit
+    // message: same document without this rule reports display:flex on a hidden
+    // panel, with it reports display:none.
+    const body = ruleBody(WORKBUDDY_CARD_CSS, '#dsm-workbuddy-panel-capabilities[hidden]')
+    expect(body, 'the hidden guard is missing — the panel will ignore `hidden`').not.toBe('')
+    expect(body).toMatch(/display:\s*none/)
+    // `!important` is not decoration here: without it the next ID-level display
+    // rule added to this panel reintroduces exactly this bug.
+    expect(body).toMatch(/!important/)
+  })
+
+  it('shows exactly one panel at a time, whichever tab is clicked', async () => {
+    // The user-visible contract: switching tabs swaps the panel. Asserted in
+    // jsdom because the prop is what changes — the CSS above is what makes the
+    // prop matter.
+    const m = await render()
+    try {
+      for (const id of ['accounts', 'models', 'capabilities', 'diag', 'sdk']) {
+        const tab = m.container.querySelector('#dsm-workbuddy-tab-' + id)
+        if (tab === null) throw new Error(`${id} tab missing`)
+        await m.click(tab)
+        const open = ['accounts', 'models', 'capabilities', 'diag', 'sdk'].filter(other => {
+          const panel = m.container.querySelector('#dsm-workbuddy-panel-' + other)
+          return panel !== null && !panel.hasAttribute('hidden')
+        })
+        expect(open, `clicking ${id} left these panels open`).toEqual([id])
+      }
+    } finally {
+      await m.unmount()
+    }
+  })
+
+  it('does not let the shot harness force the panel visible', async () => {
+    // The tool was masking this bug: it hid the other panels with
+    // `display:none!important`, so "the capabilities panel covers diagnostics"
+    // could never reproduce inside the fixture built to measure that panel. A
+    // harness that fixes the bug it is meant to observe is worse than none.
+    const { readFileSync } = await import('node:fs')
+    // `import.meta.url` is not a file: URL under the jsdom environment, so the
+    // path is resolved from the repository root the runner starts in.
+    const source = readFileSync('tools/capabilities-shot.tsx', 'utf8')
+    // Strip comments first: the tool DOCUMENTS the mistake it used to make, and
+    // matching raw text would fail on the very note that explains it.
+    const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(css).not.toMatch(/#dsm-workbuddy-panel-capabilities\{[^}]*display:block!important/)
+  })
+})

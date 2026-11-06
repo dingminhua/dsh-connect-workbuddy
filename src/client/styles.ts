@@ -174,6 +174,26 @@ export const WORKBUDDY_CARD_CSS = `
  * #dsm-workbuddy-panel-capabilities is the attribute that actually exists on
  * the element. */
 #dsm-workbuddy-panel-capabilities{display:flex;flex-direction:column;gap:18px}
+/* THE PANEL MUST STILL BE HIDEABLE (regression fix, 5.20.1).
+ *
+ * An ID selector outranks the UA sheet's [hidden]{display:none} on
+ * specificity (1,0,0 vs 0,1,0), so adding display:flex above made the
+ * capabilities panel IGNORE its own hidden attribute. Result: it painted
+ * permanently and, being later in the DOM, covered the diagnostics and SDK
+ * panels entirely — clicking those tabs appeared to do nothing.
+ *
+ * The measure is simple: a panel that is hidden must never be displayed,
+ * whatever other rules set. Both declarations are needed and neither is
+ * redundant — display:none wins the cascade, and !important is what stops
+ * the same thing recurring the next time someone gives a panel a display value.
+ *
+ * Why the shot tool did not catch it: tools/capabilities-shot.tsx hides the
+ * other panels with display:none!important so the section can be measured in
+ * one screenful. That override masked this exact bug — the harness was fixing
+ * the thing it was supposed to observe. The tool no longer forces display on
+ * the panel, and tests/capabilities-layout.spec.tsx now pins that a hidden
+ * panel stays hidden. */
+#dsm-workbuddy-panel-capabilities[hidden]{display:none!important}
 /* The note keeps the panel's gap like every other block: a special-cased
    tighter gap here would be one more number to decode, and the panel's own
    rhythm is what this rule exists to establish. */

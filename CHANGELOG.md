@@ -1,5 +1,56 @@
 # Changelog
 
+## 5.20.1 (2026-11-06)
+
+> **修复 5.20.0 引入的回归：诊断页与 SDK 页打不开。** 没有其他改动；5.20.0 的功能与默认行为不变。
+
+### 症状
+
+点「诊断」或「SDK」分栏，内容不出现——实际上是被**能力页压在下面**。能力页本身看起来正常，
+所以从界面上看像是「这两个页面坏了」，而不是「有一个页面没被隐藏」。
+
+### 原因
+
+5.20.0 给能力页加了 `#dsm-workbuddy-panel-capabilities{display:flex;gap:18px}`，用来修组间距。
+但**ID 选择器的优先级是 (1,0,0)，高于浏览器默认样式表里 `[hidden]{display:none}` 的 (0,1,0)**，
+于是这个面板开始无视自己的 `hidden` 属性，永远渲染。
+
+三个面板都在 DOM 里，靠 `hidden` 切换；能力页在诊断页与 SDK 页**之前**，所以一永久显示，
+后两者就被盖住了。
+
+浏览器里 6 行即可复现，且这是判断它到底修没修的唯一可靠办法：
+
+```html
+<style>#p{display:flex} #p[hidden]{display:none!important}</style>
+<div id="p">…</div>
+<script>p.setAttribute('hidden','')</script>
+```
+
+不带第二条规则时 `getComputedStyle(p).display` 是 `flex`，带上是 `none`。
+
+### 修法
+
+```css
+#dsm-workbuddy-panel-capabilities[hidden]{display:none!important}
+```
+
+`!important` 不是装饰：没有它，下一次给这个面板加任何 display 规则，同一个 bug 就会回来。
+
+### 为什么工装没抓到
+
+`tools/capabilities-shot.tsx` 为了在一屏里量出这一节，用 `display:none!important` 把其他面板藏了。
+**那个覆盖恰好把本 bug 遮住了——工装在修它本该观察的东西。** 该工具现在已经不强制面板 display，
+并且新增测试断言工装不得再这么做。
+
+### Tests
+
+`3182/3182`（3179 → 3182），`skip 2`。`tests/capabilities-layout.spec.tsx` +3：
+
+- `[hidden]` 守卫存在且带 `!important`（去掉它即失败）；
+- **点五个分栏，每次只开一个面板**——用户可见的契约，直接把这次的症状钉住；
+- 工装不得再用 `display:block!important` 强制面板可见。
+
+
 ## 5.20.0 (2026-11-06)
 
 > **新增一项设置，默认行为一个字节都没变。** 没有破坏性变更；不填就跟以前完全一样。

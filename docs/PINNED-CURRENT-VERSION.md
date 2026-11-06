@@ -1,8 +1,10 @@
-# 【置顶】当前版本：npm `latest` 是 **5.20.0**（2026-11-06 上架）
+# 【置顶】当前版本：npm `latest` 是 **5.20.1**（2026-11-06 上架）
 
-> **一句话**：`5.20.0` **新增一项设置，默认行为一个字节都没变** —— 在企业网络按 TLS SNI
-> 拦截 CN 网关时，可以把网关主机指到 `wb.tencentbuddy.com`（issue #220）。
-> 没有破坏性变更：不填就跟以前完全一样。
+> **一句话**：`5.20.1` 修的是 `5.20.0` 的回归 —— 能力页无视 `hidden` 属性永久显示，
+> 把**诊断页与 SDK 页**盖住了（看起来像那两个页面坏了）。功能本身没有变化。
+>
+> `5.20.0` 则是**新增一项设置、默认行为一个字节都没变**：企业网络按 TLS SNI 拦截 CN 网关时，
+> 可以把网关主机指到 `wb.tencentbuddy.com`（issue #220）。没有破坏性变更。
 >
 > **为什么需要它**：那种网络会让 `copilot.tencent.com` 在握手阶段就被重置（毫秒级失败），
 > 而同一台机器上的 WorkBuddy 桌面端正常——客户端读自己 `failover.json` 的 `trustedOrigins`，
@@ -26,17 +28,18 @@
 > 升级命令（**写精确版本号**，原因见「怎么升级」）：
 >
 > ```sh
-> dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.0
+> dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1
 > ```
 
 ## 现在的状态
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.20.0** | `latest`，发布于 2026-11-06 07:09 UTC（北京时间 11-06 15:09） |
-| 前一版 | 5.19.1 | 账号池窄栏显示修复（157px → 96px 等三处） |
-| GitHub Releases | v5.20.0 | 与本版同时创建 |
-| git tag `v5.20.0` | `5f2cacd` | 与 npm 上的包同源（shasum 已核对一致） |
+| npm `dsh-connect-workbuddy` | **5.20.1** | `latest`，发布于 2026-11-06（北京时间 11-06 当天） |
+| 前一版 | 5.20.0 | CN 网关主机可配置；**它的能力页有一个回归**，见下 |
+| GitHub Releases | v5.20.1 | 与本版同时创建 |
+| git tag `v5.20.1` | 见 `git tag` | 与 npm 上的包同源（shasum 已核对一致） |
+| git tag `v5.20.0` | `5f2cacd` | 与 npm 上 5.20.0 的包同源 |
 | git tag `v5.19.1` | `2dd64d2` | 与 npm 上 5.19.1 的包同源 |
 | git tag `v5.19.0` | `c1a3f27` | 与 npm 上 5.19.0 的包同源 |
 | git tag `v5.18.3` | `e5ab115` | 版本 bump 提交 |
@@ -44,7 +47,22 @@
 | git tag `v5.18.0` | `06006e4` | 代码仍在历史里，但**这个版本从未发布到 npm** |
 | 市场索引里的本插件 | 未核对 | 市场读的是会滞后的快照，判断口径永远是 `npm view` |
 
-## 这一版改了什么（5.20.0）
+## 这一版改了什么（5.20.1）
+
+### 修的回归：诊断页与 SDK 页打不开
+
+5.20.0 给能力页加了 `#dsm-workbuddy-panel-capabilities{display:flex}` 修组间距，但 **ID 选择器的
+优先级 (1,0,0) 高于浏览器默认 `[hidden]{display:none}` 的 (0,1,0)**，于是能力页开始无视自己的
+`hidden` 属性、永远渲染，把排在它后面的诊断页与 SDK 页盖住了。症状看起来是「那两个页面坏了」。
+
+修法是补一条 `#dsm-workbuddy-panel-capabilities[hidden]{display:none!important}`。`!important`
+不是装饰：没有它，下次给这个面板加任何 display 规则，同一个 bug 就会回来。
+
+**为什么测试没抓住**：`tools/capabilities-shot.tsx` 为了在一屏里量出这一节，用
+`display:none!important` 把其他面板藏了——那个覆盖恰好遮住了本 bug。工装在修它本该观察的东西。
+该工具已改，并新增测试断言工装不得再这么做。
+
+## 上一版改了什么（5.20.0，含上面那个回归）
 
 ### 新增：CN 网关主机可配置（issue #220）
 
@@ -71,7 +89,7 @@ WORKBUDDY_CN_BASE=https://wb.tencentbuddy.com \
 
 ### 上一版：5.19.1（账号池窄栏显示修复）
 
-## 上一版改了什么（5.19.1）
+## 更早：5.19.1（账号池窄栏显示修复）
 
 ### 账号池在 564px 窄栏里的三处显示修复
 
@@ -206,7 +224,7 @@ WORKBUDDY_CN_BASE=https://wb.tencentbuddy.com \
 
 ```sh
 dsh plugin --profile desktop remove dsh-connect-workbuddy   # 之前自己编译 / link 装过的先移除
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.0
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1
 ```
 
 **写精确版本号，别用 `^` 或 `latest`**：如果你的 profile 配了 pnpm 的 `minimumReleaseAge`（新版本等待期），浮动范围会被**静默压回旧版**，症状恰好是「升级命令跑完了、版本没变」；写死精确版本号则会明确报 `ERR_PNPM_NO_MATURE_MATCHING_VERSION`，反而好判断。要立刻装就在 profile 的 `pnpm-workspace.yaml` 里加 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]`。
@@ -273,7 +291,7 @@ The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `s
 Install with an exact version (a floating range can be silently pinned back by pnpm's `minimumReleaseAge`):
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.0
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1
 ```
 
 Restart or reload DSH afterwards (the host loads the plugin's bundles at start-up), and update any script or prompt template that calls `workbuddy_draw_image` (the 5.18.2 contract).
