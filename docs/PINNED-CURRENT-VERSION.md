@@ -40,10 +40,10 @@
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.20.2** | `latest`（发布后核对 shasum） |
+| npm `dsh-connect-workbuddy` | **5.20.2** | `latest`，发布于 2026-11-06 08:37 UTC（北京时间 16:37）；shasum 已直连核对一致 |
 | npm 上的前一版 | **5.20.0** | 5.20.1 **从未发布**，所以 npm 的序列是 5.20.0 → 5.20.2 |
 | GitHub Releases | v5.20.2 | 与本版同时创建 |
-| git tag `v5.20.2` | `b3f9ca8` | 与 npm 上的包同源（shasum 发布后核对） |
+| git tag `v5.20.2` | `f3ea34c` | 与 npm 上的包同源（shasum `c53abbbc…` 已核对一致） |
 | git tag `v5.20.1` | `3315f07` | **未发布到 npm**；其修复包含在 5.20.2 里 |
 | git tag `v5.20.0` | `5f2cacd` | 与 npm 上 5.20.0 的包同源 |
 | git tag `v5.19.1` | `2dd64d2` | 与 npm 上 5.19.1 的包同源 |
