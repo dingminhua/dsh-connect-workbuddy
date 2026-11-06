@@ -1,7 +1,11 @@
 # 【置顶】当前版本：npm `latest` 是 **5.20.2**（2026-11-06 上架）
 
-> **一句话**：`5.20.1` 修的是 `5.20.0` 的回归 —— 能力页无视 `hidden` 属性永久显示，
-> 把**诊断页与 SDK 页**盖住了（看起来像那两个页面坏了）。功能本身没有变化。
+> **一句话**：`5.20.2` 把模型行的上下文档位从一排单选按钮改成**一个下拉框**。行为不变
+> ——能选的档位、默认值、写入的值都和之前一样，仍是 `effectiveContextBudget()` 那一套。
+>
+> 它同时**包含了 `5.20.1` 的修复**：`5.20.1` 修的是 `5.20.0` 的回归——能力页无视 `hidden`
+> 属性永久显示，把**诊断页与 SDK 页**盖住了（看起来像那两个页面坏了）。
+> **注意 `5.20.1` 从未发布到 npm**，它只存在于 git 历史里，npm 的版本序列从 5.20.0 直接到 5.20.2。
 >
 > `5.20.0` 则是**新增一项设置、默认行为一个字节都没变**：企业网络按 TLS SNI 拦截 CN 网关时，
 > 可以把网关主机指到 `wb.tencentbuddy.com`（issue #220）。没有破坏性变更。
@@ -23,7 +27,8 @@
 > **也依然有效**，见下面那一节。
 >
 > `5.18.0` 那一版从未在 npm 上存在过（当时账号被安全冻结，包没发出去），所以版本号从 5.17.0
-> 直接跳到 5.18.1、5.18.2、5.18.3、5.19.0、5.19.1、5.20.0 —— 那不是漏发。
+> 直接跳到 5.18.1、5.18.2、5.18.3、5.19.0、5.19.1、5.20.0 再跳到 5.20.2 —— 那不是漏发。
+> **5.20.1 同样没有出现在 npm 上**（只是那次是我漏了发布，不是账号问题），它的修复包含在 5.20.2 里。
 >
 > 升级命令（**写精确版本号**，原因见「怎么升级」）：
 >
@@ -35,11 +40,11 @@
 
 | 渠道 | 值 | 说明 |
 | --- | --- | --- |
-| npm `dsh-connect-workbuddy` | **5.20.2** | `latest`，发布于 2026-11-06（北京时间当天） |
-| 前一版 | 5.20.1 | 修复 5.20.0 能力页盖住诊断/SDK 的回归 |
+| npm `dsh-connect-workbuddy` | **5.20.2** | `latest`（发布后核对 shasum） |
+| npm 上的前一版 | **5.20.0** | 5.20.1 **从未发布**，所以 npm 的序列是 5.20.0 → 5.20.2 |
 | GitHub Releases | v5.20.2 | 与本版同时创建 |
-| git tag `v5.20.2` | 见 `git tag` | 与 npm 上的包同源（shasum 已核对一致） |
-| git tag `v5.20.1` | `3315f07` | 与 npm 上 5.20.1 的包同源 |
+| git tag `v5.20.2` | `b3f9ca8` | 与 npm 上的包同源（shasum 发布后核对） |
+| git tag `v5.20.1` | `3315f07` | **未发布到 npm**；其修复包含在 5.20.2 里 |
 | git tag `v5.20.0` | `5f2cacd` | 与 npm 上 5.20.0 的包同源 |
 | git tag `v5.19.1` | `2dd64d2` | 与 npm 上 5.19.1 的包同源 |
 | git tag `v5.19.0` | `c1a3f27` | 与 npm 上 5.19.0 的包同源 |
@@ -61,7 +66,10 @@
 
 改动的只有形状与对齐（三个控件左边界 690/690/690、宽度均 58px）。
 
-## 上一版改了什么（5.20.1）
+## 上一版改了什么（5.20.1，**未发布到 npm**）
+
+> 这一版的代码在 git 里（tag `v5.20.1`），但**没有发布到 npm**——它被 5.20.2 一并带上。
+> 所以 npm 用户不会经历「5.20.1 已修、5.20.2 未修」这样的中间状态。
 
 ### 修的回归：诊断页与 SDK 页打不开
 
@@ -76,7 +84,7 @@
 `display:none!important` 把其他面板藏了——那个覆盖恰好遮住了本 bug。工装在修它本该观察的东西。
 该工具已改，并新增测试断言工装不得再这么做。
 
-## 更早：5.20.0（CN 网关主机可配置，含被 5.20.1 修掉的回归）
+## 更早：5.20.0（CN 网关主机可配置，含后来被修掉的回归）
 
 ### 新增：CN 网关主机可配置（issue #220）
 
@@ -238,7 +246,7 @@ WORKBUDDY_CN_BASE=https://wb.tencentbuddy.com \
 
 ```sh
 dsh plugin --profile desktop remove dsh-connect-workbuddy   # 之前自己编译 / link 装过的先移除
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2
 ```
 
 **写精确版本号，别用 `^` 或 `latest`**：如果你的 profile 配了 pnpm 的 `minimumReleaseAge`（新版本等待期），浮动范围会被**静默压回旧版**，症状恰好是「升级命令跑完了、版本没变」；写死精确版本号则会明确报 `ERR_PNPM_NO_MATURE_MATCHING_VERSION`，反而好判断。要立刻装就在 profile 的 `pnpm-workspace.yaml` 里加 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]`。
@@ -305,7 +313,7 @@ The 5.18.2 **breaking change** still applies: `workbuddy_draw_image` requires `s
 Install with an exact version (a floating range can be silently pinned back by pnpm's `minimumReleaseAge`):
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2
 ```
 
 Restart or reload DSH afterwards (the host loads the plugin's bundles at start-up), and update any script or prompt template that calls `workbuddy_draw_image` (the 5.18.2 contract).
