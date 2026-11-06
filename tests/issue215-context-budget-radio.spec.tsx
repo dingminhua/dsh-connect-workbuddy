@@ -110,22 +110,40 @@ async function render(body: Record<string, unknown>) {
   return m
 }
 
-/** Every tier radio in the model row, in document order. */
-function radios(container: HTMLElement): HTMLInputElement[] {
-  return Array.from(container.querySelectorAll<HTMLInputElement>('.dsm-workbuddy-context-budget input[type=radio]'))
+/**
+ * The one tier control in the model row.
+ *
+ * WAS A ROW OF RADIOS, IS NOW A <select> (requested). The correctness rule this
+ * file exists to protect is unchanged — the SELECTED value must equal the window
+ * the backend derives — but the reading side had to change shape with it. Every
+ * assertion below still compares the control against `applyContextBudgets`, not
+ * against a hard-coded label, so it still fails if either side drifts.
+ */
+function budgetSelect(container: HTMLElement): HTMLSelectElement {
+  const select = container.querySelector<HTMLSelectElement>('select.dsm-workbuddy-context-budget')
+  if (select === null) throw new Error('the context-budget select is missing')
+  return select
+}
+
+/** Every tier the control OFFERS, as the labels the user reads. */
+function offeredLabels(container: HTMLElement): string[] {
+  return Array.from(budgetSelect(container).options).map(option => option.textContent ?? '')
 }
 
 /**
- * The label of the ONE checked tier, or a description of how many were checked.
+ * The label of the SELECTED tier.
  *
- * "Exactly one" is itself part of the contract: with no budget stored the old
- * code could light the 200K radio while the native one was also checked (its
- * `<= 200_000 || …` clause), so two tiers claimed to be current at once.
+ * "Exactly one" was itself part of the contract when these were radios: with no
+ * budget stored the old code could light 200K while native was also checked, so
+ * two tiers claimed to be current at once. A <select> cannot express that, and
+ * the assertion that used to catch it is now impossible to fail — which is worth
+ * stating rather than silently dropping: the shape change removed that failure
+ * mode by construction.
  */
 function checkedLabel(container: HTMLElement): string {
-  const checked = radios(container).filter(radio => radio.checked)
-  if (checked.length !== 1) return `<${checked.length} checked>`
-  return checked[0]?.nextElementSibling?.textContent ?? ''
+  const select = budgetSelect(container)
+  const chosen = select.selectedOptions[0]
+  return chosen?.textContent ?? ''
 }
 
 /** The label a tier with this value would render. */
@@ -136,19 +154,23 @@ function labelFor(value: number): string {
 }
 
 /**
- * The radio whose label is `label`, re-read from the live DOM on each call.
+ * Choose a tier the way a user does: by the label they read.
  *
- * A NODE HELD ACROSS A RENDER GOES STALE: React replaces the input when the
- * draft changes, so clicking a saved reference acted on a detached element and
- * the card never saw the event. Looking it up by the label the user actually
- * reads is both safe across renders and the thing the user is choosing.
+ * Re-read from the live DOM on each call — a node held across a render goes
+ * stale, because React replaces the element when the draft changes. Choosing by
+ * label is both safe across renders and exactly what the user selects.
  */
-function radioFor(container: HTMLElement, label: string): HTMLInputElement {
-  const found = radios(container).find(radio => radio.nextElementSibling?.textContent === label)
-  if (found === undefined) {
-    throw new Error(`no "${label}" tier. Present: ${radios(container).map(r => r.nextElementSibling?.textContent).join(', ')}`)
+async function chooseTier(
+  m: Awaited<ReturnType<typeof mount>>,
+  container: HTMLElement,
+  label: string,
+): Promise<void> {
+  const select = budgetSelect(container)
+  const option = Array.from(select.options).find(candidate => candidate.textContent === label)
+  if (option === undefined) {
+    throw new Error(`no "${label}" tier. Present: ${offeredLabels(container).join(', ')}`)
   }
-  return found
+  await m.choose(select, option.value)
 }
 
 describe('issue #215: the selected tier must equal the window DSH is told', () => {
@@ -192,15 +214,28 @@ describe('issue #215: the selected tier must equal the window DSH is told', () =
     }
   })
 
-  it('never lights two tiers at once, at any window', async () => {
-    // The old native radio was `nativeContextWindow <= 200_000 || …`, so for a
-    // small model it was checked even when a budget existed. A radio group with
-    // two checked members cannot express what will happen.
+  it('selects exactly one tier, and only tiers the model can use, at any window', async () => {
+    // The radio version of this test caught two-checked-at-once, which a <select>
+    // cannot express. The invariant that still CAN break is different and worth
+    // pinning just as hard: the selected value must always be one of the tiers
+    // offered, and no tier may exceed the model's real window (a 192K model must
+    // not be offered 500K — that button would silently lower nothing).
     for (const window of [192_000, 200_000, 256_000, 500_000, 1_000_000]) {
       for (const budgets of [{}, { [MODEL_ID]: 200_000 }, { [MODEL_ID]: 500_000 }]) {
         const m = await render(usageBody(window, budgets))
-        const checked = radios(m.container).filter(radio => radio.checked)
-        expect(checked, `window=${window} saved=${JSON.stringify(budgets)}`).toHaveLength(1)
+        const select = budgetSelect(m.container)
+        const tags = `window=${window} saved=${JSON.stringify(budgets)}`
+        // A selected value that is not among the options would render as an
+        // empty first row — the classic controlled-select mistake.
+        expect(select.value, tags).not.toBe('')
+        expect(Array.from(select.options).map(o => o.value), tags).toContain(select.value)
+        const chosen = Number(select.value)
+        expect(chosen, `${tags}: selected ${chosen} exceeds the window`).toBeLessThanOrEqual(window)
+        // No offered tier may exceed the window either.
+        for (const option of Array.from(select.options)) {
+          expect(Number(option.value), `${tags}: offered ${option.value}`).toBeLessThanOrEqual(window)
+        }
+        await m.unmount()
       }
     }
   })
@@ -222,8 +257,9 @@ describe('issue #215: choosing the native tier clears the budget', () => {
     await m.settle()
 
     // Start from the stored 200K, then pick the native tier.
-    expect(radios(m.container)).toHaveLength(3)
-    await m.click(radioFor(m.container, '1M'))
+    // A 1M-window model offers exactly three tiers: 200K, 500K, native.
+    expect(offeredLabels(m.container)).toEqual(['200K', '500K', '1M'])
+    await chooseTier(m, m.container, '1M')
     expect(checkedLabel(m.container)).toBe('1M')
 
     calls.length = 0

@@ -49,18 +49,28 @@ function usageWithWindow(nativeContextWindow: number, contextBudgets: Record<str
   }
 }
 
-/** The tier labels rendered for the model row, in document order. */
-function tierLabels(html: string): string[] {
-  const fieldset = /<fieldset[^>]*dsm-workbuddy-context-budget[^>]*>([\s\S]*?)<\/fieldset>/.exec(html)
-  if (fieldset === null) return []
-  return Array.from((fieldset[1] ?? '').matchAll(/<span>([^<]*)<\/span>/g), match => match[1] ?? '')
+/**
+ * WAS A FLEX ROW OF THREE RADIOS, IS NOW A SINGLE <select>.
+ *
+ * The tiers themselves did not change — the same 200K / 500K / native gates,
+ * derived from the mode's real window — so every assertion in this file still
+ * checks the same contract. What changed is how the tier list is READ: options
+ * instead of sibling spans, `selectedIndex` instead of `checked`.
+ */
+function budgetSelect(container: HTMLElement): HTMLSelectElement | null {
+  return container.querySelector<HTMLSelectElement>('select.dsm-workbuddy-context-budget')
 }
 
-/** The tier radios in the model row, in document order. */
-function tierRadios(container: HTMLElement): HTMLInputElement[] {
-  // `Array.from`, not a spread: this tsconfig carries `dom` without
-  // `dom.iterable`, so `NodeListOf` has no `[Symbol.iterator]`.
-  return Array.from(container.querySelectorAll<HTMLInputElement>('.dsm-workbuddy-context-budget input[type=radio]'))
+/** The tier labels OFFERED for the model row, in document order. */
+function tierLabels(container: HTMLElement): string[] {
+  const select = budgetSelect(container)
+  return select === null ? [] : Array.from(select.options, option => option.textContent ?? '')
+}
+
+/** The label of the tier the control currently shows as chosen. */
+function selectedTier(container: HTMLElement): string | undefined {
+  const select = budgetSelect(container)
+  return select?.selectedOptions[0]?.textContent ?? undefined
 }
 
 const render = async (body: Record<string, unknown>) => {
@@ -75,14 +85,14 @@ describe('context-budget tiers', () => {
     // 256K: the window is real but below the half-meg point, so 500K must NOT
     // appear — offering it would name a cap the model cannot reach.
     const m = await render(usageWithWindow(256_000))
-    expect(tierLabels(m.html())).toEqual(['200K', '256K'])
+    expect(tierLabels(m.container)).toEqual(['200K', '256K'])
   })
 
   it('offers 500K to a model that really exceeds it', async () => {
     // 1M: the user's actual case (deepseek-v4.1-flash, glm-5.3-flash,
     // space-bunny, hy4-preview all advertise 960K-1M).
     const m = await render(usageWithWindow(1_000_000))
-    expect(tierLabels(m.html())).toEqual(['200K', '500K', '1M'])
+    expect(tierLabels(m.container)).toEqual(['200K', '500K', '1M'])
   })
 
   it('does not offer 500K to a model at exactly 500 000', async () => {
@@ -91,27 +101,24 @@ describe('context-budget tiers', () => {
     // with two different meanings. (No shipped CN model sits at exactly 500K;
     // this pins the operator, not an observed catalog entry.)
     const m = await render(usageWithWindow(500_000))
-    expect(tierLabels(m.html())).toEqual(['200K', '500K'])
+    expect(tierLabels(m.container)).toEqual(['200K', '500K'])
     // Exactly one 500K: the native tier, which for this window IS 500K. The
     // 500K convenience tier must not also render — two identical radio labels
     // writing different values is unreadable and un-clickable.
-    expect(tierLabels(m.html()).filter(label => label === '500K')).toHaveLength(1)
+    expect(tierLabels(m.container).filter(label => label === '500K')).toHaveLength(1)
   })
 
   it('shows only the native tier for a model at or below 200K', async () => {
     // hy3 (192K) is the shipped case: the 200K radio was already hidden, and
     // the half-meg tier must stay hidden by the same rule.
     const m = await render(usageWithWindow(192_000))
-    expect(tierLabels(m.html())).toEqual(['192K'])
+    expect(tierLabels(m.container)).toEqual(['192K'])
   })
 
   it('checks the 500K radio when the budget is 500 000', async () => {
     const m = await render(usageWithWindow(1_000_000, { 'probe-model': 500_000 }))
-    const radios = tierRadios(m.container)
-    const checked = radios.filter(radio => radio.checked)
-    expect(checked).toHaveLength(1)
-    // Sibling span of the checked input, so this asserts the LABEL the user sees.
-    expect(checked[0]?.nextElementSibling?.textContent).toBe('500K')
+    // The label the user actually reads in the closed control.
+    expect(selectedTier(m.container)).toBe('500K')
   })
 
   it('leaves the 500K radio unchecked when no budget is stored', async () => {
@@ -121,10 +128,7 @@ describe('context-budget tiers', () => {
     // budget `applyContextBudgets` keeps the model's own 1M window, so 1M is the
     // tier DSH is actually told and the only tier the card may light up.
     const m = await render(usageWithWindow(1_000_000))
-    const radios = tierRadios(m.container)
-    const checked = radios.filter(radio => radio.checked)
-    expect(checked).toHaveLength(1)
-    expect(checked[0]?.nextElementSibling?.textContent).toBe('1M')
+    expect(selectedTier(m.container)).toBe('1M')
   })
 
   it('keeps 500K selectable on a read-only card but not while saving', async () => {
@@ -132,9 +136,10 @@ describe('context-budget tiers', () => {
     // that the new tier copies it rather than accidentally shipping a writable
     // control on a locked card.
     const m = await render(usageWithWindow(1_000_000))
-    const radios = tierRadios(m.container)
-    expect(radios).toHaveLength(3)
-    expect(radios.map(radio => radio.disabled)).toEqual([false, false, false])
+    const select = budgetSelect(m.container)
+    expect(Array.from(select?.options ?? [])).toHaveLength(3)
+    // One control now, so one gate instead of three per-option ones.
+    expect(select?.disabled).toBe(false)
   })
 
   // -------------------------------------------------------------------------
@@ -166,28 +171,23 @@ describe('context-budget tiers', () => {
     expect(ruleOf('dsm-workbuddy-model-actions')).toContain('flex-wrap:wrap')
   })
 
-  it('lets the tier group wrap between its own labels', () => {
-    // `flex:none` stays — the group must not be SHRUNK into unreadability by a
-    // long model name — but `flex-wrap` has to be set too, because the three
-    // labels (`200K`, `500K`, `1.048M`) exceed a phone row on their own. Without
-    // this the group would be pushed whole past the clip: a wrapped row whose
-    // children refuse to wrap still overflows.
+  it('cannot wrap, because it is one control instead of three labels', () => {
+    // WAS: "lets the tier group wrap between its own labels" (#198). That test
+    // existed because three labels side by side overflowed a phone row, so the
+    // group had to be allowed to wrap mid-group — and then forced onto its own
+    // line by a media query so the wrapped remainder did not dangle.
+    //
+    // A <select> removes the premise: it is ONE box whose width is its own, it
+    // cannot break a label across lines, and its closed state is a single line
+    // by construction. The old assertions would now fail for a correct reason —
+    // they describe a failure mode the control no longer has — so they are
+    // replaced by the property that keeps it true: the control does not shrink,
+    // and no rule lets it wrap.
     const budget = ruleOf('dsm-workbuddy-context-budget')
-    expect(budget).toContain('flex-wrap:wrap')
     expect(budget).toContain('flex:none')
-    // A tier label breaks mid-word otherwise (`20` / `0K`), which reads as a
-    // rendering bug on the one control the user is trying to hit.
-    expect(ruleOf('dsm-workbuddy-context-budget label')).toContain('white-space:nowrap')
-  })
-
-  it('gives the tier group its own full-width line on a phone', () => {
-    // The media query is the difference between "reachable" and "scrambled": at
-    // `justify-content:flex-end` a wrapped group dangles under the buttons, and
-    // the native-window tier — the last label in the group, and the one #198 is
-    // about — is what lands nearest the edge.
-    const media = /@media \(max-width:760px\)\{\.dsm-workbuddy-context-budget\{([^}]*)\}\}/u.exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
-    expect(media).toContain('flex:1 1 100%')
-    expect(media).toContain('justify-content:flex-start')
+    expect(budget).not.toContain('flex-wrap:wrap')
+    // A fixed floor keeps the three rows' controls aligned down the list.
+    expect(budget).toContain('min-inline-size:58px')
   })
 
   it('renders all three tiers in the DOM for a 1M model', async () => {
@@ -196,11 +196,61 @@ describe('context-budget tiers', () => {
     // — but it is the PREMISE of the CSS assertions, so it is pinned here in the
     // same file that reads them. All three, in one row, for one model.
     const m = await render(usageWithWindow(1_000_000))
-    expect(tierRadios(m.container)).toHaveLength(3)
-    expect(tierLabels(m.html())).toEqual(['200K', '500K', '1M'])
+    expect(Array.from(budgetSelect(m.container)?.options ?? [])).toHaveLength(3)
+    expect(tierLabels(m.container)).toEqual(['200K', '500K', '1M'])
     // And the row that holds them is the one the stylesheet allows to wrap.
     const head = m.container.querySelector('.dsm-workbuddy-model-head')
     expect(head).not.toBeNull()
     expect(head?.querySelector('.dsm-workbuddy-context-budget')).not.toBeNull()
+  })
+})
+
+describe('the tier control is a dropdown, not a row of radios', () => {
+  it('renders one select and no tier radios', async () => {
+    // THE REQUESTED SHAPE. It was three radios wrapping onto a second line in the
+    // 564px Settings column, and a wrapped row of radios reads as three
+    // independent switches when it is one choice.
+    //
+    // Asserted as "one select AND zero radios", because either half alone can be
+    // satisfied by a half-finished migration: adding the select without deleting
+    // the radios would leave both in the row, and deleting the radios without
+    // the select would leave no control at all.
+    const m = await render(usageWithWindow(1_000_000))
+    expect(Array.from(m.container.querySelectorAll('select.dsm-workbuddy-context-budget'))).toHaveLength(1)
+    expect(Array.from(m.container.querySelectorAll('.dsm-workbuddy-context-budget input[type=radio]'))).toHaveLength(0)
+    // A <fieldset> is the group construct for radios; a select needs neither it
+    // nor its legend, and leaving the fieldset behind would nest a form group
+    // around a single form control.
+    expect(Array.from(m.container.querySelectorAll('fieldset.dsm-workbuddy-context-budget'))).toHaveLength(0)
+  })
+
+  it('offers the tiers in ascending order, native last', async () => {
+    // Order is information: 200K < 500K < native. A select that listed them in
+    // any other order would be the first thing a user notices.
+    const m = await render(usageWithWindow(1_000_000))
+    const values = Array.from(budgetSelect(m.container)?.options ?? [], option => Number(option.value))
+    expect(values).toEqual([200_000, 500_000, 1_000_000])
+  })
+
+  it('carries the chosen tier into the save payload', async () => {
+    // The read side is pinned above; this is the write side. Choosing a tier and
+    // saving must send that number — a select whose onChange is wired to the
+    // wrong handler would look right and save nothing.
+    const calls = stubFetch(() => ({ body: usageWithWindow(1_000_000) }))
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+    const select = budgetSelect(m.container)
+    if (select === null) throw new Error('no budget select')
+    await m.choose(select, '500000')
+    calls.length = 0
+    await m.click(m.button(t('row.save')))
+    await m.settle()
+    const save = calls.find(call => call.url.includes('/__save'))
+    if (save === undefined) throw new Error('no save request')
+    const sent = JSON.parse(String((save.init as { body?: string }).body ?? '{}')) as {
+      value: Record<string, { contextBudgets?: Record<string, number> }>
+    }
+    expect(sent.value['cn']?.contextBudgets?.['probe-model']).toBe(500_000)
+    await m.unmount()
   })
 })

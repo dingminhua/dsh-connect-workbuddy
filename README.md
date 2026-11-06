@@ -223,7 +223,7 @@ DSH PiAiAdapter（每个 provider 一套）
 >
 > ⚠️ **别把插件市场里那个「最新」当日程表——它读的是一份会落后的索引。** 社区市场走定期构建的快照（按包各自收录），2026-10-30 15:00 那次观测里本插件还停在 5.13.1，而当时 npm `latest` 已是 5.14.1；桌面宿主另有「24 小时内发布的版本先标成「新版等待中」」这条规则。以 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 为准，按下方[「更新」](#更新)一节做（写**精确版本号**），或者把 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 那段话丢给 AI 让它替你跑。
 >
-> 另一个会让人升级不到的原因：**pnpm 的 24 小时新版本等待期**（`minimumReleaseAge`）会把浮动范围**静默压回上一个版本**。需要立刻修复时请写**精确版本号**：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1`（原因见下方「刚发布的版本请写精确版本号」那条）。
+> 另一个会让人升级不到的原因：**pnpm 的 24 小时新版本等待期**（`minimumReleaseAge`）会把浮动范围**静默压回上一个版本**。需要立刻修复时请写**精确版本号**：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2`（原因见下方「刚发布的版本请写精确版本号」那条）。
 
 ### 受支持的宿主范围
 
@@ -291,7 +291,7 @@ npm install dsh-connect-workbuddy
 > | 精确 `5.14.1` + profile `pnpm-workspace.yaml` 里 `minimumReleaseAgeExclude: [dsh-connect-workbuddy]` | **5.14.1** ✅ |
 > | 不设该项（pnpm 默认） | 浮动 `^5.13.1` → **5.14.1** ✅ |
 >
-> 想立刻用上新版，请写精确版本号：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1`；若被等待期拒绝，见 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 的两条路（等窗口过去，或加那行 exclude）。过了等待期之后，浮动范围会自然跟上。
+> 想立刻用上新版，请写精确版本号：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2`；若被等待期拒绝，见 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §2 的两条路（等窗口过去，或加那行 exclude）。过了等待期之后，浮动范围会自然跟上。
 
 插件在 **Web**、**Desktop**、**TUI** 三种界面下均可运行，按你使用的 profile 选择对应命令：
 
@@ -376,7 +376,7 @@ dsh: plugin command failed; diagnostics: …/operation-xxxx/pnpm.log
 **手动更新（一条命令）**：
 
 ```sh
-dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.1
+dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2
 dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行就是版本
 ```
 

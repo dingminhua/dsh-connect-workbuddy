@@ -492,9 +492,12 @@ export const WORKBUDDY_CARD_CSS = `
 /* ISSUE #198 — the model row's controls MUST WRAP.
 
    The row carries four groups on one line: the name, the two checkboxes, the
-   context-budget radio group, and the test/measure buttons. The budget group had
-   flex:none and the row had no flex-wrap, so on a narrow card (dsh-go on a
-   phone, a ~360 px settings panel) the row's intrinsic width exceeded the
+   context-budget control, and the test/measure buttons. (It was a radio GROUP;
+   as of 5.20.2 it is one select, which cannot wrap or clip internally — but the
+   row still has to wrap, because the four groups together are what overflow.)
+   The budget control had flex:none and the row had no flex-wrap, so on a narrow
+   card (dsh-go on a phone, a ~360 px settings panel) the row's intrinsic width
+   exceeded the
    container and the model list's overflow:hidden CLIPPED THE REST — the third
    radio (「模型原生窗口」, e.g. 1M) was neither visible nor clickable, and the
    largest budget a user could pick looked like 500K. A control that is clipped is
@@ -573,9 +576,28 @@ export const WORKBUDDY_CARD_CSS = `
    the clipping bug, and flex-wrap is the other half — a 1.048M label is wider
    than 200K. Left-aligning the group under the media query makes the group
    own its line on a phone instead of dangling at the right edge. */
-.dsm-workbuddy-context-budget{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;row-gap:6px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
-.dsm-workbuddy-context-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
-.dsm-workbuddy-context-budget input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+/* ONE SELECT, NOT A ROW OF RADIOS.
+ *
+ * It was a wrapping flex row of three radios. In the Settings column (564px,
+ * of which the model row already spends ~300px on the id/speed column) those
+ * three wrapped onto a second line, and a wrapped row of radios reads as three
+ * independent switches rather than as one choice.
+ *
+ * A FIXED min-inline-size keeps the three rows' columns aligned. Without it the
+ * control sizes to its widest option, so a model offering only 192K drew a
+ * 56px control while its neighbours drew 58px and the left edges stepped by 2px
+ * down the list — the same misalignment the wrapped radios had, in miniature.
+ *
+ * Being a <select>, this is now a single fixed-width control that cannot wrap,
+ * and the native dropdown is what the platform draws — so the styling here is
+ * only about the closed state: the same 11px secondary text the radios used, a
+ * chevron the platform provides, and a chevron-affordance gap.
+ *
+ * flex:none matters: the row is a flex line, and a select that grows steals
+ * width from the model name beside it. */
+.dsm-workbuddy-context-budget{flex:none;margin:0;min-inline-size:58px;padding:2px 4px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:6px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-secondary,#c6c9d0);font-family:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.dsm-workbuddy-context-budget:disabled{cursor:default;opacity:.6}
+.dsm-workbuddy-context-budget:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 .dsm-workbuddy-model-capability-note{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* Model probe (test button + result). The result line is its own row under the
    meta line, because a cooldown sentence ("rate limited - the upstream gave no
@@ -1127,7 +1149,7 @@ export const WORKBUDDY_CARD_CSS = `
    wrapped two-tier group reads as a stray fragment under the buttons, and the tier
    the user is trying to find — the native window — is the last label in the group,
    so the line has to start at the left to have room to end at all. */
-@media (max-width:760px){.dsm-workbuddy-context-budget{flex:1 1 100%;justify-content:flex-start}}
+
 /* Pool switch, namespaced under .dsm-workbuddy-pool so it cannot collide with host styles. */
 .dsm-workbuddy-pool .sw{position:relative;display:inline-block;width:38px;height:22px;flex:none;cursor:pointer}
 .dsm-workbuddy-pool .sw input{position:absolute;opacity:0;width:0;height:0}

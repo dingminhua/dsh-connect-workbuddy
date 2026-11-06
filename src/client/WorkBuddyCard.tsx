@@ -3657,88 +3657,51 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                     looks saved but cannot take effect (issue #83). */}
                                 {offBlocked(model) ? <span className="dsm-workbuddy-model-off-flag">{t('row.modelOffRefused')}</span> : null}
                               </label>
-                              <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
-                                {/* ISSUE #215: the radios describe the EFFECTIVE
-                                    tier, and the effective tier comes from
-                                    `effectiveContextBudget()` — the same
-                                    function the backend's window is derived
-                                    from. The 200K radio used to read
-                                    `(activeContextBudgets[id] ?? 200_000) ===
-                                    200_000`, which lit it up for a model with
-                                    NO stored budget even though
-                                    `applyContextBudgets` kept the native 1M
-                                    window. The card therefore claimed a cap it
-                                    had not taken, and — because the radio
-                                    looked already chosen — a user who wanted
-                                    the default had nothing to click.
+                              {/* ONE SELECT, NOT A ROW OF RADIOS (requested).
+                                  It was three radios — 200K / 500K / native —
+                                  wrapping to a second line on a narrow column
+                                  and reading as three independent switches when
+                                  they are one choice.
 
-                                    Each tier is now matched against the
-                                    effective value, so exactly ONE radio is
-                                    lit and it is the one DSH is actually
-                                    told. */}
+                                  THE CORRECTNESS RULE IS UNCHANGED (issue #215).
+                                  The selected option is still computed from
+                                  `effectiveContextBudget()` — the same function
+                                  the backend's window is derived from — so the
+                                  control cannot claim a cap the host did not
+                                  take. Only the SHAPE changed: three clickable
+                                  targets became one, and the tiers stay exactly
+                                  the ones the model can actually use. */}
+                              <select
+                                className="dsm-workbuddy-context-budget"
+                                aria-label={t('row.contextBudget')}
+                                value={String(effectiveContextBudget(model.nativeContextWindow, activeContextBudgets[model.id]))}
+                                disabled={!canWrite || saving}
+                                onChange={event => {
+                                  const picked = Number(event.target.value)
+                                  // Native is stored as `undefined`, not as the
+                                  // window's number: storing the number would
+                                  // stop following the model if the upstream
+                                  // raises its window, and would make "native"
+                                  // indistinguishable from a cap that happens to
+                                  // equal it.
+                                  setContextBudget(model.id, picked === model.nativeContextWindow ? undefined : picked)
+                                }}
+                              >
+                                {/* Tiers are gated on the model's REAL window so
+                                    an option above it is never offered: a 192K
+                                    model would otherwise show a 500K choice that
+                                    silently lowers nothing. Same gates as the
+                                    radios had. */}
                                 {model.nativeContextWindow > 200_000
-                                  ? <label>
-                                      <input
-                                        type="radio"
-                                        name={`context-${model.id}`}
-                                        checked={effectiveContextBudget(model.nativeContextWindow, activeContextBudgets[model.id]) === 200_000}
-                                        disabled={!canWrite || saving}
-                                        onChange={() => { setContextBudget(model.id, 200_000) }}
-                                      />
-                                      <span>200K</span>
-                                    </label>
+                                  ? <option value={200_000}>200K</option>
                                   : null}
-                                {/* Half-meg tier. Gated on `> 500_000` rather than
-                                    `> 200_000` so it never offers a cap ABOVE a
-                                    model's real window: a 192K model (hy3) and a
-                                    300K one would otherwise get a button that
-                                    silently lowers nothing and misrepresents the
-                                    window. The upstream ladder is 300K/600K/960K
-                                    or 1M, so 500K is a deliberate convenience
-                                    point, not an upstream limit — hence a plain
-                                    literal here, like the 200K label above. */}
                                 {model.nativeContextWindow > 500_000
-                                  ? <label>
-                                      <input
-                                        type="radio"
-                                        name={`context-${model.id}`}
-                                        checked={effectiveContextBudget(model.nativeContextWindow, activeContextBudgets[model.id]) === 500_000}
-                                        disabled={!canWrite || saving}
-                                        onChange={() => { setContextBudget(model.id, 500_000) }}
-                                      />
-                                      <span>500K</span>
-                                    </label>
+                                  ? <option value={500_000}>500K</option>
                                   : null}
-                                {/* The native tier: "no cap". Choosing it CLEARS
-                                    the budget rather than storing the window's
-                                    number, so it keeps following the model if
-                                    the upstream raises the window — and so
-                                    "native" cannot be confused with a stored
-                                    budget that merely happens to equal it.
-                                    Always checked when the window is at or
-                                    below 200K, where it is the only tier. */}
-                                {model.nativeContextWindow > 200_000
-                                  ? <label>
-                                      <input
-                                        type="radio"
-                                        name={`context-${model.id}`}
-                                        checked={effectiveContextBudget(model.nativeContextWindow, activeContextBudgets[model.id]) === model.nativeContextWindow}
-                                        disabled={!canWrite || saving}
-                                        onChange={() => { setContextBudget(model.id, undefined) }}
-                                      />
-                                      <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
-                                    </label>
-                                  : <label>
-                                      <input
-                                        type="radio"
-                                        name={`context-${model.id}`}
-                                        checked
-                                        disabled
-                                        onChange={() => {}}
-                                      />
-                                      <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
-                                    </label>}
-                              </fieldset>
+                                <option value={model.nativeContextWindow}>
+                                  {formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}
+                                </option>
+                              </select>
                                 <div className="dsm-workbuddy-model-actions-buttons">
                                 {/* Test button. Deliberately NOT gated on `canWrite`
                                     or `saving`: a probe writes no settings, so it

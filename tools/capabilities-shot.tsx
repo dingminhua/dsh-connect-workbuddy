@@ -40,9 +40,15 @@ import { describe, it } from 'vitest'
 import { writeFileSync } from 'node:fs'
 
 function usageDocument(): Record<string, unknown> {
+  // Real windows, because the context-budget select's OPTIONS are derived from
+  // them: a fixture without `nativeContextWindow` renders the control with a
+  // single "unknown" option, which shows the widget's shape but not its content.
+  // Three different windows on purpose — one at the only-tier case, one that
+  // offers 200K + native, one that offers all three.
   const models = [
-    { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', creditMultiplier: 0 },
-    { id: 'glm-5.2', name: 'GLM-5.2', creditMultiplier: 0.79 },
+    { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', creditMultiplier: 0, nativeContextWindow: 1_000_000 },
+    { id: 'glm-5.2', name: 'GLM-5.2', creditMultiplier: 0.79, nativeContextWindow: 500_000 },
+    { id: 'hy3', name: 'Hunyuan3', creditMultiplier: 0.4, nativeContextWindow: 192_000 },
   ]
   return {
     status: 'signed-in',
@@ -63,6 +69,17 @@ function usageDocument(): Record<string, unknown> {
     checkin: { checkedIn: false, enabled: true },
   }
 }
+
+/**
+ * Which tab to render.
+ *
+ * The tool started as "capabilities", and the panel under review changes faster
+ * than the file name does: the model list needed the same fixture (real 564px
+ * column, real tokens, real typography) to judge a control that had just changed
+ * shape. Keeping one fixture with a switchable tab is what stops the next review
+ * from growing a third near-identical copy of this file.
+ */
+const PANEL = process.env['WB_SHOT_PANEL'] ?? 'capabilities'
 
 const TOKENS = `
 :root{
@@ -98,12 +115,13 @@ html,body{margin:0;background:#eceef1;font-family:-apple-system,"PingFang SC",sy
 
 const AUDIT = `
 <script>
+window.__WB_PANEL__ = '${PANEL}'
 addEventListener('load', () => {
   const out = {}
   const r = el => el.getBoundingClientRect()
   const box = el => { const b = r(el); return { t: Math.round(b.top), b: Math.round(b.bottom), l: Math.round(b.left), w: Math.round(b.width), h: Math.round(b.height) } }
   const cs = (el, p) => getComputedStyle(el).getPropertyValue(p).trim()
-  const panel = document.querySelector('#dsm-workbuddy-panel-capabilities')
+  const panel = document.querySelector('#dsm-workbuddy-panel-' + (window.__WB_PANEL__ || 'capabilities'))
   out.panel = panel ? box(panel) : null
 
   /* (1) THE LEFT EDGE of everything that is a "group" in this panel.
@@ -172,7 +190,7 @@ addEventListener('load', () => {
 })
 </script>`
 
-describe('capabilities shot', () => {
+describe('section shot', () => {
   it('writes the html', async () => {
     const { mount, stubFetch, t } = await import('../tests/pool-render-helpers.tsx')
     const { WorkBuddyCard } = await import('../src/client/WorkBuddyCard.tsx')
@@ -198,6 +216,15 @@ describe('capabilities shot', () => {
       set: async (field: string, next: unknown) => { settings[field] = next; return true },
     }
 
+    // A STATIC innerHTML DUMP LOSES A <select>'s SELECTION.
+    //
+    // `selectedIndex`/`value` are DOM properties, not attributes, so the dump
+    // emits every <option> without `selected` and the preview opens on the first
+    // tier — the 1M model looked like it had picked 200K, which reads as a
+    // correctness bug in the widget and is entirely an artefact of the dump.
+    // Re-stamp the current selection onto the markup before serialising. The
+    // widget's real behaviour is asserted in jsdom (see
+    // tests/issue215-context-budget-radio.spec.tsx), not here.
     stubFetch(() => ({ body: usageDocument() }))
     const m = await mount(WorkBuddyCard, { t: translate, settingsScope: scope, surface: 'settings' })
     await m.settle()
@@ -206,22 +233,31 @@ describe('capabilities shot', () => {
        hiding the two heavier panels keeps the section's rhythm measurable in one
        screenful without changing its own layout (all three are flex children of
        the same column, none is positioned against another). */
-    const tabs = Array.from(m.container.querySelectorAll('[role=tab]')) as HTMLElement[]
-    const capabilities = tabs.find(el => el.id === 'dsm-workbuddy-tab-capabilities')
-    capabilities?.click()
+    const tab = m.container.querySelector(`#dsm-workbuddy-tab-${PANEL}`)
+    if (tab === null) throw new Error(`no tab for panel ${PANEL}`)
+    ;(tab as HTMLElement).click()
     await m.settle()
 
     const ISOLATE = `
 <style>
 .dsm-workbuddy-page-head,.dsm-workbuddy-tabs,.dsm-workbuddy-tab-hint,.dsm-workbuddy-free-quota-warn{display:none!important}
-#dsm-workbuddy-panel-accounts,#dsm-workbuddy-panel-models,#dsm-workbuddy-panel-diag,#dsm-workbuddy-panel-sdk{display:none!important}
+${['accounts', 'models', 'capabilities', 'diag', 'sdk'].filter(id => id !== PANEL).map(id => `#dsm-workbuddy-panel-${id}`).join(',')}{display:none!important}
 /* NOT display:block!important — the panel's own display IS the thing under
    measurement (it is a flex column in 5.20.0). Forcing block here once hid the
    panel's real gap and made the audit report 0 for every block pair. */
-#dsm-workbuddy-panel-capabilities:not([hidden]){outline:1px dashed rgba(15,17,21,.22);outline-offset:8px}
+#dsm-workbuddy-panel-${PANEL}:not([hidden]){outline:1px dashed rgba(15,17,21,.22);outline-offset:8px}
 </style>`
 
-    const html = `<!doctype html><html><head><meta charset="utf-8"><style>${TOKENS}\n${WORKBUDDY_CARD_CSS.replace(/<\/style/gi, '<\\/style')}</style>${ISOLATE}</head><body><div class="dialog"><div class="dialog-title">设置</div><div class="dialog-header">✕</div><div class="dialog-nav"><i>账号</i><i>通用</i><i>模型</i><i class="on">dsh-connect-workbuddy</i></div><div class="dialog-body">${m.container.innerHTML}</div></div></body></html>`
-    writeFileSync('/tmp/wb-caps-preview.html', html.replace('</body>', `${AUDIT}</body>`))
+    const dump = m.container.cloneNode(true) as HTMLElement
+    // Carry the live selection into the markup (see the note above `stubFetch`).
+    for (const [index, select] of Array.from(m.container.querySelectorAll('select')).entries()) {
+      const copy = dump.querySelectorAll('select')[index]
+      if (copy === undefined) continue
+      for (const option of Array.from(copy.options)) option.removeAttribute('selected')
+      const chosen = copy.options[select.selectedIndex]
+      if (chosen !== undefined) chosen.setAttribute('selected', '')
+    }
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>${TOKENS}\n${WORKBUDDY_CARD_CSS.replace(/<\/style/gi, '<\\/style')}</style>${ISOLATE}</head><body><div class="dialog"><div class="dialog-title">设置</div><div class="dialog-header">✕</div><div class="dialog-nav"><i>账号</i><i>通用</i><i>模型</i><i class="on">dsh-connect-workbuddy</i></div><div class="dialog-body">${dump.innerHTML}</div></div></body></html>`
+    writeFileSync(`/tmp/wb-${PANEL}-preview.html`, html.replace('</body>', `${AUDIT}</body>`))
   })
 })
