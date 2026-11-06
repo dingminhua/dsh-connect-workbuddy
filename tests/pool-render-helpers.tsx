@@ -68,6 +68,20 @@ export interface Mounted {
    * keeps every select-driven assertion honest.
    */
   choose: (select: HTMLSelectElement, value: string) => Promise<void>
+  /**
+   * Type into a controlled `<input>` / `<textarea>` the way React sees it.
+   *
+   * `choose` is for `<select>`s: it assigns `.value` and dispatches `change`.
+   * On an `HTMLInputElement` that assignment goes through the PROTOTYPE setter,
+   * which also updates React's internal value tracker — so React concludes the
+   * value never changed and never calls `onChange`. The field looks typed and
+   * the component never hears about it, which is exactly the kind of silent
+   * no-op these harnesses exist to rule out.
+   *
+   * This sets the value with the React-owned setter (bypassing the tracker's
+   * update) and then dispatches `input`, which is what a keystroke produces.
+   */
+  typeInto: (input: HTMLInputElement | HTMLTextAreaElement, value: string) => Promise<void>
   settle: () => Promise<void>
 }
 
@@ -104,6 +118,22 @@ export async function mount(Component: any, props: any): Promise<Mounted> {
       Array.from(container.querySelectorAll<HTMLInputElement>('.dsm-workbuddy-pool-settings input[type=checkbox]')),
     async click(element: Element) {
       await act(async () => { (element as HTMLElement).click() })
+    },
+    async typeInto(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+      await act(async () => {
+        const proto = input instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        if (setter === undefined) {
+          input.value = value
+        } else {
+          // `set` called on the INSTANCE would hit React's patched own property;
+          // calling the prototype's writer is what leaves the tracker stale.
+          setter.call(input, value)
+        }
+        input.dispatchEvent(new window.Event('input', { bubbles: true }))
+      })
     },
     async choose(select: HTMLSelectElement, value: string) {
       await act(async () => {

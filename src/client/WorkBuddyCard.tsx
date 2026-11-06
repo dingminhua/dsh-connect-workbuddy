@@ -28,12 +28,14 @@ import { createElement as h } from 'react'
 import type { ErrorInfo, ReactElement, ReactNode } from 'react'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
+  nextRegionCnBase,
   nextRegionCreditPosition,
   nextRegionCreditsShown,
   nextRegionEnabled,
   nextRegionImageToolEnabled,
   nextRegionPreferredVideoModels,
   nextRegionVideoToolEnabled,
+  regionCnBaseOf,
   regionCreditsShownOf,
   regionEnabledOf,
   regionImageToolEnabledOf,
@@ -64,7 +66,8 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
+import { resolveCnGateway } from '../cn-gateway.ts'
 import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { DeviceSdkPanel } from './DeviceSdkPanel.tsx'
@@ -743,6 +746,15 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
   const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
+  /**
+   * The CN gateway editor's draft (issue #220). `undefined` = "not edited", so
+   * the field shows the SAVED value and a background refresh cannot overwrite
+   * what the user is typing — the same rule the model drafts follow.
+   */
+  const [cnBaseDraft, setCnBaseDraft] = useState<string | undefined>(undefined)
+  const [cnBaseSaving, setCnBaseSaving] = useState(false)
+  const [cnBaseError, setCnBaseError] = useState<string | undefined>(undefined)
+  const [cnBaseNotice, setCnBaseNotice] = useState<string | undefined>(undefined)
   /**
    * The quick-adjust pins of the CLI route (model, effort, region order) made
    * by THIS card instance.
@@ -2711,6 +2723,123 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    * NOT gated on the active tab's provider: the row is a property of the whole
    * plugin, not of one region, and a signed-out card can still turn it on.
    */
+  /**
+   * The CN gateway override editor (issue #220).
+   *
+   * A DRAFT + explicit Save, unlike the switches above it: a host name is typed,
+   * so committing per keystroke would write `https://w`, `https://wb`, … — six
+   * settings writes and six `warn` log lines for one word. The switches commit on
+   * the click precisely because a click IS a complete statement; a text field is
+   * not.
+   *
+   * CN only. The international gateways follow the credential's own brand domain
+   * (`workbuddy.ai` / `codebuddy.ai`), where an override against a host of a
+   * DIFFERENT brand is rejected by the upstream — there is no "equivalent host"
+   * to fall back to, so the control is absent on that tab rather than present and
+   * unusable.
+   *
+   * The draft is validated HERE and not by the Host: the Host falls back to the
+   * built-in gateway and logs, which keeps a running process correct but tells a
+   * half-attending user nothing. Refusing the save with the specific rule it
+   * broke ("not https" vs "not a CN brand") is what makes the setting findable.
+   */
+  const cnBaseSaved = regionCnBaseOf(settingsScope?.getSnapshot().value, 'cn')
+  const cnBaseDraftValue = cnBaseDraft ?? cnBaseSaved
+  const cnBaseDirty = cnBaseDraft !== undefined && cnBaseDraft.trim() !== cnBaseSaved.trim()
+  const cnBasePreview = resolveCnGateway(cnBaseDraftValue)
+
+  const saveCnBase = async (): Promise<void> => {
+    if (settingsScope === undefined || cnBaseSaving) return
+    const resolved = cnBasePreview
+    if (!resolved.ok) {
+      // Worded per rule, in the block itself: a single "invalid" would leave the
+      // user guessing which of the three checks their value failed.
+      setCnBaseError(
+        resolved.reason === 'malformed'
+          ? t('row.cnBaseInvalidMalformed')
+          : resolved.reason === 'insecure' ? t('row.cnBaseInvalidInsecure') : t('row.cnBaseInvalidHost'),
+      )
+      return
+    }
+    setCnBaseSaving(true)
+    setCnBaseError(undefined)
+    try {
+      const next = resolved.overridden ? resolved.base : ''
+      await writeRegionCnBase(
+        settingsScope,
+        'cn',
+        next,
+        nextRegionCnBase(settingsScope.getSnapshot().value, 'cn', next),
+      )
+      if (mounted.current) {
+        setCnBaseDraft(undefined)
+        setCnBaseNotice(t(next === '' ? 'row.cnBaseCleared' : 'row.cnBaseSaved'))
+      }
+      await refreshUsage('cn')
+    } catch (error: unknown) {
+      if (mounted.current) setCnBaseError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setCnBaseSaving(false)
+    }
+  }
+
+  const cnBasePreference = activeRegion !== 'cn'
+    ? null
+    : (
+      <div className="dsm-workbuddy-cnbase" title={t('row.cnBaseHint')}>
+        <label className="dsm-workbuddy-cnbase-row">
+          <span className="dsm-workbuddy-pref-copy">
+            <span className="dsm-workbuddy-pref-label">{t('row.cnBaseLabel')}</span>
+            <span className="dsm-workbuddy-pref-hint">{t('row.cnBaseHint')}</span>
+          </span>
+          <input
+            type="url"
+            className="dsm-workbuddy-cnbase-input"
+            value={cnBaseDraftValue}
+            placeholder={t('row.cnBasePlaceholder')}
+            disabled={!canWrite || saving || cnBaseSaving}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(event: { target: { value: string } }) => {
+              setCnBaseDraft(event.target.value)
+              setCnBaseError(undefined)
+              setCnBaseNotice(undefined)
+            }}
+          />
+        </label>
+        {cnBaseError !== undefined
+          ? <p className="dsm-workbuddy-cnbase-error" role="alert">{cnBaseError}</p>
+          : null}
+        {cnBaseError === undefined && cnBaseNotice !== undefined
+          ? <p className="dsm-workbuddy-cnbase-notice" role="status">{cnBaseNotice}</p>
+          : null}
+        {/* The Save pair appears only while there is something to save: a
+            permanently visible pair of buttons under a field nobody edited turns
+            a settings row into a form, and the section's own note says the other
+            controls here commit on the click. */}
+        {cnBaseDirty
+          ? <div className="dsm-workbuddy-cnbase-actions">
+              <button
+                type="button"
+                className="dsm-btn dsm-btn-outline"
+                disabled={cnBaseSaving}
+                onClick={() => { setCnBaseDraft(undefined); setCnBaseError(undefined); setCnBaseNotice(undefined) }}
+              >
+                {t('row.poolDiscard')}
+              </button>
+              <button
+                type="button"
+                className="dsm-btn dsm-btn-primary"
+                disabled={cnBaseSaving}
+                onClick={() => { void saveCnBase() }}
+              >
+                {cnBaseSaving ? t('row.poolSaving') : t('row.poolSaved')}
+              </button>
+            </div>
+          : null}
+      </div>
+    )
+
   const sidebarPanelPreference = (
     <label className="dsm-workbuddy-pref" title={t('row.sidebarPanelHint')}>
       <input
@@ -3791,6 +3920,11 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 hidden={signedIn && panel !== 'capabilities'}
               >
                 <p className="dsm-workbuddy-panel-note">{t('row.panelCapabilitiesHint')}</p>
+                {/* The CN gateway override, first: it is the only control here
+                    that a user reaches for when NOTHING works, and burying it
+                    under four switches is how the reporter of issue #220 spent a
+                    day on the wrong layer. */}
+                {cnBasePreference}
                 {creditPreferences}
                 {upstreamSwitches}
                 {channelRejectContinuePreference}
@@ -3827,6 +3961,27 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                               : status.domain}
                           </span>
                         </div>
+                        {/* WHICH GATEWAY IS ACTUALLY IN FORCE (issue #220).
+                            The row reports the RESOLVED value, not the saved
+                            string: a saved value that failed validation still
+                            routes to the built-in gateway, and a diagnostics
+                            panel that echoed the unvalidated text would tell a
+                            user their override is live when it is not. Only on
+                            the CN tab — the international gateways follow the
+                            credential's brand and have no override. */}
+                        {status.region === 'cn'
+                          ? <div className="dsm-workbuddy-diag-row">
+                              <span className="dsm-workbuddy-diag-label">{t('row.diagCnBase')}</span>
+                              <span className="dsm-workbuddy-diag-value dsm-workbuddy-diag-mono">
+                                {(() => {
+                                  const resolved = resolveCnGateway(regionCnBaseOf(settingsScope?.getSnapshot().value, 'cn'))
+                                  return resolved.ok && resolved.overridden
+                                    ? resolved.base
+                                    : t('row.diagCnBaseDefault')
+                                })()}
+                              </span>
+                            </div>
+                          : null}
                         <div className="dsm-workbuddy-diag-row">
                           <span className="dsm-workbuddy-diag-label">{t('row.diagAccount')}</span>
                           <span className="dsm-workbuddy-diag-value">{nameOf(status.accountName)}</span>

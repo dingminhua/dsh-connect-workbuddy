@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  nextRegionCnBase,
   nextRegionEnabled,
   nextRegionSlots,
+  regionCnBaseOf,
   regionEnabledOf,
   regionsFieldIsCorrupt,
   regionsMapOf,
@@ -277,5 +279,67 @@ describe('regionStateOf: a null slot is "no slot", not a value', () => {
   it('does not make regionEnabled throw', () => {
     expect(() => regionEnabled(nullSlot, 'cn')).not.toThrow()
     expect(regionEnabled(nullSlot, 'cn')).toBe(true)
+  })
+})
+
+/**
+ * The CN gateway override's slot helpers (issue #220).
+ *
+ * These pin the two invariants every other region helper in this file already
+ * pins, because `cnBase` shares a slot with the model directory, the pool
+ * preferences and four switches: writing a host must not disturb any of them,
+ * and reading a malformed value must not throw.
+ */
+describe('cnBase in the region slot (issue #220)', () => {
+  it('writes only cnBase, carrying the rest of the slot through', () => {
+    const before = {
+      regions: {
+        cn: { enabled: true, enabledModelIds: ['m-1'], cnBase: 'https://old.example' },
+        global: { enabled: false },
+      },
+    }
+    // The RETURN value is the `regions` MAP, not the settings section — i.e.
+    // exactly what `scope.set('regions', …)` takes (see `nextRegionSlots`).
+    const next = nextRegionCnBase(before, 'cn', 'https://wb.tencentbuddy.com')
+    const cn = next['cn'] as Record<string, unknown>
+    expect(cn['cnBase']).toBe('https://wb.tencentbuddy.com')
+    // Everything else in the slot survives the write.
+    expect(cn['enabled']).toBe(true)
+    expect(cn['enabledModelIds']).toEqual(['m-1'])
+    // ...and the sibling region is untouched.
+    expect(next['global']).toEqual({ enabled: false })
+  })
+
+  it('keeps an empty value as an explicit key, not a deletion', () => {
+    // `''` means "back to the built-in gateway" and has to survive a read-back —
+    // the same rule as `accountId`'s Clear sentinel in `nextAccountsSelection`.
+    const next = nextRegionCnBase({ regions: { cn: { cnBase: 'https://wb.tencentbuddy.com' } } }, 'cn', '')
+    const cn = next['cn'] as Record<string, unknown>
+    expect('cnBase' in cn).toBe(true)
+    expect(cn['cnBase']).toBe('')
+  })
+
+  it('reads an absent value as empty, and a malformed one as empty rather than throwing', () => {
+    expect(regionCnBaseOf({}, 'cn')).toBe('')
+    expect(regionCnBaseOf({ regions: {} }, 'cn')).toBe('')
+    // The settings mirror can hold whatever a previous version wrote; taking the
+    // whole capabilities panel down over one bad field would be a worse failure
+    // than treating it as "not configured".
+    expect(regionCnBaseOf({ regions: { cn: { cnBase: 42 } } }, 'cn')).toBe('')
+    expect(regionCnBaseOf({ regions: { cn: { cnBase: null } } }, 'cn')).toBe('')
+    expect(regionCnBaseOf({ regions: { cn: { cnBase: 'https://wb.tencentbuddy.com' } } }, 'cn'))
+      .toBe('https://wb.tencentbuddy.com')
+  })
+
+  it('reads the whole settings section as well as the bare regions map', () => {
+    const whole = { regions: { cn: { cnBase: 'https://wb.tencentbuddy.com' } }, authFile: '/x' }
+    expect(regionCnBaseOf(whole, 'cn')).toBe('https://wb.tencentbuddy.com')
+    expect(regionCnBaseOf({ cn: { cnBase: 'https://wb.tencentbuddy.com' } }, 'cn')).toBe('https://wb.tencentbuddy.com')
+  })
+
+  it('defaults the Host-side read to empty for a config that never set it', () => {
+    // The overwhelmingly common case: every existing profile reaches this path
+    // with no field at all, and it must resolve to the built-in gateway.
+    expect(regionStateOf({} as Config, 'cn').cnBase).toBeUndefined()
   })
 })

@@ -786,6 +786,38 @@ export async function writeRegionEnabled(
 }
 
 /**
+ * Write the CN gateway override (issue #220), with the same landed-check as
+ * every other settings write.
+ *
+ * Carries the region's whole slot through untouched — only `cnBase` changes —
+ * so writing a host cannot drop the model directory, the pool preferences or
+ * the switches that live beside it in the same slot.
+ *
+ * Validation is deliberately NOT here: the caller runs `resolveCnGateway` before
+ * calling, because the rejection reason has to be worded for the user ("not a
+ * known CN brand" vs "must be https"), and a bare `WorkBuddySettingsWriteError`
+ * cannot say that. This function's only job is landing the value.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param region - the region being written (always `cn` today: the international
+ *   gateways follow the credential's brand domain and have no counterpart).
+ * @param cnBase - the validated base URL, or `''` to restore the built-in gateway.
+ * @param slot - the region's COMPLETE next slot (caller owns the merge).
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writeRegionCnBase(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  cnBase: string,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['cnBase'] === cnBase
+  })
+}
+
+/**
  * Show or hide one region's sidebar credit line, with the same landed-check as
  * every other settings write.
  *

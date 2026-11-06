@@ -39,6 +39,7 @@ import { readDeviceTokenFile, WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-t
 import { readDeviceSettings } from './device-profile.ts'
 import { createTuringSdk } from './turing-sdk.ts'
 import { WorkBuddyUpstreamClient, APP_VERSION, DEFAULT_WIRE_PROFILE, describeRequestHeaderNames } from './upstream.ts'
+import { resolveCnGateway, WORKBUDDY_CN_BASE_ENV } from './cn-gateway.ts'
 import type { WorkBuddyRegion, WorkBuddyWireIdentity } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS, FALLBACK_WORKBUDDY_MODELS_GLOBAL } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -228,9 +229,38 @@ function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`)
 }
 
+/**
+ * The CN gateway override as the CLI can see it (issue #220).
+ *
+ * `doctor` runs in its own process and never loads the plugin's settings, so the
+ * card's field is invisible here. Without this, a user who fixed their network
+ * would run `doctor` and get a report measured against the gateway their network
+ * resets — a diagnostics tool lying about which host it probed.
+ *
+ * An invalid value is REPORTED and then ignored rather than silently dropped:
+ * `doctor` is where a user goes to find out why nothing works, so "your
+ * override was rejected because X" is exactly the answer they need.
+ */
+function cliCnBase(): string {
+  const raw = (process.env[WORKBUDDY_CN_BASE_ENV] ?? '').trim()
+  if (raw === '') return ''
+  const resolved = resolveCnGateway(raw)
+  if (!resolved.ok) {
+    process.stderr.write(
+      `warning: ignoring ${WORKBUDDY_CN_BASE_ENV}="${raw}" — ${
+        resolved.reason === 'malformed' ? 'not an absolute URL'
+          : resolved.reason === 'insecure' ? 'only https is accepted'
+            : 'host is not one of the CN brands'
+      }\n`,
+    )
+    return ''
+  }
+  return resolved.overridden ? resolved.base : ''
+}
+
 /** One region-scoped credential store (its own plugin-owned copy file). */
 function makeStore(region: WorkBuddyRegion): WorkBuddyCredentialStore {
-  const client = new WorkBuddyUpstreamClient()
+  const client = new WorkBuddyUpstreamClient(undefined, {}, { cnBase: cliCnBase })
   return new WorkBuddyCredentialStore({
     region,
     refresh: credential => client.refreshToken(credential),
@@ -239,7 +269,7 @@ function makeStore(region: WorkBuddyRegion): WorkBuddyCredentialStore {
 
 /** The region-unscoped store (reads every plugin-owned copy). */
 function makeAnyStore(): WorkBuddyCredentialStore {
-  const client = new WorkBuddyUpstreamClient()
+  const client = new WorkBuddyUpstreamClient(undefined, {}, { cnBase: cliCnBase })
   return new WorkBuddyCredentialStore({ refresh: credential => client.refreshToken(credential) })
 }
 
@@ -651,7 +681,7 @@ async function regionStatus(region: WorkBuddyRegion): Promise<{
   creditsError?: string
 }> {
   const store = makeStore(region)
-  const client = new WorkBuddyUpstreamClient()
+  const client = new WorkBuddyUpstreamClient(undefined, {}, { cnBase: cliCnBase })
   const authStatus = await store.status()
   const accounts = await store.accounts()
   const selected = accounts.find(account => account.selected)

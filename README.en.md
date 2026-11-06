@@ -93,6 +93,17 @@ Credentials are read (read-only) from the WorkBuddy desktop app's own auth file.
 
 **Encrypted credential fields**: newer desktop builds (Windows first) replace the auth file's `accessToken` / `refreshToken` strings with an AES-256-GCM envelope (`{"$wbEncrypted":1,"envelope":"…"}`), and the account's **display name (`nickname`) is encrypted the same way** — left unopened it degrades to a bare uin number. The envelope is sealed with a field key **compiled into the app itself**, not a user secret — so the plugin ships no key copy. When it meets an encrypted document it runs the installed app with `ELECTRON_RUN_AS_NODE` and calls that app's own native binding (`electron_browser_workbuddy_storage.loggerGet()`) to fetch the same payload and derive the key locally: it asks the very build that wrote the file. The key is cached in process memory only — never on disk, never in logs. Plain-string documents (macOS, older Windows builds) take the original path and never spawn a child process. `account.phoneNumber` is encrypted there too, and the plugin deliberately **neither reads nor displays it**. If the app lives somewhere unusual, point `WORKBUDDY_APP_EXECUTABLE` at its executable.
 
+## Every model times out on a corporate network?
+
+If **every** model times out while the WorkBuddy desktop app works fine on the same machine, the likely cause is a gateway blocked by **TLS SNI**: `copilot.tencent.com` is reset before any HTTP is sent (fails in milliseconds), while the app itself also uses `wb.tencentbuddy.com`.
+
+Open **Settings → WorkBuddy → Capabilities** and set **CN gateway host** to `https://wb.tencentbuddy.com`. Leave it empty for the built-in gateway. **Chat, the model catalog, check-in, credits and image generation all follow it** — a chat-only fix is worse than none.
+
+Only **https** is accepted, on a subdomain of `copilot.tencent.com`, `tencentbuddy.com`, `workbuddy.cn` or `codebuddy.cn`. That is not pedantry: the value is prefixed onto every request carrying `Authorization: Bearer`, so accepting an arbitrary URL would mean accepting an arbitrary destination for your token. **The international region is unaffected** — its tokens are brand-bound, and a different host only ever 401s. Measurements and design notes: [`docs/CN_GATEWAY_FALLBACK.md`](docs/CN_GATEWAY_FALLBACK.md).
+
+> `doctor` runs in its own process and cannot see plugin settings, so that path uses an environment variable: `WORKBUDDY_CN_BASE=https://wb.tencentbuddy.com dsh plugin --profile desktop exec dsh-connect-workbuddy doctor`
+
+
 ## Account pool
 
 <p align="center">

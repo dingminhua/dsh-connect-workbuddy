@@ -32,6 +32,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkBuddyCredential } from './auth.ts'
+import { CN_GATEWAY_DEFAULT, resolveCnGateway } from './cn-gateway.ts'
+import type { CnGatewayResolution } from './cn-gateway.ts'
 import { deriveDeviceId } from './device-id.ts'
 import type { WorkBuddyDeviceProfile, WorkBuddyDeviceProfileLookup } from './device-profile.ts'
 import { ensureDeviceSalt } from './device-salt.ts'
@@ -1552,12 +1554,33 @@ export function globalBase(domain: string): string {
   return GLOBAL_BASE
 }
 
-function chatBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? globalBase(credential.domain) : CN_CHAT_BASE
+/**
+ * The CN gateway base for this process, resolved ONCE at construction.
+ *
+ * Empty means "no override", and then the constant is used — the pre-#220
+ * behaviour, byte for byte. A non-empty value has already passed
+ * `resolveCnGateway`'s allowlist, so this is a validated host and not whatever
+ * happened to be in the settings file.
+ *
+ * Deliberately injected rather than read from config at each call site: the CN
+ * base feeds a Bearer token, so "which host" must be decided in exactly one
+ * place that can be pointed at and audited, not re-derived by ten request
+ * builders. The class also swaps it when the setting changes (the mount
+ * reconstructs the client on a volatile update).
+ */
+function chatBase(credential: WorkBuddyCredential, cnBase?: string): string {
+  if (regionOf(credential.domain) === 'global') return globalBase(credential.domain)
+  return cnBase === undefined || cnBase === '' ? CN_CHAT_BASE : cnBase
 }
 
-function billingBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? globalBase(credential.domain) : CN_BILLING_BASE
+function billingBase(credential: WorkBuddyCredential, cnBase?: string): string {
+  if (regionOf(credential.domain) === 'global') return globalBase(credential.domain)
+  // The billing host follows the override too, and MUST: in the network #220 is
+  // about, `www.codebuddy.cn` is filtered on the same SNI rule as
+  // `copilot.tencent.com` (the reporter measured all three CN brand hosts
+  // reset). An override that fixed chat but left check-in and credits on a
+  // blocked host would look like a half-broken plugin rather than a workaround.
+  return cnBase === undefined || cnBase === '' ? CN_BILLING_BASE : cnBase
 }
 
 function originReferer(credential: WorkBuddyCredential): string {
@@ -4058,6 +4081,14 @@ export class WorkBuddyUpstreamClient {
   private readonly deviceProfiles: WorkBuddyDeviceProfileLookup | undefined
   /** 真实值档的 token 源（本机安装的桌面端 SDK）；未接线时为 undefined。 */
   private readonly realDevice: TuringTokenSource | undefined
+  /**
+   * CN 网关 base（issue #220）。空 = 用内置常量，即 #220 之前的行为逐字节不变。
+   *
+   * 只影响 CN 区域：国际版仍然跟随凭据自己的域（`workbuddy.ai` /
+   * `codebuddy.ai`），因为国际 token 跨品牌互不通用，那里没有"换一个同构主机"
+   * 这回事。返回值必须已由 `resolveCnGateway` 的允许清单校验过，这个类不重新校验。
+   */
+  private readonly cnBaseOf: () => string
 
   constructor(
     private readonly onFallback?: (message: string) => void,
@@ -4071,8 +4102,18 @@ export class WorkBuddyUpstreamClient {
       deviceProfiles?: WorkBuddyDeviceProfileLookup
       /** 真实值档的 token 源（`src/turing-sdk.ts`）。 */
       realDevice?: TuringTokenSource
+      /**
+       * CN 网关 base 覆盖（issue #220）的**读取器**，不是值。
+       *
+       * 为什么是函数：`regions` 是 volatile 字段，用户改完不必重启插件。若这里收
+       * 一个字符串，改设置在进程生命周期内不会生效——用户会认为「填了没反应」，
+       * 而这恰好是本设置唯一的用途。每次请求现问一次，与 `regionEnabled` 读活值
+       * 同一条规则。返回空串表示用内置网关。
+       */
+      cnBase?: () => string
     } = {},
   ) {
+    this.cnBaseOf = options.cnBase === undefined ? () => '' : options.cnBase
     this.baseIdentity = resolveWireIdentity(identity)
     this.deviceProfiles = options.deviceProfiles
     this.realDevice = options.realDevice
@@ -4172,7 +4213,7 @@ export class WorkBuddyUpstreamClient {
       if (signal?.aborted === true) {
         return { ok: false, status: 0, kind: 'server', message: 'cancelled before send' }
       }
-      response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
+      response = await fetch(`${chatBase(credential, this.cnBaseOf())}/v2/chat/completions`, {
         method: 'POST',
         headers,
         body: bodyJson,
@@ -4258,7 +4299,7 @@ export class WorkBuddyUpstreamClient {
       ceiling.abort(new Error(`no response within ${PROBE_TIMEOUT_MS}ms`))
     }, PROBE_TIMEOUT_MS)
     try {
-      response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
+      response = await fetch(`${chatBase(credential, this.cnBaseOf())}/v2/chat/completions`, {
         method: 'POST',
         headers,
         body: bodyJson,
@@ -4279,7 +4320,7 @@ export class WorkBuddyUpstreamClient {
 
   /** POST the token-refresh endpoint; the caller merges the outcome. */
   async refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome> {
-    const response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
+    const response = await fetch(`${chatBase(credential, this.cnBaseOf())}/v2/plugin/auth/token/refresh`, {
       method: 'POST',
       headers: refreshHeaders(credential),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
@@ -4360,7 +4401,7 @@ export class WorkBuddyUpstreamClient {
       return withPromos(selectCliModels(data['models'], data['agents'], keepModelIds), data)
     }
     const readCatalog = async (path: string): Promise<readonly WorkBuddyUpstreamModel[]> => {
-      const response = await fetch(`${chatBase(credential)}${path}`, {
+      const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${path}`, {
         headers: {
           'Authorization': `Bearer ${credential.accessToken}`,
           'Accept': 'application/json',
@@ -4410,7 +4451,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<Map<string, WorkBuddyBusyLevel>> {
     const levels = new Map<string, WorkBuddyBusyLevel>()
     for (const batch of batchModelIds(modelIds)) {
-      const response = await fetch(`${chatBase(credential)}${MODEL_BUSY_PATH}`, {
+      const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${MODEL_BUSY_PATH}`, {
         method: 'POST',
         headers: {
           // 元数据读，**保持 5.16.0**：`legacyCommonHeaders` 而不是
@@ -4459,7 +4500,7 @@ export class WorkBuddyUpstreamClient {
     signal?: AbortSignal,
   ): Promise<readonly WorkBuddyMediaModel[]> {
     const readMedia = async (path: string): Promise<readonly WorkBuddyMediaModel[]> => {
-      const response = await fetch(`${chatBase(credential)}${path}`, {
+      const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${path}`, {
         headers: {
           'Authorization': `Bearer ${credential.accessToken}`,
           'Accept': 'application/json',
@@ -4512,7 +4553,7 @@ export class WorkBuddyUpstreamClient {
     request: { readonly model: string; readonly prompt: string; readonly size?: string },
     signal?: AbortSignal,
   ): Promise<WorkBuddyImageOutcome> {
-    const response = await fetch(`${chatBase(credential)}${IMAGE_GENERATIONS_PATH}`, {
+    const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${IMAGE_GENERATIONS_PATH}`, {
       method: 'POST',
       headers: imageHeaders(credential, await this.wireIdentity(credential)),
       body: JSON.stringify(buildImageBody(request)),
@@ -4562,7 +4603,7 @@ export class WorkBuddyUpstreamClient {
         'INVALID_ARGS',
       )
     }
-    const response = await fetch(`${chatBase(credential)}${IMAGE_EDITS_PATH}`, {
+    const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${IMAGE_EDITS_PATH}`, {
       method: 'POST',
       headers: imageHeaders(credential, await this.wireIdentity(credential)),
       body: JSON.stringify(buildEditBody(request)),
@@ -4624,7 +4665,7 @@ export class WorkBuddyUpstreamClient {
       },
       isImageToVideo,
     )
-    const response = await fetch(`${chatBase(credential)}${VIDEO_GENERATIONS_PATH}`, {
+    const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${VIDEO_GENERATIONS_PATH}`, {
       method: 'POST',
       headers: imageHeaders(credential, await this.wireIdentity(credential)),
       body: JSON.stringify(body),
@@ -4678,7 +4719,7 @@ export class WorkBuddyUpstreamClient {
       }
       let payload: unknown
       try {
-        const response = await fetch(`${chatBase(credential)}${VIDEO_TASKS_PATH}`, {
+        const response = await fetch(`${chatBase(credential, this.cnBaseOf())}${VIDEO_TASKS_PATH}`, {
           method: 'POST',
           headers: imageHeaders(credential, await this.wireIdentity(credential)),
           body: JSON.stringify({ task_id: taskId }),
@@ -4772,7 +4813,7 @@ export class WorkBuddyUpstreamClient {
 
   /** Query today's check-in status without changing account state. */
   async fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus> {
-    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/checkin-activity-status`, {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}/v2/billing/meter/checkin-activity-status`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
       body: '{}',
@@ -4841,7 +4882,7 @@ export class WorkBuddyUpstreamClient {
     credential: WorkBuddyCredential,
     path: string,
   ): Promise<WorkBuddyBenefit> {
-    const response = await fetch(`${billingBase(credential)}${path}`, {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}${path}`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
       body: '{}',
@@ -4892,7 +4933,7 @@ export class WorkBuddyUpstreamClient {
     credential: WorkBuddyCredential,
     kind: WorkBuddyBenefit['kind'],
   ): Promise<void> {
-    const response = await fetch(`${billingBase(credential)}${BENEFIT_CLAIM_PATHS[kind]}`, {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}${BENEFIT_CLAIM_PATHS[kind]}`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
       body: '{}',
@@ -4904,7 +4945,7 @@ export class WorkBuddyUpstreamClient {
 
   /** Claim today's check-in reward. The browser route guards this mutation. */
   async claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim> {
-    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/daily-checkin`, {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}/v2/billing/meter/daily-checkin`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
       body: '{}',
@@ -4944,7 +4985,7 @@ export class WorkBuddyUpstreamClient {
    *          reporting zero).
    */
   private async fetchEnterpriseCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits | undefined> {
-    const response = await fetch(`${billingBase(credential)}/billing/meter/get-enterprise-user-usage`, {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}/billing/meter/get-enterprise-user-usage`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
       body: JSON.stringify({}),
@@ -5027,7 +5068,7 @@ export class WorkBuddyUpstreamClient {
       date.getMinutes().toString().padStart(2, '0'),
       date.getSeconds().toString().padStart(2, '0'),
     ].join(':')
-    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/get-user-resource`, {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}/v2/billing/meter/get-user-resource`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
       body: JSON.stringify({

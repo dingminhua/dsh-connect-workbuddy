@@ -186,6 +186,23 @@ export const WORKBUDDY_CARD_CSS = `
    CONTRAST colour, so a ticked box painted itself as a heavy black pill — the
    loudest object in a section made of plain 13px text. */
 .dsm-workbuddy-pref input{flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+/* ── The CN gateway override (issue #220) ─────────────────────────────────────
+ * One bordered block so it does not read as a fifth switch: every other control
+ * in this section is a checkbox that commits on the click, this one is a text
+ * field that needs an explicit Save. Giving it a card of its own is what says
+ * "this answers a different question".
+ *
+ * The row wraps, and the input takes the whole width when it does: a host name is
+ * long (https://wb.tencentbuddy.com is 26 characters) and a half-width input in
+ * the panel column would show about eight of them. */
+.dsm-workbuddy-cnbase{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#24262c)}
+.dsm-workbuddy-cnbase-row{display:flex;flex-direction:column;gap:8px}
+.dsm-workbuddy-cnbase-input{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.dsm-workbuddy-cnbase-input:disabled{opacity:.5;cursor:default}
+.dsm-workbuddy-cnbase-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+.dsm-workbuddy-cnbase-error{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary,#ef4444)}
+.dsm-workbuddy-cnbase-notice{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-success-primary,#22a06b)}
+.dsm-workbuddy-cnbase-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .dsm-workbuddy-pref-check,.dsm-workbuddy-image-tool-check,.dsm-workbuddy-video-tool-check,.dsm-workbuddy-cli-bridge-check,.dsm-workbuddy-sidebar-panel-check,.dsm-workbuddy-upstream-check,.dsm-workbuddy-channel-continue-check{inline-size:15px;block-size:15px;margin:3px 0 0}
 /* The upstream-identity switches are their own group, so they get a divider
    above them instead of relying on spacing alone: they change the request the

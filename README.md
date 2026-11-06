@@ -103,6 +103,24 @@ DSH PiAiAdapter（每个 provider 一套）
 
 **加密凭据字段**：新版桌面端（Windows 先行）把 auth 文件里的 `accessToken` / `refreshToken` 从纯字符串改为 `{"$wbEncrypted":1,"envelope":"…"}` 的 AES-256-GCM 信封，**账号昵称 `nickname` 同样被加密**（不解密就会退回成一串 uin 数字）。信封用的是 App **自身构建期内置**的字段密钥，并非用户密钥，因此插件不内置任何密钥副本，而是在需要时用 `ELECTRON_RUN_AS_NODE` 调用已安装 App 的原生绑定（`electron_browser_workbuddy_storage.loggerGet()`）取回同一份载荷并就地派生密钥——也就是「向写下这个文件的那个构建本身询问」。密钥只在本进程内存中缓存，不落盘、不进日志；纯字符串文件（macOS 与旧版 Windows）走原路径，一次子进程都不会启动。其中的 `account.phoneNumber` 虽同样加密，插件**不读取也不显示**。若 App 安装在非常规位置，用 `WORKBUDDY_APP_EXECUTABLE` 指定其可执行文件。
 
+## 公司网络连不上 CN 网关？
+
+如果插件在某个网络里**全部模型都超时**，而同一台机器上的 WorkBuddy 桌面客户端**正常**，那多半是网关按
+**TLS SNI** 被拦了：`copilot.tencent.com` 会被即时重置（连接在毫秒级就失败），但客户端自己还有一条
+备选主机 `wb.tencentbuddy.com`。
+
+在**设置 → WorkBuddy → 能力**栏的「CN 网关主机」里填 `https://wb.tencentbuddy.com` 并保存即可，
+留空则回到内置网关。**chat、模型目录、签到、积分、生图都会跟着走**——只改 chat 的半个修复比不改更糟。
+
+这条设置只接受 **https**，且主机必须是 `copilot.tencent.com` / `tencentbuddy.com` / `workbuddy.cn` /
+`codebuddy.cn` 之一下的子域。这不是为了刁难：这个值会被拼在每一条带 `Authorization: Bearer` 的请求前面，
+允许任意 URL 就等于允许把 token 转发到任意主机。**国际版不受影响**——全球 token 按品牌绑定，
+换主机只会 401。技术细节与实测数据见 [`docs/CN_GATEWAY_FALLBACK.md`](docs/CN_GATEWAY_FALLBACK.md)。
+
+> `doctor` 跑在独立进程里、读不到插件设置，所以那条路上用环境变量：
+> `WORKBUDDY_CN_BASE=https://wb.tencentbuddy.com dsh plugin --profile desktop exec dsh-connect-workbuddy doctor`
+
+
 ## 账号池
 
 <p align="center">

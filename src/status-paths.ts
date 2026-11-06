@@ -711,6 +711,38 @@ export function nextRegionEnabled(
 }
 
 /**
+ * Build the next `regions` FIELD carrying one region's CN gateway override
+ * (issue #220).
+ *
+ * Same whole-slot merge as every other helper here: only `cnBase` changes, so
+ * setting a host cannot drop the model directory, the pool preferences or the
+ * switches that share this slot. An empty string is written as-is rather than
+ * deleting the key — it means "back to the built-in gateway", which must survive
+ * a read-back, and `resolveCnGateway('')` already reads both the same way.
+ */
+export function nextRegionCnBase(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  cnBase: string,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, { ...regionSlotOf(value, region), cnBase })
+}
+
+/**
+ * Read one region's saved CN gateway override, or `''` when it has none.
+ *
+ * Deliberately tolerant of a non-string: the settings mirror can hold whatever a
+ * previous version wrote, and throwing here would take out the whole capabilities
+ * panel over one malformed field. A value that is not a string is treated as
+ * "not configured", which is exactly how `resolveCnGateway` treats it.
+ */
+export function regionCnBaseOf(value: unknown, region: WorkBuddyWebRegion): string {
+  const slot = regionSlotOf(value, region)
+  const raw = slot['cnBase']
+  return typeof raw === 'string' ? raw : ''
+}
+
+/**
  * The per-region account SELECTIONS map (`Config.accounts`), as plain data.
  *
  * `value` may be the whole settings SECTION or the `accounts` FIELD: `describe()`
