@@ -26,7 +26,7 @@ grep -rn '214.0\|287.0\|288.3\|671.0' CHANGELOG.md          # :404 CN baselines
 grep -rn '0.1907\|442994\|443410\|626704' docs/ CHANGELOG.md README.md  # 0 hits (A's raw numbers absent locally)
 python3  # re-derive A (416/2182, 416/892), B (ratios, billed/unbilled char totals), Q4 (GL/CN tool budgets),
         # two-equation grid feasibility under billing vs unbilled with measured density bands
-grep -c promptTokens /Users/dmh2002/.dsh/body-reports/cn.jsonl   # 0; regions={'cn'} only; no global.jsonl (find = none)
+grep -c promptTokens <you>/.dsh/body-reports/cn.jsonl   # 0; regions={'cn'} only; no global.jsonl (find = none)
 sed -n '144,175p' src/body-report.ts                             # promptTokens/cachedTokens provenance (usage.prompt_tokens)
 ```
 

@@ -93,7 +93,7 @@
 宿主跑在一次性 profile 里，没碰 desktop：
 
 ```sh
-dsh plugin --profile pr188 add /Users/dmh2002/DshProject/dsh-connect-workbuddy
+dsh plugin --profile pr188 add /Users/<you>/DshProject/dsh-connect-workbuddy
 dsh --profile pr188 --port 7788 --no-open   # 打印带 token 的 URL
 ```
 

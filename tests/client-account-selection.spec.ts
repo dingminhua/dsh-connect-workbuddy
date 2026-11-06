@@ -23,8 +23,8 @@ describe('isFileContentionWriteError', () => {
     const live = new WorkBuddySettingsWriteError(
       'regions',
       "Host save refused: Error EPERM: operation not permitted, rename "
-      + "'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml.79498ff8fb27.tmp' "
-      + "-> 'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml'",
+      + "'C:\\Users\\<you>\\.dsh\\profiles\\desktop\\cordis.patch.yml.79498ff8fb27.tmp' "
+      + "-> 'C:\\Users\\<you>\\.dsh\\profiles\\desktop\\cordis.patch.yml'",
     )
     expect(isFileContentionWriteError(live)).toBe(true)
   })

@@ -91,7 +91,7 @@ minimax-m3.1-flash    n=  278  full= 40%  partial= 16%  cold= 44%
 
 ### 3.1 缓存是 per-account 的
 
-脚本 `C:\Users\Administrator\AppData\Local\Temp\wb-isolation2.mjs`，
+脚本 `C:\Users\<you>\AppData\Local\Temp\wb-isolation2.mjs`，
 前缀 `FILLER.repeat(420)`，model `deepseek-v4.1-flash`，同一分钟内发同样的字节：
 
 ```
@@ -263,7 +263,7 @@ keepPromptLast=true   cumulative cacheable= 98.26%  broken-prefix requests=19
 
 ## 7. 复现脚本
 
-全部在 `C:\Users\Administrator\AppData\Local\Temp\`，零上游调用（除标注）：
+全部在 `C:\Users\<you>\AppData\Local\Temp\`，零上游调用（除标注）：
 
 | 脚本 | 作用 |
 | --- | --- |

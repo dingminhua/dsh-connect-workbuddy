@@ -55,7 +55,7 @@ import { parseUpstreamResetAt } from '../src/probe.ts'
 
 /**
  * The maintainer's real stored body, verbatim, from
- * `~/.dsh/.workbuddy-pool.global.json` (account `dingxiaoman2016@gmail.com`).
+ * `~/.dsh/.workbuddy-pool.global.json` (account `someone@example.com`).
  * Kept byte-for-byte: the whole bug was that the parser did not recognise this
  * exact wording, so a trimmed fixture would have proved nothing.
  */

@@ -21,7 +21,7 @@
 ### 1. 确认代码、测试与版权
 
 ```bash
-cd /Users/dmh2002/DshProject/dsh-connect-workbuddy
+cd /Users/<you>/DshProject/dsh-connect-workbuddy
 pnpm run check        # typecheck + test + build，应全部通过
 grep -F "Copyright (c) 2026 LaoDing" LICENSE
 ```
@@ -93,6 +93,28 @@ git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
 - [ ] 两条 README 的「受支持的宿主范围」表与 `package.json` 三者一致
 - [ ] 若本次放宽了上界，已在 `CHANGELOG.md` 说明**依据**（哪些包、如何复核），而不是只写「支持新版本」
 
+### 2.7 隐私核对（**不得跳过**，规则见 [`docs/PRIVACY.md`](docs/PRIVACY.md)）
+
+**为什么这一步在发布流程里而不是在「写完文档自己看一眼」里**：本项目已经发生过一次真实泄露——
+`docs/pool-header-redesign.html` 明文写着 5 个完整手机号，`CHANGELOG.md` 里另外还有 2 个；
+两份文件都在公开仓库的 `main` 上，CHANGELOG 还随 npm 包分发。**当时没有任何东西会报警**，
+因为它不影响构建、不影响测试、不影响 `npm pack`——这正是它必须靠流程保证的原因。
+
+```bash
+node scripts/check-pii.mjs          # 退出码非 0 就不许发布
+```
+
+核对清单：
+
+- [ ] `node scripts/check-pii.mjs` 退出码为 0（发布包 + 全仓库文本 + 图片元数据三段都干净）
+- [ ] 本次**新增或修改**的截图，已按 [`docs/PRIVACY.md`](docs/PRIVACY.md) §3 复核：实心块覆盖（不用马赛克 / 模糊 / 半透明）、四条画布边缘无残留半截字
+- [ ] 截图 `alt` 文案与图里**实际**有无账号信息一致（写着「无账号信息」就必须真的没有）
+- [ ] 本次新增的文档 / issue 回复草稿里，手机号、邮箱、uin、真实昵称、本机路径一律是占位形式
+- [ ] 若本次**修复**了历史泄露，`CHANGELOG.md` 已如实写明泄露了什么（不得含糊成「若干文档修正」）
+
+> **自动扫描只挡它认识的模式。** 本次新增了一类从未出现过的内容（第一次贴开发者工具截图、第一次贴真机日志、
+> 第一次引入带元数据的图片）时，**必须人工再看一遍**，并把新规律补进 `scripts/check-pii.mjs` 的规则表。
+
 ### 3. 更新版本号
 
 手动改 `package.json` 的 `version` 字段。
@@ -129,7 +151,10 @@ npm publish
 >
 > **必须再由维护者用 2FA 批准**：到 npmjs.com 的 **Staged Packages** 标签页点 **Approve**；或在 npm CLI **≥ 11.15.0** 下用 `npm stage approve <stage-id>`（本机 npm 若是 11.12.x，`npm stage` 会报 `Unknown command`——那是 CLI 太旧，不是命令不存在）。详见[常见问题](#常见问题)。
 
-**打包内容**：`package.json` 的 `files` 字段已限定只发布 `lib/`、`docs/assets/` 产品截图、`screenshots.json`、`cordis.patch.yml`、`README.md`、`README.en.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`，`tests/` 和 `node_modules/` 不会进入发布包。
+**打包内容**：`package.json` 的 `files` 字段已限定只发布 `lib/`、`docs/assets/` 产品截图、`screenshots.json`、`cordis.patch.yml`、`README.md`、`README.en.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`docs/WINDOWS.md`、**`docs/PRIVACY.md`**、`LICENSE`，`tests/` 和 `node_modules/` 不会进入发布包。
+
+> **`docs/PRIVACY.md` 是有意随包发布的**：它是给下游使用者的承诺（本插件不收集、不外传什么），
+> 只写在仓库里对内约束、对外不公示，等于把承诺藏起来。其余 `docs/*.md`（含 `docs/audit/`）不进包。
 
 **发布前检查**（可选但推荐）：
 

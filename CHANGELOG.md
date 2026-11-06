@@ -1,5 +1,94 @@
 # Changelog
 
+## 5.20.3 (2026-11-06)
+
+> **隐私修正 + 把脱敏变成发布流程的一部分。** 没有功能与行为变化，代码一行未改。
+>
+> 这一版存在的唯一理由是：**一次隐私审计发现仓库里有真实泄露，而当时没有任何东西会报警**——
+> 它不影响 typecheck、不影响测试、不影响 `npm pack`。所以除了修掉已发现的暴露，
+> 还补了一条会让这类问题**当场拦住发布**的自动检查。
+
+### 泄露了什么（如实记录）
+
+审计覆盖了 README 与 `docs/` 下全部图片、全部文本、`git log -p`、以及 `package.json` 的 `files` 白名单。
+**先说结论：没有凭据泄露。** 本插件从不把 token 写进仓库（`$DSH_HOME/workbuddy-vault/` 与
+`~/.dsh/.workbuddy-auth.*.json` 都在用户目录，不在版本控制内）。泄露的是**显示名与号码**。
+
+| 位置 | 内容 | 暴露面 |
+| --- | --- | --- |
+| `docs/pool-header-redesign.html` L112–187 | **5 个完整明文手机号** | 公开仓库 `main` |
+| `CHANGELOG.md` L4949 / L5201 | 2 个完整明文手机号 | 公开仓库 + **npm 包内** |
+| `docs/pr188-mac-shots/02`、`05` | 4 个掩码账号号 + 昵称 | 公开仓库（CHANGELOG 引用） |
+| `docs/assets/model-picker.png` 顶边 | 被裁切但**未打码**的一行账号号 | 公开仓库 + **npm 包内** |
+| `account-pool.png` / `composer-credits.png` | 半透明马赛克覆盖的账号名 | 公开仓库 + **npm 包内** |
+| `README.md` / `README.en.md` / `RELEASING.md` 等 | 维护者本机用户名 | 公开仓库 + npm 包内 |
+| `tests/state-mismatch-surfaces.spec.ts`、`tests/at-rest.spec.ts` | 维护者邮箱、真实 uin | 公开仓库 |
+| `docs/audit/*.md`、`docs/DSH-0.2.1-RC5-FOLLOWUP.md` | 本机路径、真实会话 id | 公开仓库 |
+
+**为什么 `model-picker.png` 那条最尴尬**：它的 `alt` 文案当时写着「无账号信息」，而图的最上边缘留着一行
+被画板切掉一半的账号号——**被裁切不等于被脱敏**，上半截字形完好可读。
+
+### 改了什么
+
+- **图片**：`account-pool.png`、`composer-credits.png`、`pr188-mac-shots/02`、`pr188-mac-shots/05`
+  的账号列改成**不透明实心块**（不再用马赛克）；`model-picker.png` 直接把残留号码的顶边裁掉。
+  **马赛克与半透明遮罩不再使用**——半透明意味着原始像素参与了混合，理论上可被复原。
+- **文本**：5 个明文手机号 → `1XX****XXXX` 或全零的 `1XX****0000` 这类明显假号；
+  本机路径 → `/Users/<you>` / `C:\Users\<you>` / `<repo>`；真实 uin → 测试假值；
+  真实会话 id → `<session-id>`；维护者邮箱 → `someone@example.com`。
+- **alt 文案**：与图的实际状态对齐——「已打码」改成「已用实心块覆盖」，那张本就没有账号信息的卡片
+  明确写成「本页不含任何账号信息」。
+
+### 新增：`docs/PRIVACY.md`（**随包发布**）
+
+权威隐私规则。五类暴露面（截图 / 文档正文 / 设计稿 / 测试固件 / 构建产物）、绝对禁止出现的内容清单、
+截图打码的强制做法（实心块；不许马赛克、模糊、半透明；画布四边各留 8px 并逐边检查）、
+图片元数据、**允许存在的本人信息**（MIT 版权主体 `LaoDing`、GitHub 账号名、包名——是有意公开的身份，
+不要「顺手清理」）、以及漏了之后怎么处置。
+
+它进 `package.json` 的 `files`：**这是对使用者的承诺，只写在仓库里对内约束、对外不公示，等于把承诺藏起来。**
+
+### 新增：`scripts/check-pii.mjs`
+
+```bash
+node scripts/check-pii.mjs      # 退出码非 0 就不许发布
+```
+
+三段检查：**发布包内的文本文件**（按 `files` 白名单算，命中标 `[SHIPS TO NPM]`）、
+**全仓库的文本文件**（含 `docs/`、`tests/`、HTML——「不进 tarball」不等于「不公开」，
+仓库在 GitHub 上）、**每张 PNG 的 `tEXt`/`iTXt`/`zTXt`/`eXIf` 元数据**。
+规则表覆盖手机号（完整与掩码）、邮箱、密钥/JWT、URL 内嵌凭据、本机路径、会话 id、uin。
+
+接进两处：`prepack`（**npm 打包前先跑，命中即中止**）与 `pnpm run check`。
+`allow` 谓词只放行**显然的占位**（`/Users/test`、`uin: '100000000001'`、`someone@example.com`）——
+把它们逼红等于逼所有人去放宽规则，那正是扫描器失效的方式。
+
+### Tests
+
+`3195/3195`（3184 → 3195），`skip 2`。
+
+- `tests/privacy-gate.spec.ts`（4 条，新）：钉住三处接线——`prepack` 含扫描器、`check` 含 `check:pii`、
+  `files` 白名单含 `docs/PRIVACY.md`；外加**真跑一遍**，所以仓库脏了这条就红。
+  这三处都是一行改动，合并冲突里最容易掉，而掉了之后**没有任何其它测试会察觉**（扫描器不被任何源码 import）。
+- `tests/check-pii-script.spec.ts`（7 条，新）：**反例驱动**。每条规则喂一个该被抓住的文件（临时目录，
+  跑完即删），断言退出码 1 且报的是那条规则；另有两组「不该抓」的正例（既有 fixture 占位、
+  策略文档自身），防止把 `allow` 放宽到规则失效。
+  **变异验证**：把 `phone-cn` 的 `allow` 改成 `() => true` → 1 条变红；删掉 `prepack` 里的扫描器 → 1 条变红。
+- 隔离用的是**独立临时目录**而不是 `docs/`：第一版把探针文件写进 `docs/` 再删，结果
+  `privacy-gate.spec.ts` 并行跑真仓库时反复看到它，测试变成看运气的。
+
+### Docs
+
+- `RELEASING.md` 新增**第 2.7 步「隐私核对（不得跳过）」**，与 2.5 平台核对、2.6 宿主范围核对待遇一致；
+  第 6 步的「打包内容」补上 `docs/PRIVACY.md` 并说明它为什么随包发。
+- 两份 README 各新增一节「隐私与脱敏 / Privacy and redaction」，给出脚本入口与 `docs/PRIVACY.md` 链接。
+
+### 已知未修
+
+**git 历史没有重写。** `git log -p` 里仍然能检出上述号码——本次只修正了当前树与后续版本。
+是否用 `git filter-repo` 重写并强推，留给维护者按 `docs/PRIVACY.md` §7 自行决定；
+**npm 上 5.20.2 及更早的 tarball 也仍然带着旧内容**，只有新版本能覆盖「最新版」这个入口。
+
 ## 5.20.2 (2026-11-06)
 
 > **模型行的上下文档位改成一个下拉框。** 没有行为变化：能选的档位、默认值、
@@ -4745,7 +4834,7 @@ issue 报了三种互不相干的现象。前两个是**真 bugs**，第三个�
     - 完全没有周期家族的行（例如只带 `CapacitySize`/`CapacityRemain` 的合成行）回退读池，避免静默报 0。
     - **删除 `cycleRemain` 字段**：余额本身就是周期值了，它成了同义重复；`refreshAtMs`（周期续期点）才是「本周期已用完、什么时候恢复」的表达。gift 的丢弃规则（耗尽/过期）、`expiringSoon`、`nearestExpiryMs` 均未改变。
     - **显示只取整数部分（向下取整）**：余额现在带小数（`2,196.61`），卡片不显示小数位。取**向下取整**而非四舍五入：四舍五入会把 `2,196.61` 印成 `2,197`，而官方客户端显示 `2,196.61` —— 一张刚跟客户端核对过的卡片反而看起来差 1；而且 `0.61` 向上取整会印成 `1`，等于告诉读者他有一个并不存在的积分可花。三处显示（编辑器读数、账号池积分列、模型容量）统一走新增的 `src/client/credit-format.ts`，守卫 `tests/credit-format.spec.ts`（5 例）。
-  - **实测核对**（构建后的插件，真实账号）：`177****417… total=2196.61` —— 与客户端截图**逐位一致**；`LaoDing 647.01`、`老丁 1360.13`（旧读数为 1147 / 1860）。国际三个账号 `0.00`，与 `14018` 一致。
+  - **实测核对**（构建后的插件，真实账号）：`1XX****XXXX … total=2196.61` —— 与客户端截图**逐位一致**；`LaoDing 647.01`、`老丁 1360.13`（旧读数为 1147 / 1860）。国际三个账号 `0.00`，与 `14018` 一致。
   - **守卫**：`tests/issue58-credit-balance-cycle.spec.ts`（9 例，替换掉 `tests/issue48-monthly-pool-credits.spec.ts` —— 后者的断言钉的正是被推翻的规则）。覆盖：total == Σ 周期精确值（含小数）、周期耗尽时读周期而非池、国际耗尽行为 0、周期未用时两种读法一致（说明不是「所有数字都变了」）、无周期家族回退、精确/整数两种拼写、gift 丢弃规则不变、负值不进 total、`expiringSoon` 与 total 同源。**变异验证**：把余额改回读池 → 3 例变红；把 `*Precise` 读法去掉 → 4 例变红。
   - **另一处新增工具**：`scripts/probe-credits-raw.mjs` —— 逐包原样打印账单响应（含未被读取的字段）并给出三个候选口径的合计，让「客户端显示的到底是哪个字段」这件事可以被独立复现，而不必相信本文件的叙述。
 
@@ -4946,7 +5035,7 @@ issue 报了三种互不相干的现象。前两个是**真 bugs**，第三个�
   - **本机以真实账单接口复现（3 个国际版账号全部命中）**：`CapacityRemain=100` 而 `CycleCapacityRemain=0`、`CycleCapacityUsed=100`，且 `CycleEndTime="2026-10-31 23:59:59"`（**周期尚未结束**）、`Status=0`、`ExpiredTime=""`。即套餐有效、池里还有 100，插件却报 **0**。对照组：同机 CN 账号两字段一致（500/500），读数为 2267，**所以国内版看不出异常**——但 CN 也在受影响之列：本机 `老丁`/`LaoDing` 两个 CN 账号的月度套餐同样是池 500 而周期余额更小（实测同一时刻分别为 `CycleCapacityRemain=125` 与 `0`），修复后读数分别为 **1343→1718** 与 **768→1268**；`老丁` 的增量 +375 恰等于 `500 − 125`，正好说明这一个字段差异在两个区域都存在、且月度套餐的周期余额会随消耗变化。报告者「cn 是否受影响未能对照」一节由此有答案。
   - **修法**：余额一律读容量池 `CapacityRemain`（两种套餐都是），`size` 同理统一读 `CapacitySize`（真实月度行上 `CapacitySize` 与 `CycleCapacitySize` 同时存在且相等，取前者；后者保留为回退）。**周期字段继续读取**并作为新的 `cycleRemain` 随包透出——它回答的是「本周期额度是否用完」这个**不同**的问题，而 `refreshAtMs`（周期续期点）的提示文案只有靠它才成立。**没有采用报告者建议的 `Math.max(两者)`**：那两个字段不是同一量的两种口径，取较大值会把「本周期已用完、等 10/31 续期」误报成「仍有余额」，正是 `quotaRefreshAtMs` 冷却提示要避免的误导。
   - **修法未触动 gift 路径**（`CapacityType 1`）：仍读 `CapacityRemain`、仍按「耗尽或过期即丢弃」处理——本缺陷只存在于月度分支。
-  - **实测（真实接口，修复前后对照）**：3 个国际版账号 `0 → 100`（各自 `CapacityRemain=100`）；CN `17749714179` 保持 2267 不变（该账号两字段本来就一致）；CN `老丁` 1343→1718、`LaoDing` 768→1268。**CN 侧读数上升不是回归，是修正**：这两个账号的月度套餐池余额（500）一直高于本周期余额，旧代码只读了后者。
+  - **实测（真实接口，修复前后对照）**：3 个国际版账号 `0 → 100`（各自 `CapacityRemain=100`）；CN `1XX****XXXX` 保持 2267 不变（该账号两字段本来就一致）；CN `老丁` 1343→1718、`LaoDing` 768→1268。**CN 侧读数上升不是回归，是修正**：这两个账号的月度套餐池余额（500）一直高于本周期余额，旧代码只读了后者。
   - **守卫 `tests/issue48-monthly-pool-credits.spec.ts`（8 例）**：直接驱动**真实的 `fetchCredits` 解析器**（stub 掉的只有 `fetch`），用**真实账单行的原始字段值**（池 100 / 周期 0 / 周期未结束）构造夹具。原有的全部套件都在边界上 mock 掉整个 `fetchCredits`，**这正是该缺陷能漏出去的原因**——字段解析这一层此前零覆盖。覆盖：读池而非周期（回归本体）、`cycleRemain` 单独透出且 `refreshAtMs` 仍在、多账号求和、两字段一致时不受影响（同时通过新旧代码，用来说明「CN 没有开始按另一种方式读」）、周期耗尽但池充足时账号不被丢弃、gift 路径不变（含耗尽/过期两条丢弃分支）、负值不进入 total、月度与 gift 混合不重复计数。**变异验证**：把 `remain` 改回 `numberField('CycleCapacityRemain')` → 3 例变红，报错正是 `expected +0 to be 100`（与现场症状同形）。
   - **边界透传守卫**：`tests/web-status.spec.ts` 增补断言，钉住 `remain` 与 `cycleRemain` **各自独立**地跨 host→client 边界存活（`toMatchObject` 不会因字段丢失而变红），并钉住 gift **不带**该字段（缺失而非 0）。**变异验证**：删掉 `web-status.ts` 里的透传 → 立即变红。
 
@@ -4958,7 +5047,7 @@ issue 报了三种互不相干的现象。前两个是**真 bugs**，第三个�
   - **现象（报告者 Fedora 真机，4.3.0）**：按 README 走完 `dsh plugin --profile web add dsh-connect-workbuddy`、`dsh plugin --profile dsh-tui add …` 之后，任何一条 `exec` 命令都直接崩，且**报错文件与所跑命令看起来无关**：
     ```
     Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@deepseek-ai/dsh-atomic-write'
-    imported from /home/liguolong/.dsh/profiles/dsh-tui/node_modules/dsh-connect-workbuddy/lib/host-heartbeat-jNlsUMZO.js
+    imported from /home/<you>/.dsh/profiles/dsh-tui/node_modules/dsh-connect-workbuddy/lib/host-heartbeat-jNlsUMZO.js
     dsh: plugin command failed; diagnostics: …/.plugin-manager/logs/operation-KO6W9v/pnpm.log
     ```
     **环境**：Fedora 全新机器，`nvm install 24`（Node v24.21.0）、`pnpm 12.6.0`，`npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui`。
@@ -5198,7 +5287,7 @@ issue 报了三种互不相干的现象。前两个是**真 bugs**，第三个�
   - **背景**：池子的 failover 会给同一个请求依次试多个账号，此前只写一行 `logger.warn`——用户完全看不到。于是一次切换过的回复，和「你选的那个账号正常回答」**在界面上完全一样**，而且事后无法从记录区分「刚才真有请求失败」和「状态莫名其妙退回了旧值」。
   - 现在回答开头会附一行（仅当真的发生了切换、且确实有内容送达时）：
 
-    > [dsh-connect-workbuddy] 「13046625578」was rate limited — this answer came from another account
+    > [dsh-connect-workbuddy] 「1XX****XXXX」was rate limited — this answer came from another account
 
   - 只报**第一个**被放弃的账号与原因（连续试 4 个账号时不刷屏），原因按用户能采取的行动措辞（`rate limited` / `signed out` / `rejected by policy` / …），而不是内部 kind 名。
 

@@ -231,7 +231,7 @@ describe('hasEncryptedCredentialFields', () => {
     // on tokens alone would then silently degrade the name to the uin again.
     expect(hasEncryptedCredentialFields(JSON.stringify({
       auth: { accessToken: 'plain', refreshToken: 'plain', domain: 'www.workbuddy.cn' },
-      account: { uin: '330105772757', nickname: encrypted },
+      account: { uin: '100000000002', nickname: encrypted },
     }))).toBe(true)
   })
 
@@ -268,7 +268,7 @@ describe('parseWorkBuddyAuth with encrypted fields', () => {
   function documentWith(accessToken: unknown, refreshToken: unknown): string {
     return JSON.stringify({
       auth: { accessToken, refreshToken, expiresAt: 1_800_000_000_000, lastRefreshTime: 1_700_000_000_000, domain: 'www.workbuddy.cn' },
-      account: { uin: '330105772757', uid: 'uid-1', nickname: 'tester' },
+      account: { uin: '100000000002', uid: 'uid-1', nickname: 'tester' },
     })
   }
 
@@ -298,7 +298,7 @@ describe('parseWorkBuddyAuth with encrypted fields', () => {
     expect(credential?.accessToken).toBe('live-token')
     expect(credential?.refreshToken).toBe('live-refresh')
     // Identity and timing fields must survive the encrypted path unchanged.
-    expect(credential?.uin).toBe('330105772757')
+    expect(credential?.uin).toBe('100000000002')
     expect(credential?.uid).toBe('uid-1')
     expect(credential?.nickname).toBe('tester')
     expect(credential?.domain).toBe('www.workbuddy.cn')
@@ -344,12 +344,12 @@ describe('parseWorkBuddyAuth with encrypted fields', () => {
         expiresAt: 1_800_000_000_000,
         domain: 'www.workbuddy.cn',
       },
-      account: { uin: '330105772757', uid: 'uid-1', nickname: sealField('LaoDing', payload) },
+      account: { uin: '100000000002', uid: 'uid-1', nickname: sealField('LaoDing', payload) },
     })
     const credential = parseWorkBuddyAuth(doc, '/tmp/a.info', key)
     expect(credential?.nickname).toBe('LaoDing')
     // uin stays the stable identity used for the account id.
-    expect(credential?.uin).toBe('330105772757')
+    expect(credential?.uin).toBe('100000000002')
     // The name survives the fallback chain the card renders.
     expect(credential?.nickname ?? credential?.uin ?? credential?.uid).toBe('LaoDing')
   })
@@ -369,7 +369,7 @@ describe('parseWorkBuddyAuth with encrypted fields', () => {
     const wrongKey = deriveAtRestKey(keyPayload(secretFor('name-mismatch')))
     const doc = JSON.stringify({
       auth: { accessToken: 'plain-token', refreshToken: 'plain-refresh', domain: 'www.workbuddy.cn' },
-      account: { uin: '330105772757', nickname: sealField('LaoDing', payload) },
+      account: { uin: '100000000002', nickname: sealField('LaoDing', payload) },
     })
     const credential = parseWorkBuddyAuth(doc, '/tmp/a.info', wrongKey)
     expect(credential?.accessToken).toBe('plain-token')

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy 设置卡：模型目录与倍率、图片与可关闭思考开关、活动标签（账号名已打码）" />
+  <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy 设置卡：模型目录与倍率、图片与可关闭思考开关、活动标签（本页不含任何账号信息）" />
 </p>
 
 <h1 align="center">dsh-connect-workbuddy</h1>
@@ -60,7 +60,7 @@
 - **本机账号切换** —— 自动发现 WorkBuddy 桌面端留下的多个登录凭据，可按区域切换账号；Token 不写入 DSH 设置。
 - **对话输入框积分读数（国内版 / 国际版自动切换）** —— 对话输入框左侧工具栏常驻一行可点击的读数（如 `WB CN · 1,072`），**按本会话当前选中的模型自动切换区域**：选中 WB CN 的模型就显示国内版余额，选中 WB AI 的模型就显示国际版余额；用其它 provider 的模型时该读数完全不出现。每 5 分钟自动刷新，也可点开手动刷新。点击读数弹出面板：**按账号列出的余额表格**，点某一行即可切换到该账号（与卡片上的账号选择是同一个设置）；**当前不能用的账号会在行内标出原因**（如「被限流」「积分耗尽」），标注口径与账号池表格一致。面板里的余额只在打开时才去查，因此不会让 5 分钟的后台刷新按账号数翻倍。要关掉某一边，就在卡片对应区域的 tab 下取消勾选「在输入框工具栏显示积分读数」；该区域的供应商被关闭时，读数不显示、开关也置灰。同一个开关下面还有「显示位置」这一行：默认在输入框工具栏（与模型选择同一行，位于模型选择器左侧、与权限切换器隔开），改成「输入框下方」后读数落到轮次/步数/token 统计那一行——装了别的插件把工具栏座位占掉时用得上。
 
-  <img src="docs/assets/dsh-connect-workbuddy-composer-credits.png" width="360" alt="对话输入框积分面板：国内版账号余额表格、一键测试按钮与最近刷新时间（账号名已打码）" />
+  <img src="docs/assets/dsh-connect-workbuddy-composer-credits.png" width="360" alt="对话输入框积分面板：国内版账号余额表格、一键测试按钮与最近刷新时间（账号名已用实心块覆盖）" />
 - **账号池：多账号批量操作与自动换号** —— 把要用的账号勾进池子，即可**签到勾选的账号**、**测试勾选的账号 × 你指定的模型**（默认挑该区域倍率为 0 的免费模型）；开启**启用账号池**即同时打开**自动换号**——某个请求在上游失败时，插件会依次用池内其他可用账号重试，直到有一个接手、或全部不可用为止，然后才把错误报给你。成员**默认一个都不含**、必须显式勾选（「本机有登录」不等于「要拿它去签到和花积分」）；**开启后由池子的排序决定每一次请求用谁**（可用优先，其次快过期先花、积分高、凭据更新的）；失败时依次用池内其他可用账号重试。排序**从不写回你保存的选择**——关掉开关，你选定的账号立刻完全生效。只有请求本身不合法（HTTP 400）不换号：同一个请求体换谁都是 400，重试只会白等。**这个开关只管「插件要不要自己决定」**：关掉它，插件不再替你选账号、也不再替你换号，但**签到与测试仍然可用**（它们是手动动作）。测试走的是与模型行同一套真实体积探测，因此**有真实成本**；**不提供自动签到**——签到会真实领取奖励，只在你点按钮时执行。详见[账号池](#账号池)。
 - **企业版 / 教育版账号：签到与「领取」不适用** —— 带 `enterpriseId` 的席位（企业版或教育版）在池子里**不显示签到列、不显示福利活动，也不会发出领取请求**（5.8.0，issue #129）：上游对这类成员的个人权益**写**接口一律拒绝（实测 `10001`），而它的**读**接口照样把活动列出来、标着「未领」——所以「读到了」绝不能当成「可以领」。积分也在另一本账上（企业用量 = 上限 − 已用），个人积分表对这种账号返回空列表。这个判断贯穿池卡片、输入框胶囊与 Web 状态页，并且在账号进入池子的那一刻就带上标记，而不是等用户点了按钮才发现不支持。
 - **可选：让上游用量页把这笔记成官方客户端发的那笔（5.8.0，issue #132，默认关闭）** —— 开 `usageIdentity` 后 chat 请求带上 `X-IDE-Name: WorkBuddy`（连同 `X-IDE-Type: CLI` 与版本号；版本号取自现有的产品 UA，不留第二个硬编码数字），用量页的「使用端」由此不再空白；会话身份三件套同时改成官方客户端那种 **32 位十六进制 UUIDv7** 并补上 `X-Request-ID`——网关把这个 id 回显成 SSE 的 `id` 并写进用量页，此前带连字符的 v4 与官方记录摆在同一页上像两种客户端；**每请求现生成、互不相同**这条没有放松。**`User-Agent` 在两种取值下都一字未动**——账单与限流认的是 CLI 通道；生图路径也不跟着这个开关变，它保持自己 2026-10-21 实测过的形状。**默认关**的理由：形状本身不修任何东西（`11128` 的三道门读的是消息开头、会话 id 有没有、首条是不是 system，头改不动其中任何一条），而实测证据来自报告者的账号与旧版本、本插件未在真机复现——一次纯显示对齐不该让所有账号先承担风险。另有可选的 `keepPromptLast`（**默认关闭**）：用量页的「请求」列取自 body 里**最后一条** `user` 消息，而宿主把时间采样、运行时上下文、`<system-reminder>` 追加在你真正输入的那句**之后**，那一列于是常年记的是注入块；开启后把这些注入块**搬到真实输入之前**（只变顺序；另外会剥掉**被记录那一条**真实输入前面的 `<acp …>mNNNNN</acp>` 标记，否则那一列仍然以标记开头而等于没修，更早的消息一律保留自己的标记，因为模型靠它们引用历史）。默认关的理由是它会改变上游会数到的消息顺序、并删掉真实输入的几个前导字符；搬移只匹配宿主自己的注入前缀，而普通对话在没有注入尾块时逐字节不变（连标记也不剥）——这两点各有专门测试钉住。
@@ -124,7 +124,7 @@ DSH PiAiAdapter（每个 provider 一套）
 ## 账号池
 
 <p align="center">
-  <img src="docs/assets/dsh-connect-workbuddy-account-pool.png" width="900" alt="dsh-connect-workbuddy 账号池：签到勾选的账号、测试勾选的账号、成员排序与签到状态（账号名已打码）" />
+  <img src="docs/assets/dsh-connect-workbuddy-account-pool.png" width="900" alt="dsh-connect-workbuddy 账号池：签到勾选的账号、测试勾选的账号、成员排序与签到状态（账号名已用实心块覆盖）" />
 </p>
 
 一台机器上往往登录过多个 WorkBuddy 账号。**账号池**把这件事收成一次点击：把要用的账号勾进池子，然后「签到勾选的账号」或「测试勾选的账号」；再打开**启用账号池**，插件就会在请求失败时自动换号接着跑。
@@ -625,7 +625,7 @@ pnpm run check   # typecheck + test + build
 本地开发用 `link:` 安装到 desktop profile（改码后重启 DSH Desktop 生效）：
 
 ```sh
-dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-workbuddy
+dsh plugin --profile desktop add /Users/<you>/DshProject/dsh-connect-workbuddy
 ```
 
 #### `link:` 安装必须先构建，否则 DSH 会拒绝加载
@@ -691,6 +691,22 @@ else { await envelope.response.text() /* 或者按 SSE 消费 */ }
 - **市场图标**在注册表条目里用可选的 `icon:` 字段声明（本项目指向 `icons/dsh-connect-workbuddy-128.png`）：**必须是 GitHub 托管的位图**（png/jpg/jpeg/webp），SVG 与第三方图床会被拒；不写则回退到作者头像。它并不是 npm `package.json` 的通用字段，也不是 README 徽章。
 
 **插件卡上那句标题与简介不是本插件渲染的**——那是 DSH 插件管理器读的**包元数据**：它按 `locale/<lang>.json` 的 `meta.title` / `meta.description` 取词（`locale/en.json` 是锚点，缺了它 `zh.json` 永远不会被读；`exports` 里缺 `"./locale/*.json"` 通配则整个目录被**静默**跳过），英文回退到 `package.json` 的 `description`。因此同一句话在本仓库写在三处，并由 [`tests/locale-meta.spec.ts`](tests/locale-meta.spec.ts) 钉死：卡面字典（`locale/en.json` / `locale/zh.json`）、英文回退（`package.json.description`）、市场条目草稿（`awesome-dsh-plugin-submission/dingminhua__dsh-connect-workbuddy.yml` 的 `description.en` / `description.zh`）。**改一处就要同改三处。**
+
+## 隐私与脱敏
+
+本插件**不收集、不上传任何数据**：凭据只落在本机的 `$DSH_HOME/workbuddy-vault/`，token 只在进程内存里交给 loopback shim。**这一节说的是另一件事——仓库自己不许留下能反查到具体账号、机器或会话的痕迹**（截图里的账号名、文档里的手机号与 uin、日志里的本机路径）。
+
+这条规则并非可有可无的礼貌：**一张没打码的截图、一行粘进 CHANGELOG 的真机号码，一旦推上 GitHub 或被 `npm publish` 打包，就再也收不回来了**（npm 的旧 tarball 永久可下载，git 历史任何人都能 clone）。所以它被写成了流程，而不是习惯：
+
+```bash
+node scripts/check-pii.mjs     # 退出码非 0 就不许发布
+```
+
+- 规则全文见 **[`docs/PRIVACY.md`](docs/PRIVACY.md)**（**随包发布**，因为它是对使用者的承诺）。它列了五类暴露面、截图必须用实心块覆盖而不能用马赛克/模糊、以及「被裁切不等于被脱敏」这条曾经的翻车记录。
+- 该脚本已接进 `prepack` 与 `pnpm run check`，**npm 打包前会先跑一遍**，命中即中止发布。
+- `tests/privacy-gate.spec.ts` 钉住这三处接线（`prepack` / `check` / `files` 白名单），`tests/check-pii-script.spec.ts` 则用反例证明扫描器**真的会报错**——只会输出「干净」的扫描器比没有扫描器更糟。
+
+**自动扫描只认它认识的那些形状。** 第一次截图开发者工具、第一次贴真机日志时，规则是盖不住的——那种时候必须人工再看一遍，并把新规律补进规则表。
 
 ## 已知限制
 

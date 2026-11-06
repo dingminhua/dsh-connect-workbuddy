@@ -591,7 +591,7 @@ tests/account-pool.spec.ts: OK
 ### 7.2 Real-home sentinel — byte-identical before and after
 
 ```
--rw-------  1 dmh2002  staff  35 Sep 30 07:13 /Users/dmh2002/.dsh/.workbuddy-pool.cn.json
+-rw-------  1 dmh2002  staff  35 Sep 30 07:13 <you>/.dsh/.workbuddy-pool.cn.json
 35c8297fb847b93e45c075d2bc2dacadad43f7ca37affedb0b0c54c4650678f4
 size 35 bytes, mtime 1790723631, mode -rw-------
 ```

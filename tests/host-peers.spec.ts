@@ -6,7 +6,7 @@
  *   $ dsh plugin --profile dsh-tui exec dsh-connect-workbuddy status
  *   Error [ERR_MODULE_NOT_FOUND]: Cannot find package
  *   '@deepseek-ai/dsh-atomic-write' imported from
- *   /home/liguolong/.dsh/profiles/dsh-tui/node_modules/dsh-connect-workbuddy/lib/host-heartbeat-jNlsUMZO.js
+ *   /home/<you>/.dsh/profiles/dsh-tui/node_modules/dsh-connect-workbuddy/lib/host-heartbeat-jNlsUMZO.js
  *
  * WHY IT HAPPENED, and why the module in the message looks unrelated to the
  * command: tsdown emits ONE shared chunk (`host-heartbeat-<hash>.js`) holding

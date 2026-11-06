@@ -20,7 +20,7 @@
   `DSH_HOME` / `HOME` / `USERPROFILE` / `LOCALAPPDATA` / `APPDATA` / `XDG_CONFIG_HOME` at it
   (matching `vitest.config.ts:39`) and unsets `WORKBUDDY_AUTH_FILE`.
 - Real-home sentinel checked **before** any run and **after** every mutant:
-  `/Users/dmh2002/.dsh/.workbuddy-pool.cn.json` stayed at `size=35`, `mtime=1790723631`,
+  `<you>/.dsh/.workbuddy-pool.cn.json` stayed at `size=35`, `mtime=1790723631`,
   `sha256=35c8297fb847b93e45c075d2bc2dacadad43f7ca37affedb0b0c54c4650678f4`,
   content `{"version":1,"probes":{}}`. **No probe was ever injected into the real home.**
 - One harness bug was found and corrected mid-campaign: an early A-8 mutant reported two failures
@@ -371,7 +371,7 @@ true as written but narrower than the staleness class it is meant to prevent.
 ## 8. Reproduce
 
 ```bash
-SRC=/Users/dmh2002/DshProject/dsh-connect-workbuddy
+SRC=<repo>
 MUT=/tmp/r3v-mut
 rsync -a --exclude .git --exclude .pnpm-store --exclude .dsh-npm-cache "$SRC/" "$MUT/"
 

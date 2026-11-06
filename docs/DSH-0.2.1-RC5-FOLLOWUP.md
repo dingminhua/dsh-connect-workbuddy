@@ -180,7 +180,7 @@ dsh-settings                BYTE-IDENTICAL
 `dsh-client-ui-primitives` 动了 75 个文件、删了一个导出，需要逐条核对；这次一个字节都没动。
 
 安装进 `app.asar` 的那份 `lib/` 与 npm 包有一处差异：CSS-module 的类名前缀与源码映射里的
-构建路径（`/home/runner/work/...` vs `/Users/deepseek/dsh-ci/...`）不同。归一化这两项后，
+构建路径（`/home/runner/work/...` vs `/Users/<you>/dsh-ci/...`）不同。归一化这两项后，
 **差异归零**——即 rc.5 的本地构建产物与 npm 产物在语义上是同一份。
 
 ### 4.2 其余值得点名的包
