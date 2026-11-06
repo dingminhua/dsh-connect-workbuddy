@@ -764,7 +764,13 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     }
   }
 
-  /** Run fetchModels against a stubbed upstream; return the URL it called. */
+  /**
+   * Run fetchModels against a stubbed upstream; return the URL it called.
+   *
+   * A global account now reads the document TWICE (once per client channel,
+   * see `mergeModelRosters`), so the call count is asserted per region rather
+   * than pinned to 1.
+   */
   async function fetchModelsUrl(domain: string): Promise<string> {
     const urls: string[] = []
     vi.stubGlobal('fetch', async (url: string) => {
@@ -784,7 +790,8 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     })
     const models = await new WorkBuddyUpstreamClient().fetchModels(credential(domain))
     expect(models.map(model => model.id)).toEqual(['glm-5.3'])
-    expect(urls).toHaveLength(1)
+    const isGlobal = /(?:^|\.)codebuddy\.ai$|(?:^|\.)workbuddy\.ai$/.test(domain)
+    expect(urls).toHaveLength(isGlobal ? 2 : 1)
     const url = urls[0]
     if (url === undefined) throw new Error('fetchModels performed no upstream request')
     return url
@@ -814,10 +821,97 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
       .toBe('https://www.codebuddy.ai/v3/config')
   })
 
-  it('sends the app product identity on the global config request', async () => {
-    const seen: Record<string, string> = {}
+  it('reads the global document as the CLI channel and as the app channel', async () => {
+    // Regression for the missing free `deepseek-v4.1-flash` row. The global
+    // `/v3/config` answers a different roster per client channel and neither is
+    // a superset: the app document has `hy4free`/`hy4std`/`max-model` and the
+    // image model, the CLI document has `deepseek-v4.1-flash` and seven other
+    // chat models. Reading only one of them hid rows the plugin could actually
+    // chat with (that model answers HTTP 200 over this plugin's own chat path).
+    const seen: Record<string, string>[] = []
     vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
-      Object.assign(seen, init.headers)
+      seen.push(init.headers)
+      const isCli = init.headers['User-Agent'] === 'CLI/2.63.2 CodeBuddy/2.63.2'
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: isCli
+            ? {
+                models: [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, credits: 'x0.00' }],
+                agents: [{ name: 'cli', models: ['deepseek-v4.1-flash'] }],
+              }
+            : {
+                models: [
+                  { id: 'deepseek-v4.1-flash-sg', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, credits: 'x0.11' },
+                  { id: 'hy4free', name: 'Hy4', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, credits: 'x0.00' },
+                ],
+                agents: [{ name: 'cli', models: ['deepseek-v4.1-flash-sg', 'hy4free'] }],
+              },
+        }),
+      } as unknown as Response
+    })
+    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
+    expect(seen).toHaveLength(2)
+    expect(seen.map(headers => headers['User-Agent'])).toEqual([
+      'CLI/2.63.2 CodeBuddy/2.63.2',
+      'WorkBuddy/5.8.3',
+    ])
+    // P1 统一的是**客户端**身份（chat / image / billing），不包含这条元数据读：
+    // `/v3/config` 的字节是逐条实测过的，改动它只增加变量、不带来收益。
+    for (const headers of seen) expect(headers['X-Product']).toBe('SaaS')
+    // The CLI document is primary, so it leads; the app-only row is appended.
+    expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash', 'deepseek-v4.1-flash-sg', 'hy4free'])
+    expect(models[0]?.creditMultiplier).toBe(0)
+  })
+
+  it('keeps the CLI roster when the app document read fails', async () => {
+    const fallbacks: string[] = []
+    let calls = 0
+    vi.stubGlobal('fetch', async () => {
+      calls += 1
+      if (calls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            code: 0,
+            msg: 'OK',
+            data: {
+              models: [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, credits: 'x0.00' }],
+              agents: [{ name: 'cli', models: ['deepseek-v4.1-flash'] }],
+            },
+          }),
+        } as unknown as Response
+      }
+      return {
+        ok: false,
+        status: 502,
+        text: async () => JSON.stringify({ code: 50000, msg: 'bad gateway' }),
+      } as unknown as Response
+    })
+    const client = new WorkBuddyUpstreamClient()
+    client.onFallback = (message: string) => { fallbacks.push(message) }
+    const models = await client.fetchModels(credential('www.workbuddy.ai'))
+    expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]).toContain('using the CLI document only')
+  })
+
+  it('falls back to the app document when the CLI read fails', async () => {
+    const fallbacks: string[] = []
+    let calls = 0
+    vi.stubGlobal('fetch', async () => {
+      calls += 1
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 502,
+          text: async () => JSON.stringify({ code: 50000, msg: 'bad gateway' }),
+        } as unknown as Response
+      }
       return {
         ok: true,
         status: 200,
@@ -825,21 +919,18 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
           code: 0,
           msg: 'OK',
           data: {
-            models: [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, credits: 'x0.00' }],
-            agents: [{ name: 'cli', models: ['deepseek-v4.1-flash'] }],
+            models: [{ id: 'hy4free', name: 'Hy4', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, credits: 'x0.00' }],
+            agents: [{ name: 'cli', models: ['hy4free'] }],
           },
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
-    // The CLI user agent returns a 35-model roster without this model; only the
-    // app channel's document carries the account's real chat list.
-    expect(seen['User-Agent']).toBe('WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0')
-    // P1 统一的是**客户端**身份（chat / image / billing），不包含这条元数据读：
-    // `/v3/config` 的字节是逐条实测过的，改动它只增加变量、不带来收益。
-    expect(seen['X-Product']).toBe('SaaS')
-    expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
-    expect(models[0]?.creditMultiplier).toBe(0)
+    const client = new WorkBuddyUpstreamClient()
+    client.onFallback = (message: string) => { fallbacks.push(message) }
+    const models = await client.fetchModels(credential('www.workbuddy.ai'))
+    expect(models.map(model => model.id)).toEqual(['hy4free'])
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]).toContain('using the app document only')
   })
 
   it('sends the app product identity on the CN config request', async () => {
