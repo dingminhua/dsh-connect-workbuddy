@@ -548,6 +548,9 @@ export const en = {
   // a picture costs ~5.71 credits on CN and ~0.03 internationally (measured
   // 2026-10-25; the media catalog carries no price, the settled usage.credit
   // does). The tool reports the actual charge either way.
+  'row.modelToolsHint': 'These three decide what the model may DO on this tab: which commands it can run, and whether it can spend credits generating images or video. Each takes effect on the click.',
+  'row.channelRejectHint': 'One switch, on its own because it is the only one here that spends a real request every time it fires. Read its description before turning it on.',
+  'row.sidebarPanelLead': 'Where the card itself appears. This one only affects navigation — it changes no request and spends nothing.',
   'row.upstreamHint': 'These change what the gateway sees, not which provider serves the call. All of them are sampled when the plugin mounts, so reload the plugin (or restart DSH) after changing one.',
   'row.usageIdentityLabel': 'Make the usage page record these calls like the official client',
   'row.usageIdentityHint': 'Adds the X-IDE-* headers (which fill the 使用端 column, otherwise blank) and sends conversation ids as 32-hex UUIDv7. Display alignment only: the User-Agent and the request body never change. Off by default because the evidence comes from a reporter, not from this plugin.',
@@ -1211,6 +1214,9 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 机制），所以默认关闭，文案也必须把单价说出来，而不是只给它一个名字。
   // 单价按区分：国内区约 5.71、国际区约 0.03 积分/张（2026-10-25 实测；目录
   // 里没有价格，只有结算时的 usage.credit），工具本身回报的是实扣值。
+  'row.modelToolsHint': '这三项决定模型在这个 tab 上能「做」什么：能跑哪些命令，以及能不能花积分生图、生视频。点一下即生效。',
+  'row.channelRejectHint': '单独一项，因为这里是唯一「每触发一次就真花一次请求」的开关。开启前请读完它的说明。',
+  'row.sidebarPanelLead': '卡片本身出现在哪。这一项只管导航，不改任何请求、不花任何额度。',
   'row.upstreamHint': '这一组改的是网关看到什么，不是由哪个 provider 提供服务。四项都在插件挂载时采样，改完需重载插件或重启 DSH。',
   'row.usageIdentityLabel': '让用量页把调用记成官方客户端的样子',
   'row.usageIdentityHint': '补上 X-IDE-* 头（「使用端」那一列就不会空白），并把会话 id 改成 32 位十六进制 UUIDv7。只影响显示：User-Agent 与请求正文永不变。默认关闭——证据来自报告者，本插件未在真机复现。',

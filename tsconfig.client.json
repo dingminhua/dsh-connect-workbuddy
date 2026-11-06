@@ -67,6 +67,7 @@
     "tests/sidebar-panel-optin.spec.tsx",
     "tests/device-profile-dialog.spec.tsx",
     "tests/issue215-context-budget-radio.spec.tsx",
-    "tests/cn-base-card.spec.tsx"
+    "tests/cn-base-card.spec.tsx",
+    "tests/capabilities-layout.spec.tsx"
   ]
 }

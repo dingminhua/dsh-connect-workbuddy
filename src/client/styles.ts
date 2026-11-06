@@ -145,6 +145,39 @@ export const WORKBUDDY_CARD_CSS = `
  * of the 16px gap, and the panel's first block (the pool, with its own 16px top
  * padding) added a third layer. */
 .dsm-workbuddy-panel{margin:0}
+/* THE CAPABILITIES PANEL IS A COLUMN OF GROUPS, not a run of paragraphs.
+ *
+ * Measured before this rule existed: the panel was display:block with
+ * gap:normal, so its six blocks had NO space between them at all and the
+ * rhythm was being improvised by whatever padding each block happened to carry
+ * — ink-to-ink the gaps read 12 / 50 / 2 / 17 / 0 px. The 50px hole sat between
+ * the gateway card and the first switch (the card's own 10px bottom padding plus
+ * .prefs' 2px top), and the 2px squeeze sat between two switch groups that are
+ * different KINDS of setting. Neither number was chosen; both fell out of the
+ * order the blocks happen to be written in.
+ *
+ * One gap now owns the rhythm, and every group drops the ad-hoc padding it used
+ * to fake it. 18px is the same step the rest of this card uses between
+ * distinctly different things, and it is large enough to separate two groups of
+ * switches WITHOUT a divider — which is why the one divider that used to sit
+ * above the first upstream switch was deleted rather than kept: once the panel
+ * owns 18px, a border plus 10px of its own padding became a third spacing
+ * statement in the same 20px of air (measured 69px ink-to-ink against 18px
+ * everywhere else, the single visible hole in the panel). */
+/* THE ID IS THE HOOK, not a second class name.
+ *
+ * Every panel in this card renders as plain dsm-workbuddy-panel; none of them
+ * carries a per-panel class. A rule written as
+ * .dsm-workbuddy-panel-capabilities{...} therefore matches NOTHING — it parses,
+ * ships, and does nothing at all, which is the worst failure mode available
+ * here because the panel keeps looking slightly wrong and the CSS looks right.
+ * #dsm-workbuddy-panel-capabilities is the attribute that actually exists on
+ * the element. */
+#dsm-workbuddy-panel-capabilities{display:flex;flex-direction:column;gap:18px}
+/* The note keeps the panel's gap like every other block: a special-cased
+   tighter gap here would be one more number to decode, and the panel's own
+   rhythm is what this rule exists to establish. */
+#dsm-workbuddy-panel-capabilities > .dsm-workbuddy-panel-note{margin:0}
 /* DIAGNOSTICS: a two-column fact table rather than prose. Each row is one thing
  * the card actually READ, so a bug report can quote a line instead of
  * paraphrasing the UI. No control lives here on purpose — a diagnostics panel
@@ -179,7 +212,19 @@ export const WORKBUDDY_CARD_CSS = `
  * (the dsm-workbuddy-models-summary class) has no side padding, so copying the
  * reference's 2px would leave the two edges 2px apart — a difference too small
  * to name and just big enough to look unaligned. */
-.dsm-workbuddy-prefs{display:flex;flex-direction:column;gap:14px;padding:2px 0 0}
+.dsm-workbuddy-prefs{display:flex;flex-direction:column;gap:14px;padding:0}
+/* THE GROUP'S LEAD LINE BELONGS TO THE ROW UNDER IT (5.20.0).
+ *
+ * Every group opens with one sentence saying what the switches beneath it
+ * control. With the group's uniform 14px gap, that sentence sat as far from its
+ * first row as two rows sit from each other — measured 14px on all four groups,
+ * identical to the row-to-row distance — so it read as a paragraph of body text
+ * that happened to precede the list rather than as the list's heading.
+ *
+ * Pulling it 6px closer makes the pair visible as a pair without introducing a
+ * new step: the group's own rows stay 14px apart, the lead sits 8px from its
+ * first row, and the 18px panel gap still separates one group from the next. */
+.dsm-workbuddy-prefs > .dsm-workbuddy-pref-hint:first-child{margin-bottom:-6px}
 .dsm-workbuddy-pref{display:flex;align-items:flex-start;gap:10px;font-size:13px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0);cursor:pointer}
 /* The platform's own checkbox, themed only with accent-color. A hand-drawn box
    was tried on this card and reverted: brand-primary resolves to the host's
@@ -192,11 +237,26 @@ export const WORKBUDDY_CARD_CSS = `
  * field that needs an explicit Save. Giving it a card of its own is what says
  * "this answers a different question".
  *
+ * The 25px LEFT padding is the same indent .dsm-workbuddy-pref-indent uses
+ * (15px checkbox + 10px row gap): it puts the card's title on the same left edge
+ * as every switch LABEL in the panel below it, measured 318px vs 330px before
+ * this value existed. A bordered box whose text starts 12px left of the text
+ * beside it reads as a misaligned column, not as a card.
+ *
  * The row wraps, and the input takes the whole width when it does: a host name is
  * long (https://wb.tencentbuddy.com is 26 characters) and a half-width input in
  * the panel column would show about eight of them. */
-.dsm-workbuddy-cnbase{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#24262c)}
-.dsm-workbuddy-cnbase-row{display:flex;flex-direction:column;gap:8px}
+.dsm-workbuddy-cnbase{display:flex;flex-direction:column;gap:8px;padding:10px 12px 10px 25px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#24262c)}
+/* SAME TYPOGRAPHY AS A SWITCH ROW (13px/18px).
+ *
+ * Measured before this rule: the card's title rendered at 16px while every
+ * switch label in the same panel rendered at 13px. The cause is structural
+ * rather than a wrong number — a switch row gets its 13px from
+ * .dsm-workbuddy-pref, and this row is NOT a .dsm-workbuddy-pref (it stacks
+ * its label above a text field instead of sitting beside a 15px box), so it
+ * inherited the page's 16px instead. One group rendering a size nobody chose is
+ * exactly the kind of defect a screenshot shows and nobody can name. */
+.dsm-workbuddy-cnbase-row{display:flex;flex-direction:column;gap:8px;font-size:13px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-cnbase-input{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .dsm-workbuddy-cnbase-input:disabled{opacity:.5;cursor:default}
 .dsm-workbuddy-cnbase-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
@@ -208,8 +268,17 @@ export const WORKBUDDY_CARD_CSS = `
    above them instead of relying on spacing alone: they change the request the
    whole plugin sends, not a per-region display choice, and reading them as the
    tail of the preference list would misrepresent what flipping one costs. */
-.dsm-workbuddy-upstream-pref{margin-top:4px}
-.dsm-workbuddy-upstream-pref:first-of-type{border-top:1px solid var(--dsw-alias-bg-layer-3,#2e3034);padding-top:10px}
+/* The divider above the first upstream switch is GONE as of 5.20.0.
+ *
+ * It was doing double duty: separating "what this tab shows" from "what the
+ * plugin sends" AND propping up a panel that had no gap of its own. Once
+ * #dsm-workbuddy-panel-capabilities owns the rhythm at 18px, the border plus its
+ * 10px padding became a third spacing statement in the same 20px of air —
+ * measured ink-to-ink 69px against 18px everywhere else, i.e. the one visible
+ * hole in the panel. The semantic break it marked is still real, and it is now
+ * expressed the way the rest of the panel expresses it: one group, one gap.
+ * The 4px that remains is optical only, between the group's own rows. */
+.dsm-workbuddy-upstream-pref{margin-top:0}
 .dsm-workbuddy-pref input:disabled{cursor:default}
 .dsm-workbuddy-pref:has(input:disabled){opacity:.6;cursor:default}
 /* The NAME and what it does are TWO lines, not one wrapped blob: first what the

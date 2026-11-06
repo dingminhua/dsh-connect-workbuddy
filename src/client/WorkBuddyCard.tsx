@@ -2841,21 +2841,28 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     )
 
   const sidebarPanelPreference = (
-    <label className="dsm-workbuddy-pref" title={t('row.sidebarPanelHint')}>
-      <input
-        type="checkbox"
-        className="dsm-workbuddy-sidebar-panel-check"
-        checked={sidebarPanelSwitchedOn()}
-        disabled={!canWrite || saving || poolBusy || sidebarPanelBusy}
-        onChange={(event: { target: { checked: boolean } }) => {
-          void toggleSidebarPanel(event.target.checked)
-        }}
-      />
-      <span className="dsm-workbuddy-pref-copy">
-        <span className="dsm-workbuddy-pref-label">{t('row.sidebarPanelLabel')}</span>
-        <span className="dsm-workbuddy-pref-hint">{t('row.sidebarPanelHint')}</span>
-      </span>
-    </label>
+    /* Wrapped in `.prefs` like every other group as of 5.20.0. It used to be a
+       bare <label>, which made it the only one of the five blocks that was not a
+       group — so it took the panel's 18px gap as a row rather than as a group,
+       and its own single-row spacing came out different from the four above it. */
+    <div className="dsm-workbuddy-prefs">
+      <span className="dsm-workbuddy-pref-hint">{t('row.sidebarPanelLead')}</span>
+      <label className="dsm-workbuddy-pref" title={t('row.sidebarPanelHint')}>
+        <input
+          type="checkbox"
+          className="dsm-workbuddy-sidebar-panel-check"
+          checked={sidebarPanelSwitchedOn()}
+          disabled={!canWrite || saving || poolBusy || sidebarPanelBusy}
+          onChange={(event: { target: { checked: boolean } }) => {
+            void toggleSidebarPanel(event.target.checked)
+          }}
+        />
+        <span className="dsm-workbuddy-pref-copy">
+          <span className="dsm-workbuddy-pref-label">{t('row.sidebarPanelLabel')}</span>
+          <span className="dsm-workbuddy-pref-hint">{t('row.sidebarPanelHint')}</span>
+        </span>
+      </label>
+    </div>
   )
 
   /**
@@ -3052,6 +3059,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const channelRejectContinuePreference = (
     <div className="dsm-workbuddy-prefs">
+      <span className="dsm-workbuddy-pref-hint">{t('row.channelRejectHint')}</span>
       <label
         className="dsm-workbuddy-pref dsm-workbuddy-upstream-pref"
         title={t('row.channelRejectContinueHint')}
@@ -3088,6 +3096,14 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
 
   const creditPreferences = (
     <div className="dsm-workbuddy-prefs">
+      {/* Each of the three groups gets a LEAD LINE, and the reason is
+          structural: only the upstream group had one, so the panel read as
+          "a paragraph, a card, then three lists" with the middle list
+          explaining itself and the other two not. The leads are not decoration —
+          each states the ONE thing a user needs before touching the controls
+          under it (what these change / that they need a reload / that this one
+          spends a request). */}
+      <span className="dsm-workbuddy-pref-hint">{t('row.modelToolsHint')}</span>
       {cliBridgePreference}
       {/* The picker row is a property of the switch above it, like the seat
           row is a property of the credits switch: hidden while the route is
