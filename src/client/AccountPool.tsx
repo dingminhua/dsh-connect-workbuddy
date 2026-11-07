@@ -2414,6 +2414,12 @@ function renderSettings(input: {
     h('div', { className: 'dsm-workbuddy-pool-card-head' },
       h('h4', { className: 'dsm-workbuddy-pool-card-title' }, t('row.poolSettingsTitle')),
     ),
+    // The icon style is NOT here any more: it decides what the plugin looks like in
+    // the sidebar and the page header, which is what the plugin MAY DO on the
+    // user's behalf rather than how its account pool is configured — the same
+    // distinction that puts the switch groups on the 能力 tab. It also applied
+    // itself on the click with no Save button, and this block's own note promises
+    // 「点保存才生效」, so the two contradicted each other a few pixels apart.
     // Reference text, at the top of the settings block and OUT of the member
     // block: it explains the badges and arrows in the table above, so it belongs
     // under the data rather than in front of it.

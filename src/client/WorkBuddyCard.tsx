@@ -92,7 +92,8 @@ import { busyIcon } from './busy-icon.tsx'
 import { promoBadgeColor, promoBadgeLabel, promoBadgeTooltip, uiLanguage } from './promo-badge.ts'
 import { inlineProbeReason } from './probe-reason.ts'
 import { remainingText } from './remaining.ts'
-import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
+import { IconStylePreference, PluginIcon } from './plugin-icon.tsx'
+import { updateStickyTabs } from './series-layout.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import { searchReasonLabel, searchedView, signedOutNotice, signedOutText } from './searched-paths.ts'
 import type { Translate } from './searched-paths.ts'
@@ -3230,7 +3231,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
             </button>
           )
         : null}
-      <img className="dsm-workbuddy-page-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+      <PluginIcon className="dsm-workbuddy-page-icon" />
       <span className="dsm-workbuddy-page-title">{title}</span>
       <span className="dsm-workbuddy-page-desc">{t('row.desc')}</span>
     </div>
@@ -3968,6 +3969,17 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 {upstreamSwitches}
                 {channelRejectContinuePreference}
                 {sidebarPanelPreference}
+                {/* WHAT THE PLUGIN LOOKS LIKE, as opposed to what it may do.
+                    It lives in this panel rather than under 「更多设置」 because it
+                    applies on the click with no Save button — the same contract as
+                    the four switches above, and the opposite of the account pool's
+                    settings block, whose note promises 「点保存才生效」.
+                    Wrapped in `.prefs` so it takes the panel's group gap like every
+                    other group instead of reading as a stray row. */}
+                <div className="dsm-workbuddy-prefs">
+                  <span className="dsm-workbuddy-pref-hint">{t('row.iconStyleLead')}</span>
+                  <IconStylePreference t={t} />
+                </div>
               </div>
               {/* DIAGNOSTICS — the third section, and the one that earns its tab
                   by holding nothing the other two already say: the facts a bug
@@ -4178,7 +4190,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
 
   if (pageSurface || settingsSurface) {
     return (
-      <div className={settingsSurface ? 'dsm-workbuddy-page dsm-workbuddy-settings' : 'dsm-workbuddy-page'}>
+      <div className={settingsSurface ? 'dsm-workbuddy-page dsm-workbuddy-settings' : 'dsm-workbuddy-page'} ref={page => { if (page !== null) requestAnimationFrame(() => { updateStickyTabs(page) }) }} onScroll={event => { updateStickyTabs(event.currentTarget) }}>
         {pageHead}
         <div className="dsm-workbuddy-page-body">{cardBody}</div>
       </div>
@@ -4194,7 +4206,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
         aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
         onClick={() => { setCardOpen(!cardOpen) }}
       >
-        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+        <PluginIcon className="dsm-plugin-card-icon" />
         <span className="dsm-plugin-card-head">
           <span className="dsm-plugin-card-title">{title}</span>
           <span className="dsm-plugin-card-description">{t('row.desc')}</span>

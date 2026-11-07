@@ -144,15 +144,19 @@ describe('the gateway card speaks the same typography as its neighbours', () => 
 })
 
 describe('every group carries a lead line', () => {
-  it('renders five groups and six blocks', async () => {
-    // The note + the card + four groups. The count is the contract: a group that
-    // silently becomes a bare <label> takes the panel gap as a ROW instead of as
-    // a group, which is exactly what the sidebar switch used to do.
+  it('renders five groups and seven blocks', async () => {
+    // The note + the gateway card + FIVE groups: upstream switches, the credit
+    // switches, the channel-reject rule, the sidebar panel, and the icon style.
+    //
+    // The count is the contract: a group that silently becomes a bare <label>
+    // takes the panel gap as a ROW instead of as a group, which is exactly what
+    // the sidebar switch used to do — and the icon style, arriving last, is the
+    // one most likely to be added as a stray element rather than as a group.
     const m = await render()
     const panel = m.container.querySelector('#dsm-workbuddy-panel-capabilities')
     const blocks = Array.from(panel?.children ?? []) as Element[]
     const groups = blocks.filter(el => String(el.className).includes('dsm-workbuddy-prefs'))
-    expect(groups, `blocks were ${blocks.map(el => String(el.className)).join(', ')}`).toHaveLength(4)
+    expect(groups, `blocks were ${blocks.map(el => String(el.className)).join(', ')}`).toHaveLength(5)
     await m.unmount()
   })
 

@@ -69,6 +69,8 @@
     "tests/issue215-context-budget-radio.spec.tsx",
     "tests/cn-base-card.spec.tsx",
     "tests/capabilities-layout.spec.tsx",
-    "tests/model-label-diagnostics.spec.ts"
+    "tests/model-label-diagnostics.spec.ts",
+    "tests/plugin-icon.spec.tsx",
+    "tests/sticky-boundary.spec.tsx"
   ]
 }

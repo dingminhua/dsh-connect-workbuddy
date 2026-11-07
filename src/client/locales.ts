@@ -12,6 +12,12 @@
 
 export const en = {
   'nav.panel': 'WorkBuddy',
+  'row.iconStyleLead': 'Appearance — what the plugin looks like, not what it may do.',
+  'row.iconStyleLabel': 'Icon style',
+  'row.iconStyleHint': 'Takes effect on the click in the sidebar, the page header and the panel. The default is this plugin\'s own icon; the alternative skin follows the theme\'s text colour. The choice is stored in this browser only.',
+  'row.iconStyleClaude': 'Claude style',
+  'row.iconStyleOriginal': 'Default icon',
+  'row.iconStyleSaveFailed': 'The icon choice could not be saved. Check browser storage permissions.',
   'nav.back': 'Back to conversation',
   'row.title': 'WorkBuddy credits & models (dsh-connect-workbuddy)',
   'row.desc': 'Use WorkBuddy models in DSH: each refresh reads every model\'s credit multiplier from the upstream catalog, image input is toggled per model, several accounts can be switched or failed over automatically, and daily check-in plus your remaining credits are one click away. The domestic and international sides are two independent providers, each with its own account — use both at the same time.',
@@ -739,6 +745,12 @@ export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
   'nav.panel': 'WorkBuddy',
+  'row.iconStyleLead': '外观 —— 插件长什么样，不是它能做什么。',
+  'row.iconStyleLabel': '图标样式',
+  'row.iconStyleHint': '点一下立即应用到侧边栏、页头与面板。默认是本插件自己的图标；另一个皮肤跟随主题的文字颜色。选择只存在当前浏览器里。',
+  'row.iconStyleClaude': 'Claude 风格',
+  'row.iconStyleOriginal': '默认图标',
+  'row.iconStyleSaveFailed': '图标选择保存失败，请检查浏览器存储权限。',
   'nav.back': '返回会话',
   'row.title': '接入使用 WorkBuddy 积分与模型（dsh-connect-workbuddy）',
   'row.desc': '在 DSH 中使用 WorkBuddy 模型：每次刷新都按上游目录读取每个模型的积分倍率，图片输入可逐模型开关，多个账号可切换或由账号池自动换号，每日签到与剩余积分一键可查。国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。',

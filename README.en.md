@@ -19,6 +19,11 @@
 
 A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle plugin that connects locally signed-in WorkBuddy models to the DSH model picker — **both the CN app and the international WorkBuddy AI app are supported** — with an account pool, selectable model management, and a set of read-only capabilities built around credits: **every catalog refresh reads each model's credit multiplier from upstream** (the `x0.79` figure comes entirely from the upstream catalog; the plugin neither hard-codes it nor guesses), image input is toggled per model, multiple accounts can be switched or fail over automatically through the pool, and daily check-in plus read-only credit overviews shown as compact pills on the card and in the composer. **The CN and international sides are two parallel providers (`workbuddy` / `workbuddy-global`) that can be used at the same time**; the settings page separates them with tabs for convenient management. All it needs is a WorkBuddy sign-in on this machine — or **one sign-in from the browser**.
 
+### Icon style
+
+In the account pool, open **More settings** and choose **Claude style** or **Default icon**. The sidebar and page icons update immediately. The choice is stored in the current browser; other browsers keep their own choice.
+
+
 ## Risk notice
 
 > **WorkBuddy has begun restricting requests from unofficial clients. This project does not promise that these endpoints will keep working; the day upstream tightens its rules, the plugin may stop working. Read the [Disclaimer](#disclaimer) at the end of this file and judge the account risk for yourself. Using the official WorkBuddy client is always the safest choice.**
