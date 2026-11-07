@@ -27,7 +27,7 @@
  *    and left every row — including its 被限流/模型繁忙 mark — untouched.
  *
  * 3. A STATED TIME WAS DISCARDED, so one of the two rows lied outright.
- *    dingxiaoman2016's stored body is the ENGLISH spelling of code 6004:
+ *    one account's stored body is the ENGLISH spelling of code 6004:
  *
  *      `usage exceeds frequency limit, but don't worry, your usage will reset at
  *       2026-10-16 11:34:04 UTC+8, …`
@@ -131,7 +131,7 @@ describe('a stored record whose time was discarded is healed on read', () => {
     await writeFile(join(home, '.workbuddy-pool.cn.json'), `${JSON.stringify({
       version: 1,
       probes: {
-        dingxiaoman: {
+        accountA: {
           outcome: 'rate-limited',
           atMs: MEASURED_AT,
           source: 'test-batch',
@@ -147,7 +147,7 @@ describe('a stored record whose time was discarded is healed on read', () => {
     const probes = await readPoolProbes('cn')
     // Mutation: revert the heal in `readPoolProbes`/`retryAtMsOf` → undefined,
     // and the row goes back to claiming 上游未给出何时恢复.
-    expect(probes['dingxiaoman']?.retryAtMs).toBe(STATED_RESET)
+    expect(probes['accountA']?.retryAtMs).toBe(STATED_RESET)
   })
 
   it('the healed time is what the exclusion rule reads, so both tables agree', async () => {
@@ -156,7 +156,7 @@ describe('a stored record whose time was discarded is healed on read', () => {
     // the cooldown window was 30 minutes from MEASURED_AT, so the account
     // returned to candidacy at 17:32 — about 18 hours before upstream said.
     await writeStored()
-    const probe = (await readPoolProbes('cn'))['dingxiaoman']
+    const probe = (await readPoolProbes('cn'))['accountA']
     const early = MEASURED_AT + 30 * 60_000 + 1_000
     // Still excluded: upstream's stated time has not arrived.
     expect(exclusionOf(probe, early)).toBe('rate-limited')
@@ -173,7 +173,7 @@ describe('a stored record whose time was discarded is healed on read', () => {
     const disk = JSON.parse(await readFile(join(home, '.workbuddy-pool.cn.json'), 'utf8')) as {
       probes: Record<string, { retryAtMs?: number }>
     }
-    expect(disk.probes['dingxiaoman']?.retryAtMs).toBe(STATED_RESET)
+    expect(disk.probes['accountA']?.retryAtMs).toBe(STATED_RESET)
   })
 
   it('never invents a time for an outcome that cannot have one', async () => {
