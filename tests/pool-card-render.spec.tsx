@@ -274,7 +274,10 @@ describe('the model list no longer folds', () => {
     // The header and the list are both still rendered, and the header still says
     // what the section holds.
     expect(headOf(m).textContent).toContain('row.modelsTitle')
-    expect(headOf(m).textContent).toContain('row.modelsSummary|count=1')
+    // The "已启用 N 个" line under the title was removed on request: it
+    // restated a count the rows themselves show. Asserted as an ABSENCE so a
+    // later refactor cannot quietly put a second line of chrome back.
+    expect(headOf(m).textContent).not.toContain('row.modelsSummary')
     expect(m.container.querySelectorAll('.dsm-workbuddy-model').length).toBeGreaterThan(0)
     // A click on the header must NOT hide anything any more.
     await m.click(headOf(m))

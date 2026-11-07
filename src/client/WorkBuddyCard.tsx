@@ -3559,6 +3559,13 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                           different kind of section rather than the same one. */}
                       <div className="dsm-workbuddy-models-fold">
                         <div className="dsm-workbuddy-models-head">
+                          {/* NO "已启用 N 个" LINE UNDER THE TITLE (removed on
+                              request). It restated a count the list itself makes
+                              obvious — every row you can see is a row, and the
+                              enabled ones are the unticked ones — so it was a
+                              second line of chrome above the content. The count
+                              is still readable from the rows, and the dirty
+                              marker beside the title is untouched. */}
                           <div>
                             <div className="dsm-workbuddy-models-title-row">
                               <h3 className="dsm-workbuddy-models-title">
@@ -3568,7 +3575,6 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                   : null}
                               </h3>
                             </div>
-                            <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                           </div>
                           <div className="dsm-workbuddy-models-head-actions">
                             <button

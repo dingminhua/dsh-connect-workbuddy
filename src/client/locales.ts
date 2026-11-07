@@ -129,7 +129,6 @@ export const en = {
   'row.cardCrashed': 'The configuration area failed to render.',
   'row.cardCrashedHint': 'The model provider itself is unaffected — chat and credits keep working. Quote the line above in a bug report.',
   'row.modelsTitle': 'Models',
-  'row.modelsSummary': '{count} enabled',
   // Shown in the section header while the list is COLLAPSED. The save/discard
   // buttons live inside the fold, so without this a user could hide their own
   // unsaved edits behind it with nothing on screen saying so.
@@ -822,7 +821,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.cardCrashed': '配置区渲染失败。',
   'row.cardCrashedHint': '模型服务本身未受影响，对话与积分仍可用。反馈问题时请附上上面这行。',
   'row.modelsTitle': '模型',
-  'row.modelsSummary': '已启用 {count} 个',
   // 折叠态显示在标题行。保存/放弃按钮在折叠区里面，没有这个提示，用户会把
   // 自己未保存的改动藏到折叠后面，而界面上什么都不说。
   'row.modelsDirty': '有未保存的修改',
