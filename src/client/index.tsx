@@ -111,12 +111,53 @@ export const inject = ['slots', 'locale']
  * @returns The published view, or `undefined` when there is no global to
  *          publish onto (server rendering, a bare test).
  */
+/**
+ * One word for the state of the model-label registration.
+ *
+ * The four outcomes need DIFFERENT fixes, and three of them look identical from
+ * the picker (no badges):
+ *
+ *   not-reached       the client half never reached registration — a boot or
+ *                     composition problem, nothing to do with the slot.
+ *   parent-not-mounted  we asked, the host never called back: the parent entry
+ *                     (`conversation.input.model`) is not mounted, so the child
+ *                     cell does not exist yet.
+ *   failed            `register()` threw (a same-priority claim).
+ *   claimed           it landed; if badges are still missing the cause is
+ *                     downstream (render or CSS), not here.
+ *
+ * @param state - What the registration path recorded.
+ * @returns The verdict word.
+ */
+export function modelLabelVerdictOf(state: {
+  injectRanAt?: number | undefined
+  failure?: string | undefined
+  askedAt?: number | undefined
+  dispose?: (() => void) | undefined
+}): 'failed' | 'claimed' | 'not-reached' | 'parent-not-mounted' {
+  if (state.failure !== undefined) return 'failed'
+  if (state.injectRanAt !== undefined) return 'claimed'
+  // No ask at all: the code never got this far.
+  if (state.askedAt === undefined) return 'not-reached'
+  // It asked; the host never called back.
+  return 'parent-not-mounted'
+}
+
 export function publishModelLabelState(
-  state: { injectRanAt?: number | undefined, failure?: string | undefined, dispose?: (() => void) | undefined },
+  state: {
+    injectRanAt?: number | undefined
+    failure?: string | undefined
+    dispose?: (() => void) | undefined
+    askedAt?: number | undefined
+    rebinds?: number | undefined
+  },
   target: { warn?: (message: string) => void } & Record<string, unknown> = globalThis as never,
 ): Record<string, unknown> | undefined {
   const view = {
+    verdict: modelLabelVerdictOf(state),
     injectRanAt: state.injectRanAt,
+    askedAt: state.askedAt,
+    rebinds: state.rebinds,
     failure: state.failure,
     claimed: state.dispose !== undefined,
     at: Date.now(),
@@ -431,8 +472,23 @@ export function apply(ctx: WorkBuddyClientContext): void {
       failure?: string
       /** The disposer, when the host eventually asked for the cell. */
       dispose?: (() => void) | undefined
+      /**
+       * Set the moment `registerModelLabel()` is CALLED, before the host has a
+       * chance to answer.
+       *
+       * This exists so the published view can tell three states apart instead of
+       * two. Without it, "the plugin never got this far" and "the plugin asked
+       * and the host never answered" both publish `undefined`, and those need
+       * completely different fixes.
+       */
+      askedAt?: number
+      /** How many times `rebindSlots` has run — proves the client half booted. */
+      rebinds?: number
     } = {}
+    /** The verdict for the console line (see `modelLabelVerdictOf`). */
+    const modelLabelVerdict = (): string => modelLabelVerdictOf(modelLabelState)
     const registerModelLabel = (): (() => void) | undefined => {
+      modelLabelState.askedAt = Date.now()
       try {
         return ctx.slots.inject('conversation.input.model.label' as never, () => {
           // THIS LINE IS THE EVIDENCE. The host calls back only after
@@ -836,6 +892,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
         try { dispose() } catch { /* already disposed by the slot service */ }
       }
       liveDisposers = []
+      modelLabelState.rebinds = (modelLabelState.rebinds ?? 0) + 1
       liveDisposers = registerAllSlots()
       // Say what actually landed, once per rebind.
       //
@@ -870,9 +927,8 @@ export function apply(ctx: WorkBuddyClientContext): void {
           `[dsh-connect-workbuddy] registered ${String(liveDisposers.length)} slots `
           + `(settings form: ${settingsScope === undefined ? 'none — page is read-only' : 'bound'}, `
           + `sidebar panel: ${sidebarPanelWanted() ? 'on' : 'off'}, `
-          + `model label: ${modelLabelState.failure !== undefined
-            ? `FAILED (${modelLabelState.failure})`
-            : modelLabelState.injectRanAt === undefined ? 'waiting for the composer' : 'claimed'})`,
+          + `model label: ${modelLabelVerdict()}`
+          + `${modelLabelState.failure === undefined ? '' : ` (${modelLabelState.failure})`})`,
         )
       } catch { /* a host without console must still get its slots */ }
       // The panel rides its OWN switch, so it is reconciled rather than listed:

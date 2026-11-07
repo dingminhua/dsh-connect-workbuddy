@@ -10,7 +10,7 @@
  * facts exist, and why they are asserted rather than assumed.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { publishModelLabelState } from '../src/client/index.tsx'
+import { modelLabelVerdictOf, publishModelLabelState } from '../src/client/index.tsx'
 
 /** A stand-in for the global object that also records warnings. */
 function target(): { store: Record<string, unknown>, warnings: string[] } {
@@ -76,5 +76,48 @@ describe('publishModelLabelState', () => {
       warn: () => { throw new Error('console is gone') },
     } as never
     expect(() => publishModelLabelState({ failure: 'x' }, throwing)).not.toThrow()
+  })
+})
+
+describe('modelLabelVerdictOf', () => {
+  /**
+   * FOUR STATES, THREE OF WHICH LOOK IDENTICAL FROM THE PICKER (no badges) and
+   * need completely different fixes. Collapsing them is what made this issue take
+   * several rounds: "no badge" was reported, and every diagnosis had to start
+   * from scratch because the plugin could not say WHICH of the four it was.
+   */
+  it('says the client half never reached registration', () => {
+    // Nothing recorded at all. A boot/composition problem — the slot is not even
+    // in the picture yet.
+    expect(modelLabelVerdictOf({})).toBe('not-reached')
+  })
+
+  it('says the host never called back (the silent case)', () => {
+    // We asked; no callback, no throw. The parent entry `conversation.input.model`
+    // has not mounted, so the child cell does not exist.
+    expect(modelLabelVerdictOf({ askedAt: 1_000 })).toBe('parent-not-mounted')
+  })
+
+  it('says it landed', () => {
+    expect(modelLabelVerdictOf({ askedAt: 1_000, injectRanAt: 2_000, dispose: () => {} })).toBe('claimed')
+  })
+
+  it('reports a throw ahead of everything else', () => {
+    // A collision is the one state that DOES produce a message, and it must win
+    // over the timestamps: if `register()` threw there is no claim to describe.
+    expect(modelLabelVerdictOf({ askedAt: 1_000, injectRanAt: 2_000, failure: 'boom' })).toBe('failed')
+    expect(modelLabelVerdictOf({ askedAt: 1_000, failure: 'boom' })).toBe('failed')
+  })
+
+  it('is what the published view carries', () => {
+    // The verdict is the field a reader acts on; if it were absent from the
+    // published object the console line and `window` would disagree.
+    const t = target()
+    const view = publishModelLabelState({ askedAt: 5 }, t as never)
+    expect(view?.['verdict']).toBe('parent-not-mounted')
+    expect((t as never as Record<string, unknown>)['__dshWorkBuddyModelLabel__']).toMatchObject({
+      verdict: 'parent-not-mounted',
+      askedAt: 5,
+    })
   })
 })
