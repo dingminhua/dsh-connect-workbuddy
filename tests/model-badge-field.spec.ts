@@ -1,23 +1,22 @@
 /**
  * Mapping an upstream promotion colour onto the host's four semantic badge tones.
  *
- * WHAT THIS IS *NOT* FOR (measured, and worth recording so nobody tries again):
- * `LlmModelInfo.badge` exists and the picker does draw it — but a THIRD-PARTY
- * plugin cannot supply it. The host builds that field inside
- * `resolveListedCatalog` from `input.listing`, which comes from
- * `requestModelListing` in `@deepseek-ai/dsh-llm-deepseek` — the OFFICIAL
- * DeepSeek provider's own listing path (`registerDeepSeekProvider`). The
- * discovery channel a third-party plugin registers
- * (`ctx.llm.registerModelDiscovery`) answers `LlmDiscoveredModel`, whose fields
- * are `id / name / contextWindow / maxTokens / inputModalities` — no `badge`,
- * and nothing reads one off it.
+ * WHICH ROUTES REACH `LlmModelInfo.badge` (measured on 0.2.2-rc.1, corrected
+ * after the first version of this note got it wrong):
  *
- * So a `badge` added to a discovery result is silently dropped. That is what was
- * tried first; the field is not reachable from here.
+ * - `ctx.llm.registerModelDiscovery` — NO. Its contract answers
+ *   `LlmDiscoveredModel` (`id / name / contextWindow / maxTokens /
+ *   inputModalities`), which has no `badge` field and nothing reads one off it.
+ *   A badge added there is silently dropped. That is what was tried first, and
+ *   the assertion at the bottom of this file still pins it.
+ * - the ADAPTER's own `listModels()` — YES. `LlmRuntime.listModels` normalizes
+ *   whatever the adapter returned and keeps `badge`, and `buildModelCatalog`
+ *   copies it onto the wire. `PiAiAdapter.listModels` does not emit one, so a
+ *   subclass has to override it; `src/adapter.ts` does exactly that. This is the
+ *   route `docs/MODEL-LABEL-SPEC.md` documents for every connector.
  *
- * The tone mapping itself stays because it is correct in isolation and is the
- * piece any future surface would need — it is a pure function with no host
- * dependency.
+ * The tone mapping is needed by that second route, which is why it moved to
+ * `src/promo.ts`: the host half cannot import from `src/client/`.
  */
 import { describe, expect, it } from 'vitest'
 import { promoBadgeTone } from '../src/client/promo-badge.ts'
@@ -71,7 +70,7 @@ describe('promoBadgeTone', () => {
   })
 })
 
-describe('the channels a third-party plugin does NOT have', () => {
+describe('the channel that still does NOT work: model discovery', () => {
   /**
    * Recorded as an assertion rather than prose, so a future attempt fails fast
    * instead of shipping a field nobody reads.
@@ -85,7 +84,9 @@ describe('the channels a third-party plugin does NOT have', () => {
    * `LlmDiscoveredModel` — no `badge` field, and nothing reads one off it.
    *
    * So adding a badge to a discovery result is silently dropped. That is what
-   * was tried first; this test is why it will not be tried again by accident.
+   * was tried first. The ADAPTER route (`listModels`, see the header) does work
+   * and is what this plugin uses; this test only pins that the discovery route
+   * is still a dead end, so nobody re-attempts it by accident.
    */
   it('cannot smuggle a badge through model discovery', () => {
     // Read the declaration out of the installed host rather than trusting a

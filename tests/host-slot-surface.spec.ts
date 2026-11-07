@@ -51,7 +51,7 @@ const CLAIMED_SLOTS: Record<string, string> = {
   'settings.section': 'the configuration page itself (list slot, id owned by this plugin, order 35)',
   'settings.section.icon': 'that page\'s nav glyph, addressed by the SAME id (unmatched ids never render)',
   'conversation.input.right': 'composer-row credit capsule (order 4, before the model picker)',
-  'conversation.input.model.label': 'load badge in the model picker (single, priority -0.5)',
+  'conversation.input.model.label': 'load badge in the model picker (single cell; the priority is MODEL_LABEL_PRIORITY, deliberately not repeated here so it cannot go stale)',
   'conversation.composer.dock': 'stats credits row (order 10) and CLI live row (order 11)',
   'shell.quota-notice': 'frame-wide quota notice chain contributor',
   'sidebar.panellist': 'sidebar nav row (order 2) that opens the WorkBuddy full page',

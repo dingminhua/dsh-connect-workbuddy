@@ -20,7 +20,7 @@ import { createAssistantMessageEventStream, createProvider, isContextOverflow } 
 import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, AuthContext, Context, CredentialStore, Message, Model, Provider, ProviderStreams } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { ReasoningEffortId, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, LlmModelReasoningInfo, LlmResolvedModelInfo, PreparedAdapterCall, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmResolvedModelInfo, PreparedAdapterCall, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { PiAiAdapterOptions, ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -29,6 +29,7 @@ import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import { offRefused } from './off-thinking.ts'
 import { defaultEffortFor } from './default-effort.ts'
+import { promoBadgeTone, selectPromoBadge } from './promo.ts'
 import { WORKBUDDY_DEFAULT_EFFORT } from './default-effort.ts'
 import { WORKBUDDY_FALLBACK_SYSTEM_PROMPT } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
@@ -277,8 +278,24 @@ export interface WorkBuddyAdapter {
   invalidate: () => void
 }
 
-const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+/**
+ * One selector badge, in the shape the host's model directory accepts from
+ * DSH 0.2.2 on (`LlmModelInfo.badge`).
+ *
+ * Declared LOCALLY for the same reason `listModels` uses the spread form: this
+ * plugin's peer range still starts at `0.1.7-rc.1`, whose `LlmModelInfo` has no
+ * such field, so importing the type would not compile there. The shape is three
+ * fields and it is stable; on 0.1.x nothing reads the property.
+ *
+ * `text` is a table when the badge has per-language wording. `en` is REQUIRED
+ * by the host's resolver — a table without it resolves to `undefined`.
+ */
+export interface LlmModelBadge {
+  text: string | Record<string, string>
+  tone: 'neutral' | 'info' | 'success' | 'warning'
+}
 
+const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 type WorkBuddyThinkingLevel = typeof THINKING_LEVELS[number]
 type WorkBuddyThinkingLevelMap = Partial<Record<'off' | WorkBuddyThinkingLevel, string | null>>
 
@@ -1260,14 +1277,59 @@ class EffortNormalizingAdapter extends PiAiAdapter {
    */
   private readonly defaultEffort: (model: string) => string | undefined
 
+  /**
+   * The selector badge for one exact model, or `undefined` when it carries none.
+   *
+   * Read LIVE on every `listModels()` call, like {@link effortCapable}: the
+   * answer depends on the clock (a night window opens and closes), and the host
+   * re-reads the catalog rather than caching this for the session.
+   *
+   * @see listModels for why the badge lives here at all.
+   */
+  private readonly modelBadge: (model: string) => LlmModelBadge | undefined
+
   constructor(
     config: PiAiAdapterOptions,
     effortCapable: (model: string) => boolean,
     defaultEffort: (model: string) => string | undefined = () => undefined,
+    modelBadge: (model: string) => LlmModelBadge | undefined = () => undefined,
   ) {
     super(config)
     this.effortCapable = effortCapable
     this.defaultEffort = defaultEffort
+    this.modelBadge = modelBadge
+  }
+
+  /**
+   * The catalog, with this plugin's selector badge attached to each model.
+   *
+   * WHY THIS OVERRIDE EXISTS (issue #138). `conversation.input.model.label` is a
+   * `single` slot, so whichever plugin wins it draws EVERY provider's rows — and
+   * the host's own badge fallback only runs when the cell has NO occupant. A
+   * sibling's chip therefore survives only if it travels as DATA rather than as
+   * a component. From 0.2.2 the host's directory carries exactly such a field
+   * (`LlmModelInfo.badge`), and the only way an adapter can fill it is here:
+   * `resolveModel()` is normalized by the registry, which drops `badge`, so a
+   * value returned from there never reaches the picker.
+   *
+   * WHY THE SPREAD AND NOT AN OBJECT LITERAL. This plugin's peer range still
+   * starts at `0.1.7-rc.1`, where `LlmModelInfo` has no `badge` field — an
+   * object literal naming it would fail to compile against that declaration.
+   * The spread compiles against both, and on 0.1.x the extra property is simply
+   * not read by anything. No runtime version check is needed or wanted.
+   *
+   * WHAT IS DELIBERATELY NOT HERE: the live load level. A catalog refresh costs
+   * one `resolveModelInfo()` per model, so a per-minute fact would have to be
+   * republished by emitting `llm/models-updated` on every probe — and a stale
+   * 🚦 is worse than no 🚦. The load level stays on this plugin's own rows,
+   * where the component can re-read a snapshot per render.
+   */
+  override async listModels(provider: string): Promise<LlmModelInfo[]> {
+    const models = await super.listModels(provider)
+    return models.map((model) => {
+      const badge = this.modelBadge(model.id)
+      return { ...model, ...badge === undefined ? {} : { badge } }
+    })
   }
 
   override async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
@@ -1483,6 +1545,44 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     return defaultEffortFor(info, options.defaultThinkingEfforts?.() ?? {})
   }
 
+  /**
+   * The selector badge for one model: whatever promotion holds RIGHT NOW.
+   *
+   * WHY THE CLOCK IS READ HERE. `promos` rides along UNRESOLVED on the model
+   * entry precisely so the decision can be made where it is drawn (`src/promo.ts`
+   * explains why freezing it at parse time would leave "夜间折扣" on the row the
+   * next morning). `listModels()` is called when the host builds the catalog, so
+   * this is that "where it is drawn" moment on the host side.
+   *
+   * WHY A TABLE, AND WHEN IT COLLAPSES TO A STRING. The host resolves
+   * `badge.text` against the READER's locale (`ctx.locale.resolveText`), and this
+   * function runs in the host process, where the browser's language is not
+   * knowable. A table lets the host pick; a bare string forces one language on
+   * every user. `en` is mandatory in a table — one without it resolves to
+   * `undefined` and the chip disappears entirely.
+   *
+   * Most CN promotions publish NO English wording, so `en = labelEn ?? label`
+   * makes both entries identical and the value collapses to a bare string. That
+   * is deliberate: inventing English copy would be worse than showing the
+   * upstream's own Chinese wording to an English reader.
+   *
+   * ONLY THE PROMOTION GOES IN. The load level is a per-minute fact; see
+   * `listModels` for why it deliberately stays on this plugin's own rows.
+   */
+  const resolveModelBadge = (model: string): LlmModelBadge | undefined => {
+    const info = catalog.current().find(entry => entry.id === model)
+    if (info === undefined) return undefined
+    const promo = selectPromoBadge(info.promos, Date.now())
+    if (promo === undefined) return undefined
+    // The upstream's own wording, never invented copy: `label` is the region's
+    // wording and `labelEn` its English one when published.
+    const en = promo.badge.labelEn ?? promo.badge.label
+    const text = promo.badge.label === en
+      ? en
+      : { en, zh: promo.badge.label }
+    return { text, tone: promoBadgeTone(promo) }
+  }
+
   const adapter = new EffortNormalizingAdapter({
     profiles: () => profiles,
     auth: INERT_AUTH,
@@ -1492,7 +1592,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // itself via the store, so the secret never reaches upstream.
     resolveApiKey: async () => shim.token(),
     ...resolveAttachments === undefined ? {} : { resolveAttachments },
-  }, effortCapable, resolveDefaultEffort)
+  }, effortCapable, resolveDefaultEffort, resolveModelBadge)
 
   return {
     adapter,

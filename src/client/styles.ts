@@ -622,6 +622,20 @@ export const WORKBUDDY_CARD_CSS = `
    "· N 新模型" segment (label-dimmed), but no chip border and one step smaller,
    so it reads as a side note beside the promotion chip rather than a second
    badge competing with the model name. */
+/* A badge another PROVIDER published for its own model, reproduced in the
+   host's picker so it survives this plugin holding the cell. Geometry and the
+   no-border rule are copied from the host's own Tag.module.css (0.2.2-rc.1) —
+   the chip must be indistinguishable from one the host drew itself, which is
+   also why there is no max-width here: the host does not truncate, and a chip
+   that turned "限时免费" into "限时免…" at the same row width would be the one
+   visible difference. Colours arrive inline per tone. */
+.dsm-workbuddy-model-label-host-badge{flex:none;display:inline-flex;align-items:center;border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;white-space:nowrap}
+/* A foreign row reuses .dsm-workbuddy-model-label as its flex wrapper so both
+   branches share ONE alignment model (a bare span put the pill on the text
+   baseline, which rode visibly high). That class carries this plugin's own
+   gap:5px, while the host's fallback uses gap:4px; the one-pixel override
+   keeps the host's metric without giving our own rows a second wrapper. */
+.dsm-workbuddy-model-label-host-row{gap:4px}
 .dsm-workbuddy-model-label-new{flex:none;display:inline-flex;align-items:center;padding:0 5px;border-radius:999px;font-size:10px;line-height:16px;font-weight:600;white-space:nowrap;color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6))}
 .dsm-workbuddy-busy{flex:none;display:inline-flex;align-items:center;block-size:12px;color:var(--dsm-workbuddy-busy-color);vertical-align:-2px}
 .dsm-workbuddy-busy svg{display:block;block-size:12px;inline-size:auto}
