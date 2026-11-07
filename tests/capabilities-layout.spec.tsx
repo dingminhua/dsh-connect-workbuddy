@@ -257,3 +257,43 @@ describe('a hidden panel stays hidden (5.20.1 regression)', () => {
     expect(css).not.toMatch(/#dsm-workbuddy-panel-capabilities\{[^}]*display:block!important/)
   })
 })
+
+describe('the region hint adds no margin on top of the column gap', () => {
+  /**
+   * THE CONTAINER IS A FLEX COLUMN WITH A GAP, so any margin on this line ADDS to
+   * it. Two wrong values were shipped before this was pinned:
+   *
+   *   margin-top: 18px  -> measured 34px of air (18 + the 16px gap), which read
+   *                        as a blank band between the region cells and their own
+   *                        explanation.
+   *   margin-top: -10px -> 6px, which pushed the BOLD caution line up against the
+   *                        paragraph above it.
+   *
+   * Neither was a miscalculation; both were the same mistake — treating this
+   * line as a standalone paragraph when it is one child of a gap-separated
+   * column. The rule is that it contributes NOTHING: the gap alone is the space.
+   */
+  // The stylesheet is already imported at the top of this file.
+  const css = WORKBUDDY_CARD_CSS
+  const ruleFor = (selector: string): string => {
+    const at = css.indexOf(`${selector}{`)
+    if (at < 0) return ''
+    return css.slice(at, css.indexOf('}', at) + 1)
+  }
+
+  it('gives the hint no vertical margin at all', () => {
+    const hint = ruleFor('.dsm-workbuddy-tab-hint')
+    expect(hint, 'the region hint rule is missing').not.toBe('')
+    // `margin:0` (or a zero-valued margin-top) — anything else stacks on the gap.
+    expect(hint, 'the hint must not add margin on top of the column gap').toMatch(/margin:0[;}]/u)
+  })
+
+  it('keeps the caution line free of negative margin too', () => {
+    // The sibling failure mode: -10px pulled the bold line into the paragraph
+    // above it. It now sits INLINE on the pool heading row, so it carries no
+    // block margins either way.
+    const warn = ruleFor('.dsm-workbuddy-free-quota-warn')
+    expect(warn, 'the caution rule is missing').not.toBe('')
+    expect(warn, 'a negative margin pulls the line into its neighbour').not.toMatch(/margin[^;]*-\d/u)
+  })
+})

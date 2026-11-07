@@ -482,10 +482,14 @@ export const WORKBUDDY_CARD_CSS = `
  * follows a row of boxed cells and needs more air, plus it precedes the section
  * tabs whose own top margin would otherwise crowd it.
  *
- * 10px 在这条链路上显得贴：上一行是带边框的格子（视觉重量大），而这一行是
- * 灰色小字，两者之间 26px 的盒子间距里还有格子的边框和阴影在竞争注意力，读起
- * 来像是格子的说明文字而不是独立的一段。18px 把它和格子拉开一档。 */
-.dsm-workbuddy-tab-hint{margin:18px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+ * 最后定成 margin:0，因为这个容器是 flex column 带 gap 的：外边距会**叠在**
+ * gap 之上。10px 时实测空隙 26px（10 + 16），18px 时 34px，而格子的边框让它
+ * 看起来更松。真正需要的只是 gap 本身——这一行本就跟着单元格，属于同一个
+ * 「范围」区块，中间不需要再插一层空气。
+ *
+ * 上一版反过来试过两个极端都算过账：负外边距（压成 6px，加粗那行顶到上一行）、
+ * 18px（34px 的空档）。正解是不加。 */
+.dsm-workbuddy-tab-hint{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* Every model is laid out in full — NO inner scroll box.
  *
  * The previous rule capped this at max-height 520px with overflow-y auto, so a
