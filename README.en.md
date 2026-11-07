@@ -21,7 +21,7 @@ A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bund
 
 ### Icon style
 
-In the account pool, open **More settings** and choose **Claude style** or **Default icon**. The sidebar and page icons update immediately. The choice is stored in the current browser; other browsers keep their own choice.
+At the bottom of the **Capabilities** tab in Settings, choose an icon style. The default is this plugin's own icon; the alternative skin follows the theme's text colour. The sidebar, page header and panel update immediately, and the choice is stored in the current browser — other browsers keep their own.
 
 
 ## Risk notice

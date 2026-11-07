@@ -1967,9 +1967,11 @@ describe('an elapsed cooldown re-tests that one account by itself', () => {
    * 话」 — about 「被限流 · 限流时段已过 · 重新测试以确认」, a line that states a
    * verdict, says the verdict is over, and then asks the reader to resolve it.
    *
-   * So the card does the resolving: one account, one request, no click. The copy
-   * that remains is 「恢复时间已到 · 待复核」 (see the locale) and it lives only as
-   * long as the measurement takes.
+   * So the card does the resolving: one account, one request, no click. And the
+   * row states NOTHING while it waits — 「恢复时间已到 · 待复核」 was the first
+   * answer and the owner rejected it too, because the dot beside it is already
+   * green (the pool re-admits the account the moment the instant passes). A green
+   * dot with an amber sentence is the same self-contradiction one wording later.
    *
    * Every assertion here is about the ONE thing that could go wrong silently: a
    * test request fired on every render. `autoRetested` is the guard, and the last
@@ -1995,6 +1997,34 @@ describe('an elapsed cooldown re-tests that one account by itself', () => {
     const fired = testCalls(calls)
     expect(fired, 'the expired row must be re-measured without a click').toHaveLength(1)
     expect(fired[0]?.url, 'and it must measure THAT account').toContain('accountId=limited-1')
+    await m.unmount()
+  })
+
+  it('prints no verdict on that row while the new measurement is on its way', async () => {
+    // THE OWNER'S SCREENSHOT, as a test. A green dot, 「当前选用」 in green, and an
+    // amber 「恢复时间已到 · 待复核」 beside them: two true statements that read as
+    // one broken row.
+    //
+    // Both halves are real. The pool re-admits an account whose stated instant has
+    // passed (`exclusionOf` returns undefined then), so the dot is correctly green;
+    // and the last measurement really did say "not until T", with T behind us. The
+    // only sentence that fits both is none — so the verdict span is ABSENT, not
+    // empty, and the timestamp plus the provenance line stay because they are still
+    // true and still answer "how old is this reading".
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({ pool: poolWith([expiredAccount('limited-2')], ['limited-2']) }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    expect(row?.querySelector('.dsm-workbuddy-pool-probe-main'), 'no verdict span on an elapsed cooldown').toBeNull()
+    expect(m.text(), 'and no wording that claims a re-check is pending').not.toContain('row.poolNeverTested')
+    // The still-true half stays, which is what keeps the row at three lines.
+    expect(row?.querySelector('.dsm-workbuddy-pool-tested-at'), 'the timestamp is still true').not.toBeNull()
+    expect(row?.querySelector('.dsm-workbuddy-pool-probe-prov'), 'and so is the provenance line').not.toBeNull()
+    // …and the line must not BEGIN with a dangling separator, which is what an
+    // unconditional '·' produced once the verdict was gone: measured, and it looks
+    // like a rendering bug exactly where the row is trying to say nothing.
+    const lineParts = Array.from(row?.querySelectorAll('.dsm-workbuddy-pool-probe-line > *') ?? [])
+    expect(lineParts[0]?.className, 'the line starts with the timestamp, not a separator')
+      .toBe('dsm-workbuddy-pool-tested-at')
     await m.unmount()
   })
 

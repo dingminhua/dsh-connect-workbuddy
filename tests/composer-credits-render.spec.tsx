@@ -689,6 +689,35 @@ describe('ComposerCredits panel agrees with the pool card about availability', (
     await m.unmount()
   })
 
+  it('stops claiming a refusal once the stated instant has passed', async () => {
+    // THE OWNER'S SCREENSHOT, in the panel: a green dot, green 「当前选用」, and an
+    // amber 「恢复时间已到 · 待复核」 under the same name.
+    //
+    // The pool re-admits an account the moment its stated instant passes
+    // (`exclusionOf`), so by the time this row is drawn there is NO live refusal
+    // to report — and the plugin re-tests the account by itself. Painting the dot
+    // red here would be the same mistake in the other direction: a refusal with
+    // nothing beside it, contradicting the pool that already lifted it.
+    const expired = (): Record<string, unknown> => {
+      const base = poolUsage() as { pool: { accounts: Record<string, unknown>[] } }
+      base.pool.accounts[1] = {
+        accountId: 'a-2',
+        accountName: 'A Two',
+        credits: 300,
+        current: false,
+        member: true,
+        // `excludedBy` is ABSENT: that is what the Host sends once the instant
+        // passes, and it is why this case is not the same as the one above.
+        probe: { outcome: 'rate-limited', atMs: Date.now() - 3_600_000, retryAtMs: Date.now() - 60_000 },
+      }
+      return base
+    }
+    const m = await openPanel(expired)
+    expect(dotOf('A Two')!.className, 'nothing is being refused any more').toContain('panel-dot-unknown')
+    expect(markOf('A Two') ?? '', 'and no sentence claims otherwise').not.toContain('row.poolRetryExpired')
+    await m.unmount()
+  })
+
   it('paints a refusal red rather than amber', async () => {
     // A rate limit is a refusal, not a warning: the account cannot answer this
     // message, and amber ("mostly fine, look later") was the one thing the row

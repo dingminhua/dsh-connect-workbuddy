@@ -345,14 +345,6 @@ export const en = {
   'row.recoversMinutes': 'recovers in about {count} min',
   'row.recoversHours': 'recovers in about {count} h',
   'row.recoversDays': 'recovers in about {count} d',
-  // The cooldown the upstream stated has ALREADY elapsed. The row cannot say
-  // "recovers in …" (negative wait), and it must NOT repeat the verdict beside a
-  // note that the verdict is over: "rate-limited · the cooldown has passed —
-  // re-test to confirm" contradicted itself inside one line, and the owner said
-  // so. The card now re-tests that single account by itself, so this is the ONE
-  // state the row has to name in the moment before the new measurement lands: a
-  // reset time that has arrived with nothing measured since.
-  'row.poolRetryExpired': 'reset time reached · awaiting re-check',
   // How stale a measurement is, and which writer produced it. Two sites write
   // the same account's record and overwrite each other, so without these the
   // table cannot explain a change the user just watched happen.
@@ -1047,13 +1039,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.recoversMinutes': '约 {count} 分钟后恢复',
   'row.recoversHours': '约 {count} 小时后恢复',
   'row.recoversDays': '约 {count} 天后恢复',
-  // 上游给的冷却时间已经过去了。这里既不能说「约 N 分钟后恢复」（N 是负数），也
-  // **不能**把旧结论和「时段已过」拼在同一行——「被限流 · 限流时段已过 · 重新测试以
-  // 确认」一句话里自相矛盾，老丁明确说不要这种话。
-  //
-  // 现在卡片会自己重测这一个账号（见 AccountPool 的 autoReTest），所以这一行只需
-  // 说清楚「此刻」这唯一的状态：约定的恢复时间到了，但之后还没有人重测过。
-  'row.poolRetryExpired': '恢复时间已到 · 待复核',
   // 记录有多旧、以及是谁写的。两个写入方会互相覆盖同一个账号的记录，
   // 没有这两项就无法解释用户亲眼看到的变化（测出 ok，过后变成被限流）。
   'row.poolProbeJustNow': '刚刚',

@@ -1986,9 +1986,17 @@ function renderAccountRow(input: {
     || probe.outcome === account.excludedBy
   // The sentence comes from the SHARED rule (`account-state.ts`) so the
   // composer credits panel prints the identical words for the identical
-  // measurement. An untested account has nothing to say, and the card supplies
-  // its own "never tested" wording for that case.
-  const outcomeLine = availabilityLine(t, account) ?? t('row.poolNeverTested')
+  // measurement.
+  //
+  // `undefined` has TWO meanings, and they must not collapse into one: no
+  // measurement at all ("never tested"), and a measurement whose cooldown has
+  // expired, which deliberately states nothing because its verdict is stale and
+  // the pool has already put the account back among its candidates. Rendering the
+  // second as 「未测试」 would be a new falsehood — the account WAS tested, and the
+  // provenance line beside it still dates that test.
+  const measuredButSilent = probe !== undefined && availabilityLine(t, account) === undefined
+  const outcomeLine = availabilityLine(t, account)
+    ?? (probe === undefined ? t('row.poolNeverTested') : undefined)
   // The reason worth inlining, from the ONE rule both tables share (see
   // `probe-reason.ts`). It is absent for a limited account — whose body just
   // repeats the reset time printed beside it — and shortened otherwise, because
@@ -2200,7 +2208,11 @@ function renderAccountRow(input: {
       // on one line and for the whole row to be exactly three; the provenance row
       // below is the third and last.
       h('span', { className: 'dsm-workbuddy-pool-probe-line' },
-        h('span', { className: 'dsm-workbuddy-pool-probe-main' }, probeLine),
+        // NOTHING to assert on an elapsed cooldown: see `availabilityLine`. The
+        // verdict is stale, the instant is behind us, and the re-check is the
+        // card's own job — so the cell keeps only the timestamp, which is still
+        // true and still answers "how old is this reading".
+        measuredButSilent ? null : h('span', { className: 'dsm-workbuddy-pool-probe-main' }, probeLine),
         // Why this account is out of the running, and when it was last measured —
         // state about the ACCOUNT, so it belongs on the state line beside the
         // verdict rather than up on the identity line wedged against the name.
@@ -2226,7 +2238,13 @@ function renderAccountRow(input: {
         // date — the same "when was this measured?" gap the merge was meant to
         // close. Muted and smaller than the verdict: it is the timestamp OF the
         // verdict, not a second finding.
-        probe === undefined
+        //
+        // The separator is conditional on there being something BEFORE it, and
+        // that is the silent-row case: an elapsed cooldown prints no verdict, so an
+        // unconditional separator left the line starting with a dangling 「·」 —
+        // measured, and it reads as a rendering bug precisely where the row is
+        // trying to say nothing.
+        probe === undefined || measuredButSilent && excludedRepeatsVerdict
           ? null
           : h('span', { className: 'dsm-workbuddy-pool-probe-sep' }, '·'),
         probe === undefined
