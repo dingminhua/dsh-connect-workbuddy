@@ -1,5 +1,68 @@
 # Changelog
 
+## 5.20.17 (2026-11-07)
+
+> **撤销 5.20.16 的 `model.badge` 方案**——那条路第三方插件走不通。
+
+### 5.20.16 错在哪
+
+5.20.16 把促销胶囊改成写进 `registerModelDiscovery` 返回的 `badge` 字段。**这个字段会被
+静默丢弃。**
+
+原因在类型上：`registerModelDiscovery` 的契约是
+
+```ts
+export interface LlmDiscoveredModel {
+    id: string;
+    name?: string;
+    contextWindow?: number;
+    maxTokens?: number;
+    inputModalities?: readonly ModelModality[];
+}
+```
+
+**没有 `badge`**，也没有任何代码从发现结果里读它。
+
+`LlmModelInfo.badge` 确实存在、选择器确实会画它——但它由宿主在
+`resolveListedCatalog` 里从 `input.listing` 构造，而那个 listing 来自
+`requestModelListing`（`@deepseek-ai/dsh-llm-deepseek`），即 **DeepSeek 官方 provider
+自己的 listing 通道**（`registerDeepSeekProvider`）。第三方插件没有对应的注册入口。
+
+`modelOverrides` 也不行：它的字段集同样来自官方 provider 的配置 schema。
+
+**错因记录**：我看到 `LlmModelInfo.badge` 就假定发现路径也能产出它，没有先读
+`registerModelDiscovery` 的返回类型。这是同一个毛病——从一个可见的字段推断另一处
+不可见的行为。已撤回，不留死代码。
+
+### 5.20.16 留下的东西
+
+`promoBadgeTone()` 保留：它是纯函数、本身正确，任何将来需要把上游颜色映射到宿主
+四档语义色的地方都用得上。但它的注释现在写明了**它不用于**一条走不通的路径。
+
+### 那条 slot 路径仍然是对的
+
+复核了 `ctx.slots.inject` 的实现（宿主 0.2.2-rc.1）：
+
+```js
+unsubscribe = this._core.subscribeDeclaration(key, changed)
+try { reconcile() } catch (error) { stop(); throw error }
+return stop
+```
+
+`subscribeDeclaration` + 立即 `reconcile()`——正是「现在试一次，之后每次声明变化再试」。
+官方文档的写法与我们的代码一致。所以 5.20.16 之前的注册方式是**正确的**，
+没有被这次实验破坏。
+
+### Tests
+
+`3284/3284`（+1），`skip 2`。新增一条**把这条死路固化成测试**：
+
+读已安装宿主里的 `LlmDiscoveredModel` 声明，断言它**不含** `badge`。宿主将来若真的加上
+这个字段，这条测试会**故意变红**——那一刻发现通道才变得可行，注释里的结论也就不再成立。
+
+比写一段散文更可靠：散文会被忽略，测试不会。
+
+
 ## 5.20.16 (2026-11-07)
 
 > **选择器里的促销胶囊改走 0.2.2 的 `model.badge` 字段**，不再依赖那个会被抢走的 slot。

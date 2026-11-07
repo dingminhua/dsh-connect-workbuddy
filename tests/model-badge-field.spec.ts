@@ -1,22 +1,29 @@
 /**
- * The host's own `model.badge` field (0.2.2+), as the way a promotion reaches
- * the picker.
+ * Mapping an upstream promotion colour onto the host's four semantic badge tones.
  *
- * WHY THIS REPLACED A SLOT. Until 0.2.2 the only way to decorate a picker row
- * was `conversation.input.model.label` — a `single` cell whose PARENT seat
- * belongs to another plugin. Contributing there means winning a priority race
- * against every other contributor, and losing (or the parent seat not mounting)
- * drops the decoration with no error the user can see. This repository measured
- * exactly that on 0.2.2-rc.1: correct data, correct resolution, correct
- * component, empty picker.
+ * WHAT THIS IS *NOT* FOR (measured, and worth recording so nobody tries again):
+ * `LlmModelInfo.badge` exists and the picker does draw it — but a THIRD-PARTY
+ * plugin cannot supply it. The host builds that field inside
+ * `resolveListedCatalog` from `input.listing`, which comes from
+ * `requestModelListing` in `@deepseek-ai/dsh-llm-deepseek` — the OFFICIAL
+ * DeepSeek provider's own listing path (`registerDeepSeekProvider`). The
+ * discovery channel a third-party plugin registers
+ * (`ctx.llm.registerModelDiscovery`) answers `LlmDiscoveredModel`, whose fields
+ * are `id / name / contextWindow / maxTokens / inputModalities` — no `badge`,
+ * and nothing reads one off it.
  *
- * `LlmModelInfo.badge = { text, tone }` is a plain field on the model the
- * directory already reads: the host draws the chip itself, in its own place and
- * with its own theme tokens. Nothing to race for.
+ * So a `badge` added to a discovery result is silently dropped. That is what was
+ * tried first; the field is not reachable from here.
+ *
+ * The tone mapping itself stays because it is correct in isolation and is the
+ * piece any future surface would need — it is a pure function with no host
+ * dependency.
  */
 import { describe, expect, it } from 'vitest'
 import { promoBadgeTone } from '../src/client/promo-badge.ts'
 import type { WorkBuddyPromo } from '../src/promo.ts'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 function promo(overrides: Partial<{ color: string }> = {}): WorkBuddyPromo {
   return {
@@ -64,71 +71,40 @@ describe('promoBadgeTone', () => {
   })
 })
 
-describe('hostModelBadgeOf', () => {
-  const at = Date.parse('2026-11-07T16:00:00+08:00')
-
-  it('stamps a badge for a promotion that holds right now', async () => {
-    const { hostModelBadgeOf } = await import('../src/index.ts')
-    const live = {
-      ...promo({ color: '#009273' }),
-      schedule: { timezone: 'Asia/Shanghai', daily: [{ start: '0:00', end: '23:59' }] },
-    } as unknown as WorkBuddyPromo
-    expect(hostModelBadgeOf([live], at)).toEqual({
-      badge: { text: { en: 'Night', zh: '夜间折扣' }, tone: 'success' },
-    })
-  })
-
-  it('publishes nothing at all when no promotion holds', async () => {
-    // `{}`, not `{ badge: undefined }`: the caller spreads this into the model
-    // object, and an explicit undefined key is not the same as an absent one for
-    // the host's `model.badge === undefined ? {} : ...` check on some paths.
-    const { hostModelBadgeOf } = await import('../src/index.ts')
-    expect(hostModelBadgeOf(undefined, at)).toEqual({})
-    expect(hostModelBadgeOf([], at)).toEqual({})
-  })
-
-  it('does not claim a chip for a campaign outside its window', async () => {
-    // The defect class this guards: a standing badge shown after the campaign
-    // ended. `validUntil` is exclusive.
-    const { hostModelBadgeOf } = await import('../src/index.ts')
-    const expired = {
-      ...promo(),
-      schedule: { timezone: 'Asia/Shanghai', validUntil: at - 60_000 },
-    } as unknown as WorkBuddyPromo
-    expect(hostModelBadgeOf([expired], at)).toEqual({})
-  })
-
-  it('sends a single string when the upstream published one wording', async () => {
-    const { hostModelBadgeOf } = await import('../src/index.ts')
-    const single = {
-      ...promo(),
-      badge: { label: '限时免费' },
-      schedule: { timezone: 'Asia/Shanghai', daily: [{ start: '0:00', end: '23:59' }] },
-    } as unknown as WorkBuddyPromo
-    // `LocalizedText` accepts a plain string; sending `{ en: undefined }` would
-    // make the host resolve to "undefined" on the English locale.
-    expect(hostModelBadgeOf([single], at)).toEqual({ badge: { text: '限时免费', tone: 'neutral' } })
-  })
-
-  it('prefers the highest-priority running promotion', async () => {
-    // One badge per model is the host field's limit, so the choice among
-    // several running promotions must be deterministic and must be the one the
-    // card would draw too.
-    const { hostModelBadgeOf } = await import('../src/index.ts')
-    const low = {
-      ...promo({ color: '#009273' }),
-      id: 'low', priority: 10,
-      badge: { label: '低', labelEn: 'Low', color: '#009273' },
-      schedule: { timezone: 'Asia/Shanghai', daily: [{ start: '0:00', end: '23:59' }] },
-    } as unknown as WorkBuddyPromo
-    const high = {
-      ...promo({ color: '#1d63ed' }),
-      id: 'high', priority: 90,
-      badge: { label: '高', labelEn: 'High', color: '#1d63ed' },
-      schedule: { timezone: 'Asia/Shanghai', daily: [{ start: '0:00', end: '23:59' }] },
-    } as unknown as WorkBuddyPromo
-    expect(hostModelBadgeOf([low, high], at)).toEqual({
-      badge: { text: { en: 'High', zh: '高' }, tone: 'info' },
-    })
+describe('the channels a third-party plugin does NOT have', () => {
+  /**
+   * Recorded as an assertion rather than prose, so a future attempt fails fast
+   * instead of shipping a field nobody reads.
+   *
+   * MEASURED ON 0.2.2-rc.1. `LlmModelInfo.badge` exists and the picker renders
+   * it — the four-tone Tag is real. But the host builds it inside
+   * `resolveListedCatalog` from `input.listing`, and that listing comes from
+   * `requestModelListing` in `@deepseek-ai/dsh-llm-deepseek`, i.e. the OFFICIAL
+   * provider's listing path. A third-party plugin registers discovery through
+   * `ctx.llm.registerModelDiscovery`, whose contract answers
+   * `LlmDiscoveredModel` — no `badge` field, and nothing reads one off it.
+   *
+   * So adding a badge to a discovery result is silently dropped. That is what
+   * was tried first; this test is why it will not be tried again by accident.
+   */
+  it('cannot smuggle a badge through model discovery', () => {
+    // Read the declaration out of the installed host rather than trusting a
+    // copy pasted into this file.
+    const asar = join(
+      '/Applications/DeepSeek Harness.app/Contents/Resources',
+      'app.asar',
+    )
+    if (!existsSync(asar)) {
+      // A machine without the desktop app still has to pass the suite.
+      return
+    }
+    const raw = readFileSync(asar, 'latin1')
+    const at = raw.indexOf('export interface LlmDiscoveredModel')
+    expect(at, 'LlmDiscoveredModel is gone — re-read the discovery contract').toBeGreaterThan(-1)
+    const declaration = raw.slice(at, at + 240)
+    // The moment the host ADDS a badge here, this turns red on purpose: that is
+    // when the discovery route becomes viable and the note above stops holding.
+    expect(declaration, 'the discovery contract now carries a badge').not.toContain('badge')
+    expect(declaration, 'this is not the declaration we recorded').toContain('inputModalities')
   })
 })
