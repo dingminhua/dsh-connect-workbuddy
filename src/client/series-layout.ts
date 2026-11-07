@@ -10,7 +10,18 @@ export function seriesLayoutCss(plugin: 'trae' | 'workbuddy'): string {
   const current = plugin === 'trae' ? `${p}-pool-current` : `${p}-pool-current-badge`
   return `
 ${p}-page{font-family:inherit;--dsm-series-sticky-top:-28px}
-${p}-page${p}-page{height:calc(100% - 16px);margin-bottom:16px;padding:28px clamp(24px,4vw,48px) 48px;gap:20px}
+/* Doubled selector so this beats the host's own page rule — but NOT at the cost
+ * of the settings surface, which shares the class and overrides its padding to 0
+ * (see styles.ts: the Settings panel column is already padded and already
+ * scrolls, so this page must not add padding of its own).
+ *
+ * The doubled class is (0,2,0) and a bare .dsm-workbuddy-settings is (0,1,0), so
+ * the padding came back and ate 36px off EACH side of the settings column:
+ * measured, the content column went 612px -> 540px, i.e. every card and the
+ * account table were 72px narrower than they should be. The owner saw it before
+ * any test could ("整体宽度变小了"). The :not() keeps the reach of the rule and
+ * gives the settings surface its padding back. */
+${p}-page${p}-page:not(${p}-settings){height:calc(100% - 16px);margin-bottom:16px;padding:28px clamp(24px,4vw,48px) 48px;gap:20px}
 ${u} ${p}-pool-auto-checkin-status{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#777)}
 ${p}-page-desc{font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary,#999)}
 ${u} ${p}-pool-auto-checkin{display:flex;flex-direction:column;gap:6px;margin-top:8px}

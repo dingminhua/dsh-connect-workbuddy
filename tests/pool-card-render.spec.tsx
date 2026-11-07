@@ -1269,6 +1269,31 @@ describe('the page keeps the width its content was measured at', () => {
     expect(rule, 'and must not bring the 860px value back').not.toMatch(/860px/)
   })
 
+  it('does not put the full-page padding back on the Settings surface', () => {
+    // THE SECOND HALF of the same regression, and the one the screenshot showed.
+    //
+    // The settings surface carries BOTH classes (`dsm-workbuddy-page
+    // dsm-workbuddy-settings`), and the shared file pads `.page.page` with
+    // 28px / clamp(24px,4vw,48px) / 48px to make the standalone page breathe. That
+    // doubled selector is (0,2,0) while the plugin's own `.dsm-workbuddy-settings`
+    // padding:0 is (0,1,0), so the page padding WON and re-applied itself inside a
+    // Settings column that is already padded and already scrolls.
+    //
+    // Measured in headless Chrome: the content column went 612px -> 540px, i.e. 36px
+    // eaten on each side, and every card plus the account table came out 72px too
+    // narrow. The owner saw that before any test did.
+    const series = seriesCss()
+    const pageRule = /\.dsm-workbuddy-page\.dsm-workbuddy-page([^{]*)\{([^}]*)\}/u.exec(series)
+    expect(pageRule, 'the shared page rule is missing').not.toBeNull()
+    expect(pageRule?.[1], 'the page padding must exclude the settings surface')
+      .toContain(':not(.dsm-workbuddy-settings)')
+    // …and the plugin's own settings rule must still zero the padding, so the two
+    // together leave the column untouched.
+    const own = /\.dsm-workbuddy-settings\{([^}]*)\}/u
+      .exec(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'), 'utf8'))?.[1] ?? ''
+    expect(own, 'the settings surface must not add padding of its own').toMatch(/padding:\s*0/)
+  })
+
   it('agrees with the page rule in this plugin own stylesheet', () => {
     // Two declarations, one number. If they ever disagree the series file wins
     // (it is concatenated after), so the visible width would silently follow
