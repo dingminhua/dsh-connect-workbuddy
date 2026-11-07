@@ -2078,3 +2078,73 @@ describe('mergeModelRosters', () => {
     expect(merged[0]?.promos).toEqual([{ id: 'p' }])
   })
 })
+
+describe('the global two-channel read, end to end', () => {
+  /**
+   * The whole point of reading two documents: rows from BOTH survive, and the
+   * badges the app document carries survive too.
+   *
+   * `fetchModels` is exercised through the real merge rather than by calling
+   * `mergeModelRosters` directly, because the regression this guards lived in
+   * the CHOICE of which roster is primary — a detail no unit test of the merge
+   * would have caught on its own.
+   */
+  it('keeps the app document\'s badges on rows the CLI document also lists', async () => {
+    const cliDoc = {
+      code: 0,
+      data: {
+        models: [
+          { id: 'shared-model', name: 'Shared', maxInputTokens: 200_000, maxOutputTokens: 8_192 },
+        ],
+        // The CLI channel publishes NEITHER `modelPromotions` NOR `modelTiers`.
+        agents: [],
+      },
+    }
+    const appDoc = {
+      code: 0,
+      data: {
+        models: [
+          { id: 'shared-model', name: 'Shared', maxInputTokens: 200_000, maxOutputTokens: 8_192 },
+          { id: 'app-only', name: 'AppOnly', maxInputTokens: 200_000, maxOutputTokens: 8_192 },
+        ],
+        modelPromotions: [{
+          id: 'night',
+          badge: { label: '夜间折扣', color: '#009273' },
+          modelIds: ['shared-model'],
+          priority: 50,
+          schedule: { timezone: 'Asia/Shanghai', daily: [{ start: '0:00', end: '23:59' }] },
+        }],
+        agents: [],
+      },
+    }
+    const calls: string[] = []
+    vi.stubGlobal('fetch', async (_url: string, init?: { headers?: Record<string, string> }) => {
+      const ua = init?.headers?.['User-Agent'] ?? ''
+      // The CLI channel is the one that carries a `CLI/` segment.
+      calls.push(ua)
+      const body = ua.includes('CLI/') ? cliDoc : appDoc
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(body),
+        json: async () => body,
+      }
+    })
+
+    const client = new WorkBuddyUpstreamClient()
+    const models = await client.fetchModels({
+      accessToken: 't', uid: '', domain: 'workbuddy.ai', accountId: 'a', accountName: 'A',
+    } as unknown as WorkBuddyCredential)
+
+    // Both documents were read, one per channel.
+    expect(calls.filter(ua => ua.includes('CLI/')).length).toBe(1)
+    expect(calls.filter(ua => !ua.includes('CLI/')).length).toBe(1)
+
+    // Rows from both survive...
+    expect(models.map(model => model.id).sort()).toEqual(['app-only', 'shared-model'])
+    // ...and the shared row KEEPS the badge only the app document published.
+    const shared = models.find(model => model.id === 'shared-model')
+    expect(shared?.promos, 'the shared row lost the app document\'s badge').toHaveLength(1)
+    expect(shared?.promos?.[0]?.badge?.label).toBe('夜间折扣')
+  })
+})
