@@ -789,6 +789,15 @@ export interface Config {
    */
   dropForeignThinking?: boolean
   /**
+   * Strip every historical thinking block from the request (issue #213).
+   *
+   * A reasoning REDACTION rather than a repair: the channel gate scans the text
+   * we send, and past reasoning rides along as `reasoning_content` whenever a
+   * block carries a signature. Costs the model its own earlier reasoning, so it
+   * is off unless the user says otherwise.
+   */
+  dropAllThinking?: boolean
+  /**
    * Move the host's session-title request onto the hidden lightweight model
    * (issues #132/#133). Off by default: it is a real upstream request either
    * way, and the rewrite changes which bucket it is billed against.
@@ -1246,6 +1255,18 @@ export const Config: z<Config> = z.object({
         'repair to a model switch inside one of this bundle\'s own routes. On, those blocks are removed ' +
         'from the request; text and tool calls are untouched. Off by default for the same-route leg ' +
         'because it changes bytes the upstream counts.'),
+  ) as unknown as z<boolean>,
+  dropAllThinking: asVolatile(
+    z.boolean()
+      .default(false)
+      .description('Strip EVERY historical thinking block before the request goes out (issue #213). ' +
+        'The channel gate scans the request text, and a 11128 report matched every banned opening against ' +
+        'this session\'s own reasoning blocks: the plugin sends past reasoning as `reasoning_content` ' +
+        'whenever a block carries a signature, so the plugin is one of the things carrying the text the ' +
+        'gate refuses. On, all thinking blocks are removed from the request; your messages, tool calls and ' +
+        'the model\'s answers are untouched, but the model no longer sees its own earlier reasoning. ' +
+        'OFF by default: that loss is real, so it is a deliberate answer to a 11128 you can match to ' +
+        'reasoning text, not a default. Takes effect on the next turn, no reload.'),
   ) as unknown as z<boolean>,
   sessionTitle: asVolatile(
     z.object({
@@ -2998,6 +3019,7 @@ export function apply(ctx: Context, config: Config): void {
      * rather than the one captured at mount.
      */
     dropForeignThinking: () => unwrapVolatile(current().dropForeignThinking) === true,
+    dropAllThinking: () => unwrapVolatile(current().dropAllThinking) === true,
     /**
      * What the last request had to drop, so the card can explain a turn that
      * arrived looking like working notes instead of leaving the user to conclude
@@ -4404,6 +4426,7 @@ export function apply(ctx: Context, config: Config): void {
             // looking at a working-notes turn, and a stale capture would make
             // that look like a broken toggle.
             dropForeignThinking: () => unwrapVolatile(current().dropForeignThinking) === true,
+            dropAllThinking: () => unwrapVolatile(current().dropAllThinking) === true,
             onForeignThinking: blocks => {
               latestForeignThinking = { blocks, atMs: Date.now() }
               // Cross-provider blocks are dropped even when the switch is off.

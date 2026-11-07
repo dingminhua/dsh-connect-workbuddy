@@ -39,13 +39,71 @@ export function parseTransferFile(text: string): WorkBuddyTransferRecord[] {
   } catch (error: unknown) {
     throw new Error('transfer file is not valid JSON: ' + (error instanceof Error ? error.message : String(error)))
   }
-  if (!Array.isArray(parsed)) throw new Error('transfer file must be a JSON array of account records')
-  for (const [index, item] of parsed.entries()) {
+  const records = recordsOf(parsed)
+  if (records === undefined) {
+    // NAME WHAT WAS FOUND, not only what was wanted (issue #229).
+    //
+    // The old message said "must be a JSON array" and stopped there, so a file
+    // exported by another tool arrived as `{"accounts": [...]}` — already the
+    // right records, one wrapper deep — and the user had no way to tell that from
+    // a file of the wrong KIND. Reporting the top-level shape turns "导入失败" into
+    // something they can act on without guessing.
+    throw new Error(
+      'transfer file must be a JSON array of account records; '
+      + 'this file is ' + describeShape(parsed) + '. '
+      + 'Accepted wrappers: {"accounts": [...]}, {"data": [...]}, {"records": [...]}.',
+    )
+  }
+  for (const [index, item] of records.entries()) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
       throw new Error('transfer file item ' + (index + 1) + ' is not an account object')
     }
   }
-  return parsed as WorkBuddyTransferRecord[]
+  return records as WorkBuddyTransferRecord[]
+}
+
+/**
+ * The record array inside whatever the file's top level happens to be.
+ *
+ * THE FIX FOR ISSUE #229: the export/import loop has to be closed against the
+ * files sibling tools actually produce, and several of them wrap the records one
+ * level down (`{accounts: [...]}`) — which is also the shape THIS plugin's own
+ * export endpoint answers with, so a user who saved that JSON verbatim got a file
+ * the importer refused. A bare array stays the primary format; the wrappers are
+ * recognized by NAME, never by scanning for the first array anywhere, because a
+ * file whose records live under an unrelated key should fail loudly rather than
+ * be guessed at.
+ *
+ * `undefined` means "not a transfer document", which the caller turns into a
+ * message naming the shape it actually saw.
+ */
+function recordsOf(parsed: unknown): unknown[] | undefined {
+  if (Array.isArray(parsed)) return parsed
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const root = parsed as Record<string, unknown>
+  for (const key of ['accounts', 'data', 'records']) {
+    const value = root[key]
+    if (Array.isArray(value)) return value
+  }
+  // One more level for the envelope-of-envelope form some tools emit
+  // (`{code: 0, data: {accounts: [...]}}`). Bounded on purpose: an unbounded
+  // search would happily accept a log file with an array somewhere inside it.
+  for (const key of ['data', 'result']) {
+    const value = root[key]
+    if (typeof value !== 'object' || value === null) continue
+    const inner = recordsOf(value)
+    if (inner !== undefined) return inner
+  }
+  return undefined
+}
+
+/** A short, human-readable description of what the top level actually is. */
+function describeShape(parsed: unknown): string {
+  if (parsed === null) return 'null'
+  if (Array.isArray(parsed)) return 'an array'
+  if (typeof parsed !== 'object') return 'a ' + typeof parsed
+  const keys = Object.keys(parsed as Record<string, unknown>)
+  return keys.length === 0 ? 'an empty object' : 'an object with keys: ' + keys.slice(0, 8).join(', ')
 }
 
 /** One string field of a record, tolerating the sibling format's odd shapes. */

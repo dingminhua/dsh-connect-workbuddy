@@ -79,6 +79,12 @@ export type UpstreamSwitchField =
    * changed.
    */
   | 'channelRejectContinue'
+  /**
+   * Strip every historical thinking block from the request (issue #213).
+   *
+   * A plain boolean, unlike the block above: it has no companions to preserve.
+   */
+  | 'dropAllThinking'
 
 /**
  * Whether a save failure is a FILE-CONTENTION refusal.

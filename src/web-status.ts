@@ -308,6 +308,14 @@ export interface WorkBuddyStatusRouteOptions {
    */
   dropForeignThinking?(): boolean
   /**
+   * Whether the request path redacts EVERY historical thinking block (issue #213).
+   *
+   * Optional, absent reads as OFF for the same reason as the switch above: this
+   * removes text the model would otherwise see about its own earlier work, so a
+   * Host that cannot answer must not be read as consent.
+   */
+  dropAllThinking?(): boolean
+  /**
    * What the LAST request had to drop, for the card's explanation of a turn that
    * arrived looking like working notes (issue #147).
    *
@@ -738,6 +746,9 @@ const UPSTREAM_SWITCH_FIELDS: ReadonlySet<string> = new Set([
   // Issue #147: the transcript repair switch, driven from the card's reply
   // notice as well as its switch row.
   'dropForeignThinking',
+  // Issue #213: the reasoning redaction switch. Same channel as the repair above
+  // (one top-level boolean, no sibling fields to preserve).
+  'dropAllThinking',
   // 渠道门拒绝后自动续发（见 `src/channel-continue.ts`）。整块写入：它有三个
   // 字段，卡片只改 `enabled` 时也要把用户调过的上限与文本一起带上，否则一次
   // 布尔写会把它们擦回默认值（同 `sessionTitle` 的处置）。

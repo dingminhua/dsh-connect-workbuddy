@@ -800,6 +800,8 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   const [sessionTitleBusy, setSessionTitleBusy] = useState(false)
   const [channelRejectContinueOn, setChannelRejectContinueOn] = useState<boolean | undefined>(undefined)
   const [channelRejectContinueBusy, setChannelRejectContinueBusy] = useState(false)
+  const [dropAllThinkingOn, setDropAllThinkingOn] = useState<boolean | undefined>(undefined)
+  const [dropAllThinkingBusy, setDropAllThinkingBusy] = useState(false)
   /**
    * Probe results, keyed by region then model id.
    *
@@ -1565,6 +1567,19 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   }
 
   /**
+   * The reasoning-redaction switch (issue #213).
+   *
+   * Same three-level resolution as every other switch: this card's own verified
+   * write, then the committed snapshot. No Host mirror, because this one has no
+   * status-document field — it does not change any number the card displays.
+   */
+  const dropAllThinkingValue = (): boolean => {
+    if (dropAllThinkingOn !== undefined) return dropAllThinkingOn
+    const raw = settingsScope?.getSnapshot().value as Record<string, unknown> | undefined
+    return raw?.['dropAllThinking'] === true
+  }
+
+  /**
    * Flip one upstream-identity switch.
    *
    * No `refreshUsage` afterwards, unlike the CLI switch: these change the shape
@@ -1573,7 +1588,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    * stall #131 was about) for a number that cannot have moved.
    */
   const toggleUpstreamSwitch = async (
-    field: 'usageIdentity' | 'keepPromptLast' | 'sessionTitle' | 'channelRejectContinue',
+    field: 'usageIdentity' | 'keepPromptLast' | 'sessionTitle' | 'channelRejectContinue' | 'dropAllThinking',
     enabled: boolean,
   ): Promise<void> => {
     if (settingsScope === undefined) return
@@ -1581,12 +1596,16 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       ? setUsageIdentityBusy
       : field === 'keepPromptLast'
         ? setKeepPromptLastBusy
-        : field === 'sessionTitle' ? setSessionTitleBusy : setChannelRejectContinueBusy
+        : field === 'sessionTitle'
+          ? setSessionTitleBusy
+          : field === 'channelRejectContinue' ? setChannelRejectContinueBusy : setDropAllThinkingBusy
     const setOwn = field === 'usageIdentity'
       ? setUsageIdentityOn
       : field === 'keepPromptLast'
         ? setKeepPromptLastOn
-        : field === 'sessionTitle' ? setSessionTitleOn : setChannelRejectContinueOn
+        : field === 'sessionTitle'
+          ? setSessionTitleOn
+          : field === 'channelRejectContinue' ? setChannelRejectContinueOn : setDropAllThinkingOn
     setBusy(true)
     try {
       // `sessionTitle` and `channelRejectContinue` are the two switches whose
@@ -3123,6 +3142,41 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     </div>
   )
 
+  /**
+   * ISSUE #213: redact past reasoning from the request.
+   *
+   * Its own group rather than a row inside the channel-reject block, because the
+   * two answer different failures: that switch RESENDS after a refusal, this one
+   * removes the text that gets scanned in the first place. Grouping them would
+   * imply they are alternatives of one feature.
+   */
+  const dropAllThinkingPreference = (
+    <div className="dsm-workbuddy-prefs">
+      <span className="dsm-workbuddy-pref-hint">{t('row.dropAllThinkingLead')}</span>
+      <label
+        className="dsm-workbuddy-pref dsm-workbuddy-upstream-pref"
+        title={t('row.dropAllThinkingHint')}
+      >
+        {/* Only its own class, NOT `dsm-workbuddy-upstream-check`: that class is
+            the contract the upstream-switch suite reads to enumerate "switches
+            that need a reload", and this one takes effect on the next turn. */}
+        <input
+          type="checkbox"
+          className="dsm-workbuddy-drop-thinking-check"
+          checked={dropAllThinkingValue()}
+          disabled={!canWrite || saving || poolBusy || dropAllThinkingBusy}
+          onChange={(event: { target: { checked: boolean } }) => {
+            void toggleUpstreamSwitch('dropAllThinking', event.target.checked)
+          }}
+        />
+        <span className="dsm-workbuddy-pref-copy">
+          <span className="dsm-workbuddy-pref-label">{t('row.dropAllThinkingLabel')}</span>
+          <span className="dsm-workbuddy-pref-hint">{t('row.dropAllThinkingHint')}</span>
+        </span>
+      </label>
+    </div>
+  )
+
   const creditPreferences = (
     <div className="dsm-workbuddy-prefs">
       {/* Each of the three groups gets a LEAD LINE, and the reason is
@@ -3968,6 +4022,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 {creditPreferences}
                 {upstreamSwitches}
                 {channelRejectContinuePreference}
+                {dropAllThinkingPreference}
                 {sidebarPanelPreference}
                 {/* WHAT THE PLUGIN LOOKS LIKE, as opposed to what it may do.
                     It lives in this panel rather than under 「更多设置」 because it

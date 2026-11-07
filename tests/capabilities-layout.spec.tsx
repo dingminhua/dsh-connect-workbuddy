@@ -144,9 +144,10 @@ describe('the gateway card speaks the same typography as its neighbours', () => 
 })
 
 describe('every group carries a lead line', () => {
-  it('renders five groups and seven blocks', async () => {
-    // The note + the gateway card + FIVE groups: upstream switches, the credit
-    // switches, the channel-reject rule, the sidebar panel, and the icon style.
+  it('renders six groups and eight blocks', async () => {
+    // The note + the gateway card + SIX groups: upstream switches, the credit
+    // switches, the channel-reject rule, the reasoning redaction (issue #213),
+    // the sidebar panel, and the icon style.
     //
     // The count is the contract: a group that silently becomes a bare <label>
     // takes the panel gap as a ROW instead of as a group, which is exactly what
@@ -156,7 +157,7 @@ describe('every group carries a lead line', () => {
     const panel = m.container.querySelector('#dsm-workbuddy-panel-capabilities')
     const blocks = Array.from(panel?.children ?? []) as Element[]
     const groups = blocks.filter(el => String(el.className).includes('dsm-workbuddy-prefs'))
-    expect(groups, `blocks were ${blocks.map(el => String(el.className)).join(', ')}`).toHaveLength(5)
+    expect(groups, `blocks were ${blocks.map(el => String(el.className)).join(', ')}`).toHaveLength(6)
     await m.unmount()
   })
 

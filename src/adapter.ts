@@ -249,6 +249,18 @@ export interface WorkBuddyAdapterOptions {
    */
   dropForeignThinking?: () => boolean
   /**
+   * Strip EVERY historical thinking block before the request goes out (issue #213).
+   *
+   * OFF by default, and this one is not a styling choice: the model loses its own
+   * earlier reasoning from context, which is exactly what it was doing, so a user
+   * should turn this on deliberately — typically AFTER seeing a 11128 they can match
+   * to reasoning text. The reporter's evidence for that match is in #213.
+   *
+   * Read LIVE for the same reason `dropForeignThinking` is: the switch has to work
+   * on the next turn of the session that just failed, without a reload.
+   */
+  dropAllThinking?: () => boolean
+  /**
    * Told which foreign thinking blocks a request dropped, so the reply can name
    * the condition instead of leaving the user to conclude the model broke
    * (issue #147 asks for at least a visible hint). Called at most once per
@@ -959,6 +971,50 @@ export function foreignThinkingOf(
 }
 
 /**
+ * EVERY thinking block in the transcript, whoever produced it (issue #213).
+ *
+ * The narrow repairs above (`foreignThinkingOf`, `crossProviderThinkingOf`) exist
+ * so a different model's reasoning is never replayed as this one's. This one
+ * answers a different question: the WorkBuddy CHANNEL GATE scans the request
+ * text, and a reporter matched every banned opening in a 11128 failure against
+ * the session log's `reasoning` blocks character for character. The gate reads
+ * what we send, and one of the things we send is our own past reasoning
+ * (`reasoning_content`, emitted whenever a thinking block carries a signature).
+ *
+ * So this is not a repair of a mislabelled turn — it is a REDACTION, and it is
+ * why it is a user switch rather than a default: dropping the model's own
+ * reasoning from history changes what the model can see about its earlier work,
+ * which is a real cost paid to get past the gate. The official client's history
+ * very likely carries no thinking text at all, which is the reporter's point and
+ * the reason this is worth offering.
+ *
+ * `variant` is 'flattened' for every block because that is what happens to a
+ * signed block pi-ai cannot replay: it becomes assistant prose. An unsigned block
+ * is never emitted in the first place, so leaving it would send nothing either
+ * way — but it is still counted, because a transcript whose thinking is invisible
+ * to the request is not the same as one that never had any, and the diagnostic
+ * should say which case the user is in.
+ */
+export function allThinkingOf(context: Context): ForeignThinkingBlock[] {
+  const messages = (context as { messages?: unknown }).messages
+  if (!Array.isArray(messages)) return []
+  const found: ForeignThinkingBlock[] = []
+  for (const [messageIndex, message] of messages.entries()) {
+    for (const [blockIndex, block] of blocksOf(message).entries()) {
+      if (typeof block !== 'object' || block === null) continue
+      const fields = block as Record<string, unknown>
+      if (fields['type'] !== 'thinking') continue
+      if (fields['redacted'] === true) continue
+      const thinking = fields['thinking']
+      const characters = typeof thinking === 'string' ? thinking.length : 0
+      if (characters === 0) continue
+      found.push({ messageIndex, blockIndex, characters, variant: 'flattened' })
+    }
+  }
+  return found
+}
+
+/**
  * The subset of {@link foreignThinkingOf} that is safe to repair without asking.
  *
  * This is the predicate the adapter uses when `dropForeignThinking` is OFF: a
@@ -1063,11 +1119,55 @@ export interface TranscriptRepairOptions {
    */
   dropForeignThinking?: boolean
   /**
+   * Drop EVERY historical thinking block, including this model's own (issue #213).
+   *
+   * Wider than `dropForeignThinking` and answers a different question: that one
+   * repairs a turn whose provenance is wrong, this one REDACTES text the channel
+   * gate scans. `true` supersedes it.
+   */
+  dropAllThinking?: boolean
+  /**
    * Told how many blocks that repair removed and where, so a surface can name
    * the condition the user is actually looking at. Called at most once per
    * request, and only when something was removed.
    */
   onForeignThinking?: (blocks: readonly ForeignThinkingBlock[]) => void
+}
+
+/**
+ * Pick the repair this request needs and apply it.
+ *
+ * EXTRACTED so the choice itself is testable. When the selection lived inline in
+ * `prepare`, the only thing a test could assert was what each PREDICATE returns —
+ * and a mutation that deleted the `dropAllThinking` branch entirely still left
+ * every test green, because no test ever asked "which predicate ran". That is a
+ * decoration, not a guard (AGENTS.md: a test that stays green when you break the
+ * code is not a test).
+ *
+ * The order is load-bearing: `dropAllThinking` is checked FIRST because it is the
+ * broadest. A user who turned it on has decided the gate matters more than the
+ * model seeing its own past reasoning, so the narrow "is this block foreign?"
+ * question is no longer the one to ask.
+ */
+export function applyTranscriptRepair(
+  context: Context,
+  repair?: TranscriptRepairOptions,
+  identity: string = WORKBUDDY_MODEL_IDENTITY,
+  requestModelId?: string,
+  ownedRoutes: readonly string[] = [WORKBUDDY_PROVIDER, WORKBUDDY_GLOBAL_PROVIDER],
+): Context {
+  const affected = repair?.dropAllThinking === true
+    ? allThinkingOf(context)
+    : repair?.dropForeignThinking === true
+      ? foreignThinkingOf(context, identity, requestModelId)
+      : crossProviderThinkingOf(context, identity, ownedRoutes)
+  if (affected.length === 0) return context
+  try {
+    repair?.onForeignThinking?.(affected)
+  } catch {
+    // A diagnostic must never fail a chat request.
+  }
+  return dropThinkingBlocks(context, affected)
 }
 
 function withLegacyContext(
@@ -1097,16 +1197,11 @@ function withLegacyContext(
     // BETWEEN MODELS inside one region (`hy3` → `deepseek-v4.1-flash`, both on
     // this route) degraded exactly like a cross-provider switch, while this
     // repair saw nothing to do: provider and api both still matched.
-    const affected = repair?.dropForeignThinking === true
-      ? foreignThinkingOf(aligned, identity, requestModelId)
-      : crossProviderThinkingOf(aligned, identity, ownedRoutes)
-    if (affected.length === 0) return aligned
-    try {
-      repair?.onForeignThinking?.(affected)
-    } catch {
-      // A diagnostic must never fail a chat request.
-    }
-    return dropThinkingBlocks(aligned, affected)
+    // ISSUE #213 takes precedence over both repairs, and it is checked FIRST
+    // because it is the broadest: a user who turned it on has decided the gate
+    // matters more than the model seeing its own past reasoning, so the narrow
+    // "is this block foreign?" question is no longer the one to ask.
+    return applyTranscriptRepair(aligned, repair, identity, requestModelId, ownedRoutes)
   }
   if (generation === 'modern') {
     return {
@@ -1452,6 +1547,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
         // Both read per request: the switch is meant to be flipped WHILE
         // looking at the bad turn, and a captured boolean would need a reload.
         get dropForeignThinking() { return options.dropForeignThinking?.() === true },
+        get dropAllThinking() { return options.dropAllThinking?.() === true },
         ...options.onForeignThinking === undefined ? {} : { onForeignThinking: options.onForeignThinking },
       }),
       options.resolveContextRescue,
