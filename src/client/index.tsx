@@ -103,9 +103,9 @@ export function apply(ctx: WorkBuddyClientContext): void {
     /**
      * The credits popover's header button: open 设置 → WorkBuddy.
      *
-     * ALWAYS A FUNCTION, never `undefined`. It drives the shell's real chrome
-     * (see `settings-jump.ts`) rather than asking a host service, so it has a
-     * definite value from the moment `apply` runs. That matters because the
+     * ALWAYS A FUNCTION, never `undefined`, and it takes no route value at
+     * creation time: it reads the store seat per press and otherwise drives the
+     * shell's real chrome (see `settings-jump.ts`). That matters because the
      * readout only renders the button when this is present, and the first
      * `registerAllSlots()` happens before most of `apply` has finished — a
      * route captured from `ctx.get('layout')` at that moment is `undefined` on
@@ -117,6 +117,10 @@ export function apply(ctx: WorkBuddyClientContext): void {
      */
     const openSettingsSection = (): boolean => openWorkBuddySettingsSection({
       label: () => t('nav.panel'),
+      // Route 1: the settings shell's store seat, which opens the dialog ON this
+      // plugin's section in one call. Probed per press (not captured here)
+      // because the sidebar bundle's apply order is not ours to assume.
+      get: softGet,
       onGiveUp: () => {
         // Last resort: the plugin manager's bundle page, which at least names
         // the plugin and offers install/uninstall. Soft-probed, and its absence

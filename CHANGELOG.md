@@ -1,5 +1,81 @@
 # Changelog
 
+## 5.20.4 (2026-11-07)
+
+> **积分弹层里的「设置」按钮现在直达本插件的设置页**，不再靠模拟用户点击。
+
+### 症状
+
+点积分弹层里的「Settings」按钮，本意是打开 **设置 → WorkBuddy**。旧实现的做法是：
+先点宿主的设置入口把面板打开，然后等导航行渲染出来，再按**标签文字**找到本插件那一行点一下。
+
+这条路能走通，但它依赖三件随时会变的事：面板的选择器、导航行的本地化文案、以及渲染时序
+（因此带了 5 次、约 300ms 的重试）。其中「按文案找行」最脆：宿主换了说法、或用户在别的语言下，
+按钮就落到 `onGiveUp`——打开插件市场页，而不是设置页。
+
+### 改了什么
+
+宿主其实**公开**了一条精确的路，只是不在 `settings.section` 的契约里：设置外壳把自己的状态
+句柄作为 `store` 座位发布在 `sidebar.settings` 这个 slot 上，而 `create().actions.openSection(id)`
+**一次调用同时设 `activeId` 和 `open`**，也就是「打开设置并停在这一页」。
+
+现在按优先级走两条路：
+
+1. **座位**：`slots.entries('sidebar.settings')[0].store.create().actions.openSection(id)`。
+   一次调用，无重试、无文案依赖、不会先停在错误的页面上再跳。
+2. **驱动 chrome**（旧实现，保留）：宿主版本跨度里可能有更早的外壳没有这个座位，
+   此时旧路仍能把用户送到本插件的页，删掉它等于拿一个可用的兜底换一个空。
+
+座位里的 store 若只有 `open()` 而没有 `openSection()`，仍会调 `open()` 打开面板，**然后继续走第 2 条**
+去点本插件那一行——所以老外壳上按钮也不会只停在「设置随便某页」。
+
+### 依据（不是照着别人的注释抄的）
+
+从**随包发布的宿主代码**里逐条读过（0.1.7-rc.1）：
+
+```js
+const shellHandle = createSettingsShellStore()
+const shellInstance = shellHandle.create()
+const shellStore = { ...shellHandle, create: () => shellInstance }
+ctx.slots.register({ name: 'sidebar.settings', store: shellStore, … })
+```
+
+```js
+defineStore({
+  init: () => ({ open: false, activeId: void 0 }),
+  actions: { open, close, select, openSection: (d, id) => { d.activeId = id; d.open = true } },
+})
+```
+
+`create: () => shellInstance` 这行是关键：座位被**钉在唯一的活动实例**上，所以读座位的人拿到的
+就是用户真正看到的那个对话框；裸句柄每次 `create()` 会另造一份，`openSection` 移动的是没人渲染的副本。
+
+`entries(key)` 与 `store` 都是公开契约（`StoredEntry.store` 的注释原文是 "Declared store seat;
+instance resolution and lifecycle live with the host machinery"），而 `settings.section` 的注册方
+按契约只拿到 `close` —— 所以读座位不是绕过 API，而是**只有这条路**。
+
+座位在**每次点击时**探测，不在 `apply` 时缓存：那个 slot 属于另一个 bundle，apply 顺序不由我们决定。
+
+### Tests
+
+`3266/3266`（3255 → 3266），`skip 2`。
+
+`tests/settings-jump.spec.tsx` 11 条（+5），新增覆盖：
+- 座位一次调用即到位，且**完全不碰 chrome**（trigger 点击次数必须为 0）；
+- 座位**每次点击都重新探测**——先无座位、后出现座位，第二次必须找到（防「apply 时缓存」）；
+- 座位只有 `open()` 时，仍要点到本插件那一行；
+- 7 种座位不可用形态（无 slots 服务 / 无 `entries` / 空账本 / 无 `create` / `create` 抛错 /
+  `create` 返回 null / `get` 抛错）全部安全退回第 2 条路，且不抛。
+
+**变异验证**：`openSection` 不传 id（3 条红）、把探测结果缓存（3 条红）、去掉 `open()` 兜底（1 条红）。
+
+### 一处顺带的修正
+
+`tests/settings-jump.spec.tsx` 的旧用例各自在开头清 `document.body`，但**不在结尾清**；新增用例
+断言「这个宿主上没有 chrome」时，会被上一条用例残留的 trigger 满足而变成空断言。已改为
+`beforeEach` 清理，与旧用例的约定一致。
+
+
 ## 5.20.3 (2026-11-06)
 
 > **脱敏与发布流程。** 没有功能与行为变化。
