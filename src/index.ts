@@ -4430,11 +4430,25 @@ export function apply(ctx: Context, config: Config): void {
             dropAllThinking: () => unwrapVolatile(current().dropAllThinking) === true,
             onForeignThinking: blocks => {
               latestForeignThinking = { blocks, atMs: Date.now() }
-              // Cross-provider blocks are dropped even when the switch is off.
-              // Name that edit in the log: it changes bytes the upstream would
-              // otherwise count, and the user may be looking for the reason
-              // their transcript lost the other provider's working notes.
-              if (unwrapVolatile(current().dropForeignThinking) !== true) {
+              // NAME THE REASON THAT ACTUALLY APPLIED.
+              //
+              // This callback fires for all three repairs, so the message has to
+              // be chosen by which one ran, not by which switches happen to be
+              // off. Testing only `dropForeignThinking !== true` meant a user who
+              // turned on the #213 redaction got a log line claiming a
+              // cross-provider switch (#163) — a different cause with a different
+              // fix, sending them to the wrong issue while the real reason (their
+              // own switch) went unmentioned.
+              if (unwrapVolatile(current().dropAllThinking) === true) {
+                ctx.logger.warn(
+                  `dsh-connect-workbuddy: dropped ${blocks.length} thinking block(s) `
+                  + 'before a WorkBuddy request because the reasoning-redaction switch is on; see issue #213',
+                )
+              } else if (unwrapVolatile(current().dropForeignThinking) !== true) {
+                // Cross-provider blocks are dropped even when the switch is off.
+                // Name that edit in the log: it changes bytes the upstream would
+                // otherwise count, and the user may be looking for the reason
+                // their transcript lost the other provider's working notes.
                 ctx.logger.warn(
                   `dsh-connect-workbuddy: dropped ${blocks.length} cross-provider thinking block(s) `
                   + 'before a WorkBuddy request (provider switch); see issue #163',

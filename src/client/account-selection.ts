@@ -204,7 +204,10 @@ export function cliBridgeEnabledOf(configured: unknown): boolean {
  * @param field - which switch to read.
  * @returns whether the switch is on.
  */
-export function upstreamSwitchOf(configured: unknown, field: 'usageIdentity' | 'keepPromptLast'): boolean {
+export function upstreamSwitchOf(
+  configured: unknown,
+  field: 'usageIdentity' | 'keepPromptLast' | 'dropAllThinking',
+): boolean {
   const value = (configured as Record<string, unknown> | undefined)?.[field]
   return unwrapVolatileDeep(value) === true
 }
@@ -329,7 +332,16 @@ export async function writeUpstreamSwitch(
   }
   if (delivered) {
     const after = scope.getSnapshot().value
-    const landed = field === 'usageIdentity' || field === 'keepPromptLast'
+    // EVERY TOP-LEVEL BOOLEAN MUST BE NAMED HERE. The chain's final arm reads a
+    // `readonly string[]` and spreads it — so an unnamed boolean field reaches it
+    // and throws `TypeError: true is not iterable`. That is exactly what happened
+    // to `dropAllThinking`: the save had already LANDED, but the verification
+    // threw, so the card reported a failure and left the switch un-flipped while
+    // the config really had changed. A false failure on a successful write is
+    // worse than a plain one.
+    //
+    // Adding a new switch? Add it to the first arm, not the last.
+    const landed = field === 'usageIdentity' || field === 'keepPromptLast' || field === 'dropAllThinking'
       ? upstreamSwitchOf(after, field) === value
       : field === 'sessionTitle'
         ? JSON.stringify(sessionTitleOf(after)) === JSON.stringify(value)

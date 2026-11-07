@@ -988,12 +988,22 @@ export function foreignThinkingOf(
  * very likely carries no thinking text at all, which is the reporter's point and
  * the reason this is worth offering.
  *
- * `variant` is 'flattened' for every block because that is what happens to a
- * signed block pi-ai cannot replay: it becomes assistant prose. An unsigned block
- * is never emitted in the first place, so leaving it would send nothing either
- * way — but it is still counted, because a transcript whose thinking is invisible
- * to the request is not the same as one that never had any, and the diagnostic
- * should say which case the user is in.
+ * `variant` is 'flattened' for every block, and that is an APPROXIMATION this
+ * function cannot refine: the real outcome depends on the block's signature,
+ * which only pi-ai's request builder can see.
+ *
+ *   - a block whose `thinkingSignature` is one of the three reasoning field names
+ *     is REPLAYED as that field (`reasoning_content` for this vendor), not
+ *     flattened;
+ *   - a block with NO signature is never emitted at all - it is dropped from the
+ *     request, not turned into prose;
+ *   - a block whose message fails `isSameModel` IS flattened into assistant prose
+ *     (`transform-messages.js:88-96`), and that is the only real 'flattened' case.
+ *
+ * So the field is deliberately not surfaced to the user: `variant` reaches
+ * nothing but the diagnostic callback, and a label that is wrong for two of the
+ * three cases would mislead whoever finally does display it. The count is what
+ * the user is told ("N blocks were removed"), which is true for all three.
  */
 export function allThinkingOf(context: Context): ForeignThinkingBlock[] {
   const messages = (context as { messages?: unknown }).messages

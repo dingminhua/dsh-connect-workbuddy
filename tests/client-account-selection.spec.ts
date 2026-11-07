@@ -8,6 +8,7 @@ import {
   writeRegionModels,
   writeRegionNewModelsShown,
   writePoolPreferences,
+  writeUpstreamSwitch,
 } from '../src/client/account-selection.ts'
 import type { WorkBuddyAccountScope } from '../src/client/account-selection.ts'
 
@@ -525,5 +526,67 @@ describe('writeRegionNewModelsShown', () => {
     }
     await expect(writeRegionNewModelsShown(scope, 'cn', true, { showNewModelsInMainUi: false }))
       .rejects.toThrow(WorkBuddySettingsWriteError)
+  })
+})
+
+/**
+ * THE FALLBACK WRITE PATH, FOR EVERY FIELD KIND IT CAN CARRY.
+ *
+ * `writeUpstreamSwitch` writes to the Host endpoint first; when that is
+ * unreachable it falls back to `scope.set`, then verifies the value landed by
+ * reading it back. That verification is a chain of type-specific arms, and the
+ * FINAL arm spreads a `readonly string[]`.
+ *
+ * A boolean field that is not named in an earlier arm therefore reaches that
+ * spread, and `[...true]` throws `TypeError: true is not iterable`. That is what
+ * happened to `dropAllThinking` (issue #213): the save had already LANDED, but
+ * verification threw, so the card reported a failure and left the switch
+ * un-flipped while the config really had changed. A false failure on a
+ * successful write is worse than a plain failure — the user sees an error for an
+ * operation that worked.
+ *
+ * These tests drive the REAL `writeUpstreamSwitch` down the fallback path
+ * (no fetch stub, so the Host endpoint attempt fails) for one field of each kind,
+ * which is what makes the arm chain itself the thing under test.
+ */
+describe('writeUpstreamSwitch verification, on the fallback path', () => {
+  /** No Host endpoint: `fetch` rejects, so the scope path is the one that runs. */
+  const withoutHost = async <T>(run: () => Promise<T>): Promise<T> => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (() => Promise.reject(new Error('no host endpoint'))) as typeof fetch
+    try {
+      return await run()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+
+  it('verifies a plain boolean switch without throwing', async () => {
+    const { scope, document } = scopeWith({})
+    await withoutHost(() => writeUpstreamSwitch(scope, 'dropAllThinking', true))
+    expect(document()['dropAllThinking']).toBe(true)
+    // …and the OFF direction, so a read-back that always answered `true` fails.
+    await withoutHost(() => writeUpstreamSwitch(scope, 'dropAllThinking', false))
+    expect(document()['dropAllThinking']).toBe(false)
+  })
+
+  it('verifies every other boolean and array kind the same way', async () => {
+    // The regression this pins is "a new field fell into the wrong arm", so each
+    // arm is exercised: boolean (two of them), string[], and an object block.
+    const { scope, document } = scopeWith({})
+    await withoutHost(() => writeUpstreamSwitch(scope, 'keepPromptLast', true))
+    expect(document()['keepPromptLast']).toBe(true)
+    await withoutHost(() => writeUpstreamSwitch(scope, 'extraInjectedPrefixes', ['a', 'b']))
+    expect(document()['extraInjectedPrefixes']).toEqual(['a', 'b'])
+    await withoutHost(() => writeUpstreamSwitch(scope, 'sessionTitle', { enabled: true, model: 'wb-lite' }))
+    expect(document()['sessionTitle']).toEqual({ enabled: true, model: 'wb-lite' })
+  })
+
+  it('still reports a real failure when the write is dropped by a locked file', async () => {
+    // The complement: the fallback must not swallow a genuine failure. Without
+    // this, "never throws" would pass while every broken write went unreported.
+    const { scope } = scopeWith({}, { locked: true })
+    await expect(withoutHost(() => writeUpstreamSwitch(scope, 'dropAllThinking', true)))
+      .rejects.toBeInstanceOf(WorkBuddySettingsWriteError)
   })
 })
