@@ -58,6 +58,11 @@ import type { WorkBuddyDeviceSettings } from './device-profile.ts'
 import { createDeviceSdkPort, createTuringSdk } from './turing-sdk.ts'
 import { WORKBUDDY_DEVICE_TOKEN_FILE_ENV } from './device-token.ts'
 import { BENEFIT_CACHE_MS, claimableBenefits, type WorkBuddyBenefitView } from './benefits.ts'
+// The host's own `model.badge` field (0.2.2+): a running promotion is stamped
+// onto the model the directory already publishes, so the picker draws it without
+// this plugin having to win a slot. See the note inside `registerModelDiscovery`.
+import { selectPromoBadge, type WorkBuddyPromo } from './promo.ts'
+import { promoBadgeTone } from './client/promo-badge.ts'
 import {
   createWorkBuddyAdapter,
   regionOfProvider,
@@ -1487,6 +1492,53 @@ export async function legacyAttributionRegion(
  * The static fallback catalogs serve from the first moment, so an offline
  * upstream never leaves a provider empty.
  */
+/**
+ * The host's native `model.badge` for a model's running promotion, if any.
+ *
+ * WHY THIS EXISTS AT ALL, AND WHY IT REPLACED A SLOT. Until 0.2.2 the only way to
+ * decorate a picker row was the `conversation.input.model.label` slot — a
+ * `single` cell whose PARENT seat belongs to another plugin. Contributing there
+ * means winning a priority race against every other contributor, and losing (or
+ * the parent seat not mounting) drops the decoration with nothing the user can
+ * see. On 0.2.2-rc.1 this repository measured exactly that end state: correct
+ * data, correct resolution, correct component, empty picker.
+ *
+ * `LlmModelInfo.badge = { text, tone }` is a plain field on the model the
+ * directory already reads: the host draws the chip itself, in its own place, with
+ * its own theme tokens. Nothing to race for.
+ *
+ * `tone` is one of four semantic slots, not a colour, so the upstream's hex is
+ * mapped onto the closest meaning (see `promoBadgeTone`).
+ *
+ * ONE BADGE PER MODEL is the field's own limit, so:
+ *  - only a promotion that HOLDS RIGHT NOW is stamped (a standing campaign
+ *    outside its hours must not claim a chip), and
+ *  - nothing else competes for the slot — the load icon stays in the label slot,
+ *    which is where a per-level glyph belongs anyway.
+ *
+ * @param promos - The model's unresolved promotions, or undefined.
+ * @param nowMs - The clock, passed in so the answer is testable.
+ * @returns `{}` when no promotion holds, so the caller can spread it
+ *          unconditionally without publishing `badge: undefined`.
+ */
+export function hostModelBadgeOf(
+  promos: readonly WorkBuddyPromo[] | undefined,
+  nowMs: number,
+): { badge?: { text: string | { readonly en: string, readonly [locale: string]: string }, tone: 'neutral' | 'info' | 'success' | 'warning' } } {
+  const promo = selectPromoBadge(promos, nowMs)
+  if (promo === undefined) return {}
+  return {
+    badge: {
+      // The host localizes this itself, so both wordings travel when the
+      // upstream published both.
+      text: promo.badge.labelEn === undefined
+        ? promo.badge.label
+        : { en: promo.badge.labelEn, zh: promo.badge.label },
+      tone: promoBadgeTone(promo),
+    },
+  }
+}
+
 export function apply(ctx: Context, config: Config): void {
   // The CN catalog prefers `/v3/config` and falls back to the legacy document.
   // A fallback is worth a line in the log: it means the card's roster may no
@@ -4506,6 +4558,8 @@ export function apply(ctx: Context, config: Config): void {
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
             inputModalities: workBuddyModelInput(model),
+            // THE HOST'S OWN BADGE SLOT (0.2.2+) — see `hostModelBadgeOf`.
+            ...hostModelBadgeOf(model.promos, Date.now()),
           }))
         })
 

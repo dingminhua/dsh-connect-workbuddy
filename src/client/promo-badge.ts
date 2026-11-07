@@ -86,6 +86,44 @@ export function promoBadgeShortLabel(promo: WorkBuddyPromo, language?: string): 
  * refused rather than passed through, and the card falls back to its own
  * brand colour.
  */
+/**
+ * The host's own badge tone for a promotion, for the 0.2.2+ `model.badge` field.
+ *
+ * WHY A TONE AND NOT A COLOUR. From 0.2.2 the host's model directory accepts a
+ * per-model `badge` (`LlmModelBadge = { text, tone }`) and draws it itself, in
+ * the same place and shape as the picker's own labels. `tone` is one of four
+ * semantic slots (`neutral | info | success | warning`), NOT an arbitrary
+ * colour: the shell paints it from theme tokens so it stays legible in every
+ * theme, which an upstream hex value cannot guarantee.
+ *
+ * The upstream's hex colour is therefore mapped onto the CLOSEST tone rather
+ * than passed through. Green — the value every CN promotion here uses for "free
+ * for now" — reads as `success`; blues as `info`; amber/red as `warning`;
+ * anything else stays `neutral` rather than inventing a meaning.
+ *
+ * @param promo - The resolved promotion.
+ * @returns The host tone to stamp on `model.badge`.
+ */
+export function promoBadgeTone(promo: WorkBuddyPromo): 'neutral' | 'info' | 'success' | 'warning' {
+  const color = promoBadgeColor(promo)
+  if (color === undefined) return 'neutral'
+  // #RRGGBB only (promoBadgeColor already refuses anything else).
+  const hex = color.replace('#', '')
+  if (hex.length !== 6) return 'neutral'
+  const r = Number.parseInt(hex.slice(0, 2), 16)
+  const g = Number.parseInt(hex.slice(2, 4), 16)
+  const b = Number.parseInt(hex.slice(4, 6), 16)
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return 'neutral'
+  // Green dominates when it is clearly the strongest channel: that is the
+  // "免费 / 折扣" green and it must not be read as a warning.
+  if (g > r + 24 && g > b + 24) return 'success'
+  // Blue: a "members only / tier" badge rather than a price event.
+  if (b > r + 24 && b > g + 8) return 'info'
+  // Warm: amber and red both mean "read this before choosing".
+  if (r > b + 24) return 'warning'
+  return 'neutral'
+}
+
 export function promoBadgeColor(promo: WorkBuddyPromo): string | undefined {
   const color = promo.badge.color
   if (color === undefined) return undefined
