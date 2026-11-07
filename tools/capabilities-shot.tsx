@@ -240,7 +240,7 @@ describe('section shot', () => {
 
     const ISOLATE = `
 <style>
-.dsm-workbuddy-page-head,.dsm-workbuddy-tabs,.dsm-workbuddy-tab-hint,.dsm-workbuddy-free-quota-warn{display:none!important}
+${process.env['WB_SHOT_HEADERS'] === '1' ? '' : '.dsm-workbuddy-page-head,.dsm-workbuddy-tabs,.dsm-workbuddy-tab-hint,.dsm-workbuddy-free-quota-warn{display:none!important}'}
 ${['accounts', 'models', 'capabilities', 'diag', 'sdk'].filter(id => id !== PANEL).map(id => `#dsm-workbuddy-panel-${id}`).join(',')}{display:none!important}
 /* NOT display:block!important — the panel's own display IS the thing under
    measurement (it is a flex column in 5.20.0). Forcing block here once hid the

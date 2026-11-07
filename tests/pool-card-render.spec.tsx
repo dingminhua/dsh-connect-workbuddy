@@ -484,7 +484,11 @@ describe('the free-model quota warning', () => {
     // computed weight keeps this out of jsdom's (absent) cascade, and the CSS
     // rule itself is pinned in `tests/card-credits-switch.spec.tsx`'s sibling
     // source guard below.
-    expect(warn?.className).toContain('dsm-workbuddy-models-summary')
+    // It no longer borrows `.dsm-workbuddy-models-summary`: that class carries the
+    // block margins of a paragraph following a section heading, and this element
+    // now sits INLINE on the pool heading's row. Asserting its own class also
+    // proves the stylesheet rule below is the one that styles it.
+    expect(warn?.className).toContain('dsm-workbuddy-free-quota-warn')
     await m.unmount()
   })
 
@@ -826,40 +830,55 @@ describe('the model name survives its badges', () => {
  * it disappeared on the model section, which is exactly where the ×0 tiers the
  * warning is about are shown.
  */
-describe('the free-quota warning travels with the region hint', () => {
-  it('sits directly under the hint, above the section tabs', async () => {
+describe('the free-quota warning sits beside the pool heading', () => {
+  /**
+   * WHERE IT LIVES NOW, and why the old position was wrong.
+   *
+   * It used to travel with the region hint (above the section tabs), then for one
+   * release above the model list. Both put it AWAY from the thing it is about: it
+   * corrects exactly one misreading — a ×0 multiplier looks free, so a column of
+   * them looks unlimited — and a caveat three hundred pixels above the numbers,
+   * behind a tab row, is a caveat nobody connects to them.
+   *
+   * Beside the pool heading it is a note ON this tab: every account here serves
+   * the same gateways, so the limit belongs to the panel rather than to one row
+   * or one model. It also uses the gap that was already empty — the heading is
+   * short and the serving-account badge is pushed to the right edge.
+   */
+  it('renders on the pool heading row, next to the title', async () => {
     routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
     const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await m.settle()
 
-    const html = m.html()
-    const hint = html.indexOf('dsm-workbuddy-tab-hint')
-    const warn = html.indexOf('dsm-workbuddy-free-quota-warn')
-    const sections = html.indexOf('class="dsm-workbuddy-panels"')
-    expect(hint, 'no region hint').toBeGreaterThan(-1)
-    expect(warn, 'no free-quota warning').toBeGreaterThan(-1)
-    expect(sections, 'no section tabs').toBeGreaterThan(-1)
-    expect(warn, 'the warning must follow the hint it belongs to').toBeGreaterThan(hint)
-    expect(warn, 'the warning must sit above the section tabs').toBeLessThan(sections)
+    const head = m.container.querySelector('.dsm-workbuddy-pool-head')
+    expect(head, 'no pool heading row').not.toBeNull()
+    const warn = head?.querySelector('.dsm-workbuddy-free-quota-warn')
+    expect(warn, 'the warning is not on the pool heading row').not.toBeNull()
+    // Beside the TITLE, not somewhere else on the row.
+    expect(warn?.previousElementSibling?.className).toContain('dsm-workbuddy-pool-title')
+    expect(warn?.textContent).toContain('row.tabFreeQuotaWarn')
     await m.unmount()
   })
 
-  it('stays outside every section panel, so the model view shows it too', async () => {
+  it('is no longer one of the region-pair paragraphs', async () => {
+    // The old home is asserted as an ABSENCE, so a later refactor cannot quietly
+    // put a second copy back above the tabs while this one stays here.
     routeFetch([[USAGE_PATH, () => ({ body: usageOf() })], ['*', () => ({ body: {} })]])
     const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
     await m.settle()
 
-    const warn = m.container.querySelector('.dsm-workbuddy-free-quota-warn')
-    expect(warn, 'the warning is not rendered').not.toBeNull()
-    let node: Element | null = warn
-    while (node !== null && node !== m.container) {
-      expect(node.classList.contains('dsm-workbuddy-panel'),
-        'the warning is inside a section panel and will disappear with it').toBe(false)
-      node = node.parentElement
-    }
+    // SIBLING, not descendant: the region hint and the pool share one big
+    // container (`dsm-workbuddy-usage`), so a descendant check would fail for the
+    // right reason on the wrong evidence. What the old layout had was the warning
+    // as the very NEXT element after the hint — that is what must not come back.
+    const hint = m.container.querySelector('.dsm-workbuddy-tab-hint')
+    expect(hint, 'no region hint').not.toBeNull()
+    expect(hint?.nextElementSibling?.className ?? '',
+      'the warning is a sibling of the region hint again').not.toContain('dsm-workbuddy-free-quota-warn')
     await m.unmount()
   })
 })
+
 
 /**
  * ONE SPACING SOURCE, NOT THREE (the Settings panel).

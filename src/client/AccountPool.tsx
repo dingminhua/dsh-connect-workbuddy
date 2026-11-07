@@ -1282,6 +1282,22 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     // before anything can be acted on.
     h('div', { className: 'dsm-workbuddy-pool-head' },
       h('h3', { className: 'dsm-workbuddy-pool-title' }, t('row.poolTitle')),
+      // The free-model quota caveat, in the gap beside the heading (moved here
+      // on request; before that it sat under the region pair, and briefly above
+      // the model list).
+      //
+      // WHY BESIDE THE HEADING. It is a CAVEAT that applies to the whole tab —
+      // every account below serves the same gateways, so the limit is a property
+      // of the panel rather than of one row, one account or one model. Sitting
+      // on the heading's own line makes it read as a note ON this section
+      // instead of as a paragraph that interrupts whatever follows it. It is the
+      // space that was empty anyway: the heading is short and the serving-account
+      // badge is pushed to the right edge.
+      //
+      // BOLD, and deliberately not an error banner: it corrects the assumption
+      // that ×0 means unlimited (issue #56), and the behaviour it states is
+      // normal product behaviour rather than a failure.
+      h('p', { className: 'dsm-workbuddy-free-quota-warn' }, t('row.tabFreeQuotaWarn')),
       // One slot, not two. With the pool off this is the picker — the name is
       // there because the control carries it, so a badge repeating it would be
       // the same fact twice in one row of pixels. With the pool on there is

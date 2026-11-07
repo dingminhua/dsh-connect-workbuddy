@@ -457,10 +457,22 @@ export const WORKBUDDY_CARD_CSS = `
    colour: it has to stand out from the three lines around it WITHOUT reading as
    an error banner, because the fact it states is normal product behaviour
    rather than a failure. Weight is the only signal it needs. */
-/* 这两句现在连在一起读：先说这两个 tab 是什么，再说它们的免费额度有限。
- * 所以两行之间不要段落间距（上一条 .dsm-workbuddy-tab-hint 的下边距已经给
- * 足了），否则会读成两段互不相干的话。 */
-.dsm-workbuddy-free-quota-warn{font-weight:600;margin-top:-10px}
+/* 这两句仍然连在一起读（先说这两个 tab 是什么，再说额度有限），但不再用负
+ * 外边距把它们压成一坨。
+ *
+ * 上一版是 margin-top:-10px，本意是「不要段落间距」。实测代价是两行底部只隔
+ * 6px，而第二行是加粗的：负外边距把上一行 18px 行高留下的空隙吃掉之后，加粗
+ * 的字面几乎顶到上一行的下缘，读起来像一个被挤住的块，而不是两句话。改成
+ * 4px 的正间距：仍然贴得比普通段落近，但加粗那一行有了自己的呼吸。 */
+/* Sits ON the pool heading's line now, in the gap between the title and the
+ * serving-account badge. It was a block paragraph (with margins tuned to follow
+ * the region-pair explanation), so it needs a row-appropriate box: no block
+ * margins, and flex:1 so it takes exactly the empty middle and pushes the
+ * badge to the right edge the way the heading row already wanted.
+ *
+ * It may WRAP rather than ellipsize: this is the sentence that stops a ×0 tier
+ * being read as "unlimited", and a truncated caveat is worse than a taller row. */
+.dsm-workbuddy-free-quota-warn{font-weight:600;flex:1 1 12em;min-width:0;margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* The line that explains the REGION pair, directly under it.
  *
  * It used to be a .dsm-workbuddy-models-summary inside the accounts panel,
@@ -468,8 +480,12 @@ export const WORKBUDDY_CARD_CSS = `
  * cells above it, so it gets its own name and its own margin: the summary's
  * margin:2px 0 0 was tuned to sit under a section heading, and here the line
  * follows a row of boxed cells and needs more air, plus it precedes the section
- * tabs whose own top margin would otherwise crowd it. */
-.dsm-workbuddy-tab-hint{margin:10px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+ * tabs whose own top margin would otherwise crowd it.
+ *
+ * 10px 在这条链路上显得贴：上一行是带边框的格子（视觉重量大），而这一行是
+ * 灰色小字，两者之间 26px 的盒子间距里还有格子的边框和阴影在竞争注意力，读起
+ * 来像是格子的说明文字而不是独立的一段。18px 把它和格子拉开一档。 */
+.dsm-workbuddy-tab-hint{margin:18px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 /* Every model is laid out in full — NO inner scroll box.
  *
  * The previous rule capped this at max-height 520px with overflow-y auto, so a

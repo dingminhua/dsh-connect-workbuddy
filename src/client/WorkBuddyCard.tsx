@@ -3285,23 +3285,6 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                   now lives outside every panel it stays readable from all five
                   sections instead of disappearing with the first one. */}
               <p className="dsm-workbuddy-models-summary dsm-workbuddy-tab-hint">{t('row.tabHint')}</p>
-              {/* Its OWN paragraph rather than a clause appended to the hint
-                  above: this one is BOLD and is the only sentence here that
-                  corrects a wrong assumption rather than describing a fact.
-                  Appending it in the same grey run is what let the ×0 tiers
-                  read as "unlimited" in the first place (issue #56's reporter
-                  lost 30 minutes to exactly that reading).
-
-                  It belongs HERE, with the region pair and its explanation, and
-                  not inside the accounts panel where it used to sit: the two
-                  sentences answer the same question ("what am I looking at, and
-                  what are its limits"), and separating them by the section tabs
-                  put a rule and three tabs between a statement and its caveat.
-                  Living outside every panel also keeps it readable from the
-                  model section, which is where the ×0 tiers actually appear. */}
-              <p className="dsm-workbuddy-models-summary dsm-workbuddy-free-quota-warn">
-                {t('row.tabFreeQuotaWarn')}
-              </p>
               {/* THE CARD'S THREE SECTIONS. Above them, the region pair is the
                   SCOPE (which provider's data this whole panel is about) and
                   scrolls with the content like any other header row. */}
