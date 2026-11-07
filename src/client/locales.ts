@@ -12,9 +12,14 @@
 
 export const en = {
   'nav.panel': 'WorkBuddy',
+  'row.iconStyleLabel': 'Icon style',
+  'row.iconStyleHint': 'Apply the selected icon in the sidebar and page immediately. The choice is saved for this plugin in this browser.',
+  'row.iconStyleClaude': 'Claude style',
+  'row.iconStyleOriginal': 'Default icon',
+  'row.iconStyleSaveFailed': 'The icon choice could not be saved. Check browser storage permissions.',
   'nav.back': 'Back to conversation',
-  'row.title': 'WorkBuddy credits & models (dsh-connect-workbuddy)',
-  'row.desc': 'Use WorkBuddy models in DSH: each refresh reads every model\'s credit multiplier from the upstream catalog, image input is toggled per model, several accounts can be switched or failed over automatically, and daily check-in plus your remaining credits are one click away. The domestic and international sides are two independent providers, each with its own account — use both at the same time.',
+  'row.title': 'WorkBuddy credits and models',
+  'row.desc': 'Use WorkBuddy domestic and global models in DSH. Manage accounts, select models, view credits and claim daily check-in rewards. Refreshing the model catalog also updates credit multipliers.',
   'row.expand': 'Expand',
   'row.collapse': 'Collapse',
   'row.tabCn': 'Domestic',
@@ -384,7 +389,7 @@ export const en = {
   // says what it DOES rather than naming the feature: "automatic check-in" alone
   // does not tell a user that a background job will write to their account.
   'row.poolAutoCheckin': 'Check in automatically each day',
-  'row.poolAutoCheckinHint': 'On: the plugin claims the daily check-in for the accounts checked into this pool, once a day, in the background. It reads first and never re-claims an account already checked in, so a restart cannot double-claim. Off: nothing runs until you press the button. A missed day resets the streak.',
+  'row.poolAutoCheckinHint': 'Enable and save to claim daily rewards for selected domestic personal accounts while DSH is running. After a restart, the plugin checks today\'s progress before processing remaining accounts. Failed attempts retry automatically.',
   'row.poolAutoCheckinToday': 'Today: {done} of {total} checked in',
   'row.poolAutoCheckinDone': 'Today: all {total} checked in',
   'row.poolAutoCheckinPending': '{count} still to retry',
@@ -736,9 +741,14 @@ export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
   'nav.panel': 'WorkBuddy',
+  'row.iconStyleLabel': '图标样式',
+  'row.iconStyleHint': '立即应用到侧边栏和页面图标，选择会保存在当前浏览器的本插件设置中。',
+  'row.iconStyleClaude': 'Claude 风格',
+  'row.iconStyleOriginal': '默认图标',
+  'row.iconStyleSaveFailed': '图标选择保存失败，请检查浏览器存储权限。',
   'nav.back': '返回会话',
-  'row.title': '接入使用 WorkBuddy 积分与模型（dsh-connect-workbuddy）',
-  'row.desc': '在 DSH 中使用 WorkBuddy 模型：每次刷新都按上游目录读取每个模型的积分倍率，图片输入可逐模型开关，多个账号可切换或由账号池自动换号，每日签到与剩余积分一键可查。国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。',
+  'row.title': 'WorkBuddy 积分与模型',
+  'row.desc': '在 DSH 中使用 WorkBuddy 国内版和国际版模型，可管理账号、选择模型、查看积分并领取每日签到奖励。刷新模型目录时会同步更新积分倍率。',
   'row.expand': '展开',
   'row.collapse': '收起',
   'row.tabCn': '国内版',
@@ -1072,7 +1082,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolDirty': '● 有未保存的修改',
   // 自动签到（issue #191）。默认关，且标题写的是「它会做什么」而不是功能名。
   'row.poolAutoCheckin': '每天自动签到',
-  'row.poolAutoCheckinHint': '开启：插件在后台为勾选进池的账号领取每日签到，一天一次。它先读状态、已签到的不重复领取，所以重启也不会多领。关闭：不点按钮就什么都不会发生。漏一天会断连签。',
+  'row.poolAutoCheckinHint': '开启并保存后，插件在 DSH 运行期间每天为选中的国内版个人账号领取签到奖励。重启后先检查当天进度，再处理尚未完成的账号。失败时会自动重试。',
   'row.poolAutoCheckinToday': '今日：已签 {done} / {total}',
   'row.poolAutoCheckinDone': '今日：{total} 个全部已签',
   'row.poolAutoCheckinPending': '待重试 {count} 个',

@@ -130,9 +130,9 @@ describe('WORKBUDDY_CARD_CSS template literal', () => {
     // dozens of expression statements, one per token.
     const source = readFileSync(fileURLToPath(new URL('src/client/styles.ts', repoRoot)), 'utf8')
     const sf = ts.createSourceFile('styles.ts', source, ts.ScriptTarget.ESNext, true)
-    const strays = sf.statements.filter(st => !ts.isVariableStatement(st))
+    const strays = sf.statements.filter(st => !ts.isVariableStatement(st) && !ts.isImportDeclaration(st))
     expect(strays.map(st => ts.SyntaxKind[st.kind])).toEqual([])
-    expect(sf.statements.length).toBe(2)
+    expect(sf.statements.length).toBe(3)
   })
 
   it('still carries the veil rules the shared busy overlay depends on', () => {
