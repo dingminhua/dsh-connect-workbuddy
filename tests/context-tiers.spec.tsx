@@ -259,13 +259,18 @@ describe('the tier control is a dropdown, not a row of radios', () => {
   })
 })
 
-describe('one model is expressed as three lines', () => {
+describe('one model is expressed as two lines', () => {
   /**
-   * The row was TWO lines, and the first did not fit 564px — it wrapped, so the
-   * row was already three lines tall, just broken wherever the widths landed.
-   * These cases pin the explicit structure, and they are deliberately about the
-   * STRUCTURE rather than the pixels: jsdom performs no layout, so "is it three
-   * lines" is unmeasurable, while "is there one container per concern" is exact.
+   * TWO lines: line 1 is what the model is PLUS how it behaves, line 2 is what it
+   * costs plus the actions.
+   *
+   * It was three for one release (5.20.7), and that was the wrong split: the name
+   * is short, so line 1 left its whole right half empty while line 2 carried
+   * three narrow controls — three lines, two-thirds empty each. These cases pin
+   * the two-line structure, and they are about the STRUCTURE rather than the
+   * pixels: jsdom performs no layout, so "is it two lines" is unmeasurable, while
+   * "is there one container per concern, and is the switch group INSIDE line 1"
+   * is exact.
    */
   const rowOf = async (): Promise<{ head: Element | null, controls: Element | null, details: Element | null }> => {
     const m = await render(usageWithWindow(1_000_000))
@@ -284,40 +289,43 @@ describe('one model is expressed as three lines', () => {
     expect(details, 'line 3 (facts + actions)').not.toBeNull()
   })
 
-  it('puts the name line alone on line 1', async () => {
-    // Line 1 answers "what is this model": the checkbox, the name, its price,
-    // the promo chip and the load icon. A switch or a select here would put a
-    // setting back on the line the row was split to lighten.
+  it('keeps the switches on line 1, beside the name', async () => {
+    // THE WHOLE POINT of the two-line form: the switch group is INSIDE the name's
+    // line, not a line of its own. If someone moves it back out, line 1 becomes
+    // mostly empty again and the row grows a third line for no gain.
     const { head } = await rowOf()
     expect(head?.querySelector('.dsm-workbuddy-model-name')).not.toBeNull()
     expect(head?.querySelector('input[type=checkbox]')).not.toBeNull()
-    expect(head?.querySelector('select.dsm-workbuddy-context-budget')).toBeNull()
+    // The controls container must be a DESCENDANT of the head, not a sibling.
+    expect(head?.querySelector('.dsm-workbuddy-model-controls')).not.toBeNull()
+    expect(head?.querySelector('select.dsm-workbuddy-context-budget')).not.toBeNull()
+    // The actions still belong to line 2.
     expect(head?.querySelector('.dsm-workbuddy-model-probe')).toBeNull()
   })
 
-  it('puts the per-model switches on line 2 and the buttons on line 3', async () => {
-    // The split that actually needed fixing: the two BUTTONS are actions on the
-    // model, not settings OF it, so they belong with its facts.
-    const { controls, details } = await rowOf()
-    expect(controls?.querySelector('select.dsm-workbuddy-context-budget')).not.toBeNull()
-    expect(controls?.querySelector('.dsm-workbuddy-model-probe')).toBeNull()
+  it('keeps the switches off line 2, and the buttons on it', async () => {
+    // The split that matters: the buttons are actions ON the model, not settings
+    // OF it, so they belong with its facts — and the switches do NOT belong there.
+    const { details } = await rowOf()
+    expect(details?.querySelector('select.dsm-workbuddy-context-budget')).toBeNull()
+    expect(details?.querySelector('.dsm-workbuddy-model-image')).toBeNull()
     expect(details?.querySelector('.dsm-workbuddy-model-probe')).not.toBeNull()
     expect(details?.querySelector('.dsm-workbuddy-model-meta')).not.toBeNull()
   })
 
-  it('indents lines 2 and 3 under the name, not under the checkbox', async () => {
-    // A stylesheet contract, because the alignment cannot be observed in jsdom.
-    // 22px = the checkbox's own box + the 8px gap before the name, so the three
-    // lines read as one block instead of a checkbox column with three toppled
-    // fragments beside it.
-    const rules = /\.dsm-workbuddy-model-(?:controls|details)\{([^}]*)\}/g
-    const found = Array.from(WORKBUDDY_CARD_CSS.matchAll(rules))
-    expect(found.length, 'both line-2 and line-3 rules must exist').toBe(2)
-    for (const rule of found) {
-      expect(rule[1]).toContain('padding-inline-start:22px')
-    }
-    // Line 1 must NOT be indented: the checkbox opens it.
+  it('indents line 2 under the name, and lets line 1 start at the checkbox', async () => {
+    // A stylesheet contract, because alignment cannot be observed in jsdom.
+    // 22px = the checkbox's own box + the 8px gap before the name, so the two
+    // lines read as one block.
+    const details = /\.dsm-workbuddy-model-details\{([^}]*)\}/.exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
+    expect(details).toContain('padding-inline-start:22px')
+    // Line 1 opens with the checkbox, so it must NOT be indented.
     const head = /\.dsm-workbuddy-model-head\{([^}]*)\}/.exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
     expect(head).not.toContain('padding-inline-start')
+    // The switch group sits on line 1, so it must not carry line 2's indent —
+    // and it must not shrink, or the controls would be squeezed by a long name.
+    const controls = /\.dsm-workbuddy-model-controls\{([^}]*)\}/.exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
+    expect(controls).not.toContain('padding-inline-start')
+    expect(controls).toContain('flex:none')
   })
 })

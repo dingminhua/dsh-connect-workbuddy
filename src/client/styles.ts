@@ -506,30 +506,31 @@ export const WORKBUDDY_CARD_CSS = `
    itself wraps, because its three labels can exceed even a whole narrow line —
    hence the media query below as well, which gives the group the full width on a
    phone so it reads as one deliberate line rather than a scramble. */
-/* ONE MODEL = THREE LINES (requested).
+/* ONE MODEL = TWO LINES (requested; it was three for one release).
  *
- * It was two: a single "head" line carrying the checkbox, the name, the two
- * switches, the budget select and the two buttons, then a line of metadata. The
- * head line did not fit 564px, so it wrapped — the row was ALREADY three lines
- * tall most of the time, just broken at whatever point the widths landed on,
- * with the budget select sometimes starting a line by itself.
+ *   1. WHAT IT IS + HOW IT BEHAVES — checkbox, name, price, badges, load icon
+ *                                    then the switches and the budget select
+ *   2. WHAT IT COSTS / WHAT YOU CAN DO — window + output + tier, then the buttons
  *
- * Making the break explicit is the change: each line is now a unit.
- *   1. WHAT IT IS    — checkbox, name, price multiplier, badges, load icon
- *   2. HOW IT BEHAVES — image input, thinking, context budget
- *   3. WHAT IT COSTS / WHAT YOU CAN DO — window + output + tier, then the buttons
+ * WHY THE SWITCHES MOVED BACK UP. As three lines the row left the whole right
+ * HALF of line 1 empty — the name is short, and nothing followed it — while
+ * line 2 carried three controls that together are narrower than that empty
+ * space. The row was three lines tall and two-thirds empty per line; two lines
+ * fit the same content in less height, which is what the list is for (reading
+ * a roster, not admiring whitespace).
  *
- * Nothing is added or removed; the same controls are grouped by meaning instead
- * of by what happened to fit. */
+ * Line 1 is a two-part flex: the name label is flex:1 and the switch group is
+ * flex:none, so a long model name shrinks (it already ellipsizes) and the
+ * controls never move. When the column is too narrow for both, the controls
+ * wrap UNDER the name — the same visual as the old three-line layout, decided
+ * by the available width rather than always. */
 .dsm-workbuddy-model-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;row-gap:8px;min-width:0}
-/* Line 2. Its own row under the name, left-aligned: these are the model's own
-   settings, and aligning them with the name's indent (rather than to the right
-   edge) makes the three lines read as one block. padding-inline-start matches
-   the checkbox + gap so line 2 starts under the name, not under the checkbox. */
-.dsm-workbuddy-model-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;row-gap:8px;min-width:0;padding-inline-start:22px}
-/* Line 3 already exists as .dsm-workbuddy-model-details (facts left, actions
-   right). It gains the buttons, so it needs the same indent as line 2 and a
-   baseline that keeps the buttons from stretching the line. */
+/* Line 1's right half. flex:none so the switches and the select keep their own
+   width and the NAME is the only thing that gives way. */
+.dsm-workbuddy-model-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;row-gap:8px;min-width:0;flex:none}
+/* Line 2: facts left, actions right. Indented to the name (22px = the
+   checkbox box + its 8px gap) so the two lines read as one block rather than
+   as a checkbox with two toppled fragments beside it. */
 .dsm-workbuddy-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding-inline-start:22px}
 .dsm-workbuddy-model-enabled{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;flex:1}
 .dsm-workbuddy-model-enabled input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe);flex:none}

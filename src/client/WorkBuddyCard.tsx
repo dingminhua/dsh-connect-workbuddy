@@ -3686,14 +3686,18 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                   {busyIcon(busyLevels[model.id], uiLanguage())}
                                 </span>
                               </label>
-                            </div>
-                            {/* LINE 2 — the model's own behaviour: what it
-                                accepts, what it thinks at, and how much of its
-                                window it may use. All three are per-model
-                                settings, which is why they share a line; the
-                                buttons that ACT on the model belong with its
-                                facts on line 3. */}
-                            <div className="dsm-workbuddy-model-controls">
+                              {/* LINE 1, RIGHT HALF — the model's own
+                                  behaviour: what it accepts, what it thinks at,
+                                  and how much of its window it may use. It used
+                                  to be a line of its own (line 2), which pushed
+                                  the row to THREE lines and left the whole right
+                                  side of line 1 empty. Sharing line 1 with the
+                                  name costs nothing: the name is the only thing
+                                  that grows, and it already ellipsizes.
+                                  The actions (test / speed) stay on LINE 2 with
+                                  the facts, because they act on the model
+                                  rather than configure it. */}
+                              <div className="dsm-workbuddy-model-controls">
                               <label
                                 className="dsm-workbuddy-model-image"
                                 title={imageCheckboxHint(model, t)}
@@ -3768,13 +3772,14 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                   {formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}
                                 </option>
                               </select>
+                              </div>
                             </div>
-                              {/* LINE 3 — what the model IS (window, output
+                              {/* LINE 2 — what the model IS (window, output
                                   ceiling, thinking tier) on the left, and what
                                   an operator can DO to it on the right. The
-                                  buttons were on line 1 next to the switches;
-                                  they act on the model rather than configuring
-                                  it, so they belong beside its facts. */}
+                                  buttons act on the model rather than configure
+                                  it, so they belong beside its facts rather than
+                                  beside its switches. */}
                               <div className="dsm-workbuddy-model-details">
                                 <div className="dsm-workbuddy-model-meta">
                                   <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
