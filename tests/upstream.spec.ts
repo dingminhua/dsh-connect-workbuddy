@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
-import type { WorkBuddyWireIdentity } from '../src/upstream.ts'
+import type { WorkBuddyUpstreamModel, WorkBuddyWireIdentity } from '../src/upstream.ts'
 import {
   WorkBuddyUpstreamClient,
   WORKBUDDY_FALLBACK_SYSTEM_PROMPT,
@@ -16,6 +16,7 @@ import {
   globalBase,
   isUndecodablePolicyBody,
   selectCliModels,
+  mergeModelRosters,
 } from '../src/upstream.ts'
 
 const POLICY_REJECT_BODY = JSON.stringify({
@@ -2024,5 +2025,56 @@ describe('selectCliModels drops the regional routers, and keeps doing it', () =>
       ['retired-model'],
     )
     expect(roster.map(model => model.id)).toEqual(['hy3', 'retired-model'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// mergeModelRosters: the two global documents, and the badge they carry.
+// ---------------------------------------------------------------------------
+
+/** A roster row with an optional promotion attached, as `attachPromos` leaves it. */
+function row(id: string, promos?: readonly unknown[]): WorkBuddyUpstreamModel {
+  const base = { id, name: id, contextWindow: 200_000, maxTokens: 8_192 } as unknown as WorkBuddyUpstreamModel
+  return promos === undefined ? base : { ...base, promos } as unknown as WorkBuddyUpstreamModel
+}
+
+describe('mergeModelRosters', () => {
+  it('keeps every id either document publishes, primary first', () => {
+    const merged = mergeModelRosters([row('a'), row('b')], [row('b'), row('c')])
+    expect(merged.map(model => model.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('does NOT let the primary document erase a badge only the secondary carries', () => {
+    // THIS IS A REGRESSION, recorded because the code made it invisible.
+    //
+    // The global catalog is now read twice — once as the CLI channel, once as
+    // the app channel — and merged with the CLI roster as PRIMARY. The app
+    // document publishes `modelPromotions`; the CLI document publishes NEITHER
+    // `modelPromotions` nor `modelTiers` (see the `fetchModels` docblock: that
+    // is the very reason both regions read `/v3/config` as the app's identity).
+    //
+    // `attachPromos` hangs a promotion on the MODEL OBJECT, so "which document
+    // won this id" decides "does this row have a badge". A plain id-dedup keeps
+    // the CLI row and throws the app row away — the model is still listed, its
+    // badge is gone. Measured on a real global account: every picker row lost
+    // `夜间折扣` / `订阅优先` / `Exclusive` and the 🌲 load icon while the
+    // `· x0.11` multiplier stayed (that one is parsed out of the NAME, not the
+    // snapshot), which is exactly the shape of this bug.
+    const cli = row('deepseek-v4.1-flash')                        // no promos array in that document
+    const app = row('deepseek-v4.1-flash', [{ id: 'night-discount' }])  // the badge lives here
+    const merged = mergeModelRosters([cli], [app])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.promos, 'the merged row lost the app document\'s badge').toEqual([{ id: 'night-discount' }])
+  })
+
+  it('still prefers the primary row for everything the primary actually has', () => {
+    // The fix must not become "the secondary always wins": the CLI document's
+    // prices are the settled ones (the plugin chats as the CLI agent), so a row
+    // both documents carry keeps the primary's non-badge fields.
+    const cli = { id: 'x', name: 'CLI', creditMultiplier: 0.03, contextWindow: 1, maxTokens: 1 } as unknown as WorkBuddyUpstreamModel
+    const app = { id: 'x', name: 'APP', creditMultiplier: 0.11, promos: [{ id: 'p' }], contextWindow: 1, maxTokens: 1 } as unknown as WorkBuddyUpstreamModel
+    const merged = mergeModelRosters([cli], [app])
+    expect(merged[0]?.creditMultiplier).toBe(0.03)
+    expect(merged[0]?.promos).toEqual([{ id: 'p' }])
   })
 })

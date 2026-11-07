@@ -4059,12 +4059,41 @@ export function mergeModelRosters(
   primary: readonly WorkBuddyUpstreamModel[],
   secondary: readonly WorkBuddyUpstreamModel[],
 ): WorkBuddyUpstreamModel[] {
+  const byId = new Map<string, WorkBuddyUpstreamModel>()
+  for (const model of primary) byId.set(model.id, model)
   const merged = [...primary]
-  const seen = new Set(primary.map(model => model.id))
   for (const model of secondary) {
-    if (seen.has(model.id)) continue
-    seen.add(model.id)
-    merged.push(model)
+    const existing = byId.get(model.id)
+    if (existing === undefined) {
+      byId.set(model.id, model)
+      merged.push(model)
+      continue
+    }
+    /**
+     * THE ID COLLIDED — and a plain id-dedup here silently deleted badges.
+     *
+     * `attachPromos` hangs a promotion on the MODEL OBJECT, so for a row both
+     * documents publish, "which one survived" decides "does this row have a
+     * badge". The two global documents are read through DIFFERENT client
+     * channels: the app channel publishes `modelPromotions` / `modelTiers`, the
+     * CLI channel publishes NEITHER (see the `fetchModels` docblock — reading
+     * `/v3/config` as the CLI channel is the documented cause of an
+     * entirely badge-less card). The caller passes the CLI roster as PRIMARY
+     * because its PRICES are the settled ones, so keeping the primary row —
+     * correct for prices — was also throwing away every badge the app document
+     * carried for those 20 shared ids.
+     *
+     * So: keep the primary's fields (prices stay the CLI's) and graft on the
+     * secondary's promotions when the primary has none. Merging is not
+     * "pick a winner for the whole row"; these two facts are independent.
+     */
+    if ((existing.promos === undefined || existing.promos.length === 0)
+      && model.promos !== undefined && model.promos.length > 0) {
+      const index = merged.indexOf(existing)
+      const grafted = { ...existing, promos: model.promos }
+      if (index !== -1) merged[index] = grafted
+      byId.set(model.id, grafted)
+    }
   }
   return merged
 }

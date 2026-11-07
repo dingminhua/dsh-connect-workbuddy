@@ -1,5 +1,74 @@
 # Changelog
 
+## 5.20.5 (2026-11-07)
+
+> **修复 5.20.3 引入的回归：国际版的模型选择器里，胶囊徽章和 🌲 负载图标全部消失。**
+
+### 症状
+
+国际版（workbuddy-global）的模型选择器里，本该出现在模型名后面的
+「夜间折扣」「订阅优先」「Exclusive」胶囊、以及 🌲 图标，一个都没有了。
+
+**但 `· x0.11` 那个倍率还在**——这一点很关键，它把排查方向定死了（见下）。
+
+### 根因
+
+5.20.3 给国际版加了**第二次目录读取**：同一个 `/v3/config` 用两个不同的
+`User-Agent` 各读一次（app 通道 + CLI 通道），再按 id 合并，因为两份文档
+互为非超集（app 独有 `hy4free`/`hy4std`，CLI 独有 8 个 chat 模型）。
+
+合并时 `mergeModelRosters(cliRoster, appRoster)` 以 **CLI 为 primary**——这是对的，
+因为插件作为 CLI agent 聊天，CLI 文档的**价格**才是结算价。但合并实现是
+**纯 id 去重**：同 id 时保留 primary、丢掉 secondary。
+
+问题出在**徽章是挂在 model 对象上的**（`attachPromos` 逐个模型附加），而
+**CLI 通道的文档不发布 `modelPromotions` / `modelTiers`**——这一点代码里
+早就写着，`fetchModels` 的注释原话是：
+
+> the CLI channel's answer is a strict subset of the app channel's and publishes
+> neither `modelPromotions` nor `modelTiers`, so reading `/v3/config` as the CLI
+> channel is what left the CN card without a single promotion badge
+
+所以两份文档都有的那 20 个 id，最后留下的是**不带徽章的 CLI 那一行**：
+模型还在、价格是对的、徽章没了。
+
+**为什么 `· x0.11` 还在**：那个倍率不是从快照里来的，是从**模型名字符串末尾**
+正则抠出来的（`splitCatalogRate`，`/ · x(\d+(\.\d+)?)$/`）。所以它只能证明
+组件仍在渲染，不能证明快照正常——这正是我一开始的判断依据，也是这个 bug
+对用户来说最迷惑的地方。
+
+### 修复
+
+合并语义从「整行选一个赢家」改成「**按字段分别取**」：价格等字段仍取 primary
+（CLI 的结算价），但 primary 若没有徽章而 secondary 有，就把徽章**移植**过来。
+这两件事本来就是独立的，不是二选一。
+
+### 影响范围
+
+- **国际版**：受影响，本版修复。
+- **国内版**：不受影响——它仍只读一次 `/v3/config`（`PRODUCT_UA`），本次改动没碰它。
+- **选择器里的「新」标记**：5.20.3 把它改成默认关闭的 opt-in（`showNewModelsInMainUi`），
+  这是**有意为之**的独立改动，不是回归。想要的话在能力页打开。
+
+### Tests
+
+`3258/3258`（3255 → 3258），`skip 2`。
+
+`tests/upstream.spec.ts` 116 条（+3）。`mergeModelRosters` 此前**没有直接测试**，
+现在补上三条，其中最关键的一条直接复现本次回归：
+
+```
+cli = row('deepseek-v4.1-flash')                        // 无 promos
+app = row('deepseek-v4.1-flash', [{ id: 'night-discount' }])  // 徽章在这
+mergeModelRosters([cli], [app])[0].promos  →  必须等于 [{ id: 'night-discount' }]
+```
+
+另两条：合并保持 primary 优先的顺序与字段（防止修复过度变成「secondary 永远赢」），
+以及 primary 的非徽章字段（价格）仍必须来自 primary。
+
+**变异验证**：把合并退回纯 id 去重 → 2 条红；恢复 → 全绿。
+
+
 ## 5.20.4 (2026-11-07)
 
 > **积分弹层里的「设置」按钮现在直达本插件的设置页**，不再靠模拟用户点击。
