@@ -163,17 +163,14 @@ export const en = {
   'row.modelEffortFollowNamed': 'Default ({effort})',
   'row.modelUnknown': 'Unknown',
   'row.modelCapabilityPending': 'Only capabilities advertised by WorkBuddy are shown.',
-  // The two one-click sweeps (issue #61 follow-up, mirroring the sibling `trae`
-  // plugin). Cost is stated in the HINT rather than a confirm dialog, per the
-  // maintainer's choice: the "all" run covers models the user did not enable, so
-  // it spends more than the enabled-only run.
+  // The sweep (issue #61 follow-up, mirroring the sibling `trae` plugin). Cost is
+  // stated in the HINT rather than a confirm dialog. The "all models" variant was
+  // removed on request: it spent credit on models the user had deliberately
+  // switched off, and the same information is reachable by enabling one first.
   'row.modelsTestEnabled': 'Test enabled models',
-  'row.modelsTestAll': 'Test all models',
   'row.modelsTesting': 'Testing {done}/{total}…',
   'row.modelsTestEnabledHint': 'Tests every model you have ENABLED, one request each — each probe sends a real-volume request, so this spends real credit (about 0.01 per model at the default 25000-token size). Rows show their verdict as it lands. Stops early if the credential is rejected.',
-  'row.modelsTestAllHint': 'Tests EVERY model in this region\'s catalog, including the ones you have NOT enabled — so it costs noticeably more than "test enabled models". Same per-probe cost, same early stop on a rejected credential.',
   'row.tpsSweepEnabled': 'Measure speed (enabled)',
-  'row.tpsSweepAll': 'Measure speed (all)',
   'row.tpsSweepEnabledHint': 'Measures OUTPUT SPEED for every model you have ENABLED: three runs each, taking the median. Unlike the availability probes above, this sends a tiny prompt and asks for 256 output tokens back, so it costs far less per model (measured 0.01–0.15 credit against 0.72), because this gateway prices by input. Speed matters because DSH dispatches models as parallel sub-agents, so a slow model costs wall-clock time across the whole run.',
   'row.tpsTesting': 'Measuring {done}/{total}…',
   'row.tpsMeasure': 'Speed',
@@ -857,15 +854,13 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.modelEffortFollowNamed': '默认（{effort}）',
   'row.modelUnknown': '未知',
   'row.modelCapabilityPending': '仅展示 WorkBuddy 接口明确公布的模型能力。',
-  // 两个一键遍历按钮（issue #61 的后续，与同族 trae 插件对齐）。成本写在 title 提示里
-  // 而不是二次确认，按维护者的选择：「所有模型」含未启用的，所以比「仅启用」花得多。
-  'row.modelsTestEnabled': '一键测试启用模型',
-  'row.modelsTestAll': '一键测试所有模型',
+  // 遍历按钮（issue #61 的后续，与同族 trae 插件对齐）。成本写在 title 提示里
+  // 而不是二次确认。「所有模型」那个变体已按维护者要求删除：它会花积分在用户
+  // 特意关掉的模型上，而同样的信息可以先启用再测。
+  'row.modelsTestEnabled': '测试启用模型',
   'row.modelsTesting': '测试中 {done}/{total}…',
   'row.modelsTestEnabledHint': '逐个测试你**已启用**的模型，一个模型一次请求 —— 每次探测都发真实体积的请求，真花积分（默认 25000 token 体积下约 0.01/个）。每行的结果一出来就显示。凭据被拒时提前停止。',
-  'row.modelsTestAllHint': '测试本区域目录里的**每一个**模型，含**未启用**的 —— 所以比「仅测试启用模型」明显更贵。单次探测成本相同，凭据被拒时同样提前停止。',
-  'row.tpsSweepEnabled': '一键测速启用模型',
-  'row.tpsSweepAll': '一键测速所有模型',
+  'row.tpsSweepEnabled': '测速启用模型',
   'row.tpsSweepEnabledHint': '测**已启用**模型的**输出速度**：每个模型跑 3 次取中位数。和上面的可用性探测不同，它只发一个极小的提示、要求返回 256 个输出 token —— 这个网关按**输入**计价，所以单模型成本低得多（实测 0.01–0.15 积分，可用性探测是 0.72）。速度之所以重要：DSH 会把模型当子代理并行派发，慢模型拖的是整个任务的实际耗时。',
   'row.tpsTesting': '测速中 {done}/{total}…',
   'row.tpsMeasure': '测速',

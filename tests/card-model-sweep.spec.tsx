@@ -75,29 +75,43 @@ async function render(options: {
   return { m, calls, probed }
 }
 
-/** The two sweep buttons, found by their labels. */
-function sweepButtons(container: HTMLElement): { enabled: HTMLButtonElement | undefined, all: HTMLButtonElement | undefined } {
+/**
+ * The sweep buttons, found by their labels.
+ *
+ * THERE IS NO "all models" BUTTON ANY MORE (removed on request: it spent
+ * credits on rows the user had deliberately switched off). The sweep logic
+ * itself is unchanged, so the cases below that used to drive it from that
+ * button now enable the whole roster first and drive the SAME logic from the
+ * remaining button — the behaviour being pinned is the sweep, not the button.
+ */
+function sweepButtons(container: HTMLElement): { enabled: HTMLButtonElement | undefined } {
   const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-models-sweep'))
   return {
     enabled: buttons.find(b => (b.textContent ?? '').includes('row.modelsTestEnabled')),
-    all: buttons.find(b => (b.textContent ?? '').includes('row.modelsTestAll')),
   }
 }
 
 describe('the sweep buttons', () => {
-  it('renders both, side by side in the model section', async () => {
+  it('renders exactly ONE sweep button, and no "all models" variant', async () => {
     const { m } = await render()
-    const { enabled, all } = sweepButtons(m.container)
+    const { enabled } = sweepButtons(m.container)
     expect(enabled).toBeDefined()
-    expect(all).toBeDefined()
+    // The removed variant must stay removed: a half-finished deletion would
+    // leave a button that spends on un-enabled rows. Asserted by LABEL rather
+    // than by count, because the speed-sweep button shares this class.
+    const labels = Array.from(m.container.querySelectorAll('.dsm-workbuddy-models-sweep'))
+      .map(button => button.textContent ?? '')
+    expect(labels.some(label => label.includes('row.modelsTestAll'))).toBe(false)
   })
 
-  it('sweeps ALL visible models from the "all" button', async () => {
-    const { m, probed } = await render({ enabled: ['step-5-preview'] })
-    const { all } = sweepButtons(m.container)
-    all?.click()
+  it('sweeps every ENABLED model, in catalog order', async () => {
+    // Was "sweeps ALL visible models from the 'all' button". The sweep still
+    // covers a multi-model roster; what changed is that the roster is now the
+    // user's selection rather than everything the upstream lists.
+    const { m, probed } = await render({ enabled: ['hy4-preview-f', 'step-5-preview', 'glm-5.3'] })
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
-    // Every catalog id, not just the enabled one.
     expect(probed).toEqual(['hy4-preview-f', 'step-5-preview', 'glm-5.3'])
   })
 
@@ -117,9 +131,9 @@ describe('the sweep buttons', () => {
     // keeps a sweep from being a single unaccounted spend. A card that posted a
     // list would get a 400 (visible failure) — or, worse, would start working
     // again if someone widened the route.
-    const { m, calls } = await render()
-    const { all } = sweepButtons(m.container)
-    all?.click()
+    const { m, calls } = await render({ enabled: ['hy4-preview-f', 'step-5-preview', 'glm-5.3'] })
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
     const probeCalls = calls.filter(call => call.url.includes('/probe'))
     expect(probeCalls).toHaveLength(MODELS.length)
@@ -131,17 +145,14 @@ describe('the sweep buttons', () => {
 
   it('disables the enabled-only sweep when nothing is enabled', async () => {
     const { m } = await render({ enabled: [] })
-    const { enabled, all } = sweepButtons(m.container)
+    const { enabled } = sweepButtons(m.container)
     expect(enabled?.disabled).toBe(true)
-    // …while "all" stays available: the catalog is not empty, so there IS
-    // something to test.
-    expect(all?.disabled).toBe(false)
   })
 
   it('reports a tally of what was measured', async () => {
     const { m } = await render()
-    const { all } = sweepButtons(m.container)
-    all?.click()
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
     const summary = m.container.querySelector('.dsm-workbuddy-models-sweep-summary')
     expect(summary?.textContent).toContain('row.modelsTestDone')
@@ -154,8 +165,8 @@ describe('the sweep buttons', () => {
     const { m } = await render({
       verdictFor: modelId => (modelId === 'glm-5.3' ? { outcome: 'rate-limited' } : { outcome: 'ok' }),
     })
-    const { all } = sweepButtons(m.container)
-    all?.click()
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
     const summary = m.container.querySelector('.dsm-workbuddy-models-sweep-summary')
     // 3 measured; the text is built by `t`, which echoes its params in the stub.
@@ -166,10 +177,11 @@ describe('the sweep buttons', () => {
     // A rejected credential answers identically for every remaining model, so
     // continuing would only spend credit to collect the same answer again.
     const { m, probed } = await render({
+      enabled: ['hy4-preview-f', 'step-5-preview', 'glm-5.3'],
       verdictFor: () => ({ outcome: 'credential-rejected' }),
     })
-    const { all } = sweepButtons(m.container)
-    all?.click()
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
     expect(probed).toEqual(['hy4-preview-f'])
     expect(m.container.textContent).toContain('row.modelsTestAuth')
@@ -179,21 +191,21 @@ describe('the sweep buttons', () => {
     // A rate limit on one model is information about THAT model; stopping would
     // hide the rest of the roster the user asked about.
     const { m, probed } = await render({
+      enabled: ['hy4-preview-f', 'step-5-preview', 'glm-5.3'],
       verdictFor: modelId => (modelId === 'hy4-preview-f' ? { outcome: 'rate-limited' } : { outcome: 'ok' }),
     })
-    const { all } = sweepButtons(m.container)
-    all?.click()
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
     expect(probed).toEqual(['hy4-preview-f', 'step-5-preview', 'glm-5.3'])
   })
 
   it('re-enables the buttons after a sweep finishes', async () => {
-    const { m } = await render()
-    const { all, enabled } = sweepButtons(m.container)
-    all?.click()
+    const { m } = await render({ enabled: ['hy4-preview-f', 'step-5-preview', 'glm-5.3'] })
+    const { enabled } = sweepButtons(m.container)
+    enabled?.click()
     await m.settle()
     const after = sweepButtons(m.container)
-    expect(after.all?.disabled).toBe(false)
-    expect(enabled?.disabled).toBe(false)
+    expect(after.enabled?.disabled).toBe(false)
   })
 })

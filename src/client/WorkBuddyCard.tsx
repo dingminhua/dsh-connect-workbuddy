@@ -2303,27 +2303,6 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     void measureTpsFor(visibleModels.filter(model => activeEnabledIds.has(model.id)).map(model => model.id))
   }
 
-  /**
-   * Sweep EVERY model in the region's live catalog, enabled or not.
-   *
-   * Deliberately the whole VISIBLE catalog and nothing else: those are the ids
-   * the host can validate against its own catalog, so this cannot spend credit
-   * on an id that only exists in a config file.
-   */
-  const sweepAllModels = (): void => {
-    void sweepModels(visibleModels.map(model => model.id))
-  }
-
-  /**
-   * Sweep speed for the WHOLE visible catalog.
-   *
-   * Same rule as {@link sweepAllModels}: the visible catalog only, because those
-   * are the ids the host can validate against its own roster.
-   */
-  const sweepTpsAllModels = (): void => {
-    void measureTpsFor(visibleModels.map(model => model.id))
-  }
-
   const saveModels = async (): Promise<void> => {
     if (settingsScope === undefined) return
     if (status.status !== 'signed-in') return
@@ -3600,15 +3579,15 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                             >
                               {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
                             </button>
-                            {/* Two sweeps, by request of the maintainer after
-                                comparing with the sibling `trae` plugin — which
-                                ships the same pair. Both stay ONE model per
-                                request (the route refuses more, and that cap is
-                                what keeps a sweep from being an unaccounted
-                                spend), so the loop lives here rather than in the
-                                Host. The "all" button carries the cost hint: it
-                                covers the models you did NOT enable as well, so
-                                it spends more than the enabled-only run. */}
+                            {/* ONE sweep over the ENABLED models (the
+                                "all models" variant was removed on request: it
+                                spent credits on rows the user had deliberately
+                                not enabled, and the same information is
+                                reachable by enabling a model first). It stays
+                                ONE model per request — the route refuses more,
+                                and that cap is what keeps a sweep from being an
+                                unaccounted spend — so the loop lives here rather
+                                than in the Host. */}
                             <button
                               type="button"
                               className="dsm-btn dsm-btn-outline dsm-workbuddy-models-sweep"
@@ -3618,17 +3597,6 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                             >
                               {sweeping === undefined
                                 ? t('row.modelsTestEnabled')
-                                : t('row.modelsTesting', { done: sweeping.done, total: sweeping.total })}
-                            </button>
-                            <button
-                              type="button"
-                              className="dsm-btn dsm-btn-outline dsm-workbuddy-models-sweep"
-                              disabled={busy || sweeping !== undefined || visibleModels.length === 0}
-                              title={t('row.modelsTestAllHint')}
-                              onClick={sweepAllModels}
-                            >
-                              {sweeping === undefined
-                                ? t('row.modelsTestAll')
                                 : t('row.modelsTesting', { done: sweeping.done, total: sweeping.total })}
                             </button>
                             {/* Speed sweep (issue #92). A separate button from the
