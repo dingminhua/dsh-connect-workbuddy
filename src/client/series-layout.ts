@@ -92,6 +92,29 @@ ${u} ${p}-pool-set{display:flex;align-items:center;justify-content:space-between
 ${u} ${p}-pool-set-copy{flex:1;min-width:0;gap:3px}
 ${u} ${p}-pool-set-copy b{font-size:13px;font-weight:500;line-height:18px}
 ${u} ${p}-pool-set-copy span{font-size:12px;line-height:18px}
+/* ONCE THE SETTINGS ROW STACKS, THE CONTROL TAKES THE WHOLE LINE.
+ *
+ * Two rules above do the stacking (this file's .pool-set is the flex row, the
+ * plugin's own @container turns it into a column), and both of the things that
+ * finish that move were being overridden here:
+ *
+ *   - width:240px on the select — (0,2,1) beats the plugin's (0,1,0) width:100%,
+ *     so the dropdown stayed a 240px stub in a 612px column, sitting alone under its
+ *     label with ~180px of dead space on each side. The owner's screenshot:
+ *     「这个应该 100%宽度啊」.
+ *   - align-items:center on .pool-set — (0,2,0) beats the @container's
+ *     align-items:stretch, so even a width:100% child would have been centred
+ *     at its intrinsic width rather than filling.
+ *
+ * Restated here rather than narrowed above, because this is the same direction the
+ * plugin already declares and the file that wins the cascade has to say it too.
+ * Specificity matches the base rules above ((0,2,0)/(0,2,1)) and these come later,
+ * so they win by order. */
+@container (max-width:620px){
+ ${u} ${p}-pool-set{flex-direction:column;align-items:stretch;gap:8px}
+ ${u} ${p}-pool-set-ctl{flex:1 1 auto;justify-content:flex-start;max-width:100%;min-width:0}
+ ${u} ${p}-pool-set-ctl select{width:100%;max-width:none;min-width:0}
+}
 ${u} ${p}-models-title{font-size:13px;line-height:18px;font-weight:600}
 ${u} ${p}-model-list{border-radius:12px}
 ${u} ${p}-model{padding:12px 14px;gap:8px}

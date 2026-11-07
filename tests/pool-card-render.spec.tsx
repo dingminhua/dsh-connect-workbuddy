@@ -1269,6 +1269,31 @@ describe('the page keeps the width its content was measured at', () => {
     expect(rule, 'and must not bring the 860px value back').not.toMatch(/860px/)
   })
 
+  it('lets the settings dropdown fill the line once the row stacks', () => {
+    // THE THIRD width regression from the same merge, and the one the screenshot
+    // showed: two `<select>`s stayed 240px stubs inside a 612px column, sitting
+    // alone under their labels with dead space on both sides — 「这个应该 100%宽度啊」.
+    //
+    // The plugin's own @container already said width:100% for the stacked form,
+    // but this file states width:240px at (0,2,1) — two classes plus the descendant
+    // `select` — against the plugin's (0,1,0), so the stub won. And .pool-set was
+    // re-centred at (0,2,0) against the @container's align-items:stretch, so even a
+    // width:100% child would have been centred at its intrinsic width.
+    //
+    // Both are restated in the shared file's own @container, at the same
+    // specificity and later in the cascade, because the file that wins has to say
+    // the narrow direction too.
+    const series = seriesCss()
+    const narrow = /@container \(max-width:620px\)\{([\s\S]*?)\n\}/u.exec(series)?.[1] ?? ''
+    expect(narrow, 'the shared file lost its narrow block').not.toBe('')
+    expect(narrow, 'the stacked row must stretch, not centre').toMatch(/pool-set\{[^}]*align-items:\s*stretch/u)
+    expect(narrow, 'the stacked dropdown must fill the line')
+      .toMatch(/pool-set-ctl select\{[^}]*width:\s*100%/u)
+    // …and the wide direction must keep its fixed width, or a settings row would
+    // stretch a dropdown across 600px.
+    expect(series, 'the wide form keeps a fixed control width').toMatch(/pool-set-ctl select\{[^}]*width:\s*240px/u)
+  })
+
   it('does not put the full-page padding back on the Settings surface', () => {
     // THE SECOND HALF of the same regression, and the one the screenshot showed.
     //
