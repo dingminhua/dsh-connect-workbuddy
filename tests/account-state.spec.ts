@@ -212,3 +212,91 @@ describe('a successful probe never renders a wait', () => {
     }, NOW)).toContain('row.recoversMinutes')
   })
 })
+
+describe('an elapsed cooldown says so instead of repeating the stale verdict', () => {
+  /**
+   * THE REPORT: the composer panel showed 「被限流」 with no time on some rows and
+   * 「被限流 · 约 17 小时后恢复」 on others, and asked why they disagree.
+   *
+   * They disagree because they are in different states, not because one is
+   * broken. `recoversInText` returns '' once the moment passes (a negative wait
+   * cannot be printed), so the elapsed rows fell back to the bare verdict — which
+   * then looked IDENTICAL to a verdict measured one second ago. Measured on a
+   * real profile, the two such rows were backed by probes taken SEVEN HOURS
+   * earlier, so the panel was reporting yesterday's situation as today's.
+   *
+   * The fix states the one thing that is certainly true: the window the upstream
+   * named has passed, and nothing has re-measured since.
+   *
+   * SECOND REPORT, same state: 「被限流 · 限流时段已过 · 重新测试以确认」 was three
+   * fragments contradicting each other inside one line — a present-tense verdict,
+   * a note that it is over, and a chore for the reader. The owner's answer was
+   * that the plugin should re-test that single account instead (see the card's
+   * autoReTest), which leaves the row with exactly this to say while the new
+   * measurement is on its way. The verdict must therefore be ABSENT from the
+   * mark: printing both is the contradiction, not the fix.
+   */
+  const RETRY_PAST = NOW - 5 * 3_600_000
+
+  it('names the elapsed cooldown in the composer panel', () => {
+    const mark = availabilityMark(t, {
+      probe: { outcome: 'rate-limited', retryAtMs: RETRY_PAST },
+    }, NOW)
+    expect(mark).toContain('row.poolRetryExpired')
+    expect(mark, 'an elapsed cooldown must not repeat the verdict it contradicts')
+      .not.toContain('row.poolExcludedRateLimited')
+  })
+
+  it('says the same in the full sentence the card prints', () => {
+    // The two surfaces come from ONE rule. The card's line went on printing
+    // 「被限流 · 05:20 之后可再用」 about an instant five hours in the past — a
+    // present-tense verdict beside a future-tense date for the same moment.
+    const line = availabilityLine(t, {
+      probe: { outcome: 'rate-limited', retryAtMs: RETRY_PAST },
+    }, NOW)
+    expect(line).toContain('row.poolRetryExpired')
+    expect(line ?? '', 'the past instant must not be printed as a future one')
+      .not.toContain('row.poolRetryAt')
+    expect(line ?? '').not.toContain('row.poolExcludedRateLimited')
+  })
+
+  it('leaves a non-cooldown verdict alone when its instant has passed', () => {
+    // An exhausted quota stores the monthly refresh as `retryAtMs`, and a
+    // rejected credential can carry a `Retry-After` — neither is cleared by
+    // waiting, and neither is "awaiting a re-check". Replacing those with
+    // 「恢复时间已到 · 待复核」 hid the one fact the user has to act on (top up, or
+    // sign in again) and, for the quota, promised a re-check that would return the
+    // same answer until the month turned over.
+    const poor = availabilityLine(t, {
+      probe: { outcome: 'out-of-credit', retryAtMs: RETRY_PAST },
+    }, NOW)
+    expect(poor, 'the reason must survive').toContain('row.poolExcludedOutOfCredit')
+    expect(poor ?? '', 'and it must not claim a re-check is pending').not
+      .toContain('row.poolRetryExpired')
+    expect(poor ?? '', 'a past instant is not news').not.toContain('row.poolRetryAt')
+    // The panel agrees, from the same rule.
+    const rejected = availabilityMark(t, {
+      probe: { outcome: 'credential-rejected', retryAtMs: RETRY_PAST },
+    }, NOW)
+    expect(rejected).not.toContain('row.poolRetryExpired')
+  })
+
+  it('never prints a negative or zero wait', () => {
+    const mark = availabilityMark(t, {
+      probe: { outcome: 'rate-limited', retryAtMs: RETRY_PAST },
+    }, NOW)
+    // `recoversInText` returning '0' would be the obvious wrong fix: it reads as
+    // "no wait left" while the row still claims the account is limited.
+    expect(mark).not.toContain('row.recovers')
+  })
+
+  it('keeps the verdict unchanged while the cooldown still runs', () => {
+    // The guard must be scoped to the elapsed case only. A row with time left
+    // keeps its countdown — replacing that with 「已过」 would be a worse lie.
+    const mark = availabilityMark(t, {
+      probe: { outcome: 'rate-limited', retryAtMs: NOW + 2 * 3_600_000 },
+    }, NOW)
+    expect(mark).toContain('row.recoversHours')
+    expect(mark).not.toContain('row.poolRetryExpired')
+  })
+})

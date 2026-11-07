@@ -950,6 +950,68 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   }, [appendLog, onRefresh, region, t])
 
   /**
+   * RE-TEST THE ONE ACCOUNT WHOSE STATED COOLDOWN HAS RUN OUT — by itself, once.
+   *
+   * The row used to print 「被限流 · 限流时段已过 · 重新测试以确认」: a verdict, a
+   * note that the verdict had expired, and a chore for the reader, in one line
+   * that contradicted itself. The owner's answer was that the plugin should
+   * simply measure that single account rather than write such a sentence, so
+   * this does exactly that: one account, one request, no click.
+   *
+   * WHY AN EFFECT rather than a decision taken while rendering: `runRowTest` is
+   * async and writes state, and a render must never start requests. Running after
+   * the snapshot has been painted means the row first shows the honest
+   * 「恢复时间已到 · 待复核」, which the new measurement then replaces.
+   *
+   * ONCE PER ACCOUNT PER MOUNT. The old record keeps being rendered until the new
+   * one lands, so without `autoRetested` every re-render in that window would
+   * fire another test, and a pool of limited accounts would hammer the upstream.
+   * A FAILED re-test is final too: the row keeps its stale record instead of
+   * looping on a route that is refusing.
+   *
+   * ONE AT A TIME. Any write in flight — a batch, a removal, another row's test —
+   * returns early; the next candidate is picked on the render after the previous
+   * one has flipped its own probe. Firing them together would race the refresh
+   * each of them triggers (the same reason the batch is serialized).
+   */
+  const autoRetested = useRef(new Set<string>())
+  useEffect(() => {
+    if (!mounted.current || pool === undefined || !active.enabled) return
+    if (rowBusyAccountId !== undefined || busy !== undefined) return
+    // The manual 测试 button is disabled in exactly these two states (see the
+    // row's `testDisabled`), so firing here would run a probe the user has been
+    // told cannot run.
+    if (pool.targetModelSource === 'none' || pool.targetModelSource === 'stale') return
+    const now = Date.now()
+    for (const account of pool.accounts) {
+      // Members only: an unchecked row is listed for the user to opt into, and
+      // spending a measurement on it would be work nobody asked for.
+      if (!active.memberAccountIds.includes(account.accountId)) continue
+      const probe = account.probe
+      if (probe === undefined || probe.retryAtMs === undefined) continue
+      // Only the two WAIT-AND-SEE cooldowns are re-measured, and this is the same
+      // rule `availabilityLine` states: an `ok` record never waits, whatever
+      // instant came with it (an `ok` probe carries the monthly quota reset), and
+      // an exhausted quota or a rejected credential is not cleared by waiting —
+      // re-probing those spends a request to learn what the verdict already says
+      // (and, for the quota, the same answer until the month turns over).
+      if (probe.outcome !== 'rate-limited' && probe.outcome !== 'model-busy') continue
+      // A cooldown that still RUNS is not this state: the row already states its
+      // countdown (「… 之后可再用」), and the number it states is the upstream's own
+      // answer. Re-testing it now would spend a request to learn what the row is
+      // already saying, and would hammer upstream on every render.
+      if (probe.retryAtMs > now) continue
+      if (autoRetested.current.has(account.accountId)) continue
+      // Marked BEFORE the request, because the request is what takes time: the
+      // re-render at `setRowBusyAccountId` happens before the await settles, and
+      // a check taken afterwards would leave a window with no entry in the set.
+      autoRetested.current.add(account.accountId)
+      void runRowTest(account.accountId)
+      return
+    }
+  }, [active.enabled, active.memberAccountIds, busy, pool, rowBusyAccountId, runRowTest])
+
+  /**
    * Claim ONE benefit on ONE account, from its row (issue #79).
    *
    * Always a single account and a single campaign: there is no batch entry
@@ -1613,19 +1675,28 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           ),
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
+        // ONE TEMPLATE, TWO READERS: the header and the rows place their cells
+        // by the same AREA NAMES (see the grid in styles.ts), so a label cannot
+        // end up over a different cell than the one it names.
+        //
+        // The cells are emitted in READING ORDER — line one left to right, then
+        // line two — and the areas, not the order, decide where each one lands.
+        // That is also why the check-in is absent rather than empty where the
+        // region has none: an empty cell still claims its area.
         h('div', { className: 'dsm-workbuddy-pool-row dsm-workbuddy-pool-row-head' },
-          // The first track is labelled 账号, but the account cell begins with a
+          // The first area is labelled 账号, but the account cell begins with a
           // checkbox, so the NAME starts 38px into it (measured at 1120px). A
           // header flush with the cell edge therefore hangs in the margin and
           // labels nothing — the reader has to guess where the column starts.
-          // The offset is carried by the class, not by inline padding, so the
-          // narrow (stacked) form can drop it along with the header itself.
           h('span', { className: 'dsm-workbuddy-pool-col-account' }, t('row.poolColumnAccount')),
-          h('span', null, t('row.poolColumnCredits')),
-          h('span', null, t('row.poolColumnProbe')),
-          pool.checkinSupported ? h('span', null, t('row.poolColumnCheckin')) : null,
-          // The per-row actions column: no header text, the buttons speak.
-          h('span', null),
+          h('span', { className: 'dsm-workbuddy-pool-col-credits' }, t('row.poolColumnCredits')),
+          h('span', { className: 'dsm-workbuddy-pool-col-probe' }, t('row.poolColumnProbe')),
+          pool.checkinSupported
+            ? h('span', { className: 'dsm-workbuddy-pool-col-checkin' }, t('row.poolColumnCheckin'))
+            : null,
+          // The actions area: no header text, the buttons speak. It still needs
+          // its cell, or the area named in the template would have no box.
+          h('span', { className: 'dsm-workbuddy-pool-col-actions' }),
         ),
         ...(() => {
           const ordered = sortAccountsByOrder(pool.accounts, orderIds)
@@ -1895,6 +1966,24 @@ function renderAccountRow(input: {
   const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
   const excluded = exclusionText(t, account.excludedBy)
   const probe = account.probe
+  /**
+   * Would the exclusion label say what line two already says?
+   *
+   * Both facts come from the SAME measurement: `excludedBy` is derived from the
+   * probe, so for every outcome that doubles as an exclusion reason (rate-limited,
+   * model-busy, out-of-credit, credential-rejected, account-restricted,
+   * unavailable, not-found, failed) the label is a second copy of the verdict a
+   * few pixels away. Comparing the REASON CODE, not the translated string: the
+   * string comparison this replaces covered only `rate-limited`, so 「模型繁忙 ·
+   * … · 模型繁忙」 and 「积分用尽 · … · 积分用尽」 still printed the verdict twice —
+   * and it would have silently un-fixed itself on the next wording change.
+   *
+   * With no probe at all the label is not duplicated but REUSED: `availabilityLine`
+   * falls back to exactly this text.
+   */
+  const excludedRepeatsVerdict = excluded === undefined
+    || probe === undefined
+    || probe.outcome === account.excludedBy
   // The sentence comes from the SHARED rule (`account-state.ts`) so the
   // composer credits panel prints the identical words for the identical
   // measurement. An untested account has nothing to say, and the card supplies
@@ -2026,56 +2115,24 @@ function renderAccountRow(input: {
         checked
           ? null
           : h('span', { className: 'dsm-workbuddy-pool-not-member' }, t('row.poolNotMember')),
-        excluded === undefined
-          ? probe === undefined ? null : h('span', null, t('row.poolTestedAt', { at: formatShortClock(probe.atMs) }))
-          : h('span', { className: 'dsm-workbuddy-pool-excluded' }, excluded),
       ),
-          // Per-row actions, RIGHT side of the row: test this one account, and forget
-          // this account's plugin-stored credential. The test reuses the batch's
-          // probe (one measurement, one vocabulary); the removal deletes ONLY the
-          // vault entry — a desktop sign-in reappears on the next rescan, which the
-          // log message states instead of a silent no-op.
-          h('span', { className: 'dsm-workbuddy-pool-row-actions' },
-            // 设备参数入口。放在「测试」左边：它改的是"这个账号以什么身份出现"，
-            // 与"它现在能不能用"是同一层的问题，两个按钮挨着才读得通。
-            onEditDevice === undefined
-              ? null
-              : h('button', {
-                  type: 'button',
-                  className: `dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn dsm-workbuddy-device-gear${deviceGearBlocked ? ' dsm-workbuddy-device-gear-off' : ''}`,
-                  'aria-disabled': deviceGearBlocked ? true : undefined,
-                  title: deviceGearBlocked ? t('row.deviceGearBlockedHint') : t('row.deviceGearHint'),
-                  'aria-label': t('row.deviceGearAria', { accountName: name }),
-                  onClick: onEditDevice,
-                }, '⚙'),
-            h('button', {
-              type: 'button',
-              className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
-              disabled: rowBusy || testDisabled,
-              title: testDisabled ? targetHint : undefined,
-              onClick: onTest,
-            }, t('row.poolRowTest')),
-            h('button', {
-              type: 'button',
-              className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
-              disabled: rowBusy,
-              title: t('row.poolRowRemoveHint'),
-              'aria-label': t('row.poolRowRemoveAria', { accountName: name }),
-              onClick: onRemove,
-            }, t('row.poolRowRemove')),
-          ),
     ),
     h('span', { className: 'dsm-workbuddy-pool-credits' },
       account.credits === undefined
         ? h('span', null, '—')
         : h('b', null, formatNumber(account.credits)),
+      // The credits figure, and ONLY a warning worth acting on.
+      //
+      // A plain expiry date used to sit here too ("最近积分包 11/27 03:46 过期").
+      // It was removed by request: on every row it is a date months out that no
+      // one is deciding anything with, and it cost the credits cell a second line
+      // on all of them. The amount that is about to lapse still prints — that one
+      // IS actionable — and the absolute date stays reachable where the question
+      // is actually asked (the usage panel's own expiry column).
       account.expiringSoon !== undefined && account.expiringSoon > 0
         ? h('span', { className: 'dsm-workbuddy-pool-soon' },
             t('row.poolCreditSoon', { count: formatNumber(account.expiringSoon) }))
-        : account.nearestExpiryMs === undefined
-          ? null
-          : h('span', { className: 'dsm-workbuddy-pool-soon-plain' },
-              t('row.poolCreditNearest', { at: formatShortClock(account.nearestExpiryMs) })),
+        : null,
       // Claimable benefits (issue #79). Rendered ONLY when there is at least one:
       // a claimed campaign and a lapsed one both arrive here ABSENT, so the line
       // disappears by itself once nothing is left to take — that absence is the
@@ -2136,7 +2193,46 @@ function renderAccountRow(input: {
       className: 'dsm-workbuddy-pool-probe',
       ...probe?.message === undefined ? {} : { title: probe.message },
     },
-      h('span', { className: 'dsm-workbuddy-pool-probe-main' }, probeLine),
+      // ONE LINE, not two: the verdict and the moment it was measured are one
+      // sentence ("被限流 · … 之后可再用 · 测试于 11/07 17:36"). As separate rows
+      // they read as two unrelated statements, and the second one was nothing but
+      // a timestamp costing a whole line of height. The owner asked for these two
+      // on one line and for the whole row to be exactly three; the provenance row
+      // below is the third and last.
+      h('span', { className: 'dsm-workbuddy-pool-probe-line' },
+        h('span', { className: 'dsm-workbuddy-pool-probe-main' }, probeLine),
+        // Why this account is out of the running, and when it was last measured —
+        // state about the ACCOUNT, so it belongs on the state line beside the
+        // verdict rather than up on the identity line wedged against the name.
+        //
+        // SUPPRESSED WHEN IT WOULD REPEAT THE VERDICT. `excludedBy: 'rate-limited'`
+        // and a rate-limited probe both say 「被限流」, and the state line would then
+        // print it twice, a few pixels apart. The verdict on this line is the more
+        // precise one (it carries the reset time), so the coarse exclusion label is
+        // dropped in exactly that case. Every other exclusion reason — out of
+        // credit, credential rejected, account restricted — is a fact the verdict
+        // does NOT state, so those still print.
+        excludedRepeatsVerdict || excluded === undefined
+          ? null
+          // A separator, because this is a SECOND fact rather than a continuation
+          // of the verdict: without it the line read as one run-on sentence
+          // (「… 约 60 分钟后模型繁忙」) once the two fragments shared a line. The
+          // old layout hid that by putting them in separate cells.
+          : h('span', { className: 'dsm-workbuddy-pool-probe-sep' }, '·'),
+        excludedRepeatsVerdict ? null : h('span', { className: 'dsm-workbuddy-pool-excluded' }, excluded),
+        // The timestamp ALWAYS follows the verdict, whichever of the two above
+        // was printed: it dates the measurement the line reports, and dropping it
+        // whenever an exclusion label appeared left the row with a verdict and no
+        // date — the same "when was this measured?" gap the merge was meant to
+        // close. Muted and smaller than the verdict: it is the timestamp OF the
+        // verdict, not a second finding.
+        probe === undefined
+          ? null
+          : h('span', { className: 'dsm-workbuddy-pool-probe-sep' }, '·'),
+        probe === undefined
+          ? null
+          : h('span', { className: 'dsm-workbuddy-pool-tested-at' }, t('row.poolTestedAt', { at: formatShortClock(probe.atMs) })),
+      ),
       // The provenance row renders ONLY when there is something to say: an
       // untested account has no measurement to date, and an empty second line
       // would add height to every row while explaining nothing.
@@ -2166,14 +2262,27 @@ function renderAccountRow(input: {
         // measured before the model changed must not look like it applies to the
         // current one. That case is exactly `modelId !== poolModelId`, and it is
         // still stated — including "unknown", which differs from any named model.
+        //
+        // The separator is part of this branch, so line three reads as a list
+        // (pill · age · model) instead of letting the model note run into the age
+        // with nothing but the flex gap between them — measured, 「2 小时前 未记录
+        // 模型」 read as one doubled fragment rather than two facts.
         probe !== undefined && probe.modelId !== poolModelId
-          ? h('span', { className: 'dsm-workbuddy-pool-prov-model' },
-              probe.modelId === undefined
-                ? t('row.poolProbeModelUnknown')
-                : t('row.poolProbeModel', { model: probe.modelId }))
+          ? [
+              h('span', { key: 'sep', className: 'dsm-workbuddy-pool-prov-sep' }, '·'),
+              h('span', { key: 'model', className: 'dsm-workbuddy-pool-prov-model' },
+                probe.modelId === undefined
+                  ? t('row.poolProbeModelUnknown')
+                  : t('row.poolProbeModel', { model: probe.modelId })),
+            ]
           : null,
       ),
     ),
+    // LINE TWO, between the verdict and the actions — and AFTER the probe in the
+    // DOM, not before. It used to be emitted first (its old grid area was on the
+    // identity line), which meant a screen reader reached 「已签到」 before the
+    // verdict it belongs with while the eye met it after. Now the DOM order is the
+    // visual order on that line: verdict → check-in → buttons.
     checkinSupported
       ? h('span', { className: 'dsm-workbuddy-pool-checkin' },
           // Enterprise accounts have no consumer check-in at all (issue #129):
@@ -2194,6 +2303,49 @@ function renderAccountRow(input: {
       // Absent entirely where the region has no check-in: an empty column would
       // still imply the state exists and is merely unknown.
       : null,
+    // Per-row actions, LAST cell of the row: test this one account, and forget
+    // this account's plugin-stored credential. The test reuses the batch's
+    // probe (one measurement, one vocabulary); the removal deletes ONLY the
+    // vault entry — a desktop sign-in reappears on the next rescan, which the
+    // log message states instead of a silent no-op.
+    //
+    // WHY THE LAST CELL. These used to sit INSIDE the account cell, pushed to
+    // its right edge, because a separate actions track put three small buttons on
+    // a line of their own below the credits. Moving them back into the account
+    // cell wedged them between the name and the credits, so the reader met the
+    // buttons before the facts they act on. The row has ONE form at every width
+    // now (no stacked variant), and as its last cell the buttons share the
+    // verdict line, right-aligned: who it is (line 1) → what state it is in
+    // (line 2) → what you can do about it (line 2, at the end).
+    h('span', { className: 'dsm-workbuddy-pool-row-actions' },
+      // 设备参数入口。放在「测试」左边：它改的是"这个账号以什么身份出现"，
+      // 与"它现在能不能用"是同一层的问题，两个按钮挨着才读得通。
+      onEditDevice === undefined
+        ? null
+        : h('button', {
+            type: 'button',
+            className: `dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn dsm-workbuddy-device-gear${deviceGearBlocked ? ' dsm-workbuddy-device-gear-off' : ''}`,
+            'aria-disabled': deviceGearBlocked ? true : undefined,
+            title: deviceGearBlocked ? t('row.deviceGearBlockedHint') : t('row.deviceGearHint'),
+            'aria-label': t('row.deviceGearAria', { accountName: name }),
+            onClick: onEditDevice,
+          }, '⚙'),
+      h('button', {
+        type: 'button',
+        className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
+        disabled: rowBusy || testDisabled,
+        title: testDisabled ? targetHint : undefined,
+        onClick: onTest,
+      }, t('row.poolRowTest')),
+      h('button', {
+        type: 'button',
+        className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
+        disabled: rowBusy,
+        title: t('row.poolRowRemoveHint'),
+        'aria-label': t('row.poolRowRemoveAria', { accountName: name }),
+        onClick: onRemove,
+      }, t('row.poolRowRemove')),
+    ),
   )
 }
 

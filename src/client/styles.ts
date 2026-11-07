@@ -774,11 +774,102 @@ export const WORKBUDDY_CARD_CSS = `
  * viewport, which is where a full-screen overlay belongs. The table itself
  * contains only the header and member rows — no fixed-position descendants. */
 .dsm-workbuddy-pool-table{container-type:inline-size;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
-.dsm-workbuddy-pool-row{display:grid;grid-template-columns:1.6fr 1fr 1.3fr .9fr .8fr;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-/* No check-in column (the international region): the freed track goes to the actions. */
-.dsm-workbuddy-pool-table:not(.dsm-workbuddy-pool-table-checkin) .dsm-workbuddy-pool-row{grid-template-columns:1.6fr 1fr 1.3fr 1.7fr}
+/* THREE LINES AT EVERY WIDTH — the shape the row is meant to have.
+ *
+ * The row used to be five columns on one line when the table was wide, and a
+ * different re-grid when it was not, so its SHAPE depended on how wide the box
+ * around it happened to be: the same account read differently in the composer
+ * card, the full page and the Settings column. Named lines fix the shape once,
+ * whatever width it lands in:
+ *   line 1:  who it is ...................... credits
+ *   line 2:  what state it is in ... check-in  actions
+ *   line 3:  how it was measured (provenance)
+ *
+ * TWO ROWS OF AREAS, THREE LINES OF TEXT. The provenance line is the PROBE
+ * CELL's own second line (the -probe-line and -probe-prov spans), so the row
+ * grows to three lines without a third grid row, and the verdict line and the
+ * provenance line keep the same left edge and wrap independently.
+ *
+ * What this replaced: the verdict and 「测试于 …」 were separate sub-rows, so
+ * every row with a measured account was FOUR lines — the last one holding
+ * nothing but a timestamp. The owner asked for those two on one line and for the
+ * whole row to be three.
+ *
+ * NAMED AREAS, not five anonymous tracks. Every cell declares where it goes, so
+ * a cell that is absent — the international region renders no check-in — leaves
+ * its area empty instead of pulling the cells after it into the wrong columns.
+ * That failure is not hypothetical: it is what made the international table
+ * stack (5.20.26), where a template naming five cells over four tracks was
+ * discarded wholesale by the browser. Both variants therefore keep the same
+ * three tracks and the same three cells per line; only the areas differ.
+ *
+ * The first track is minmax(0,1fr) and not a bare 1fr on purpose: a bare 1fr
+ * carries an automatic minimum of the item's min-content width, so a long
+ * account name or verdict would push the row wider than its table instead of
+ * ellipsizing. With a zero minimum the flexible track gives way, which is what
+ * lets the same template serve the ~564px Settings column without a breakpoint.
+ *
+ * The LAST track is fixed px, never auto: the header and the rows are separate
+ * grid containers, so an auto track is sized twice against different contents
+ * and the two disagree. Measured at 820px, the actions track came out at 691 in
+ * the header (it holds one empty span) and 615 in the row (it holds three
+ * buttons), which dragged the check-in track beside it out of place by 76px. See
+ * the credits rule below for the A/B numbers.
+ *
+ * The check-in track is minmax(0,auto) — flexible, so it can hold 「不适用（企业
+ * 版）」 (96px) without overflowing, but with a ZERO minimum so it yields to the
+ * account name instead of widening the row. It is also the one auto track the
+ * header drift cannot reach: every cell in it is justify-self:end, so a header
+ * label 24px wide and a value 36px wide still share their RIGHT edge exactly —
+ * an auto track can move a left edge, and that is all it moves.
+ *
+ * The last track is 160px because that is what the button group needs AT REST in
+ * the widest locale, measured in headless Chrome: ⚙ Test Remove is 156px, ⚙ 测试
+ * 删除 134px. At 132px — the value this briefly shipped with — even the Chinese
+ * resting group wrapped, dropping 删除 onto a line of its own and growing every
+ * row by ~24px at every width. The in-flight labels (Testing… / Removing…,
+ * 194-208px) still wrap, and that is exactly what flex-wrap on the group is for:
+ * a momentary second line while a request is in flight beats a track wide enough
+ * to waste ~48px per row at rest. */
+.dsm-workbuddy-pool-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,auto) 160px;
+  grid-template-areas:
+    "account account credits"
+    "probe   checkin actions";
+  column-gap:12px;row-gap:4px;align-items:center;padding:10px 14px;
+  border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);
+  font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0);
+}
+/* WITHOUT the check-in the verdict takes the freed area, so the actions stay in
+   the last track — the same track, and the same right edge, in both variants.
+   Three cells again: the count never changes, only which area a cell owns. */
+.dsm-workbuddy-pool-table:not(.dsm-workbuddy-pool-table-checkin) .dsm-workbuddy-pool-row{
+  grid-template-areas:
+    "account account credits"
+    "probe   probe   actions";
+}
 .dsm-workbuddy-pool-row:first-child{border-top:0}
-.dsm-workbuddy-pool-row-head{padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
+.dsm-workbuddy-pool-row-head{padding:8px 14px;row-gap:1px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
+/* THE HEADER SPEAKS THE SAME TEMPLATE AS THE ROWS.
+ *
+ * It used to be a five-span row against a five-track template, and the narrow
+ * form hid it because its labels pointed at tracks that no longer existed.
+ * Both templates now name the same AREAS, so the labels line up in both
+ * directions — and a label cannot drift away from the value it names, because
+ * there is no second column definition to keep in step.
+ *
+ * The cells are emitted in reading order (line one, then line two) and the
+ * areas decide where each lands, exactly as in the rows.
+ *
+ * The check-in label is ABSENT where the region has none, exactly as its cell
+ * is: an empty area stays empty, and a label over nothing is worse than none.
+ * The actions cell has no text — the buttons speak — but it still has to exist,
+ * or the area named in the template would have no box to fill. */
+.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-credits{grid-area:credits;justify-self:end;text-align:right}
+.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-probe{grid-area:probe}
+.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-checkin{grid-area:checkin;justify-self:end}
+.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-actions{grid-area:actions}
 /* WHERE THE LABELED COLUMN ACTUALLY STARTS (learned from dsh-connect-trae, which
    carries the same rule for the same reason).
  *
@@ -790,27 +881,34 @@ export const WORKBUDDY_CARD_CSS = `
  * 38px is the checkbox (13px) plus the cell's 8px gap plus the vertical
  * centring slack of an 18px glyph in a 20px label; rounded to the value that
  * measured flush rather than derived, because the two cells do not share a
- * box. The narrow form hides the whole header row, so this offset never has to
- * be re-tuned for the stacked layout. */
-.dsm-workbuddy-pool-col-account{padding-inline-start:38px}
+ * box. The offset holds at every width now that the header is no longer hidden:
+ * the cell keeps the same leading checkbox in both forms. */
+.dsm-workbuddy-pool-col-account{grid-area:account;padding-inline-start:38px}
 .dsm-workbuddy-pool-row-current{background:rgba(86,134,254,.07)}
 /* The serving row, made findable at a glance: a left accent bar plus the tint.
    The bar is what distinguishes it in a long table, where a 7%-opacity wash
    alone reads as an alternating-row stripe. */
 .dsm-workbuddy-pool-row-current{box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-workbuddy-pool-account{display:flex;align-items:center;gap:8px;min-width:0}
-.dsm-workbuddy-pool-account-name{display:flex;flex-direction:column;gap:1px;min-width:0}
-.dsm-workbuddy-pool-account-name b{font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsm-workbuddy-pool-account{grid-area:account;display:flex;align-items:center;gap:8px;min-width:0}
+/* The account block WRAPS AMONG ITSELF instead of stacking.
+ *
+ * It was a column — name / rank+arrows / current pill / membership line — which
+ * is what a whole cell per fact needs, but this cell now shares line one with
+ * the credits. Stacked, those four become four lines and the three-line row the
+ * rest of the card promises is a lie on every row. Read as a sentence it is one
+ * line — 「账号A · 第 1 位 · 当前使用」 — so it wraps instead. */
+.dsm-workbuddy-pool-account-name{display:flex;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px;min-width:0}
+.dsm-workbuddy-pool-account-name b{font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:100%}
 .dsm-workbuddy-pool-account-name span{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
 /* Declared AFTER the blanket span rule so it wins: the badge must not inherit
    the muted 11px tertiary treatment the membership line uses. */
-.dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-current-tag{align-self:flex-start;margin-top:2px;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-state-success-primary,#22c55e);border:1px solid rgba(34,197,94,.55);color:#fff;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
+.dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-current-tag{align-self:center;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-state-success-primary,#22c55e);border:1px solid rgba(34,197,94,.55);color:#fff;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
 /* Manual-priority chrome (order badge + up/down arrows). The rank badge is a SPAN,
    not a button: it only DESCRIBES the current order and must not read as a
    control (nor join the row's button list). The solid vs dashed distinction is
    load-bearing — a numeric rank must NOT appear when the credit policy still
    decides the order, so the -auto modifier is the dashed/grey state. */
-.dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-order{display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap}
+.dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-order{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-rank{display:inline-flex;align-items:center;border-radius:999px;border:1px solid rgba(86,134,254,.32);background:rgba(86,134,254,.12);color:var(--dsw-alias-brand-primary,#5686fe);font-size:11px;font-weight:600;line-height:16px;padding:1px 6px;white-space:nowrap;cursor:default;font-variant-numeric:tabular-nums}
 .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-rank-auto{border:1px dashed var(--dsw-alias-border-l1,#2c2d31);background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-move{display:inline-flex;align-items:center;gap:2px}
@@ -847,10 +945,42 @@ export const WORKBUDDY_CARD_CSS = `
 /* The "why expiring credits win" note is the sentence users push back on, so
    it is tinted rather than buried in the same grey as the eight rules. */
 .dsm-workbuddy-pool-order-rules-why{margin:0;padding:8px 10px;border-radius:8px;border-left:3px solid var(--dsw-alias-state-warn-primary,#f59e0b);background:rgba(245,158,11,.10);font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-.dsm-workbuddy-pool-credits{display:flex;flex-direction:column;gap:1px;min-width:0;font-variant-numeric:tabular-nums}
+/* THE CREDITS TRACK IS ITS OWN COLUMN, right-aligned against the row's edge.
+ *
+ * This cell is pinned to its right end (justify-self:end) so one right edge
+ * stands under every row, however wide the number is.
+ *
+ * AUTO IS THE THING THAT FAILED HERE, for the track that follows it. The header
+ * and the data rows are two SEPARATE grid containers, so an auto track is
+ * measured twice, each against its own contents — and it is the ACTIONS track
+ * that differs (one empty span in the header, three buttons in the row). Because
+ * the check-in sits immediately before it, a 76px difference there moves the
+ * check-in label 76px away from the value it names: measured in headless Chrome
+ * at 820px, header 691 vs data 615. jsdom does no layout and cannot see it. Fixed
+ * px on the actions track keeps the two containers in step — the same reason
+ * dsh-connect-qoder pins its trailing tracks.
+ *
+ * The cell is a ROW, not a column, and it is ONE track: the fixed 160px the
+ * actions need (see the row rule). The figure and its warning sit side by side
+ * and share that width — 「1,556」 is 38px and 「300 积分 3 天内过期」 103px, so
+ * together they are 122px and never wrap here. Stacked, as they were, the cell
+ * was 35px instead of 18px: line one grew by 17px on EVERY row, and the
+ * warning's baseline landed between the verdict and the provenance line, so the
+ * right side of the row read as detached from the left. flex-wrap is kept as a
+ * last resort (a 3-digit figure plus a longer locale) rather than a clipped
+ * number.
+ *
+ * THE ONE STATE THAT IS NOT THREE LINES: a claimable-benefit entry (issue #79)
+ * also renders in this cell, and its own min-content is 229px — a full label
+ * plus the claim pill — so inside 160px it wraps to two lines and line one
+ * becomes two lines, i.e. a four-line row. That predates the three-line shape
+ * and is deliberate in the benefit rule below (its tag clamps to two lines so an
+ * unexpectedly long upstream title cannot push the row taller than the pill can
+ * travel). Fitting it would mean moving the claim button OFF line one; the pill
+ * is a seasonal campaign, so the row keeps its honest wrap instead. */
+.dsm-workbuddy-pool-credits{grid-area:credits;display:flex;flex-direction:row;flex-wrap:wrap;align-items:baseline;justify-content:flex-end;gap:0 6px;min-width:0;justify-self:end;text-align:right;font-variant-numeric:tabular-nums}
 .dsm-workbuddy-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}
 .dsm-workbuddy-pool-soon{font-size:11px;line-height:16px;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
-.dsm-workbuddy-pool-soon-plain{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
 /* Claimable benefits (issue #79). A quiet line by default — it is an opportunity, not a fault — and loud only when the window is about to close. */
 .dsm-workbuddy-pool-benefits{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999);min-width:0}
 /* One entry = text + pill, and the text wraps rather than being cut.
@@ -960,8 +1090,33 @@ export const WORKBUDDY_CARD_CSS = `
   box-shadow:none;
 }
 .dsm-workbuddy-pool-probe,.dsm-workbuddy-pool-checkin{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;overflow-wrap:anywhere}
-.dsm-workbuddy-pool-probe{display:flex;flex-direction:column;gap:4px}
-.dsm-workbuddy-pool-probe-main{color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The verdict cell: LINE TWO of the row, and two lines of its own.
+ *
+ * The -probe-line span holds the verdict together with the moment it was
+ * measured (see the rule below); -probe-prov is line THREE. A 2px gap is what
+ * keeps those two from reading as one wrapped paragraph: at 4px they looked like
+ * a single block of text that happened to break, which is how the four-line row
+ * it replaced looked. */
+.dsm-workbuddy-pool-probe{grid-area:probe;display:flex;flex-direction:column;gap:2px;min-width:0}
+/* VERDICT · TESTED-AT, ONE LINE.
+ *
+ * These were two sub-rows, and every measured account was therefore four lines
+ * tall with a timestamp on the last one. They are one sentence — "被限流 · 11/08
+ * 15:44 之后可再用 · 约 15 小时后 · 测试于 11/07 17:36" — so they wrap together
+ * as a unit, and the measured widths say why that matters: the longest verdict
+ * is 260px and 「测试于 11/07 17:36」 another 102, so the pair needs ~380px. It
+ * fits from ~700px up; below that only the verdict fits, and the block further
+ * down drops the timestamp rather than letting the pair wrap onto a line the row
+ * does not have. */
+.dsm-workbuddy-pool-probe-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 6px;min-width:0}
+.dsm-workbuddy-pool-probe-main{color:var(--dsw-alias-label-secondary,#c6c9d0);min-width:0;overflow-wrap:anywhere}
+/* The separator belongs to the timestamp it introduces, so a wrapped line can
+   never leave a lone 「·」 hanging at the end of the verdict. */
+.dsm-workbuddy-pool-probe-sep,.dsm-workbuddy-pool-tested-at{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap}
+.dsm-workbuddy-pool-probe-sep{color:var(--dsw-alias-label-dimmed,#9aa0a6);opacity:.7}
+/* WHEN, in the verdict's own sentence but at the weight of a timestamp: at 12px
+   and the verdict's colour it read as a second verdict, and the row looked like
+   two statements fighting for the same line. */
 .dsm-workbuddy-pool-probe-prov{display:flex;align-items:center;gap:5px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;flex-wrap:wrap}
 .dsm-workbuddy-pool-prov-tag{padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:10px;font-weight:600;line-height:15px;white-space:nowrap}
 .dsm-workbuddy-pool-prov-live{background:rgba(245,158,11,.16);color:var(--dsw-alias-state-warn-primary,#f59e0b)}
@@ -987,6 +1142,15 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-check input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-workbuddy-pool-check input:disabled{cursor:default;opacity:.5}
 .dsm-workbuddy-pool-checked{color:var(--dsw-alias-state-success-primary,#22a06b)}
+/* Line two, middle: the daily claim. Its own AREA so that a region WITHOUT it
+   leaves that slot empty instead of sliding the actions one track left.
+ *
+ * BASELINE-aligned, not centred: line two is two lines tall (verdict above,
+ * provenance below), and a centred cell floats between them — measured, 「已签到」
+ * sat 8px below the verdict's baseline, which read as belonging to neither line.
+ * Sharing the verdict's baseline puts the state on the same line as the verdict
+ * it belongs to. */
+.dsm-workbuddy-pool-checkin{grid-area:checkin;justify-self:end;align-self:baseline;white-space:nowrap;min-width:0;overflow-wrap:anywhere}
 .dsm-workbuddy-pool-unknown{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
 .dsm-workbuddy-pool-not-member{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
 /* A section break, not just a gap: below this line the page stops showing what
@@ -1106,24 +1270,28 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-log-error{color:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-workbuddy-pool-log-info{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-pool-log-empty{padding:14px;font-size:12px;color:var(--dsw-alias-label-tertiary,#999)}
-/* Per-row actions (test / remove), right side of each pool row. */
-/* Per-row actions (test / remove), right side of each pool row.
-   The nowrap is NOT cosmetic: a two-character label (测试) belongs on one line,
-   and this row's track is a fraction of the table — in a narrow window it let
-   the label break into 测 / 试. Clipping is the right failure for a button
-   whose label is fixed and tiny. */
-/* Per-row actions, at the right end of the NAME line.
+/* Per-row actions (test / device / remove), closing line two.
  *
- * They used to be the pool row's last grid cell, so on a wide panel they landed
- * on a line of their own below the credits, and on a narrow one they wrapped to
- * a line of their own again. Either way the row spent a line on three small
- * buttons. margin-inline-start:auto claims the empty space beside the sort
- * badge instead — the name line is the shortest one in the row, so there is
- * always room, and the buttons sit where the eye already is.
+ * Their third resting place. They have been (1) the row's last grid cell of the
+ * old single-line table, where a separate track put them on a line of their own
+ * below the credits; (2) inside the account cell, pushed right by an auto
+ * margin, which on the re-grid put them at the END OF LINE ONE — before the
+ * reader met the facts they act on; and now (3) the row's last cell again,
+ * which with two named lines means the end of line two, right after the verdict
+ * they respond to. The reading order is the point:
+ * who it is → what state it is in → what you can do about it.
  *
+ * BASELINE-aligned for the same reason as the check-in beside them: line two is
+ * two lines tall, and a centred button group sits in the gap between the verdict
+ * and the provenance line — measured, the buttons' text baseline was 8px below
+ * the verdict's. Sharing that baseline makes the buttons read as the end of the
+ * sentence they act on.
+ *
+ * The nowrap is NOT cosmetic: a two-character label (测试) belongs on one line,
+ * and clipping is the right failure for a button whose label is fixed and tiny.
  * flex:none is load-bearing: the name may truncate, the buttons may not, and a
  * shrunken button is unclickable. */
-.dsm-workbuddy-pool-row-actions{display:flex;gap:6px;align-items:center;flex:none;margin-inline-start:auto}
+.dsm-workbuddy-pool-row-actions{grid-area:actions;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;align-items:center;flex:none;justify-self:end;align-self:baseline;max-width:100%}
 .dsm-workbuddy-pool-row-actions .dsm-workbuddy-pool-small-btn{white-space:nowrap}
 .dsm-workbuddy-pool-row-actions .dsm-workbuddy-pool-small-btn{padding:2px 10px;font-size:12px}
 /* The picker's cap, narrowed on a phone. NOTE this @media measures the VIEWPORT,
@@ -1141,74 +1309,45 @@ export const WORKBUDDY_CARD_CSS = `
 /* The settings rows (target model, probe size) are flex with a content column
  * that grows and a control that does not. In the Settings panel the control was
  * squeezed to a sliver: max-width:260px caps it but nothing gives it a floor,
- * and the copy beside it takes everything else. Stacking is the same move the
- * table makes at this width — one fact per line rather than two columns of
- * clipped text. */
+ * and the copy beside it takes everything else. Stacking gives each one a whole
+ * line, which beats two columns of clipped text.
+ *
+ * NOTE: this is NOT the move the pool table makes. The table is three lines at
+ * every width now (see the grid above), so a narrow column no longer changes
+ * its shape — only these two settings rows still switch. */
 @container (max-width:620px){.dsm-workbuddy-pool-set{flex-direction:column;align-items:stretch;gap:8px}
 .dsm-workbuddy-pool-set-ctl{flex:1 1 auto;justify-content:flex-start}
 .dsm-workbuddy-pool-select{max-width:none;width:100%}}
-/* THE TABLE'S NARROW FORM, measured against the table rather than the window.
+/* THE ONE THING THAT STILL DEPENDS ON WIDTH — and it is a DETAIL, not a shape.
  *
- * Every breakpoint in this file up to here is a @media query, and those
- * measure the VIEWPORT. The same card now renders in the Settings panel's
- * content column (~564px on a 1400px screen), where a media query never fires:
- * a five-column table was laid into 564px and every cell clipped.
+ * The three-line row above is the same shape at every width, so nothing here
+ * re-arranges cells any more: no second track count, no second set of occupied
+ * cells, no display:none on the header. All three existed because the wide and
+ * narrow forms disagreed about where a cell went; both templates now name the
+ * same areas, so the labels describe the rows at every width.
  *
- * ONE threshold, not two. An earlier revision had a 720px band that merely
- * dropped one track, on the theory that "slightly narrower" still wants a grid
- * — but the Settings column lands at ~564px, i.e. INSIDE that band, so the
- * reader got a 2x2 grid whose cells no longer lined up with their headers and
- * whose rows were twice as tall as the wide ones. A table has no "slightly
- * narrower" form worth having: either there is room for the columns or there
- * is not.
+ * What this block DOES drop is 「测试于 11/07 17:36」, and only where it cannot
+ * fit beside the verdict. Measured in headless Chrome: the longest verdict is
+ * 260px and the timestamp 102px, so the verdict line needs ~380px; at the
+ * Settings column's 564px the probe cell has ~330px in the Chinese table (the
+ * check-in and the 160px button track take the rest). Letting the pair wrap there
+ * is what turns three lines into four — the exact shape the owner rejected — and
+ * the timestamp is the fragment to lose, not the verdict: the provenance line
+ * directly below already dates the same measurement, as 「2 小时前」. Nothing is
+ * hidden that is not said again on the next line, and the absolute moment stays
+ * in the activity log the test wrote.
  *
- * Below the threshold each row becomes a STACKED CARD: the same five facts, in
- * the same order they read left to right when wide, now top to bottom. That is
- * what keeps a narrow row legible instead of merely fitting. */
+ * ONE CASE IS STILL FOUR LINES, and it is left that way on purpose: an ENGLISH
+ * enterprise row in the 564px column, whose check-in cell says 「N/A (enterprise)」
+ * (~96px) while the verdict is the 301px English rate-limit sentence. The probe
+ * cell then has ~262px, so the verdict wraps. The alternative — clipping the
+ * verdict, or ellipsizing the check-in — trades a rare extra line for a lie about
+ * whether the account works, which is the one thing this row exists to say. The
+ * Chinese table in the same state fits (262px for a 260px verdict). */
 @container (max-width:700px){
-  /* THREE LINES, not five. A plain flex-direction:column stacked every cell
-     onto its own line, which doubled the row height and read as a form rather
-     than an account. Wrapping is what keeps the row a CARD: the account and the
-     actions own a full line each (they are the identify-it and act-on-it ends),
-     while the three facts in between share the middle line and wrap among
-     themselves only when they genuinely do not fit. */
-  .dsm-workbuddy-pool-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:10px 12px}
-  .dsm-workbuddy-pool-table:not(.dsm-workbuddy-pool-table-checkin) .dsm-workbuddy-pool-row{display:flex;flex-wrap:wrap;align-items:baseline}
-  /* The column headers describe tracks that no longer exist. */
-  .dsm-workbuddy-pool-row-head{display:none}
-  .dsm-workbuddy-pool-account{flex:1 1 100%;align-items:center}
-  /* THE ACCOUNT CELL'S OWN COLUMN, collapsed the same way — and this is the
-     rule that actually decides the row height (learned from dsh-connect-trae
-     4.9.0, which shipped the outer half of this fix and measured 138px rows).
-   *
-   * Collapsing only .dsm-workbuddy-pool-account above is NOT enough: that is
-   * just a flex wrapper. The cells that stack are one level deeper, inside
-   * .dsm-workbuddy-pool-account-name, which declares flex-direction:column so
-   * that the name, the rank badge with its ↑/↓ arrows, the 「当前使用」 pill and
-   * the 「测试于 …」 line read as a small card when the table is WIDE.
-   *
-   * In the Settings column they have no reason to keep one line each: measured
-   * at 549px, that block was 81px of the row's 157px — five lines (name, rank +
-   * arrows, current badge, tested-at), while the three facts beside it sat on
-   * one 18px line. The row therefore read as "one tall account block and three
-   * strays", and every extra row cost the reader two thirds of a screen.
-   *
-   * Read as a sentence it is one line — 「账号A · 第 1 位 ↑↓ · 当前使用 ·
-   * 测试于 00/00, 00:00」 — so it wraps among itself instead of stacking. The
-   * margins the wide form needs (2px above the badge, 2px above the current pill)
-   * go away with the stacking: in a wrapped row they become uneven leading. */
-  .dsm-workbuddy-pool-account-name{flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
-  .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-order{margin-top:0}
-  .dsm-workbuddy-pool-account-name .dsm-workbuddy-pool-current-tag{align-self:center;margin-top:0}
-  /* The name still has to be allowed to SHRINK. The <b> carries nowrap + ellipsis,
-     whose whole point is that a long account name ends in "…" rather than
-     pushing the line — but as a flex item it defaults to min-width:auto, i.e.
-     its content width, and then the ellipsis can never engage. */
-  .dsm-workbuddy-pool-account-name b{min-width:0;max-width:100%}
-  /* The three middle facts, laid out as one line of the same sentence. */
-  .dsm-workbuddy-pool-credits{flex:0 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
-  .dsm-workbuddy-pool-probe{flex:1 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
-  .dsm-workbuddy-pool-checkin{flex:none}
+  .dsm-workbuddy-pool-row{column-gap:8px;row-gap:3px;padding:9px 12px}
+  .dsm-workbuddy-pool-row-head{padding:7px 12px}
+  .dsm-workbuddy-pool-probe-sep,.dsm-workbuddy-pool-tested-at{display:none}
 }
 
 /* ISSUE #198, the same breakpoint the pool row already uses. On a phone the model

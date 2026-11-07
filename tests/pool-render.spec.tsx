@@ -391,8 +391,15 @@ describe('every timestamp is a 24-hour clock (no AM/PM)', () => {
     //
     // Both instants are built from LOCAL calendar fields, so the expected text is
     // the same on any machine: `Intl` formats in the local zone too.
-    const testedAt = new Date(2026, 8, 30, 13, 23).getTime()   // 13:23 (1:23 PM)
-    const retryAt = new Date(2026, 9, 1, 5, 20).getTime()      // 05:20 (5:20 AM)
+    //
+    // RELATIVE TO TODAY, not to a fixed date: a cooldown instant in the past is a
+    // different state — the card stops printing 「05:20 之后可再用」 and states
+    // 「恢复时间已到 · 待复核」 instead, because a future-tense date for an expired
+    // moment is a lie. Fixed dates made this test pass until the calendar caught
+    // up with them and then start asserting the wrong branch's text.
+    const today = new Date()
+    const testedAt = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1, 13, 23).getTime()  // yesterday 13:23 (1:23 PM)
+    const retryAt = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 5, 20).getTime()    // tomorrow 05:20 (5:20 AM)
     const m = await mount(AccountPool, baseProps({
       pool: poolOf({
         memberAccountIds: [GENUINE_ID, 'limited-1'],
@@ -1630,6 +1637,448 @@ describe('the mode bar draws both switches the same way', () => {
     expect(bar, 'the mode bar is still a card').not.toBeNull()
     // Exactly ONE element is the card, and it is the bar — not a switch row.
     expect(m.container.querySelectorAll('.dsm-workbuddy-pool-modebar')).toHaveLength(1)
+    await m.unmount()
+  })
+})
+
+describe('a rate-limited account says so ONCE', () => {
+  /**
+   * THE REPORT: the state line read 「被限流 · 11/08 03:56 之后可再用 · 约 7 小时后 被限流」.
+   *
+   * Two independent fields describe the same fact — the pool's own exclusion
+   * verdict (`excludedBy: 'rate-limited'`) and the probe's outcome — and each
+   * renders its own 「被限流」. They used to sit in different cells; moving the
+   * exclusion label onto the state line put the two a few pixels apart, which is
+   * what turned a latent duplication into an obvious one.
+   *
+   * The verdict is the one kept: it also carries the reset time. The coarse
+   * exclusion label is therefore dropped ONLY for that one reason — every other
+   * exclusion reason states a fact the verdict does not, and must still print.
+   */
+  it('prints the exclusion label once when the probe already says it', async () => {
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['limited-1'],
+        effectiveMemberAccountIds: ['limited-1'],
+        accounts: [
+          accountOf({
+            accountId: 'limited-1',
+            accountName: 'Limited',
+            probe: { outcome: 'rate-limited', atMs: Date.now(), retryAtMs: Date.now() + 3600_000 },
+            excludedBy: 'rate-limited',
+          }),
+        ],
+      }),
+    }))
+    // NOT `querySelector`: the FIRST `.dsm-workbuddy-pool-row` is the header row,
+    // which carries only column labels.
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    // Count the RENDERED words, not the source: the duplication was visible on
+    // screen while every text assertion on either field passed on its own.
+    // The double count came from TWO different keys, so each is counted
+    // separately rather than by scanning for one literal string.
+    const text = row?.textContent ?? ''
+    const verdict = text.split('row.poolExcludedRateLimited').length - 1
+    const outcome = text.split('row.probeRateLimited').length - 1
+    expect(verdict + outcome, 'a rate-limited row must not say 被限流 twice').toBe(1)
+    await m.unmount()
+  })
+
+  it('does not print a model-busy verdict twice either', async () => {
+    // The first version of the suppression compared the TRANSLATED label, so it
+    // only covered `rate-limited`: a model-busy or out-of-credit row still read
+    // 「模型繁忙 · … · 模型繁忙」. The comparison is on the reason CODE now, and
+    // this case is what keeps it there — the wording of the label is not what
+    // decides whether it repeats the verdict.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['busy-1'],
+        effectiveMemberAccountIds: ['busy-1'],
+        accounts: [
+          accountOf({
+            accountId: 'busy-1',
+            accountName: 'Busy',
+            probe: { outcome: 'model-busy', atMs: Date.now(), retryAtMs: Date.now() + 60_000 },
+            excludedBy: 'model-busy',
+          }),
+        ],
+      }),
+    }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const text = row?.textContent ?? ''
+    const label = text.split('row.poolExcludedModelBusy').length - 1
+    const verdict = text.split('row.probeModelBusyAt').length - 1
+    expect(label + verdict, 'a model-busy row must not say 模型繁忙 twice').toBe(1)
+    // …and the line still ends with the timestamp, which the old branch dropped
+    // whenever an exclusion label was printed.
+    expect(text, 'the merged line must still date the measurement').toContain('row.poolTestedAt')
+    await m.unmount()
+  })
+
+  it('still prints an exclusion reason the verdict does not state', async () => {
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['poor-1'],
+        effectiveMemberAccountIds: ['poor-1'],
+        accounts: [
+          accountOf({
+            accountId: 'poor-1',
+            accountName: 'Poor',
+            probe: { outcome: 'ok', atMs: Date.now() },
+            excludedBy: 'out-of-credit',
+          }),
+        ],
+      }),
+    }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    // The suppression above must be narrow: an out-of-credit account is healthy
+    // per the probe, so dropping this label would hide the ONLY reason it is
+    // not serving.
+    expect(row?.textContent ?? '', 'out-of-credit must still be stated').toContain('row.poolExcludedOutOfCredit')
+    await m.unmount()
+  })
+})
+
+describe('the row groups its cells into the three intended lines', () => {
+  /**
+   * THE REQUEST: 「被限流 · 11/08 15:44 之后可再用 · 约 15 小时后 / 测试于 11/07
+   * 17:36 / 这个放在一行，整个账号，就是三行，国内国际一样」.
+   *
+   * The row had grown to FOUR lines — identity / verdict / timestamp / provenance
+   * — because the verdict and its timestamp were separate sub-rows, so the last
+   * line held nothing but a date. Three lines are what is left when those two
+   * share one:
+   *   line 1: identity + credits
+   *   line 2: verdict + timestamp, then the check-in, then the buttons
+   *   line 3: provenance (writer · age · model)
+   *
+   * The line assignment comes from TWO places that must agree: the grid's
+   * `grid-template-areas` (which cells share a row) and the DOM order (which cell
+   * a reader reaches first). These assertions check the DOM half, because the
+   * CSS half is asserted in pool-card-render.
+   */
+  it('orders the cells so line two reads verdict → check-in → actions', async () => {
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['a-1'],
+        effectiveMemberAccountIds: ['a-1'],
+        accounts: [
+          accountOf({
+            accountId: 'a-1',
+            accountName: 'Acct',
+            checkedInToday: true,
+            probe: { outcome: 'ok', atMs: Date.now() },
+          }),
+        ],
+      }),
+    }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const order = Array.from(row?.children ?? []).map(el => el.className)
+    const at = (needle: string): number => order.findIndex(c => c.includes(needle))
+    // Line one: the identity, then its price.
+    expect(at('dsm-workbuddy-pool-account'), 'the account cell is missing').toBe(0)
+    expect(at('dsm-workbuddy-pool-credits'), 'the credits cell must follow the account')
+      .toBeGreaterThan(0)
+    // Line two: verdict → check-in → actions, in that order. The check-in used to
+    // be emitted BEFORE the verdict (it owned an area on the identity line), which
+    // put it ahead of the verdict for a screen reader while the eye met it after.
+    expect(at('dsm-workbuddy-pool-probe'), 'the verdict opens line two')
+      .toBeGreaterThan(at('dsm-workbuddy-pool-credits'))
+    expect(at('dsm-workbuddy-pool-checkin'), 'the check-in follows the verdict')
+      .toBeGreaterThan(at('dsm-workbuddy-pool-probe'))
+    expect(at('dsm-workbuddy-pool-row-actions'), 'the actions close the row')
+      .toBeGreaterThan(at('dsm-workbuddy-pool-checkin'))
+    await m.unmount()
+  })
+
+  it('puts the timestamp INSIDE the verdict line, not on a line of its own', async () => {
+    // The DOM half of the merge: both fragments must live in ONE flex line, so
+    // that no CSS rule can put them back on two lines without this failing.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['a-1'],
+        effectiveMemberAccountIds: ['a-1'],
+        accounts: [
+          accountOf({
+            accountId: 'a-1',
+            accountName: 'Acct',
+            probe: { outcome: 'rate-limited', atMs: Date.now() - 3_600_000, retryAtMs: Date.now() + 3_600_000 },
+          }),
+        ],
+      }),
+    }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const line = row?.querySelector('.dsm-workbuddy-pool-probe-line')
+    expect(line, 'the verdict line wrapper is missing').not.toBeNull()
+    // ONE wrapper holds both, and neither is a sibling of it: the "two lines"
+    // shape this replaced was exactly two siblings inside the probe cell.
+    expect(line?.querySelector('.dsm-workbuddy-pool-probe-main'), 'the verdict is not in the line')
+      .not.toBeNull()
+    expect(line?.querySelector('.dsm-workbuddy-pool-tested-at'), 'the timestamp is not in the line')
+      .not.toBeNull()
+    // …and the provenance line is NOT inside it: that is line three.
+    expect(line?.querySelector('.dsm-workbuddy-pool-probe-prov'), 'the provenance row must stay out of line two')
+      .toBeNull()
+    await m.unmount()
+  })
+})
+
+describe('the credits cell prints the amount, not an expiry date', () => {
+  /**
+   * THE REQUEST: 「这个信息不要了」 pointing at 「最近积分包 11/27 03:46 过期」.
+   *
+   * That line printed the nearest package's expiry on EVERY row — a date months
+   * out that nobody is deciding anything with — and it cost the credits cell a
+   * second line on all of them. The actionable half is kept: an amount that is
+   * about to lapse still prints, because that one can still be spent.
+   *
+   * Pinned as a rendered assertion rather than a source grep: the date came from
+   * a `nearestExpiryMs == undefined ? … :` fallback, so re-adding it is a one-line
+   * change that no existing test would notice.
+   */
+  it('omits the nearest-expiry date but keeps the figure', async () => {
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['a-1'],
+        effectiveMemberAccountIds: ['a-1'],
+        accounts: [
+          accountOf({
+            accountId: 'a-1',
+            accountName: 'Acct',
+            credits: 1648,
+            // A date months out, exactly the shape the removed line printed.
+            nearestExpiryMs: Date.now() + 20 * 24 * 3_600_000,
+          }),
+        ],
+      }),
+    }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const text = row?.textContent ?? ''
+    expect(text, 'the credits figure must still print').toContain('1,648')
+    expect(text, 'the expiry date must be gone').not.toContain('row.poolCreditNearest')
+    await m.unmount()
+  })
+
+  it('still warns about credits that are about to lapse', async () => {
+    // The removal must not take the actionable warning with it: "about to expire"
+    // answers a question ("should I spend this now?") that a plain date does not.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['a-1'],
+        effectiveMemberAccountIds: ['a-1'],
+        accounts: [
+          accountOf({
+            accountId: 'a-1',
+            accountName: 'Acct',
+            credits: 1648,
+            expiringSoon: 300,
+            nearestExpiryMs: Date.now() + 3 * 24 * 3_600_000,
+          }),
+        ],
+      }),
+    }))
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    expect(row?.textContent ?? '', 'the lapse warning must survive')
+      .toContain('row.poolCreditSoon')
+    await m.unmount()
+  })
+})
+
+describe('the international pool (no check-in column) renders the same two lines', () => {
+  /**
+   * THE GAP THAT LET A REAL BUG SHIP. `checkinSupported: false` is not
+   * hypothetical — the `workbuddy-global` region reports exactly that, so this is
+   * the everyday path for international accounts. Every layout assertion in this
+   * suite mounted the DOMESTIC pool, where the check-in cell exists, so a grid
+   * declared with four tracks while naming five areas went unnoticed: the browser
+   * discards `grid-template-areas` wholesale in that case, and the two-line
+   * layout silently collapsed to a single stacked column.
+   *
+   * The static assertion in pool-card-render now compares track counts, but a
+   * static check cannot prove the DOM for this variant exists at all. This mounts
+   * it.
+   */
+  const international = (overrides: Record<string, unknown> = {}) => baseProps({
+    pool: poolOf({
+      checkinSupported: false,
+      memberAccountIds: ['i-1'],
+      effectiveMemberAccountIds: ['i-1'],
+      accounts: [
+        accountOf({
+          accountId: 'i-1',
+          accountName: 'Intl',
+          credits: 900,
+          probe: { outcome: 'ok', atMs: Date.now() },
+        }),
+      ],
+      ...overrides,
+    }),
+  })
+
+  it('renders no check-in cell, so the class that carries it is absent', async () => {
+    const m = await mount(AccountPool, international())
+    expect(m.container.querySelector('.dsm-workbuddy-pool-checkin'),
+      'an international row must not render a check-in cell').toBeNull()
+    // The table variant class selects the no-check-in grid template. Without it
+    // the row would use the domestic template, whose `checkin` area has no cell
+    // to fill — an empty gap in the middle of line two.
+    expect(m.container.querySelector('.dsm-workbuddy-pool-table-checkin'),
+      'the check-in table variant must be absent').toBeNull()
+    await m.unmount()
+  })
+
+  it('emits exactly the cells its template names, and no extra one', async () => {
+    // A CELL COUNT, not a class name. The template and the DOM are separate
+    // edits, and a grid whose areas name more cells than there are elements
+    // silently pulls each cell one slot along — which is how the check-in used
+    // to appear under the credits column. The browser will not warn.
+    const m = await mount(AccountPool, international())
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const cells = Array.from(row?.children ?? []).map(el => el.className)
+    // account, credits, probe, actions — the check-in is absent by design.
+    expect(cells, 'the international row must carry four cells').toHaveLength(4)
+    expect(cells.some(c => c.includes('dsm-workbuddy-pool-checkin')), 'no check-in cell').toBe(false)
+    // …and the header row names three of them, plus the silent actions slot.
+    const head = m.container.querySelectorAll('.dsm-workbuddy-pool-row-head')[0]
+    const labels = Array.from(head?.children ?? []).map(el => el.textContent ?? '')
+    expect(labels.join(' '), 'the header must not label a column that is not there')
+      .not.toContain('row.poolColumnCheckin')
+    await m.unmount()
+  })
+
+  it('still renders the credits, the verdict and the actions', async () => {
+    const m = await mount(AccountPool, international())
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const text = row?.textContent ?? ''
+    // The three cells that survive must all still be there — the layout change
+    // moves them, it must not drop them.
+    expect(text, 'the credits figure must print').toContain('900')
+    expect(row?.querySelector('.dsm-workbuddy-pool-probe'), 'the verdict cell is missing')
+      .not.toBeNull()
+    expect(row?.querySelector('.dsm-workbuddy-pool-row-actions'), 'the actions cell is missing')
+      .not.toBeNull()
+    await m.unmount()
+  })
+})
+
+describe('an elapsed cooldown re-tests that one account by itself', () => {
+  /**
+   * THE REQUEST: 「发现这种情况，自己单个账号测试一下就好了，不用写这种自相矛盾的
+   * 话」 — about 「被限流 · 限流时段已过 · 重新测试以确认」, a line that states a
+   * verdict, says the verdict is over, and then asks the reader to resolve it.
+   *
+   * So the card does the resolving: one account, one request, no click. The copy
+   * that remains is 「恢复时间已到 · 待复核」 (see the locale) and it lives only as
+   * long as the measurement takes.
+   *
+   * Every assertion here is about the ONE thing that could go wrong silently: a
+   * test request fired on every render. `autoRetested` is the guard, and the last
+   * test below is the one that would catch its removal.
+   */
+  const expiredAccount = (id: string, extra: Record<string, unknown> = {}) => accountOf({
+    accountId: id,
+    accountName: id,
+    probe: { outcome: 'rate-limited', atMs: Date.now() - 3_600_000, retryAtMs: Date.now() - 60_000 },
+    ...extra,
+  })
+  const poolWith = (accounts: unknown[], members: string[], extra: Record<string, unknown> = {}) => poolOf({
+    memberAccountIds: members,
+    effectiveMemberAccountIds: members,
+    accounts,
+    ...extra,
+  })
+  const testCalls = (calls: { url: string }[]): { url: string }[] => calls.filter(c => c.url.includes('action=test'))
+
+  it('fires one test for the account whose window has passed', async () => {
+    const calls = stubFetch(() => ({ body: { rows: [{ accountId: 'limited-1', accountName: 'limited-1', result: { outcome: 'ok' } }] } }))
+    const m = await mount(AccountPool, baseProps({ pool: poolWith([expiredAccount('limited-1')], ['limited-1']) }))
+    const fired = testCalls(calls)
+    expect(fired, 'the expired row must be re-measured without a click').toHaveLength(1)
+    expect(fired[0]?.url, 'and it must measure THAT account').toContain('accountId=limited-1')
+    await m.unmount()
+  })
+
+  it('leaves a cooldown that still has time left alone', async () => {
+    const calls = stubFetch(() => ({ body: { rows: [] } }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolWith([accountOf({
+        accountId: 'limited-2',
+        accountName: 'Limited Two',
+        probe: { outcome: 'rate-limited', atMs: Date.now(), retryAtMs: Date.now() + 2 * 3_600_000 },
+      })], ['limited-2']),
+    }))
+    expect(testCalls(calls), 'a running cooldown must not be re-tested').toHaveLength(0)
+    await m.unmount()
+  })
+
+  it('leaves an account that is not in the pool alone', async () => {
+    // An unchecked row is listed for the user to opt into; spending a probe on it
+    // is work nobody asked for.
+    const calls = stubFetch(() => ({ body: { rows: [] } }))
+    const m = await mount(AccountPool, baseProps({ pool: poolWith([expiredAccount('unchecked-1')], [GENUINE_ID]) }))
+    expect(testCalls(calls), 'a non-member row must not be measured').toHaveLength(0)
+    await m.unmount()
+  })
+
+  it('measures ONE expired account at a time, not the whole list at once', async () => {
+    // The in-flight guard, and the reason it is not decoration: `runRowTest` is
+    // serialized on purpose (a pool test that fires N requests at once is how a
+    // rate-limited pool hammers itself). Two expired rows must therefore produce
+    // one request, not two — the second waits for the first to land.
+    //
+    // A never-resolving fetch keeps the first request in flight for the whole
+    // assertion, so this measures the guard and not the response time.
+    let calls = 0
+    vi.stubGlobal('fetch', () => { calls += 1; return new Promise(() => {}) })
+    const m = await mount(AccountPool, baseProps({
+      pool: poolWith([expiredAccount('limited-4'), expiredAccount('limited-5')], ['limited-4', 'limited-5']),
+    }))
+    expect(calls, 'two expired rows must not fire two requests at once').toBe(1)
+    await m.unmount()
+  })
+
+  it('does not measure an account the manual 测试 button is disabled for', async () => {
+    // `targetModelSource: 'stale'` is exactly the state where the row's own 测试
+    // button is disabled and explains why (the pool has no model it can test
+    // against). Firing a probe here would be the plugin pressing a button it has
+    // just told the user not to press.
+    const calls = stubFetch(() => ({ body: { rows: [] } }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolWith([expiredAccount('limited-6')], ['limited-6'], { targetModelSource: 'stale' }),
+    }))
+    expect(testCalls(calls), 'a stale target model must not be re-probed').toHaveLength(0)
+    await m.unmount()
+  })
+
+  it('does not re-measure an account whose verdict is not a cooldown', async () => {
+    // An `ok` record can carry `retryAtMs` (the monthly quota reset read off a
+    // 200), and an exhausted quota carries it too — neither is cleared by waiting,
+    // and `availabilityLine` says so. Re-probing them would spend a request to
+    // learn what the row already states.
+    const calls = stubFetch(() => ({ body: { rows: [] } }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolWith([
+        accountOf({ accountId: 'healed-1', accountName: 'Healed',
+          probe: { outcome: 'ok', atMs: Date.now() - 3_600_000, retryAtMs: Date.now() - 60_000 } }),
+        accountOf({ accountId: 'poor-1', accountName: 'Poor',
+          probe: { outcome: 'out-of-credit', atMs: Date.now() - 3_600_000, retryAtMs: Date.now() - 60_000 } }),
+      ], ['healed-1', 'poor-1']),
+    }))
+    expect(testCalls(calls), 'only a wait-and-see cooldown is re-probed').toHaveLength(0)
+    await m.unmount()
+  })
+
+  it('does not fire again when the card re-renders with the same stale record', async () => {
+    // The guard that matters: the row keeps rendering the OLD probe until the new
+    // one lands, and a re-render in that window (a preference edit, the 60s poll)
+    // passes a NEW pool object through the same effect. Without `autoRetested`
+    // that is a second request per render — a rate-limited pool hammering itself.
+    const calls = stubFetch(() => ({ body: { rows: [{ accountId: 'limited-3', accountName: 'limited-3', result: { outcome: 'ok' } }] } }))
+    const props = baseProps({ pool: poolWith([expiredAccount('limited-3')], ['limited-3']) })
+    const m = await mount(AccountPool, props)
+    expect(testCalls(calls)).toHaveLength(1)
+    await m.update({ ...props, pool: poolWith([expiredAccount('limited-3')], ['limited-3']) })
+    expect(testCalls(calls), 'the second render must not fire another test').toHaveLength(1)
     await m.unmount()
   })
 })

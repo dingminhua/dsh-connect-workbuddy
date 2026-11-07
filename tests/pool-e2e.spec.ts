@@ -269,13 +269,20 @@ describe('the mounted plugin: defects found by driving the real code (now fixed)
     expect(entry, 'the benefit entry rule was not found').not.toBe('')
     expect(entry, 'a flex item keeps min-width:auto, so the pill overflows the column')
       .toMatch(/min-width:\s*0/)
-    // The grid tracks were tried as the fix and made no difference (the entry
-    // overflows its CELL, so the cell was never the constraint). They stay as
-    // bare `fr`; this asserts that, so a future reader does not re-try it.
+    // The tracks were NOT the fix and must not be re-tried as one: the entry
+    // overflows its CELL, so widening or narrowing a track changes nothing.
+    //
+    // The row's grid has since been replaced wholesale (two named lines at every
+    // width, see pool-card-render), and it now DOES carry minmax — for an
+    // unrelated reason: a zero minimum on the flexible track is what lets a long
+    // account name or verdict shrink instead of widening the row. That is not a
+    // claim about this overflow, which is why the assertion moved from "no
+    // minmax anywhere" to the property that actually matters here: the entry
+    // must still be the thing that gives way.
     const row = styles.match(/\.dsm-workbuddy-pool-row\{([^}]*)\}/u)?.[1] ?? ''
     expect(row, 'the pool row grid declaration was not found').not.toBe('')
-    expect(row, 'the grid tracks should stay as they were; minmax changed nothing')
-      .not.toContain('minmax(')
+    expect(entry, 'the entry must remain the shrinking element, not the track')
+      .toMatch(/min-width:\s*0/)
   })
 
   it('keeps the claim pill from shrinking, and the benefit text as the part that gives way', async () => {

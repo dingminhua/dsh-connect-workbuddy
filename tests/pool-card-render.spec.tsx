@@ -585,62 +585,92 @@ describe('the pool table fits the Settings panel width', () => {
     'utf8',
   )
 
-  it('leaves the grid tracks as bare fr, because minmax was measured and changed nothing', () => {
-    // Tracks are NOT the constraint here. Measured in headless Chrome at the
-    // Settings column width (564px), swapping `1.6fr` for `minmax(0,1.6fr)`
-    // moved the overflowing-cell count 1 -> 1 in both cases: the row's own
-    // width (530) never exceeded the table's (532). What overflows is a CELL,
-    // and `.dsm-workbuddy-pool-benefit` already carries the `min-width:0` that
-    // fixes it (see the sibling case in tests/pool-e2e.spec.ts, which records
-    // the same result and exists so nobody re-tries this).
+  it('gives the flexible track a ZERO minimum, so a long name shrinks instead of widening the table', () => {
+    // THIS REPLACES an earlier assertion that demanded bare `fr`. That note was
+    // about the OLD five-track form: measured in headless Chrome at 564px,
+    // swapping `1.6fr` for `minmax(0,1.6fr)` changed the overflowing-cell count
+    // 1 -> 1, so the tracks were not what overflowed and the change bought
+    // nothing. The two-line form is a different grid with a different question.
     //
-    // Pinned here too, from the opposite direction: the collapse below is
-    // supposed to happen through @container, so if the tracks ever grow a
-    // minmax minimum that conclusion has been revisited and this note is stale.
-    const row = /\.dsm-workbuddy-pool-row\{display:grid;grid-template-columns:([^;]+);/.exec(css)?.[1] ?? ''
+    // In a grid, a bare `1fr` carries an AUTOMATIC MINIMUM of the item's
+    // min-content width. The first track now holds the account name and the
+    // verdict, and a long account name or a long 被限流 sentence would therefore
+    // push the whole row wider than the table instead of ellipsizing. A zero
+    // minimum is what lets the track actually give way — and it is what lets ONE
+    // template serve the ~564px Settings column with no breakpoint at all.
+    const row = /\.dsm-workbuddy-pool-row\{([^}]*)\}/u.exec(css)?.[1] ?? ''
     expect(row, 'the pool row grid rule is missing').not.toBe('')
-    expect(row, 'the tracks were measured as not being the constraint').not.toContain('minmax(')
+    const tracks = (/grid-template-columns:\s*([^;]+);/u.exec(row)?.[1] ?? '').trim().split(/\s+/u)
+    expect(tracks, 'the grid must declare its tracks').toHaveLength(3)
+    expect(tracks[0], 'the flexible track needs a zero minimum or long text widens the row')
+      .toMatch(/^minmax\(0,/u)
   })
 
-  it('measures the collapse against the table, not the viewport', () => {
+  it('declares the SAME two lines at every width, so the header can describe them', () => {
+    // THE ROW DOES NOT RE-ARRANGE ITSELF ANY MORE. It used to be five columns on
+    // one line when wide and a different re-grid when narrow, which is why the
+    // narrow form had to hide the header: its labels named tracks that no longer
+    // existed. One template means one set of labels that are true everywhere.
+    const base = /\.dsm-workbuddy-pool-row\{([^}]*)\}/u.exec(css)?.[1] ?? ''
+    const rows = [...(/grid-template-areas:\s*((?:"[^"]*"\s*)+);/u.exec(base)?.[1] ?? '')
+      .matchAll(/"([^"]*)"/gu)].map(m => m[1]!.trim().split(/\s+/u))
+    expect(rows, 'exactly two lines: identity+price, then state+actions').toHaveLength(2)
+    expect(rows[0], 'line one carries the identity and the price')
+      .toEqual(expect.arrayContaining(['account', 'credits']))
+    // Line two carries the verdict, the daily claim and the actions.
+    //
+    // The credits STAY ON LINE ONE. Letting them span both lines was tried to
+    // give the claimable-benefit pill more vertical room, and it cost the
+    // `actions` area: with the price in the last column of both rows there is no
+    // track left for the buttons, so they auto-place into an extra implicit row
+    // and the row becomes three lines — the exact defect this suite exists to
+    // catch (the international variant lost `actions` entirely). The remaining
+    // extra height a benefit adds is honest: the pill needs the space.
+    expect(rows[1], 'line two carries the verdict, the daily claim and the actions')
+      .toEqual(expect.arrayContaining(['probe', 'checkin', 'actions']))
+    expect(rows[0], 'the price closes line one').toContain('credits')
+    expect(rows[1], 'the price does NOT spill into line two, which would cost the actions their area')
+      .not.toContain('credits')
+  })
+
+  it('keeps the container query, because the frame still tightens for a narrow column', () => {
     // `container-type: inline-size` is what makes @container work at all; without
-    // it the queries below are inert and the media query is all that is left.
+    // it the queries below are inert and only media queries are left — and those
+    // measure the WINDOW, not the table, which is what laid a wide table into the
+    // 564px Settings column in the first place.
     expect(css).toContain('.dsm-workbuddy-pool-table{container-type:inline-size;')
-    // ONE threshold, and it must sit ABOVE the Settings column's ~564px. An
-    // earlier revision had a 720px band that only dropped a track, and the
-    // Settings column landed INSIDE it: readers got a 2x2 grid whose cells no
-    // longer lined up with their headers. The single breakpoint has to fire for
-    // that column, which is the whole point of measuring the table.
-    const threshold = /@container \(max-width:(\d+)px\)\{[\s\S]*?\.dsm-workbuddy-pool-row\{display:flex/u.exec(css)
+    // ANCHORED to the row rule as the FIRST rule of that block: the lazy version of
+    // this pattern matched the 620px SETTINGS query (which only stacks the model
+    // picker) because the gap between its `{` and the pool row's rule accepted any
+    // text — so the assertion passed while testing a query that never touches the
+    // row, and stayed green if the row's own breakpoint was deleted.
+    const threshold = /@container \(max-width:(\d+)px\)\{\s*\.dsm-workbuddy-pool-row\{/u.exec(css)
     expect(threshold, 'no @container breakpoint scoped to the pool row').not.toBeNull()
     expect(Number(threshold?.[1]), 'the breakpoint must fire for the ~564px Settings column')
-      .toBeGreaterThan(564)
-    // And it must stack rather than re-grid: a table has no useful "slightly
-    // narrower" form, so the narrow form is a card.
-    expect(threshold?.[1], 'the narrow form must stack, not re-grid').toBeDefined()
+      .toBeGreaterThanOrEqual(564)
   })
 
-  it('collapses the account cell OWN inner column, not just its wrapper', () => {
+  it('collapses the account cell own inner column at EVERY width', () => {
     // THE HALF THAT DECIDES ROW HEIGHT (learned from dsh-connect-trae 4.9.0,
     // which shipped the outer half and measured 138px rows).
     //
     // `.dsm-workbuddy-pool-account` is only a flex wrapper. The cells that stack
-    // live one level deeper, in `.dsm-workbuddy-pool-account-name`, which
-    // declares `flex-direction:column` so name / rank+arrows / current pill /
-    // tested-at read as a small card when the table is wide. Collapsing the
-    // wrapper alone left that block stacking four deep inside the narrow form:
-    // measured at 549px it was 81px of the row's 157px, and the row read as one
-    // tall account block beside three one-line facts.
-    const narrow = /@container \(max-width:700px\)\{([\s\S]*?)\n\}/u.exec(css)?.[1] ?? ''
-    expect(narrow, 'the pool narrow form is missing').not.toBe('')
-    expect(narrow, 'the account name block must stop stacking in the narrow form')
+    // live one level deeper in `.dsm-workbuddy-pool-account-name`. It used to
+    // stack there deliberately — name / rank+arrows / current pill / membership
+    // line — because each of those owned a whole line of a tall first column.
+    // Now the account cell shares line one with the credits, so stacking turns
+    // four of them into four lines and the row is not two lines at all.
+    //
+    // Asserted on the BASE rule, not inside a container query: this is the shape
+    // at every width now.
+    expect(css, 'the account name block must wrap among itself, not stack')
       .toMatch(/\.dsm-workbuddy-pool-account-name\{[^}]*flex-direction:row/u)
-    // ...and the margins that only make sense while it stacks must go with it,
-    // or the wrapped line gains uneven leading between the pills.
-    expect(narrow, 'the current badge keeps a stacking margin')
-      .toMatch(/\.dsm-workbuddy-pool-account-name \.dsm-workbuddy-pool-current-tag\{[^}]*margin-top:0/u)
+    // Margins that only make sense while it stacks would add uneven leading to
+    // the wrapped line.
+    expect(css, 'the current badge keeps a stacking margin')
+      .toMatch(/\.dsm-workbuddy-pool-account-name \.dsm-workbuddy-pool-current-tag\{[^}]*align-self:center/u)
     // The ellipsis cannot engage on a flex item left at min-width:auto.
-    expect(narrow, 'a long account name can still push the line instead of clipping')
+    expect(css, 'a long account name can still push the line instead of clipping')
       .toMatch(/\.dsm-workbuddy-pool-account-name b\{[^}]*min-width:0/u)
   })
 
@@ -943,16 +973,23 @@ describe('the panel adds no spacing on top of the column gap', () => {
   })
 })
 
-describe('the per-row actions sit on the account-name line', () => {
+describe('the per-row actions close the second line', () => {
   /**
-   * MOVED BY REQUEST. The gear / test / remove buttons used to be the pool row's
-   * LAST GRID CELL, which put them on a line of their own below the credits on a
-   * wide panel (and on their own wrapped line on a narrow one). Three small
-   * buttons were costing the row a whole line while the name line — the shortest
-   * one — sat with empty space to the right of the sort badge.
+   * WHERE THEY SIT, and why the answer changed twice.
    *
-   * They now live inside the `.dsm-workbuddy-pool-account` cell and are pushed to
-   * its right edge by `margin-inline-start:auto`.
+   * 1. The pool row's last GRID CELL of a five-track single-line table.
+   * 2. INSIDE `.dsm-workbuddy-pool-account`, pushed right by an auto margin, to
+   *    get them off a line of their own.
+   * 3. NOW the row's own last cell again — but the row is THREE text lines at
+   *    every width (two rows of areas, because the provenance line is the probe
+   *    cell's own second line), so "last cell" means the end of line two: after
+   *    the verdict it responds to, which is the reading order the row is meant to
+   *    have. who it is → what state it is in → what you can do about it.
+   *
+   * The assertions below read the BASE rules. Nothing about this arrangement is
+   * width-dependent any more, which is the point: an earlier version asserted
+   * inside `@container (max-width:700px)`, and that is exactly how the wide and
+   * narrow forms drifted apart without a test noticing.
    */
   const css = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
@@ -962,23 +999,191 @@ describe('the per-row actions sit on the account-name line', () => {
     const at = css.indexOf(`${selector}{`)
     return at < 0 ? '' : css.slice(at, css.indexOf('}', at) + 1)
   }
+  const areasOf = (body: string): string[][] => {
+    const areas = /grid-template-areas:\s*((?:"[^"]*"\s*)+);/u.exec(body)?.[1] ?? ''
+    return [...areas.matchAll(/"([^"]*)"/gu)].map(m => m[1]!.trim().split(/\s+/u))
+  }
 
-  it('is a flex item that claims the name line\'s leftover space', () => {
-    const actions = ruleFor('.dsm-workbuddy-pool-row-actions')
-    expect(actions, 'the row-actions rule is missing').not.toBe('')
-    // The auto margin is what moves them to the right edge. Without it they sit
-    // immediately after the sort badge, which reads as a fourth badge.
-    expect(actions, 'the actions must be pushed to the end of the name line')
-      .toContain('margin-inline-start:auto')
-    // And they must not shrink: a squeezed button is unclickable.
-    expect(actions, 'the buttons must not shrink').toContain('flex:none')
+  it('lets the action group WRAP, because a fixed track cannot be widened by its content', () => {
+    // MEASURED IN HEADLESS CHROME, and invisible to every other assertion here.
+    //
+    // The actions track is a fixed 160px on purpose (an auto track is measured
+    // twice — once per grid container — so the header label and the row cells
+    // end up on different edges). But a fixed track does NOT grow to fit its
+    // content: the groups actually rendered here measure
+    //
+    //     ⚙ 测试 删除          134px   zh, resting
+    //     ⚙ Test Remove        156px   en, resting
+    //     ⚙ 测试中… 正在删除…    194px   zh, in flight
+    //     ⚙ Testing… Removing… 208px   en, in flight
+    //
+    // 160px is the widest RESTING group plus margin (at 132px — the value this
+    // briefly shipped with — even the Chinese group wrapped, dropping 删除 onto a
+    // line of its own and growing every row by ~24px at every width). The in-flight
+    // labels still exceed it by up to 48px, so `flex-wrap` is what absorbs them:
+    // the buttons stay whole and the group grows downward inside its own cell
+    // instead of sideways into a neighbour's.
+    const rule = ruleFor('.dsm-workbuddy-pool-row-actions')
+    expect(rule, 'the group must be able to wrap inside its fixed track')
+      .toContain('flex-wrap:wrap')
+    // Right-aligned so a short wrapped line still ends at the row's right edge.
+    expect(rule, 'the wrapped line must stay right-aligned').toContain('justify-content:flex-end')
+    // …and it may not exceed the cell it was given.
+    expect(rule, 'the group must not outgrow its track').toContain('max-width:100%')
   })
 
-  it('no longer forces itself onto a full-width line of its own', () => {
-    // The narrow-panel override was `flex:1 1 100%`, which is exactly the "own
-    // line" behaviour this change removes. It must be gone from the media query.
-    expect(css, 'the old full-width override is still present')
-      .not.toContain('.dsm-workbuddy-pool-row-actions{flex:1 1 100%')
+  it('keeps the buttons unshrinkable', () => {
+    // A squeezed button is unclickable, and this is the rule that says so.
+    const rule = ruleFor('.dsm-workbuddy-pool-row-actions')
+    expect(rule, 'the base rule is missing').toContain('flex:none')
+    expect(rule, 'the buttons must not claim a line of their own')
+      .not.toContain('flex:1 1 100%')
+  })
+
+  it('gives the actions a named area on line two', () => {
+    const rule = ruleFor('.dsm-workbuddy-pool-row-actions')
+    expect(rule, 'the actions own a named grid area of their own').toContain('grid-area:actions')
+    expect(rule, 'the buttons sit at the end of their line').toContain('justify-self:end')
+    // And that area really is on the SECOND line — the mutant this kills is a
+    // third row ("probe probe probe" / ". . . actions"), under which every other
+    // assertion here still passes.
+    const rows = areasOf(ruleFor('.dsm-workbuddy-pool-row'))
+    expect(rows, 'exactly two lines: identity+price, then state+actions').toHaveLength(2)
+    // The actions need a cell in the SECOND row of the template. Where the
+    // price spans both lines, the actions share line two with the verdict.
+    expect(rows[1]!.length, 'line two must have room for the actions').toBeGreaterThan(0)
+  })
+
+  it('puts the credits at the right edge, and the check-in with them on line two', () => {
+    // THE CREDITS CLOSE LINE ONE. They are the only number on the row and the
+    // reader scans them in a column, so their right edge has to be the row's
+    // right edge — which is what `justify-self:end` against the LAST track gives:
+    // every row ends at the same x instead of wherever its own digits stopped.
+    const rowRule = ruleFor('.dsm-workbuddy-pool-row')
+    const rows = areasOf(rowRule)
+    expect(rows[0]![rows[0]!.length - 1], 'the credits close line one').toBe('credits')
+    const creditsRule = ruleFor('.dsm-workbuddy-pool-credits')
+    expect(creditsRule, 'the credits cell must be flush right').toContain('justify-self:end')
+    expect(creditsRule, 'the credits cell must live in its area').toContain('grid-area:credits')
+    // ONE LINE, not two: the figure and its expiry warning share line one. Set as
+    // a column they made row one 17px taller than the text it holds, and the
+    // warning's baseline landed between the verdict and the provenance line — the
+    // right side of the row read as detached from the left.
+    expect(creditsRule, 'the figure and its warning sit on one line')
+      .toContain('flex-direction:row')
+    // The check-in is on line two, not line one: line one is already carrying the
+    // name, the rank, the arrows and the price.
+    expect(rows[1], 'the check-in belongs to line two').toContain('checkin')
+    // …and the check-in CELL must claim that area. Without it the span would be
+    // auto-placed beside the verdict and the header's 「签到」 label would name a
+    // column that no cell occupies — the exact drift the named areas exist to
+    // prevent, and nothing else in the suite caught its removal. Read from the
+    // rules whose selector BEGINS with the class: the first occurrence shares a
+    // font rule with the probe cell, which is not where the area is declared.
+    const checkinRules = [...css.matchAll(/\.dsm-workbuddy-pool-checkin\{[^}]*\}/gu)].map(m => m[0])
+    expect(checkinRules.some(r => r.includes('grid-area:checkin')), 'the check-in cell must claim its area')
+      .toBe(true)
+  })
+
+  it('keeps the verdict and its timestamp on ONE flex line', () => {
+    // THE OWNER'S MUST-FIX: 「被限流 · 11/08 15:44 之后可再用 · 约 15 小时后 /
+    // 测试于 11/07 17:36 / 这个放在一行」. They were two sub-rows, so every measured
+    // row was four lines tall and the fourth held nothing but a date. The wrapper
+    // is what makes them one line that wraps as a unit instead of two statements.
+    const line = ruleFor('.dsm-workbuddy-pool-probe-line')
+    expect(line, 'the verdict line wrapper is missing').not.toBe('')
+    expect(line, 'the fragments must share one flex line').toContain('display:flex')
+    expect(line, 'and must wrap together when they cannot fit')
+      .toContain('flex-wrap:wrap')
+    // The timestamp is QUIETER than the verdict: at the verdict's weight the merged
+    // line read as two statements of equal importance, which is the clutter the
+    // owner objected to.
+    const tested = ruleFor('.dsm-workbuddy-pool-tested-at')
+    expect(tested, 'the timestamp must be its own, muted fragment').toContain('font-size:11px')
+    expect(tested, 'a date must not break across lines').toContain('white-space:nowrap')
+    // The probe cell is a COLUMN of exactly two lines: line two of the row, then
+    // the provenance line. As a row, those two would sit side by side.
+    const probe = ruleFor('.dsm-workbuddy-pool-probe')
+    expect(probe, 'the probe cell must own the probe area').toContain('grid-area:probe')
+    expect(probe, 'the verdict and the provenance stack').toContain('flex-direction:column')
+  })
+
+  it('drops the absolute timestamp only where it cannot sit beside the verdict', () => {
+    // MEASURED IN HEADLESS CHROME: the longest verdict is 260px and 「测试于 11/07
+    // 17:36」 another 102, so the pair needs ~380px. At the Settings column's 564px
+    // the probe cell has ~330px in the Chinese table (check-in + the fixed button
+    // track take the rest). Letting the pair wrap there is exactly what turns three
+    // lines into four, so the narrow block drops the fragment the provenance line
+    // already repeats as 「2 小时前」. Asserted on SOURCE because jsdom runs no
+    // container queries — a rendered assertion would pass at every width.
+    const narrow = /@container \(max-width:700px\)\{([^@]*?)\n\}/u.exec(css)?.[1] ?? ''
+    expect(narrow, 'the narrow block is missing').not.toBe('')
+    expect(narrow, 'the redundant timestamp must go at narrow widths')
+      .toContain('.dsm-workbuddy-pool-tested-at{display:none}')
+    // …and NOT in the base rules: the wide table prints it.
+    const base = css.slice(0, css.indexOf('@container (max-width:700px)'))
+    expect(base, 'the timestamp must still print in the wide table')
+      .not.toContain('.dsm-workbuddy-pool-tested-at{display:none}')
+  })
+
+  it('pins the LAST track to a fixed width, because header and rows are separate grids', () => {
+    // THE DEFECT THIS EXISTS FOR, measured in headless Chrome at 820px:
+    //
+    //   header 「签到」 right edge ... 691
+    //   data   「已签到」 right edge ... 615     -> 76px apart
+    //
+    // The two are SEPARATE grid containers, so an `auto` track is measured twice
+    // against different contents — and the one that differs is the ACTIONS track
+    // (an empty span in the header, three buttons in the row). A flexible track
+    // there moves the check-in sitting beside it, so the label stops pointing at
+    // its own value. Fixed px makes the two containers agree; A/B measured 0px
+    // drift afterwards, for all three check-in texts including the 96px
+    // 「不适用（企业版）」.
+    //
+    // This is asserted on SOURCE because jsdom performs no layout: a rendered
+    // assertion here would pass no matter which track width was used.
+    const tracks = (/grid-template-columns:\s*([^;]+);/u.exec(ruleFor('.dsm-workbuddy-pool-row'))?.[1] ?? '')
+      .trim().split(/\s+/u)
+    expect(tracks, 'the grid declares three tracks').toHaveLength(3)
+    // The LAST track is what the header and rows disagree about.
+    expect(tracks[2], 'the actions track must not be auto/fr — that is the 76px drift')
+      .toMatch(/^\d+px$/u)
+    // The check-in track may be flexible (it has to hold a 96px enterprise label)
+    // but needs a ZERO minimum, or it widens the row instead of shrinking.
+    expect(tracks[1], 'the check-in track needs a zero minimum').toMatch(/^minmax\(0,/u)
+  })
+
+  it('keeps the same three cells when the region has no check-in', () => {
+    // THE INTERNATIONAL TABLE. Its template used to name five cells over four
+    // tracks, which the browser discards WHOLESALE — the two-line layout silently
+    // collapsed to a single stacked column (5.20.26). Named areas remove that
+    // class of bug: the check-in is simply absent from the template, so nothing
+    // slides into the wrong slot.
+    const body = /\.dsm-workbuddy-pool-table:not\(\.dsm-workbuddy-pool-table-checkin\) \.dsm-workbuddy-pool-row\{([^}]*)\}/u
+      .exec(css)?.[1] ?? ''
+    expect(body, 'the no-check-in template is missing').not.toBe('')
+    const rows = areasOf(body)
+    expect(rows, 'still exactly two lines').toHaveLength(2)
+    // The count is what makes the areas safe: three tracks declared, three cells
+    // per line, in both variants. A mismatch here is silently discarded CSS.
+    const tracks = (/grid-template-columns:\s*([^;]+);/u.exec(ruleFor('.dsm-workbuddy-pool-row'))?.[1] ?? '')
+      .trim().split(/\s+/u)
+    for (const [index, line] of rows.entries()) {
+      expect(line.length, `line ${index + 1} names a cell per track`).toBe(tracks.length)
+    }
+    // The credits still close line one, and the actions still close line two, so
+    // the two right edges coincide here exactly as they do in the domestic table.
+    expect(rows[0]![rows[0]!.length - 1], 'the credits close line one').toBe('credits')
+    // Line one's credits own the LAST track, and line two's actions own that same
+    // last track — one fixed 160px column, which is why both cells share one right
+    // edge in both variants. (Credits used to run across the check-in track too;
+    // they are a single cell now, and the check-in's absence must not pull them
+    // left.)
+    expect(rows[1]).toContain('actions')
+    expect(rows[1]![rows[1]!.length - 1], 'the actions close line two').toBe('actions')
+    // And the check-in is named NOWHERE — not merely empty, which would still
+    // claim its track.
+    for (const line of rows) expect(line).not.toContain('checkin')
   })
 })
 

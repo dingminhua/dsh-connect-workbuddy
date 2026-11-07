@@ -122,13 +122,17 @@ export function formatShortClock(value: number): string {
  * measurement and no exclusion is simply unknown, and inventing "可用" for it
  * would be a claim nobody made.
  *
- * The retry wording has three states, matching the card's three:
- *  - a stated instant        → "被限流 · 10/19 01:32 之后可再用"
- *  - no instant but a timed   → "被限流 · 未提供恢复时间"
+ * The retry wording has four states, matching the card's four:
+ *  - a stated instant still ahead → "被限流 · 10/19 01:32 之后可再用 · 约 6 小时后"
+ *  - a stated instant ALREADY past, on a WAIT-AND-SEE cooldown (rate-limited,
+ *    model-busy) → "恢复时间已到 · 待复核" (never the verdict beside a note that
+ *    the verdict has expired — one of them would be false). Other outcomes that
+ *    happen to carry a past instant keep their verdict and drop the instant
+ *  - no instant but a timed       → "被限流 · 未提供恢复时间"
  *    exclusion
- *  - any other outcome        → the bare outcome ("连不上上游")
+ *  - any other outcome            → the bare outcome ("连不上上游")
  *
- * That third case is deliberate: "未提供恢复时间" beside a credential rejection
+ * That last case is deliberate: "未提供恢复时间" beside a credential rejection
  * would imply waiting helps, when the only fix is signing in again.
  */
 export function availabilityLine(
@@ -158,12 +162,33 @@ export function availabilityLine(
       // It lives HERE rather than being appended by each caller because the card
       // appended it and the panel did not — the same drift this module exists to
       // stop, one layer down. Assembling a sentence at a call site guarantees the
-      // call sites will disagree eventually. The relative part is empty once the
-      // moment has passed (`remainingText` returns ''), which is exactly when the
-      // account is back and the absolute time is the honest thing to show.
+      // call sites will disagree eventually.
+      //
+      // Once the moment has passed `remainingText` returns '' and there IS no
+      // wait left, but the answer is NOT "the outcome, and the instant it should
+      // have recovered at" — that printed 被限流 · 11/08 15:44 之后可再用 about a
+      // time already in the past, i.e. a present-tense verdict beside a
+      // future-tense date for the same moment. The row says the one state that is
+      // actually true then, and the card re-tests this single account on its own
+      // (see autoReTest) so the next measurement — not the wording — is what
+      // resolves it.
       const left = remainingText(t, probe.retryAtMs, nowMs)
+      if (left === '') {
+        // 「恢复时间已到 · 待复核」 belongs to the two states where WAITING is the
+        // whole answer: the upstream named an instant and that instant is now
+        // behind us. Anything else carrying a past `retryAtMs` — an exhausted
+        // quota's monthly refresh, a `Retry-After` on a rejected credential — is
+        // NOT waiting for a re-check: its verdict is still the reason it cannot
+        // serve, and replacing it with 「待复核」 would hide the one fact the user
+        // has to act on. Those keep their verdict and DROP the instant instead,
+        // because a past instant is not information (it was printed before as
+        // 「积分用尽 · 11/08 15:44 之后可再用」 about a moment already gone).
+        return probe.outcome === 'rate-limited' || probe.outcome === 'model-busy'
+          ? t('row.poolRetryExpired')
+          : outcomeText(t, probe.outcome)
+      }
       const at = t('row.poolRetryAt', { at: formatShortClock(probe.retryAtMs) })
-      return `${outcomeText(t, probe.outcome)} · ${at}${left === '' ? '' : ` · ${left}`}`
+      return `${outcomeText(t, probe.outcome)} · ${at} · ${left}`
     }
     // A limited account with NO stated time says exactly that. Rendering the
     // bare outcome would leave the user unable to tell "the upstream gave no
@@ -218,12 +243,33 @@ export function availabilityMark(
       // guess what happens when it elapses — on a row whose whole job is "can
       // this account serve", the verb is the answer, not the rounding.
       //
-      // Once the moment has passed `recoversInText` returns '' — then the reason
-      // alone is the honest line, because there is nothing left to wait for.
+      // Once the moment has passed `recoversInText` returns '' — there is no
+      // wait left to name. Returning the reason ALONE there was wrong, and the
+      // bug was invisible for a whole session: a row whose cooldown expired an
+      // hour ago rendered exactly like a row measured a second ago, so
+      // 「被限流」 on a seven-hour-old record looked like a live verdict.
+      //
+      // What is true in that state is narrower than "rate limited": the upstream
+      // said it would free up at a time that has NOW PASSED, and nothing has
+      // re-measured since. So the line states that instead of repeating the
+      // stale verdict — it is the difference between "this is the situation" and
+      // "this was the situation, as of the last test".
+      //
+      // The verdict is NOT prefixed here, and that is the whole point: the first
+      // version printed 「被限流 · 限流时段已过 · 重新测试以确认」, three fragments
+      // that contradict each other inside one line — a present-tense verdict, a
+      // note that it is over, and a chore for the reader. The owner's answer was
+      // that the plugin should simply re-test that one account, which is what
+      // `autoReTest` in the card does; the row only has to name the moment before
+      // the new measurement lands.
       const left = recoversInText(t, probe.retryAtMs, nowMs)
-      return left === ''
-        ? outcomeMarkText(t, probe.outcome)
-        : `${outcomeMarkText(t, probe.outcome)} · ${left}`
+      if (left !== '') return `${outcomeMarkText(t, probe.outcome)} · ${left}`
+      // Same two-state rule as `availabilityLine`: only a cooldown whose instant
+      // has passed is 「待复核」. A quota refresh or a rejected credential keeps its
+      // own reason — see the longer note there.
+      return probe.outcome === 'rate-limited' || probe.outcome === 'model-busy'
+        ? t('row.poolRetryExpired')
+        : outcomeMarkText(t, probe.outcome)
     }
     if (probe.outcome === 'rate-limited'
       || probe.outcome === 'model-busy'
