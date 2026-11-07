@@ -77,7 +77,7 @@ export function parseTransferFile(text: string): WorkBuddyTransferRecord[] {
  * `undefined` means "not a transfer document", which the caller turns into a
  * message naming the shape it actually saw.
  */
-function recordsOf(parsed: unknown): unknown[] | undefined {
+function recordsOf(parsed: unknown, depth = 0): unknown[] | undefined {
   if (Array.isArray(parsed)) return parsed
   if (typeof parsed !== 'object' || parsed === null) return undefined
   const root = parsed as Record<string, unknown>
@@ -85,13 +85,20 @@ function recordsOf(parsed: unknown): unknown[] | undefined {
     const value = root[key]
     if (Array.isArray(value)) return value
   }
-  // One more level for the envelope-of-envelope form some tools emit
-  // (`{code: 0, data: {accounts: [...]}}`). Bounded on purpose: an unbounded
-  // search would happily accept a log file with an array somewhere inside it.
+  // ONE extra level for the envelope-of-envelope form some tools emit
+  // (`{code: 0, data: {accounts: [...]}}`).
+  //
+  // The `depth` bound is not decoration — without it this walked ALL the way
+  // down. The first version of this function recursed unconditionally and its
+  // comment claimed it was bounded, which was simply false: measured, a record
+  // array wrapped 200 levels deep was ACCEPTED, so a log or a config dump with
+  // an array under `data` somewhere would have been read as a credential file.
+  // The bound is what makes "bounded on purpose" true instead of aspirational.
+  if (depth >= 1) return undefined
   for (const key of ['data', 'result']) {
     const value = root[key]
     if (typeof value !== 'object' || value === null) continue
-    const inner = recordsOf(value)
+    const inner = recordsOf(value, depth + 1)
     if (inner !== undefined) return inner
   }
   return undefined

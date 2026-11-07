@@ -1261,9 +1261,10 @@ export const Config: z<Config> = z.object({
       .default(false)
       .description('Strip EVERY historical thinking block before the request goes out (issue #213). ' +
         'The channel gate scans the request text, and a 11128 report matched every banned opening against ' +
-        'this session\'s own reasoning blocks: the plugin sends past reasoning as `reasoning_content` ' +
-        'whenever a block carries a signature, so the plugin is one of the things carrying the text the ' +
-        'gate refuses. On, all thinking blocks are removed from the request; your messages, tool calls and ' +
+        'this session\'s own reasoning blocks: WorkBuddy answers reasoning in `reasoning_content`, pi-ai ' +
+        'records that field name as the block signature and replays it under the same name, so past ' +
+        'reasoning rides along in the request and is one of the things carrying the text the gate refuses. ' +
+        'On, all thinking blocks are removed from the request; your messages, tool calls and ' +
         'the model\'s answers are untouched, but the model no longer sees its own earlier reasoning. ' +
         'OFF by default: that loss is real, so it is a deliberate answer to a 11128 you can match to ' +
         'reasoning text, not a default. Takes effect on the next turn, no reload.'),

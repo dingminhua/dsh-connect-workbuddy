@@ -32,6 +32,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
+import { convertMessages } from '@earendil-works/pi-ai/api/openai-completions'
 import type { Api, Context, Model } from '@earendil-works/pi-ai'
 import {
   allThinkingOf,
@@ -63,7 +64,14 @@ function ownTurn(thinking: string): Record<string, unknown> {
     provider: WORKBUDDY_PROVIDER,
     model: MODEL.id,
     content: [
-      { type: 'thinking', thinking, thinkingSignature: 'sig' },
+      // THE REAL SIGNATURE VALUE, not a placeholder. pi-ai records the stream
+      // field name the reasoning arrived in and re-emits that same field, so the
+      // signature that actually replays is `reasoning_content` — measured, 790
+      // replay records in one real session held that value and no other
+      // (`src/body-report.ts`). An arbitrary string like 'sig' is NOT a field
+      // name, so `isOpenAICompletionsReasoningField` rejects it and the block is
+      // never emitted: a test built on it would prove nothing about the wire.
+      { type: 'thinking', thinking, thinkingSignature: 'reasoning_content' },
       { type: 'text', text: 'the answer' },
     ],
     usage: { input: 1, output: 1 },
@@ -146,6 +154,57 @@ describe('the switch actually changes the request (through the real repair dispa
   })
 })
 
+describe('the premise, pinned through pi-ai real request builder', () => {
+  /**
+   * WHY THIS BLOCK EXISTS. The first draft of this suite used `'sig'` as the
+   * thinking signature — a value pi-ai's `isOpenAICompletionsReasoningField`
+   * rejects, so the block was never emitted and every "it replays" assertion was
+   * about a block that could not reach the wire. The suite was green and proved
+   * nothing.
+   *
+   * These two cases pin the actual gate: the signature IS the stream field name,
+   * so only `reasoning_content` / `reasoning` / `reasoning_text` replay. If pi-ai
+   * ever changes that, these fail and #213's premise gets re-examined instead of
+   * silently rotting.
+   */
+  /**
+   * `convertMessages` is pi-ai's REAL request-body assembler, which is the only
+   * thing that answers "does this block reach the wire". `transformMessages`
+   * (used elsewhere in this file) only rewrites blocks; asserting on its output
+   * proved nothing about emission, which is how the first draft of this suite
+   * stayed green while testing a signature that is never sent.
+   */
+  const wireKeys = (signature: string): string[] => {
+    const content = [
+      { type: 'thinking', thinking: 'the reasoning', thinkingSignature: signature },
+      { type: 'text', text: 'the answer' },
+    ]
+    const converted = convertMessages(MODEL as never, {
+      messages: [{
+        role: 'assistant',
+        api: 'openai-completions',
+        provider: WORKBUDDY_PROVIDER,
+        model: MODEL.id,
+        content,
+        usage: { input: 1, output: 1 },
+        stopReason: 'stop',
+        timestamp: 1,
+      }],
+    } as never, {} as never)
+    return Object.keys((converted as unknown as Record<string, unknown>[])[0] ?? {})
+  }
+
+  it('replays reasoning under the field name WorkBuddy actually uses', () => {
+    expect(wireKeys('reasoning_content')).toContain('reasoning_content')
+  })
+
+  it('does NOT replay a signature that is not a field name', () => {
+    // This is the mistake the first draft made, kept as a guard.
+    expect(wireKeys('sig')).not.toContain('reasoning_content')
+    expect(wireKeys('')).not.toContain('reasoning_content')
+  })
+})
+
 describe('what the predicate selects', () => {
   /**
    * The production path is `withLegacyContext`'s `prepare`: align, then pick a
@@ -173,7 +232,7 @@ describe('what the predicate selects', () => {
       { role: 'assistant', provider: WORKBUDDY_PROVIDER, model: MODEL.id,
         api: 'openai-completions', stopReason: 'stop', timestamp: 1,
         content: [
-          { type: 'thinking', thinking: 'reasoning', thinkingSignature: 'sig' },
+          { type: 'thinking', thinking: 'reasoning', thinkingSignature: 'reasoning_content' },
           { type: 'text', text: 'the answer the user reads' },
           { type: 'toolCall', id: 'call-1', name: 'read', arguments: {} },
         ] },

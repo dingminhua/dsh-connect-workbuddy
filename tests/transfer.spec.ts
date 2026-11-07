@@ -84,6 +84,23 @@ describe('parseTransferFile', () => {
     expect(parseTransferFile(JSON.stringify({ code: 0, data: { accounts: records } }))).toHaveLength(2)
   })
 
+  it('is bounded at one extra level, and proves it by walking deep', () => {
+    // THIS TEST EXISTS BECAUSE THE FIRST VERSION OF THE FIX LIED.
+    //
+    // `recordsOf` recursed unconditionally while its comment said "bounded on
+    // purpose: one extra level". The claim was false — measured, an array of
+    // records wrapped 200 levels deep was still accepted, which defeats the very
+    // reason the wrappers are recognized BY NAME: a log dump with an array under
+    // `data` would have been read as a credential file.
+    //
+    // A comment cannot be tested. This asserts the bound by walking past it.
+    const records = [siblingRecord()]
+    expect(parseTransferFile(JSON.stringify({ data: { accounts: records } }))).toHaveLength(1)
+    let deep: unknown = records
+    for (let i = 0; i < 200; i += 1) deep = { data: deep }
+    expect(() => parseTransferFile(JSON.stringify(deep))).toThrow('array')
+  })
+
   it('still refuses a document whose shape it does not recognize, and says what it saw', () => {
     // Not every object is a transfer file: a wrapper must be recognized BY NAME.
     // Scanning for "the first array anywhere" would accept a log dump.
