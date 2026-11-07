@@ -198,10 +198,14 @@ describe('context-budget tiers', () => {
     const m = await render(usageWithWindow(1_000_000))
     expect(Array.from(budgetSelect(m.container)?.options ?? [])).toHaveLength(3)
     expect(tierLabels(m.container)).toEqual(['200K', '500K', '1M'])
-    // And the row that holds them is the one the stylesheet allows to wrap.
-    const head = m.container.querySelector('.dsm-workbuddy-model-head')
-    expect(head).not.toBeNull()
-    expect(head?.querySelector('.dsm-workbuddy-context-budget')).not.toBeNull()
+    // And it lives on the model's SECOND line, with the other per-model
+    // switches. This used to assert "inside .dsm-workbuddy-model-head" — the
+    // control has since moved to `.dsm-workbuddy-model-controls` when the row
+    // was split into three explicit lines, so the old anchor was pinning WHERE
+    // the control was rather than that it is reachable.
+    const controls = m.container.querySelector('.dsm-workbuddy-model-controls')
+    expect(controls).not.toBeNull()
+    expect(controls?.querySelector('select.dsm-workbuddy-context-budget')).not.toBeNull()
   })
 })
 
@@ -252,5 +256,68 @@ describe('the tier control is a dropdown, not a row of radios', () => {
     }
     expect(sent.value['cn']?.contextBudgets?.['probe-model']).toBe(500_000)
     await m.unmount()
+  })
+})
+
+describe('one model is expressed as three lines', () => {
+  /**
+   * The row was TWO lines, and the first did not fit 564px — it wrapped, so the
+   * row was already three lines tall, just broken wherever the widths landed.
+   * These cases pin the explicit structure, and they are deliberately about the
+   * STRUCTURE rather than the pixels: jsdom performs no layout, so "is it three
+   * lines" is unmeasurable, while "is there one container per concern" is exact.
+   */
+  const rowOf = async (): Promise<{ head: Element | null, controls: Element | null, details: Element | null }> => {
+    const m = await render(usageWithWindow(1_000_000))
+    const model = m.container.querySelector('.dsm-workbuddy-model')
+    return {
+      head: model?.querySelector('.dsm-workbuddy-model-head') ?? null,
+      controls: model?.querySelector('.dsm-workbuddy-model-controls') ?? null,
+      details: model?.querySelector('.dsm-workbuddy-model-details') ?? null,
+    }
+  }
+
+  it('gives each concern its own line', async () => {
+    const { head, controls, details } = await rowOf()
+    expect(head, 'line 1 (name)').not.toBeNull()
+    expect(controls, 'line 2 (switches)').not.toBeNull()
+    expect(details, 'line 3 (facts + actions)').not.toBeNull()
+  })
+
+  it('puts the name line alone on line 1', async () => {
+    // Line 1 answers "what is this model": the checkbox, the name, its price,
+    // the promo chip and the load icon. A switch or a select here would put a
+    // setting back on the line the row was split to lighten.
+    const { head } = await rowOf()
+    expect(head?.querySelector('.dsm-workbuddy-model-name')).not.toBeNull()
+    expect(head?.querySelector('input[type=checkbox]')).not.toBeNull()
+    expect(head?.querySelector('select.dsm-workbuddy-context-budget')).toBeNull()
+    expect(head?.querySelector('.dsm-workbuddy-model-probe')).toBeNull()
+  })
+
+  it('puts the per-model switches on line 2 and the buttons on line 3', async () => {
+    // The split that actually needed fixing: the two BUTTONS are actions on the
+    // model, not settings OF it, so they belong with its facts.
+    const { controls, details } = await rowOf()
+    expect(controls?.querySelector('select.dsm-workbuddy-context-budget')).not.toBeNull()
+    expect(controls?.querySelector('.dsm-workbuddy-model-probe')).toBeNull()
+    expect(details?.querySelector('.dsm-workbuddy-model-probe')).not.toBeNull()
+    expect(details?.querySelector('.dsm-workbuddy-model-meta')).not.toBeNull()
+  })
+
+  it('indents lines 2 and 3 under the name, not under the checkbox', async () => {
+    // A stylesheet contract, because the alignment cannot be observed in jsdom.
+    // 22px = the checkbox's own box + the 8px gap before the name, so the three
+    // lines read as one block instead of a checkbox column with three toppled
+    // fragments beside it.
+    const rules = /\.dsm-workbuddy-model-(?:controls|details)\{([^}]*)\}/g
+    const found = Array.from(WORKBUDDY_CARD_CSS.matchAll(rules))
+    expect(found.length, 'both line-2 and line-3 rules must exist').toBe(2)
+    for (const rule of found) {
+      expect(rule[1]).toContain('padding-inline-start:22px')
+    }
+    // Line 1 must NOT be indented: the checkbox opens it.
+    const head = /\.dsm-workbuddy-model-head\{([^}]*)\}/.exec(WORKBUDDY_CARD_CSS)?.[1] ?? ''
+    expect(head).not.toContain('padding-inline-start')
   })
 })

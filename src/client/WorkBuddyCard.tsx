@@ -3633,6 +3633,18 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                       <div className="dsm-workbuddy-model-list">
                         {visibleModels.map(model => (
                           <div className={`dsm-workbuddy-model${activeEnabledIds.has(model.id) ? '' : ' dsm-workbuddy-model-disabled'}`} key={model.id}>
+                            {/* THREE LINES PER MODEL (requested) — the name,
+                                its switches, and the facts/actions.
+                                It was two: one line carrying the checkbox, the
+                                name, both switches, the budget select and two
+                                buttons, then a line of metadata. In the 564px
+                                Settings column that first line wrapped onto a
+                                second one anyway, so the row was already three
+                                lines tall — just broken at an arbitrary point,
+                                with the budget select sometimes starting a line
+                                of its own. Making the break explicit means each
+                                line is a UNIT a reader can scan: what the model
+                                is, how it behaves, what it costs. */}
                             <div className="dsm-workbuddy-model-head">
                               <label className="dsm-workbuddy-model-enabled">
                                 <input
@@ -3668,6 +3680,14 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                   {busyIcon(busyLevels[model.id], uiLanguage())}
                                 </span>
                               </label>
+                            </div>
+                            {/* LINE 2 — the model's own behaviour: what it
+                                accepts, what it thinks at, and how much of its
+                                window it may use. All three are per-model
+                                settings, which is why they share a line; the
+                                buttons that ACT on the model belong with its
+                                facts on line 3. */}
+                            <div className="dsm-workbuddy-model-controls">
                               <label
                                 className="dsm-workbuddy-model-image"
                                 title={imageCheckboxHint(model, t)}
@@ -3742,47 +3762,13 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                   {formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}
                                 </option>
                               </select>
-                                <div className="dsm-workbuddy-model-actions-buttons">
-                                {/* Test button. Deliberately NOT gated on `canWrite`
-                                    or `saving`: a probe writes no settings, so it
-                                    works on a read-only card and while a save is
-                                    in flight. It IS gated on being signed in,
-                                    because without a credential the only possible
-                                    answer is "rejected".
-
-                                    It sends a REAL-VOLUME request (see
-                                    DEFAULT_PROBE_INPUT_TOKENS in src/probe.ts), because
-                                    the upstream's 6004 throttle fires on request
-                                    size: a tiny probe would report "usable" while
-                                    every real request in a long conversation is
-                                    refused. That also means it costs real
-                                    credits, so it is per-model and manual only —
-                                    there is deliberately no batch button. */}
-                                <button
-                                  type="button"
-                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
-                                  disabled={probing[model.id] === true || status.status !== 'signed-in'}
-                                  title={t('row.probeHint')}
-                                  onClick={() => { void probeModels([model.id]) }}
-                                >
-                                  {probing[model.id] === true ? t('row.probing') : t('row.probe')}
-                                </button>
-                                {/* Speed, beside availability (issue #92). Its own
-                                    button because the two answers are about
-                                    different things: a model can be perfectly
-                                    available and half the speed of its
-                                    neighbour at the same credit multiplier. */}
-                                <button
-                                  type="button"
-                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
-                                  disabled={tpsProbing[model.id] === true || status.status !== 'signed-in'}
-                                  title={t('row.tpsHint')}
-                                  onClick={() => { void measureTpsFor([model.id]) }}
-                                >
-                                  {tpsProbing[model.id] === true ? t('row.tpsMeasuring') : t('row.tpsMeasure')}
-                                </button>
-                                </div>
-                              </div>
+                            </div>
+                              {/* LINE 3 — what the model IS (window, output
+                                  ceiling, thinking tier) on the left, and what
+                                  an operator can DO to it on the right. The
+                                  buttons were on line 1 next to the switches;
+                                  they act on the model rather than configuring
+                                  it, so they belong beside its facts. */}
                               <div className="dsm-workbuddy-model-details">
                                 <div className="dsm-workbuddy-model-meta">
                                   <span>{t('row.modelContext', { context: formatCapacity(model.nativeContextWindow, t('row.modelUnknown')) })}</span>
@@ -3855,6 +3841,46 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                       </label>
                                     )
                                   })()}
+                                </div>
+                                <div className="dsm-workbuddy-model-actions-buttons">
+                                {/* Test button. Deliberately NOT gated on `canWrite`
+                                    or `saving`: a probe writes no settings, so it
+                                    works on a read-only card and while a save is
+                                    in flight. It IS gated on being signed in,
+                                    because without a credential the only possible
+                                    answer is "rejected".
+
+                                    It sends a REAL-VOLUME request (see
+                                    DEFAULT_PROBE_INPUT_TOKENS in src/probe.ts), because
+                                    the upstream's 6004 throttle fires on request
+                                    size: a tiny probe would report "usable" while
+                                    every real request in a long conversation is
+                                    refused. That also means it costs real
+                                    credits, so it is per-model and manual only —
+                                    there is deliberately no batch button. */}
+                                <button
+                                  type="button"
+                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
+                                  disabled={probing[model.id] === true || status.status !== 'signed-in'}
+                                  title={t('row.probeHint')}
+                                  onClick={() => { void probeModels([model.id]) }}
+                                >
+                                  {probing[model.id] === true ? t('row.probing') : t('row.probe')}
+                                </button>
+                                {/* Speed, beside availability (issue #92). Its own
+                                    button because the two answers are about
+                                    different things: a model can be perfectly
+                                    available and half the speed of its
+                                    neighbour at the same credit multiplier. */}
+                                <button
+                                  type="button"
+                                  className="dsm-btn dsm-btn-outline dsm-workbuddy-model-probe"
+                                  disabled={tpsProbing[model.id] === true || status.status !== 'signed-in'}
+                                  title={t('row.tpsHint')}
+                                  onClick={() => { void measureTpsFor([model.id]) }}
+                                >
+                                  {tpsProbing[model.id] === true ? t('row.tpsMeasuring') : t('row.tpsMeasure')}
+                                </button>
                                 </div>
                               </div>
                               {(() => {

@@ -506,7 +506,31 @@ export const WORKBUDDY_CARD_CSS = `
    itself wraps, because its three labels can exceed even a whole narrow line —
    hence the media query below as well, which gives the group the full width on a
    phone so it reads as one deliberate line rather than a scramble. */
+/* ONE MODEL = THREE LINES (requested).
+ *
+ * It was two: a single "head" line carrying the checkbox, the name, the two
+ * switches, the budget select and the two buttons, then a line of metadata. The
+ * head line did not fit 564px, so it wrapped — the row was ALREADY three lines
+ * tall most of the time, just broken at whatever point the widths landed on,
+ * with the budget select sometimes starting a line by itself.
+ *
+ * Making the break explicit is the change: each line is now a unit.
+ *   1. WHAT IT IS    — checkbox, name, price multiplier, badges, load icon
+ *   2. HOW IT BEHAVES — image input, thinking, context budget
+ *   3. WHAT IT COSTS / WHAT YOU CAN DO — window + output + tier, then the buttons
+ *
+ * Nothing is added or removed; the same controls are grouped by meaning instead
+ * of by what happened to fit. */
 .dsm-workbuddy-model-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;row-gap:8px;min-width:0}
+/* Line 2. Its own row under the name, left-aligned: these are the model's own
+   settings, and aligning them with the name's indent (rather than to the right
+   edge) makes the three lines read as one block. padding-inline-start matches
+   the checkbox + gap so line 2 starts under the name, not under the checkbox. */
+.dsm-workbuddy-model-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;row-gap:8px;min-width:0;padding-inline-start:22px}
+/* Line 3 already exists as .dsm-workbuddy-model-details (facts left, actions
+   right). It gains the buttons, so it needs the same indent as line 2 and a
+   baseline that keeps the buttons from stretching the line. */
+.dsm-workbuddy-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding-inline-start:22px}
 .dsm-workbuddy-model-enabled{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;flex:1}
 .dsm-workbuddy-model-enabled input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe);flex:none}
 .dsm-workbuddy-model-image{display:inline-flex;align-items:center;gap:5px;flex:none;cursor:pointer;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
@@ -558,7 +582,6 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-model-promo{flex:none;display:inline-flex;align-items:center;padding:0 7px;border-radius:999px;font-size:10px;line-height:16px;font-weight:600;white-space:nowrap;color:var(--dsm-workbuddy-promo-color,var(--dsw-alias-brand-primary,#5686fe));background:rgba(255,255,255,.08);background:color-mix(in srgb,var(--dsm-workbuddy-promo-color,var(--dsw-alias-brand-primary,#5686fe)) 16%,transparent);border:1px solid transparent;border-color:color-mix(in srgb,var(--dsm-workbuddy-promo-color,var(--dsw-alias-brand-primary,#5686fe)) 40%,transparent)}
 .dsm-workbuddy-model-id{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-workbuddy-model-desc{margin:0;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
-.dsm-workbuddy-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
 .dsm-workbuddy-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}
 .dsm-workbuddy-model-meta-tag{padding:1px 7px;border-radius:999px;font-size:11px;line-height:15px;background:rgba(174,179,187,.11);color:var(--dsw-alias-label-secondary,#c6c9d0)}
 /* The per-model default thinking tier (issue #179). It lives INSIDE the meta row
@@ -1441,8 +1464,8 @@ export const WORKBUDDY_CARD_CSS = `
   background:var(--dsw-alias-bg-l1,transparent);
   border:1px solid var(--dsw-alias-border-l2,#3a3d45);
 }
-
 `
+
 /**
  * Composer credit readout styles, injected by the readout component itself.
  *
