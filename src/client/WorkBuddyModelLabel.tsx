@@ -287,10 +287,33 @@ export interface WorkBuddyModelLabelProps {
  * WHY NOT `-1`. That is `dsh-connect-qoder`'s slot priority, and two plugins on
  * one priority collide for exactly the same reason `0` did.
  *
- * WHY `-0.5` IS SAFE AND SELF-CONTAINED. The value only has to be distinct from
- * whatever else claims the cell; `-0.5` is legal, sorts without collision
- * against both `-1` and `0`, and requires knowing nothing about the other
- * plugins. See the "不做插件联动" invariant in `docs/DESIGN.md`.
+ * WHY `-0.5` WAS TOO HIGH — the measured defect. `-0.5` is legal and collides
+ * with nothing, but "distinct from everyone" is NOT the same as "wins", and this
+ * cell only renders its LOWEST priority. `-0.5` sits ABOVE two contributors that
+ * were present in the same profile:
+ *
+ *     dsh-connect-qoder   -1
+ *     dsh-connect-trae    -0.25
+ *     this plugin         -0.5   ← lost to qoder, so this component never ran
+ *
+ * Losing is silent by construction: the winner renders, the loser is simply not
+ * called. The symptom is exactly "the picker shows no badges", with correct
+ * data, a correct component and no error anywhere — which is what made this cost
+ * several rounds to find. The rows still showed `Hy4 · x0.00` because that
+ * string is the catalog `model.name` the WINNER drew, not our label.
+ *
+ * WHY `-100`. The value has to be BELOW every plausible claimant, not merely
+ * different from the ones visible today. That is the whole lesson: `-0.5` was
+ * chosen to be DISTINCT, was distinct, and still lost. Contributors already
+ * shipped at `-10` (`dsh-model-picker-brand`, a label decorator) and `-1`
+ * (`dsh-connect-qoder`), so anything in the single digits is a value someone
+ * else can step under. `-100` is an ordinary number to the sort (no range is
+ * reserved), leaves room on both sides, and makes the ordering a decision of
+ * this plugin rather than a race it keeps losing.
+ *
+ * A low priority is also the CORRECT semantic here: this label shows more than
+ * any other contributor (name + price + promotion + load + new-model mark), so
+ * it should be the one that takes the cell when several want it.
  *
  * WHAT THIS PLUGIN DELIBERATELY DOES NOT DO. It does not read the slot ledger,
  * does not look for another plugin's registration, and does not render another
@@ -318,7 +341,7 @@ export interface WorkBuddyModelLabelProps {
  * Exported so the test asserts against the value that actually ships rather
  * than a copy of it.
  */
-export const MODEL_LABEL_PRIORITY = -0.5
+export const MODEL_LABEL_PRIORITY = -100
 
 /**
  * The label for one model row in the host's picker.

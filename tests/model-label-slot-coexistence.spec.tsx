@@ -154,22 +154,29 @@ describe('claiming the model-label cell beside the host\'s own contributor', () 
     expect(slotCore.entriesOfSlot(SLOT)).toHaveLength(1)
   })
 
-  it('picks a priority that collides with neither the host nor qoder', () => {
-    // The host's entry declares NO priority, which MEANS the default 0 — that
-    // is exactly why a same-value registration collided with it. qoder claims
-    // -1. Ours has to be distinct from both, and picking it must not require
-    // inspecting anyone else's registration.
-    expect(MODEL_LABEL_PRIORITY).not.toBe(0)
-    expect(MODEL_LABEL_PRIORITY).not.toBe(-1)
-
+  it('WINS the cell against every contributor that competes for it', () => {
+    // WAS "picks a priority that collides with neither the host nor qoder", and
+    // that assertion is why the real defect survived several rounds: "distinct"
+    // was mistaken for "sufficient". `-0.5` was distinct from `0` and from `-1`,
+    // passed this test, and still LOST — because the cell renders its LOWEST
+    // priority, and qoder registers at `-1`.
+    //
+    // Losing is silent: the winner renders, the loser is simply not called. So
+    // the only assertion worth making is that this plugin ENDS UP the winner.
     const slotCore = core()
+    slotCore.register({ name: SLOT, priority: 0 }, Host1017Label)
     slotCore.register({ name: SLOT, priority: -1 }, () => 'qoder')
+    slotCore.register({ name: SLOT, priority: -0.25 }, () => 'trae')
+    // A plausible future contributor that undercuts anything in single digits.
+    slotCore.register({ name: SLOT, priority: -10 }, () => 'brand')
+
     expect(() => slotCore.register({ name: SLOT, priority: MODEL_LABEL_PRIORITY }, WorkBuddyModelLabel))
       .not.toThrow()
-    slotCore.register({ name: SLOT, locale: 'deepseek-model-label-1017' }, Host1017Label)
 
+    // The claim itself: ours sorts first, so ours is what the picker renders.
     const order = slotCore.entries(SLOT).map(entry => entry.options.priority ?? 0)
-    expect(order).toEqual([-1, MODEL_LABEL_PRIORITY, 0])
+    expect(order[0], `entries=${order.join(',')}`).toBe(MODEL_LABEL_PRIORITY)
+    expect(winnerOf(slotCore)).toBe(WorkBuddyModelLabel)
   })
 
   it('still decorates a WorkBuddy row', () => {
