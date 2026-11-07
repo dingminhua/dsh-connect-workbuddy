@@ -1099,7 +1099,18 @@ export const WORKBUDDY_CARD_CSS = `
    and this row's track is a fraction of the table — in a narrow window it let
    the label break into 测 / 试. Clipping is the right failure for a button
    whose label is fixed and tiny. */
-.dsm-workbuddy-pool-row-actions{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex:none}
+/* Per-row actions, at the right end of the NAME line.
+ *
+ * They used to be the pool row's last grid cell, so on a wide panel they landed
+ * on a line of their own below the credits, and on a narrow one they wrapped to
+ * a line of their own again. Either way the row spent a line on three small
+ * buttons. margin-inline-start:auto claims the empty space beside the sort
+ * badge instead — the name line is the shortest one in the row, so there is
+ * always room, and the buttons sit where the eye already is.
+ *
+ * flex:none is load-bearing: the name may truncate, the buttons may not, and a
+ * shrunken button is unclickable. */
+.dsm-workbuddy-pool-row-actions{display:flex;gap:6px;align-items:center;flex:none;margin-inline-start:auto}
 .dsm-workbuddy-pool-row-actions .dsm-workbuddy-pool-small-btn{white-space:nowrap}
 .dsm-workbuddy-pool-row-actions .dsm-workbuddy-pool-small-btn{padding:2px 10px;font-size:12px}
 /* The picker's cap, narrowed on a phone. NOTE this @media measures the VIEWPORT,
@@ -1185,7 +1196,6 @@ export const WORKBUDDY_CARD_CSS = `
   .dsm-workbuddy-pool-credits{flex:0 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
   .dsm-workbuddy-pool-probe{flex:1 1 auto;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
   .dsm-workbuddy-pool-checkin{flex:none}
-  .dsm-workbuddy-pool-row-actions{flex:1 1 100%;justify-content:flex-start;padding-top:4px}
 }
 
 /* ISSUE #198, the same breakpoint the pool row already uses. On a phone the model

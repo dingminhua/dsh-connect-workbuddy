@@ -929,3 +929,42 @@ describe('the panel adds no spacing on top of the column gap', () => {
       .toMatch(/padding:0 0 \d+px/u)
   })
 })
+
+describe('the per-row actions sit on the account-name line', () => {
+  /**
+   * MOVED BY REQUEST. The gear / test / remove buttons used to be the pool row's
+   * LAST GRID CELL, which put them on a line of their own below the credits on a
+   * wide panel (and on their own wrapped line on a narrow one). Three small
+   * buttons were costing the row a whole line while the name line — the shortest
+   * one — sat with empty space to the right of the sort badge.
+   *
+   * They now live inside the `.dsm-workbuddy-pool-account` cell and are pushed to
+   * its right edge by `margin-inline-start:auto`.
+   */
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
+    'utf8',
+  )
+  const ruleFor = (selector: string): string => {
+    const at = css.indexOf(`${selector}{`)
+    return at < 0 ? '' : css.slice(at, css.indexOf('}', at) + 1)
+  }
+
+  it('is a flex item that claims the name line\'s leftover space', () => {
+    const actions = ruleFor('.dsm-workbuddy-pool-row-actions')
+    expect(actions, 'the row-actions rule is missing').not.toBe('')
+    // The auto margin is what moves them to the right edge. Without it they sit
+    // immediately after the sort badge, which reads as a fourth badge.
+    expect(actions, 'the actions must be pushed to the end of the name line')
+      .toContain('margin-inline-start:auto')
+    // And they must not shrink: a squeezed button is unclickable.
+    expect(actions, 'the buttons must not shrink').toContain('flex:none')
+  })
+
+  it('no longer forces itself onto a full-width line of its own', () => {
+    // The narrow-panel override was `flex:1 1 100%`, which is exactly the "own
+    // line" behaviour this change removes. It must be gone from the media query.
+    expect(css, 'the old full-width override is still present')
+      .not.toContain('.dsm-workbuddy-pool-row-actions{flex:1 1 100%')
+  })
+})

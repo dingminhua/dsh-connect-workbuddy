@@ -2030,6 +2030,40 @@ function renderAccountRow(input: {
           ? probe === undefined ? null : h('span', null, t('row.poolTestedAt', { at: formatShortClock(probe.atMs) }))
           : h('span', { className: 'dsm-workbuddy-pool-excluded' }, excluded),
       ),
+          // Per-row actions, RIGHT side of the row: test this one account, and forget
+          // this account's plugin-stored credential. The test reuses the batch's
+          // probe (one measurement, one vocabulary); the removal deletes ONLY the
+          // vault entry — a desktop sign-in reappears on the next rescan, which the
+          // log message states instead of a silent no-op.
+          h('span', { className: 'dsm-workbuddy-pool-row-actions' },
+            // 设备参数入口。放在「测试」左边：它改的是"这个账号以什么身份出现"，
+            // 与"它现在能不能用"是同一层的问题，两个按钮挨着才读得通。
+            onEditDevice === undefined
+              ? null
+              : h('button', {
+                  type: 'button',
+                  className: `dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn dsm-workbuddy-device-gear${deviceGearBlocked ? ' dsm-workbuddy-device-gear-off' : ''}`,
+                  'aria-disabled': deviceGearBlocked ? true : undefined,
+                  title: deviceGearBlocked ? t('row.deviceGearBlockedHint') : t('row.deviceGearHint'),
+                  'aria-label': t('row.deviceGearAria', { accountName: name }),
+                  onClick: onEditDevice,
+                }, '⚙'),
+            h('button', {
+              type: 'button',
+              className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
+              disabled: rowBusy || testDisabled,
+              title: testDisabled ? targetHint : undefined,
+              onClick: onTest,
+            }, t('row.poolRowTest')),
+            h('button', {
+              type: 'button',
+              className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
+              disabled: rowBusy,
+              title: t('row.poolRowRemoveHint'),
+              'aria-label': t('row.poolRowRemoveAria', { accountName: name }),
+              onClick: onRemove,
+            }, t('row.poolRowRemove')),
+          ),
     ),
     h('span', { className: 'dsm-workbuddy-pool-credits' },
       account.credits === undefined
@@ -2160,40 +2194,6 @@ function renderAccountRow(input: {
       // Absent entirely where the region has no check-in: an empty column would
       // still imply the state exists and is merely unknown.
       : null,
-    // Per-row actions, RIGHT side of the row: test this one account, and forget
-    // this account's plugin-stored credential. The test reuses the batch's
-    // probe (one measurement, one vocabulary); the removal deletes ONLY the
-    // vault entry — a desktop sign-in reappears on the next rescan, which the
-    // log message states instead of a silent no-op.
-    h('span', { className: 'dsm-workbuddy-pool-row-actions' },
-      // 设备参数入口。放在「测试」左边：它改的是"这个账号以什么身份出现"，
-      // 与"它现在能不能用"是同一层的问题，两个按钮挨着才读得通。
-      onEditDevice === undefined
-        ? null
-        : h('button', {
-            type: 'button',
-            className: `dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn dsm-workbuddy-device-gear${deviceGearBlocked ? ' dsm-workbuddy-device-gear-off' : ''}`,
-            'aria-disabled': deviceGearBlocked ? true : undefined,
-            title: deviceGearBlocked ? t('row.deviceGearBlockedHint') : t('row.deviceGearHint'),
-            'aria-label': t('row.deviceGearAria', { accountName: name }),
-            onClick: onEditDevice,
-          }, '⚙'),
-      h('button', {
-        type: 'button',
-        className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
-        disabled: rowBusy || testDisabled,
-        title: testDisabled ? targetHint : undefined,
-        onClick: onTest,
-      }, t('row.poolRowTest')),
-      h('button', {
-        type: 'button',
-        className: 'dsm-btn dsm-btn-outline dsm-workbuddy-pool-small-btn',
-        disabled: rowBusy,
-        title: t('row.poolRowRemoveHint'),
-        'aria-label': t('row.poolRowRemoveAria', { accountName: name }),
-        onClick: onRemove,
-      }, t('row.poolRowRemove')),
-    ),
   )
 }
 
