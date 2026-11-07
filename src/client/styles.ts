@@ -572,7 +572,20 @@ export const WORKBUDDY_CARD_CSS = `
  * floor. It may still ellipsize — a name longer than the whole row cannot fit —
  * but it never collapses to a stub while a badge sits whole beside it. */
 .dsm-workbuddy-model-copy{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;min-width:0}
-.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name{flex:1 1 auto;min-width:9em}
+/* THE NAME MUST NOT CLAIM LEFTOVER WIDTH.
+ *
+ * It was flex:1 1 auto; min-width:9em, which made the name box grow to fill
+ * whatever the row had spare — 117px (9em) for "Hy4", whose text is ~30px. The
+ * promo chip therefore sat at the END of that inflated box, and the gap between
+ * the price and the chip read as a stray blank block: it appears ONLY on rows
+ * that have a chip, because that is the only case where anything follows the
+ * name.
+ *
+ * flex:0 1 auto takes the name's own width and allows SHRINKING (so a long
+ * name still ellipsizes and still cannot push the chip out of view). The floor
+ * is gone with it: a minimum of 9em was what turned "do not collapse" into
+ * "always at least 117px". */
+.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name{flex:0 1 auto;min-width:0}
 /* Below the panel's own width the floor is too greedy: 9em plus two chips is
    wider than the line, and the NAME would force the wrap it is meant to avoid.
    Give it less and let the chips take the second line. */

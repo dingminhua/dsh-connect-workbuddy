@@ -800,12 +800,25 @@ describe('the model name survives its badges', () => {
       .toContain('flex-wrap:wrap')
   })
 
-  it('gives the name a floor so it cannot collapse to a stub', () => {
+  it('does NOT let the name claim leftover width', () => {
+    // WAS "gives the name a floor so it cannot collapse to a stub", and the floor
+    // was the bug. `flex:1 1 auto; min-width:9em` made the name box grow to fill
+    // the row's spare space — 117px for "Hy4", whose text is ~30px — so the promo
+    // chip sat at the end of that inflated box and the space between the price
+    // and the chip read as a stray blank block. It appeared ONLY on rows that
+    // carry a chip, which is what pointed at the name box rather than at the chip.
+    //
+    // The concern the old floor was protecting against is real — a long name must
+    // not squeeze the chip out of view — but it is answered by SHRINKING, not by
+    // growing: `flex:0 1 auto` takes the name's own width and still allows it to
+    // give way, and the name already ellipsizes.
     const name = ruleFor('.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name')
     expect(name, 'the name has no rule of its own').not.toBe('')
-    expect(name, 'the name must keep a minimum width').toMatch(/min-width:\d+em/u)
-    // It must still be allowed to grow, or the floor would cap it.
-    expect(name, 'the name must be able to take the leftover space').toMatch(/flex:1 1 auto/u)
+    expect(name, 'the name must not GROW into the free space').not.toMatch(/flex:1 1 auto/u)
+    expect(name, 'the name must still be allowed to shrink').toMatch(/flex:0 1 auto/u)
+    // And no em-based floor, which is what turned "do not collapse" into
+    // "always at least 117px".
+    expect(name, 'an em floor reintroduces the blank block').not.toMatch(/min-width:\d+em/u)
   })
 
   it('lets the models header wrap instead of squeezing the title', () => {
@@ -966,5 +979,47 @@ describe('the per-row actions sit on the account-name line', () => {
     // line" behaviour this change removes. It must be gone from the media query.
     expect(css, 'the old full-width override is still present')
       .not.toContain('.dsm-workbuddy-pool-row-actions{flex:1 1 100%')
+  })
+})
+
+describe('no blank block between the price and the promo chip', () => {
+  /**
+   * THE REPORT: "不应该有空白" — a ~40px empty gap appeared between `x0.00` and the
+   * promo chip, on SOME rows only.
+   *
+   * The rows that showed it were exactly the rows with a chip, which is the whole
+   * clue: with nothing after the name, an over-wide name box is invisible; add a
+   * chip and the box's leftover width becomes a visible blank. The cause was
+   * `.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name{flex:1 1 auto;
+   * min-width:9em}` — 117px of name box for a ~30px name.
+   */
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'),
+    'utf8',
+  )
+  const ruleFor = (selector: string): string => {
+    const at = css.indexOf(`${selector}{`)
+    return at < 0 ? '' : css.slice(at, css.indexOf('}', at) + 1)
+  }
+
+  it('leaves the name at its own width', () => {
+    const name = ruleFor('.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name')
+    // `flex:0 1 auto` = do not grow, may shrink, base on content.
+    expect(name).toMatch(/flex:0 1 auto/u)
+    expect(name, 'a min-width in em re-creates the blank').not.toMatch(/min-width:\d+em/u)
+  })
+
+  it('still lets the name give way instead of pushing the chip out', () => {
+    // The reason the floor existed. Shrinking answers the same worry without
+    // inflating short names, and `min-width:0` is what allows it (a flex item
+    // cannot shrink below its content width otherwise).
+    const name = ruleFor('.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name')
+    expect(name, 'min-width:0 is required for a flex item to shrink').toContain('min-width:0')
+    // The name still ellipsizes rather than overflowing. Looked up by its own
+    // rule — `ruleFor` matches the FIRST occurrence, which is the
+    // `.dsm-workbuddy-model-copy>.dsm-workbuddy-model-name` override above.
+    const full = ruleFor('\n.dsm-workbuddy-model-name')
+    expect(full).toContain('text-overflow:ellipsis')
+    expect(full).toContain('white-space:nowrap')
   })
 })
