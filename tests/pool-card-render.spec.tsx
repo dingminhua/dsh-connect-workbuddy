@@ -1228,3 +1228,56 @@ describe('no blank block between the price and the promo chip', () => {
     expect(full).toContain('white-space:nowrap')
   })
 })
+
+describe('the page keeps the width its content was measured at', () => {
+  // The series file is a TEMPLATE LITERAL built from a function, so it is read and
+  // expanded here rather than imported: the assertions below are about the CSS the
+  // bundle actually ends up with.
+  const seriesCss = (): string => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'series-layout.ts'),
+      'utf8',
+    )
+    const body = /return `([\s\S]*)`\n\}/u.exec(src)?.[1] ?? ''
+    return body
+      .replace(/\$\{p\}/gu, '.dsm-workbuddy')
+      .replace(/\$\{u\}/gu, '.dsm-workbuddy-usage')
+      .replace(/\$\{members\}/gu, '.dsm-workbuddy-pool-members')
+      .replace(/\$\{memberHead\}/gu, '.dsm-workbuddy-pool-members-head')
+      .replace(/\$\{memberTitle\}/gu, '.dsm-workbuddy-pool-members-title')
+      .replace(/\$\{memberActions\}/gu, '.dsm-workbuddy-pool-members-actions')
+      .replace(/\$\{saveBar\}/gu, '.dsm-workbuddy-pool-save-bar')
+      .replace(/\$\{current\}/gu, '.dsm-workbuddy-pool-current-badge')
+  }
+  /**
+   * THE REGRESSION THIS EXISTS FOR: PR #228 moved the page's width into the shared
+   * `series-layout.ts` and brought 860px with it, down from the 1120px this plugin
+   * had always used. Nothing failed — the CSS was valid, the page rendered, every
+   * cell was still in its right place — and the owner saw it at once: 「整体宽度变小
+   * 了，不行，要用原来的宽度」.
+   *
+   * A width is exactly the sort of thing a suite cannot notice by itself, because
+   * 860px is not an error, it is a narrower page. So it is pinned here as a NUMBER,
+   * in the file that actually wins the cascade.
+   */
+  it('sets 1120px in the shared series layout, not the 860px it shipped with', () => {
+    const series = seriesCss()
+    const rule = /\.dsm-workbuddy-page>\*\{([^}]*)\}/u.exec(series)?.[1] ?? ''
+    expect(rule, 'the series layout no longer states a width for page children').not.toBe('')
+    expect(rule, 'the shared file must not re-narrow the page it does not own')
+      .toMatch(/max-width:\s*1120px/)
+    expect(rule, 'and must not bring the 860px value back').not.toMatch(/860px/)
+  })
+
+  it('agrees with the page rule in this plugin own stylesheet', () => {
+    // Two declarations, one number. If they ever disagree the series file wins
+    // (it is concatenated after), so the visible width would silently follow
+    // whichever was edited last.
+    const own = /\.dsm-workbuddy-page>\*\{[^}]*max-width:\s*(\d+)px[^}]*\}/u
+      .exec(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'styles.ts'), 'utf8'))?.[1]
+    const shared = /\.dsm-workbuddy-page>\*\{[^}]*max-width:\s*(\d+)px[^}]*\}/u.exec(seriesCss())?.[1]
+    expect(own, 'the plugin no longer states the page width').toBeDefined()
+    expect(shared, 'the series layout no longer states it').toBeDefined()
+    expect(shared, 'the two must state the SAME width').toBe(own)
+  })
+})

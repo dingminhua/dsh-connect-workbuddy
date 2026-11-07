@@ -14,7 +14,20 @@ ${p}-page${p}-page{height:calc(100% - 16px);margin-bottom:16px;padding:28px clam
 ${u} ${p}-pool-auto-checkin-status{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#777)}
 ${p}-page-desc{font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary,#999)}
 ${u} ${p}-pool-auto-checkin{display:flex;flex-direction:column;gap:6px;margin-top:8px}
-${p}-page>*{width:100%;max-width:860px;min-width:0}
+/* 1120px, NOT the 860px the shared series layout shipped with.
+ *
+ * The page's own rule (styles.ts) has always been 1120px, and that is what the
+ * cards, the account table and the settings block were laid out and measured
+ * against. The series file narrowed the container to 860 as part of "unifying
+ * spacing", which does not unify anything for this plugin: it simply made every
+ * block on the page ~23% narrower, took the account table's columns with it, and
+ * the owner saw it immediately ("整体宽度变小了，不行，要用原来的宽度").
+ *
+ * Kept as a SECOND declaration next to the page's own one ON PURPOSE: this file is
+ * loaded after styles.ts (it is concatenated onto the same bundle), so it would
+ * win the cascade. Stating the same 1120 here is what keeps the shared file from
+ * silently re-narrowing the page the next time it is synced from trae. */
+${p}-page>*{width:100%;max-width:1120px;min-width:0}
 ${u}{gap:16px;font-size:13px;line-height:1.5;min-width:0}
 ${u} .dsm-btn{box-sizing:border-box;font:inherit;font-size:13px;line-height:20px;padding:5px 14px;border-radius:8px;min-height:32px}
 ${u} .dsm-btn-outline{background:transparent;border-color:var(--dsw-alias-border-l2,#777);color:var(--dsw-alias-label-secondary,#999)}
