@@ -23,6 +23,7 @@
 import { applyManualOrder } from './manual-order'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
+import { IconStylePreference } from './plugin-icon.tsx'
 import type { ReactNode } from 'react'
 import {
   WORKBUDDY_BENEFIT_CLAIM_PATH,
@@ -2246,6 +2247,7 @@ function renderSettings(input: {
     h('div', { className: 'dsm-workbuddy-pool-card-head' },
       h('h4', { className: 'dsm-workbuddy-pool-card-title' }, t('row.poolSettingsTitle')),
     ),
+    h(IconStylePreference, { t }),
     // Reference text, at the top of the settings block and OUT of the member
     // block: it explains the badges and arrows in the table above, so it belongs
     // under the data rather than in front of it.

@@ -43,7 +43,7 @@ import { CodebuddyLive } from './CodebuddyLive.tsx'
 import { selectQuotaNoticeClaim, WorkBuddyQuotaNotice } from './WorkBuddyQuotaNotice.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
-import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
+import { PluginIcon } from './plugin-icon.tsx'
 import {
   setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted,
 } from './panel-switch.ts'
@@ -215,20 +215,10 @@ export function apply(ctx: WorkBuddyClientContext): void {
                 // is the selected one; honouring both keeps the glyph on the
                 // same rhythm as the built-in rows' own icons.
                 const edge = typeof iconProps?.size === 'number' ? iconProps.size : 16
-                return h('img', {
-                  src: WORKBUDDY_PLUGIN_ICON,
-                  alt: '',
-                  width: edge,
-                  height: edge,
+                return h(PluginIcon, {
+                  size: edge,
                   className: 'dsm-workbuddy-nav-icon',
-                  style: {
-                    width: `${edge}px`,
-                    height: `${edge}px`,
-                    borderRadius: '4px',
-                    display: 'block',
-                    objectFit: 'contain',
-                    opacity: iconProps?.active === false ? 0.75 : 1,
-                  },
+                  style: { borderRadius: '4px', display: 'block', opacity: iconProps?.active === false ? 0.75 : 1 },
                 })
               })
               disposers.push(iconDisposer)
@@ -375,14 +365,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
      */
     function WorkBuddyPanelIcon(props: { size?: number }): JSX.Element {
       const edge = typeof props.size === 'number' && props.size > 0 ? props.size : 16
-      return h('img', {
-        className: 'dsm-workbuddy-panel-icon',
-        src: WORKBUDDY_PLUGIN_ICON,
-        alt: '',
-        width: edge,
-        height: edge,
-        'aria-hidden': 'true',
-      })
+      return h(PluginIcon, { className: 'dsm-workbuddy-panel-icon', size: edge })
     }
 
     /**
