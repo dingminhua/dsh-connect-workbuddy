@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ComposerCredits, COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS } from '../src/client/ComposerCredits.tsx'
+import { WORKBUDDY_DEFAULT_POLL_INTERVAL_MS } from '../src/status-paths.ts'
 import { mount, stubFetch, t, type Mounted } from './pool-render-helpers.tsx'
 
 /**
@@ -138,17 +139,35 @@ function rowOf(name: string): Element | undefined {
 
 describe('the panel keeps its account rows current while it is open', () => {
   it('re-reads the account table on the CARD cadence, not the readout one', () => {
-    // Pinned as a constant, because the value IS the argument: the shortest
-    // exclusion cooldown this table renders is 2 minutes, and the pool card it
-    // must agree with polls at 60 s. A 5-minute cycle — the readout's own — would
-    // let the panel contradict the card for up to four minutes at a time.
-    expect(COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS).toBe(60_000)
+    // The property that matters is AGREEMENT, not a particular number. The panel
+    // used to hold its own 60 s constant that merely happened to equal the
+    // card's hard-coded 60 s — two numbers that stayed equal only as long as
+    // nobody changed either one. The interval is a user setting now, so the
+    // panel must READ it from the same document the card polls.
+    //
+    // What replaces the old pin, therefore, is the source: the panel's timer is
+    // armed from `refreshIntervalMs`, and its fallback is the shared default —
+    // never a second literal.
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'ComposerCredits.tsx'),
+      'utf8',
+    )
+    expect(source, 'the panel must read the cadence off the document').toContain('refreshIntervalMs')
+    expect(source, 'the panel must arm its timer from that value').toContain(
+      '() => { void fetchAccountCredits(controller.signal) },\n        refreshIntervalMs,',
+    )
+    // The fallback is the shared constant, not a fresh literal.
+    expect(COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS).toBe(WORKBUDDY_DEFAULT_POLL_INTERVAL_MS)
     const card = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'WorkBuddyCard.tsx'),
       'utf8',
     )
-    expect(card).toContain('const POLL_INTERVAL_MS = 60_000')
-    expect(COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS).toBe(60_000)
+    // The card's timer reads the same field; a hard-coded interval reappearing
+    // there would silently split the two surfaces again.
+    expect(card).toContain('pollIntervalMs,')
+    expect(card, 'the card must not re-grow a hard-coded 60 s cadence').not.toContain(
+      'const POLL_INTERVAL_MS = 60_000',
+    )
   })
 
   it('picks up a mark that appeared AFTER the panel was opened', async () => {

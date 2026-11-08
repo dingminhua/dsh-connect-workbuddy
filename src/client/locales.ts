@@ -585,6 +585,17 @@ export const en = {
   'row.cnBaseCleared': 'Back to the built-in CN gateway.',
   'row.diagCnBase': 'CN gateway',
   'row.diagCnBaseDefault': 'built-in (copilot.tencent.com)',
+  // The card's refresh cadence. Five fixed steps rather than a free number:
+  // this is what decides the plugin's upstream request volume.
+  'row.pollIntervalLead': 'Refresh frequency',
+  'row.pollIntervalLabel': 'Refresh the account table',
+  'row.pollIntervalHint': 'How often the card re-reads credits and check-in state. One refresh costs a credits read plus a check-in read per pooled account, so this is the setting that decides the plugin\'s upstream request volume. The composer account panel follows this value, so the two never disagree about one account. Takes effect on the next poll — no Save needed.',
+  'row.pollIntervalAria': 'Refresh frequency for the account table',
+  'row.pollInterval1m': 'Every 1 minute',
+  'row.pollInterval5m': 'Every 5 minutes (default)',
+  'row.pollInterval10m': 'Every 10 minutes',
+  'row.pollInterval30m': 'Every 30 minutes',
+  'row.pollInterval60m': 'Every 60 minutes',
   'row.sidebarPanelLabel': 'Show WorkBuddy in the sidebar',
   'row.sidebarPanelHint': 'Adds a WorkBuddy row to the DSH sidebar that opens this card as a full page. Off by default: the row takes a global sidebar slot shared by every installed plugin, and the Plugins page already reaches the same content. Takes effect on the click — no Save needed — and switching it off while the page is open returns you to the conversation.',
   // The three quick-adjust pins of the route: which model and which reasoning
@@ -1263,6 +1274,16 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.cnBaseCleared': '已回到内置 CN 网关。',
   'row.diagCnBase': 'CN 网关',
   'row.diagCnBaseDefault': '内置（copilot.tencent.com）',
+  // 卡片的刷新频率。五档固定值而不是自由输入：这个间隔决定插件的上游请求量。
+  'row.pollIntervalLead': '刷新频率',
+  'row.pollIntervalLabel': '刷新账号表',
+  'row.pollIntervalHint': '卡片多久重读一次积分与签到状态。每次刷新要为池内每个账号各读一次积分和一次签到状态，所以这一项决定插件的上游请求量。输入框的账号面板跟随同一个值，两处不会对同一个账号给出不同说法。下一次轮询即生效，不用保存。',
+  'row.pollIntervalAria': '账号表的刷新频率',
+  'row.pollInterval1m': '每 1 分钟',
+  'row.pollInterval5m': '每 5 分钟（默认）',
+  'row.pollInterval10m': '每 10 分钟',
+  'row.pollInterval30m': '每 30 分钟',
+  'row.pollInterval60m': '每 60 分钟',
   'row.sidebarPanelLabel': '在侧边栏显示 WorkBuddy',
   'row.sidebarPanelHint': '在 DSH 侧边栏加一个 WorkBuddy 行，点开就是这张卡片的整页版。默认关闭：这一行占的是所有插件共用的全局侧边栏座位，而「插件」页本来就能看到同样的内容。点一下即生效，不用保存；页面开着时关掉它，会直接回到对话。',
   // 本地 CLI 路由的三个快调旋钮：跑哪个模型、哪个推理档位、按什么顺序

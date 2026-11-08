@@ -144,10 +144,14 @@ describe('the gateway card speaks the same typography as its neighbours', () => 
 })
 
 describe('every group carries a lead line', () => {
-  it('renders six groups and eight blocks', async () => {
-    // The note + the gateway card + SIX groups: upstream switches, the credit
+  it('renders seven groups and nine blocks', async () => {
+    // The note + the gateway card + SEVEN groups: upstream switches, the credit
     // switches, the channel-reject rule, the reasoning redaction (issue #213),
-    // the sidebar panel, and the icon style.
+    // the sidebar panel, the refresh-interval picker, and the icon style.
+    //
+    // The interval picker is the seventh (5.21.2): it commits on the click like
+    // every other control here, so it is a GROUP of this panel rather than a row
+    // inside the account pool's saved-settings block.
     //
     // The count is the contract: a group that silently becomes a bare <label>
     // takes the panel gap as a ROW instead of as a group, which is exactly what
@@ -157,7 +161,7 @@ describe('every group carries a lead line', () => {
     const panel = m.container.querySelector('#dsm-workbuddy-panel-capabilities')
     const blocks = Array.from(panel?.children ?? []) as Element[]
     const groups = blocks.filter(el => String(el.className).includes('dsm-workbuddy-prefs'))
-    expect(groups, `blocks were ${blocks.map(el => String(el.className)).join(', ')}`).toHaveLength(6)
+    expect(groups, `blocks were ${blocks.map(el => String(el.className)).join(', ')}`).toHaveLength(7)
     await m.unmount()
   })
 

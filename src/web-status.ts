@@ -75,6 +75,8 @@ import {
   WORKBUDDY_TRANSFER_PATH,
   WORKBUDDY_ACCOUNT_CREDITS_PATH,
   WORKBUDDY_USAGE_PATH,
+  WORKBUDDY_POLL_INTERVALS_MS,
+  WORKBUDDY_DEFAULT_POLL_INTERVAL_MS,
 } from './status-paths.ts'
 import type {
   WorkBuddyTransferExportAnswer,
@@ -275,6 +277,18 @@ export interface WorkBuddyStatusRouteOptions {
    * stale `true` here would draw a row the Host does not honour.
    */
   sidebarPanelEnabled?(): boolean
+  /**
+   * How often the card should re-read this document, in milliseconds.
+   *
+   * Carried on the Host's answer rather than read from the browser's settings
+   * mirror, for the same measured reason as the two flags above: that mirror is
+   * stale for this namespace on the affected 0.1.7 deployments, and a stale
+   * interval would make the card poll at a cadence the Host never stored.
+   *
+   * Optional, and absent reads as the 5-minute default — which is what an older
+   * Host (and any build before the setting existed) should do.
+   */
+  pollIntervalMs?(): number
   /**
    * The model the OPTIONAL CodeBuddy CLI route runs on, or `''` for "the CLI's
    * own default".
@@ -757,6 +771,10 @@ const UPSTREAM_SWITCH_FIELDS: ReadonlySet<string> = new Set([
   // 字段；把它加进来是因为它决定一个 GLOBAL 座位（`sidebar.panellist` 行 +
   // `main` 页）存不存在，而这个决定只有用户能下。
   'sidebarPanel',
+  // 卡片的刷新频率。一个顶层数字，自己一条路径，没有需要保留的兄弟字段。
+  // 它决定插件的上游请求量（每次刷新按池内账号数各读一次积分与签到状态），
+  // 所以必须能由用户从卡片上改，而不是只能手改配置文件。
+  'pollIntervalMs',
 ])
 
 /** A non-null, non-array object: the only shape the slot merge applies to. */
@@ -1253,6 +1271,20 @@ export async function workBuddyWebStatus(
   // claims a sidebar seat every bundle shares, so an absent answer (an older
   // Host that cannot answer) must never read as "the user asked for this".
   const sidebarPanelEnabled = deps.sidebarPanelEnabled?.() === true
+  /**
+   * The card's refresh cadence, resolved once per document.
+   *
+   * Coerced against the offered set here as well as on the Host: this value
+   * drives `setInterval`, and an unrecognized number (an older Host, a
+   * hand-edited profile) must degrade to the default rather than to something
+   * like `0`, which would poll continuously.
+   */
+  const pollIntervalMs = (() => {
+    const raw = deps.pollIntervalMs?.()
+    return typeof raw === 'number' && WORKBUDDY_POLL_INTERVALS_MS.includes(raw)
+      ? raw
+      : WORKBUDDY_DEFAULT_POLL_INTERVAL_MS
+  })()
   // The route's three quick-adjust pins. Absent reads as `''` (the CLI's own
   // default), never as a made-up value: an older Host without the deps simply
   // cannot answer, and the card's pickers then fall back to the settings
@@ -1280,7 +1312,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, sidebarPanelEnabled, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, sidebarPanelEnabled, pollIntervalMs, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
   }
   let credential
   try {
@@ -1318,6 +1350,7 @@ export async function workBuddyWebStatus(
       preferredVideoModels,
       cliBridgeEnabled,
       sidebarPanelEnabled,
+      pollIntervalMs,
       cliBridgeModel,
       cliBridgeEffort,
       cliBridgeRegionOrder,
@@ -1357,6 +1390,7 @@ export async function workBuddyWebStatus(
     preferredVideoModels,
     cliBridgeEnabled,
     sidebarPanelEnabled,
+    pollIntervalMs,
     cliBridgeModel,
     cliBridgeEffort,
     cliBridgeRegionOrder,

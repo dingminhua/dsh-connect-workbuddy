@@ -162,6 +162,35 @@ export type WorkBuddyOAuthAction = 'start' | 'poll'
 /** How long the card waits between polls while the user is scanning. */
 export const OAUTH_POLL_INTERVAL_MS = 2_000
 
+/**
+ * The refresh intervals the card offers, in milliseconds.
+ *
+ * SHARED between the Host (which validates the saved value) and the browser
+ * (which renders the dropdown), so the control and its validation cannot drift:
+ * a value the dropdown can produce is always a value the Host accepts, and the
+ * Host's fallback is always a value the dropdown can show.
+ *
+ * A CLOSED SET rather than a free number because this interval decides the
+ * plugin's upstream request volume — one credits read plus one check-in read per
+ * pooled account, per refresh.
+ */
+export const WORKBUDDY_POLL_INTERVALS_MS: readonly number[] = [
+  60_000,
+  5 * 60_000,
+  10 * 60_000,
+  30 * 60_000,
+  60 * 60_000,
+]
+
+/**
+ * The default refresh interval: 5 minutes.
+ *
+ * Moved off the old hard-coded 60 s. A 4-account pool at 60 s costs ~11,520
+ * requests a day for figures that move slowly; 5 minutes is a fifth of that and
+ * still five times finer than the 30-minute auto check-in heartbeat.
+ */
+export const WORKBUDDY_DEFAULT_POLL_INTERVAL_MS = 5 * 60_000
+
 /** Read the OAuth action off a request URL; unknown/absent means undefined. */
 export function oauthActionOf(url: string): WorkBuddyOAuthAction | undefined {
   const at = url.indexOf('?')
@@ -1363,6 +1392,15 @@ export type WorkBuddyWebUsage =
      */
     sidebarPanelEnabled?: boolean
     /**
+     * How often the card should re-read this document, in milliseconds.
+     *
+     * GLOBAL like `sidebarPanelEnabled`, and carried on the Host's answer for
+     * the same measured reason: on the stale-mirror 0.1.7 deployment an
+     * interval read from the settings mirror could be a value the Host never
+     * stored. Absent reads as {@link WORKBUDDY_DEFAULT_POLL_INTERVAL_MS}.
+     */
+    pollIntervalMs?: number
+    /**
      * The model the OPTIONAL CodeBuddy CLI route runs on, or `''` for
      * "nothing is pinned, the CLI uses its own default".
      *
@@ -1511,6 +1549,15 @@ export type WorkBuddyWebUsage =
      * that cannot answer must not be read as consent.
      */
     sidebarPanelEnabled?: boolean
+    /**
+     * How often the card should re-read this document, in milliseconds.
+     *
+     * GLOBAL like `sidebarPanelEnabled`, and carried on the Host's answer for
+     * the same measured reason: on the stale-mirror 0.1.7 deployment an
+     * interval read from the settings mirror could be a value the Host never
+     * stored. Absent reads as {@link WORKBUDDY_DEFAULT_POLL_INTERVAL_MS}.
+     */
+    pollIntervalMs?: number
     /**
      * The model the OPTIONAL CodeBuddy CLI route runs on, or `''` for
      * "nothing is pinned, the CLI uses its own default".

@@ -284,6 +284,8 @@ import {
   WORKBUDDY_REGIONS,
   WORKBUDDY_SETTINGS_NS,
   WORKBUDDY_USAGE_PATH,
+  WORKBUDDY_POLL_INTERVALS_MS,
+  WORKBUDDY_DEFAULT_POLL_INTERVAL_MS,
   regionOfStatusUrl,
   toPersistedWorkBuddyModel,
   withWorkBuddyRegion,
@@ -702,6 +704,15 @@ export interface Config {
    * 而不必先回滚一个版本。
    */
   wireProfile?: 'conservative' | 'balanced'
+  /**
+   * How often the card refreshes its account table, in milliseconds.
+   *
+   * One of 60000 / 300000 / 600000 / 1800000 / 3600000; absent reads as 5
+   * minutes. This is the setting that decides the plugin's upstream request
+   * volume (one credits read plus one check-in read per pooled account, per
+   * refresh), and the composer account panel follows it.
+   */
+  pollIntervalMs?: number
   /**
    * SDK 功能的**总开关**（默认开）。
    *
@@ -1221,6 +1232,38 @@ export const Config: z<Config> = z.object({
       .default('balanced')
       .description('Outbound identity profile. "balanced" (default) makes every request claim the same client (WorkBuddy product/IDE/agent headers, X-CodeBuddy-Request, Accept-Language, X-Root-Request-ID, and a per-account X-Machine-ID/X-Session-ID pair) and gives the billing routes a User-Agent plus Origin/Referer. "conservative" restores the 5.16.0 bytes exactly, including X-Product: SaaS.'),
   ) as unknown as z<'conservative' | 'balanced'>,
+  /**
+   * How often the card re-reads the usage document.
+   *
+   * GLOBAL, not per-region: the card polls ONE region at a time (whichever tab
+   * is open), so a per-region value would be a setting the user edits per tab
+   * while only one of them is ever in effect. The composer account panel reads
+   * the same number, which is what keeps the two surfaces from disagreeing
+   * about one account — the complaint that fixed the panel at 60s in the first
+   * place.
+   *
+   * A CLOSED SET of five values rather than a free number: this interval decides
+   * the plugin's upstream request volume, and a typo'd `0` or a hand-written
+   * `1000` would turn a display refresh into a poll the upstream could rate
+   * limit. The same five are what the dropdown offers, so the control and its
+   * validation cannot drift apart.
+   *
+   * WHY THE DEFAULT MOVED OFF 60s: one refresh reads a credits document AND a
+   * check-in status per pooled account, so a 4-account pool at 60s is ~11,520
+   * requests a day for figures that move slowly. 5 minutes is a fifth of that
+   * and still far finer than the 30-minute auto check-in heartbeat.
+   */
+  pollIntervalMs: asVolatile(
+    z.union([
+      z.const(60_000),
+      z.const(5 * 60_000),
+      z.const(10 * 60_000),
+      z.const(30 * 60_000),
+      z.const(60 * 60_000),
+    ])
+      .default(5 * 60_000)
+      .description('How often the card refreshes its account table: 60000 (1 min), 300000 (5 min, default), 600000 (10 min), 1800000 (30 min) or 3600000 (60 min), in milliseconds. One refresh costs a credits read plus a check-in read per pooled account, so this is the setting that decides the plugin\'s upstream request volume. The composer account panel follows this value so the two surfaces cannot disagree about one account.'),
+  ) as unknown as z<number>,
   deviceSdkEnabled: asVolatile(
     z.boolean()
       .default(false)
@@ -3011,6 +3054,11 @@ export function apply(ctx: Context, config: Config): void {
      */
     sidebarPanelEnabled: () => unwrapVolatile(current().sidebarPanel) === true,
     /**
+     * The card's refresh cadence, read live so a change takes effect on the
+     * next poll rather than on a plugin reload.
+     */
+    pollIntervalMs: () => pollIntervalOf(current()),
+    /**
      * The model / reasoning effort the optional CodeBuddy CLI route runs on.
      *
      * `cliBridge` is volatile, hence the unwrap; absent keys read as `''` —
@@ -4038,6 +4086,23 @@ export function apply(ctx: Context, config: Config): void {
    */
   const creditPositionOf = (config: Config, region: WorkBuddyRegion): WorkBuddyCreditPosition =>
     regionStateOf(config, region).creditPosition === 'stats' ? 'stats' : 'composer'
+
+  /**
+   * The card's refresh interval, coerced against the offered set.
+   *
+   * Coerced HERE rather than trusted from the config, for the same reason
+   * `resolveProbeInputTokens` coerces its own: a hand-edited `cordis.patch.yml`
+   * can carry any number, and `setInterval(…, 0)` would turn a display refresh
+   * into a busy loop against the upstream. An unrecognized value falls back to
+   * the default rather than to the smallest step — the safe direction for a
+   * setting whose whole purpose is bounding request volume.
+   */
+  const pollIntervalOf = (config: Config): number => {
+    const raw = unwrapVolatile(config.pollIntervalMs)
+    return typeof raw === 'number' && WORKBUDDY_POLL_INTERVALS_MS.includes(raw)
+      ? raw
+      : WORKBUDDY_DEFAULT_POLL_INTERVAL_MS
+  }
 
   const poolPreferencesOf = (config: Config, region: WorkBuddyRegion) => {
     const pool = regionStateOf(config, region).pool

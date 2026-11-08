@@ -17,7 +17,7 @@
  * @module dsh-connect-workbuddy/client/account-selection
  */
 
-import { nextRegionModels, nextRegionPool, regionsMapOf, unwrapVolatileDeep } from '../status-paths.ts'
+import { nextRegionModels, nextRegionPool, regionsMapOf, unwrapVolatileDeep, WORKBUDDY_POLL_INTERVALS_MS, WORKBUDDY_DEFAULT_POLL_INTERVAL_MS } from '../status-paths.ts'
 import type { WorkBuddyWebRegion, WorkBuddyCreditPosition } from '../status-paths.ts'
 
 /**
@@ -151,7 +151,7 @@ function fieldSnapshotOf(
  * the field's live value, preserving the other region.
  */
 async function saveViaHostEndpoint(
-  field: 'accounts' | 'regions' | 'cliBridge' | 'sidebarPanel' | UpstreamSwitchField,
+  field: 'accounts' | 'regions' | 'cliBridge' | 'sidebarPanel' | 'pollIntervalMs' | UpstreamSwitchField,
   region: WorkBuddyWebRegion | undefined,
   value: unknown,
 ): Promise<Record<string, unknown> | undefined> {
@@ -460,6 +460,60 @@ export async function writeSidebarPanelEnabled(
   throw hostError instanceof Error
     ? hostError
     : new WorkBuddySettingsWriteError('sidebarPanel', 'neither the Host save endpoint nor the settings scope persisted the value')
+}
+
+/**
+ * Read the card's refresh interval out of a settings snapshot.
+ *
+ * Coerced against the offered set, and an unrecognized value reads as the
+ * default. The direction matters: this number drives `setInterval`, so a typo in
+ * the settings file must not become a sub-second poll. Coercing on READ as well
+ * as on the Host means a stale browser mirror cannot arm a cadence the Host
+ * would have refused.
+ */
+export function pollIntervalMsOf(value: unknown): number {
+  const raw = (value as { pollIntervalMs?: unknown } | undefined)?.pollIntervalMs
+  return typeof raw === 'number' && WORKBUDDY_POLL_INTERVALS_MS.includes(raw)
+    ? raw
+    : WORKBUDDY_DEFAULT_POLL_INTERVAL_MS
+}
+
+/**
+ * Persist the card's refresh interval.
+ *
+ * Same two-writer shape as {@link writeSidebarPanelEnabled}: the Host endpoint is
+ * authoritative, the settings scope is the fallback for an older Host. A plain
+ * top-level number, so there is no sibling state to preserve.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param intervalMs - one of {@link WORKBUDDY_POLL_INTERVALS_MS}.
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writePollIntervalMs(
+  scope: WorkBuddyAccountScope,
+  intervalMs: number,
+): Promise<void> {
+  let hostError: unknown
+  try {
+    const authoritative = await saveViaHostEndpoint('pollIntervalMs', undefined, intervalMs)
+    if (authoritative !== undefined) {
+      // Mirror what the Host stored, never a client-side re-merge.
+      try { await scope.set('pollIntervalMs', authoritative['pollIntervalMs']) } catch { /* optional */ }
+    }
+    return
+  } catch (error) {
+    hostError = error
+  }
+  let delivered = false
+  try {
+    delivered = (await scope.set('pollIntervalMs', intervalMs)) !== false
+  } catch {
+    delivered = false
+  }
+  if (delivered && pollIntervalMsOf(scope.getSnapshot().value) === intervalMs) return
+  throw hostError instanceof Error
+    ? hostError
+    : new WorkBuddySettingsWriteError('pollIntervalMs', 'neither the Host save endpoint nor the settings scope persisted the value')
 }
 
 /**

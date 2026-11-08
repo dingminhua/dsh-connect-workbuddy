@@ -45,6 +45,8 @@ import {
   WORKBUDDY_ACCOUNT_CREDITS_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_USAGE_PATH,
+  WORKBUDDY_POLL_INTERVALS_MS,
+  WORKBUDDY_DEFAULT_POLL_INTERVAL_MS,
   withWorkBuddyRegion,
   withWorkBuddyRegionAndAction,
 } from '../status-paths.ts'
@@ -87,27 +89,27 @@ if (typeof document !== 'undefined') {
 export const COMPOSER_CREDITS_REFRESH_INTERVAL_MS = 300_000
 
 /**
- * Refresh period for the panel's per-account table, while it stays open.
+ * The FALLBACK refresh period for the panel's per-account table.
  *
- * Deliberately NOT the readout's five minutes. The table carries two things,
- * and the faster-moving one decides the cadence:
+ * The panel no longer owns a cadence: it reads `pollIntervalMs` off the usage
+ * document, which is the same number the pool card arms. That is the fix for the
+ * original complaint — two surfaces disagreeing about one account — and it is
+ * strictly better than the old arrangement, where this constant happened to
+ * equal the card's hard-coded 60 s and only STAYED equal as long as nobody
+ * changed either one.
  *
- *  - the balance, which barely moves, and
- *  - each account's `excludedBy` ("被限流" / "模型繁忙"), which is derived from
- *    the pool's own cooldowns — and the SHORTEST of those is the model-scoped
- *    two-minute throttle (`MODEL_BUSY_COOLDOWN_MS`).
+ * This value is what the timer uses before any document has landed (the panel
+ * opened on a cold card), and it is deliberately the Host's default so the first
+ * interval is never armed at something like `0`.
  *
- * At five minutes the table could state an account is 模型繁忙 long after the
- * upstream let it serve again, and the pool card — which polls every 60 s
- * (`POLL_INTERVAL_MS` in `WorkBuddyCard.tsx`) — would say it is fine at the same
- * moment. Two surfaces disagreeing about one account is exactly the complaint
- * this constant answers, so the table now converges on the card's cadence
- * instead of its own.
- *
- * The cost is bounded and paid only while the panel is open: one `fetchCredits`
- * per account per minute, the same read the card already makes when it is open.
+ * The trade-off that made the old 60 s worth arguing for still exists and is now
+ * the USER's call: the table renders each account's `excludedBy`, whose shortest
+ * cooldown is the model-scoped two-minute throttle (`MODEL_BUSY_COOLDOWN_MS`).
+ * At the 5-minute default that mark can lag the upstream by up to five minutes —
+ * acceptable because the card behind it now reports the same staleness instead
+ * of contradicting it, and anyone who wants tighter feedback can pick 1 minute.
  */
-export const COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS = 60_000
+export const COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS = WORKBUDDY_DEFAULT_POLL_INTERVAL_MS
 
 /** Localized copy injected by the browser-plugin registration. */
 export interface ComposerCreditsInjected {
@@ -302,6 +304,26 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const activeRegion = region ?? owned
 
   const [usage, setUsage] = useState<WorkBuddyWebUsage | undefined>(undefined)
+  /**
+   * The refresh cadence, taken from the SAME document the card polls.
+   *
+   * The panel used to hold its own 60s constant, and that was the whole reason
+   * the two surfaces could contradict each other about one account: the card
+   * re-ranked every minute while a panel opened at a different cadence drew a
+   * frozen verdict. Sharing the Host's value means there is one cadence to
+   * reason about, and changing it in the card changes it here too.
+   *
+   * An absent value (the panel opened before any document landed) falls back to
+   * the same default the Host uses, so the first timer is never armed at 0.
+   */
+  const refreshIntervalMs = (() => {
+    // `in` rather than a plain read: the union's `{ status: 'error' }` variant
+    // carries no data at all, and a failed re-read must not decide the cadence.
+    const raw = usage !== undefined && 'pollIntervalMs' in usage ? usage.pollIntervalMs : undefined
+    return typeof raw === 'number' && WORKBUDDY_POLL_INTERVALS_MS.includes(raw)
+      ? raw
+      : WORKBUDDY_DEFAULT_POLL_INTERVAL_MS
+  })()
   const [accountCredits, setAccountCredits] = useState<WorkBuddyWebAccountCredit[] | undefined>(undefined)
   const [switchingId, setSwitchingId] = useState<string | undefined>(undefined)
   /**
@@ -520,7 +542,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (cancelled) return
       timer = window.setInterval(
         () => { void fetchAccountCredits(controller.signal) },
-        COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS,
+        refreshIntervalMs,
       )
     })
     return () => {
@@ -528,7 +550,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (timer !== undefined) window.clearInterval(timer)
       controller.abort()
     }
-  }, [open, activeRegion, fetchAccountCredits])
+  }, [open, activeRegion, fetchAccountCredits, refreshIntervalMs])
 
   // Escape closes the panel, matching the neighbouring popovers.
   useEffect(() => {

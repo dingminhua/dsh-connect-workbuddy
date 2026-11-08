@@ -70,6 +70,7 @@
     "tests/capabilities-layout.spec.tsx",
     "tests/model-label-diagnostics.spec.ts",
     "tests/plugin-icon.spec.tsx",
-    "tests/sticky-boundary.spec.tsx"
+    "tests/sticky-boundary.spec.tsx",
+    "tests/poll-interval.spec.tsx"
   ]
 }

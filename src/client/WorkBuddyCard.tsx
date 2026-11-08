@@ -57,6 +57,7 @@ import {
   toPersistedWorkBuddyModel,
   withWorkBuddyRegion,
   withWorkBuddyRegionFastDetail,
+  WORKBUDDY_POLL_INTERVALS_MS,
 } from '../status-paths.ts'
 import type {
   WorkBuddyCreditPosition,
@@ -68,7 +69,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
 import { resolveCnGateway } from '../cn-gateway.ts'
 import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
@@ -144,7 +145,19 @@ export type WorkBuddyCardProps =
   Partial<WorkBuddyCardInjected>
   & { view?: string; surface?: WorkBuddySurface; backToConversation?: () => void }
 
-const POLL_INTERVAL_MS = 60_000
+/**
+ * The refresh cadence when the Host does not say.
+ *
+ * The Host answers with the SAVED interval on every document (see
+ * `pollIntervalMs`), and that is what the card actually arms — this constant is
+ * only the fallback for an older Host that cannot answer, so it stays a plain
+ * number rather than a second source of truth.
+ *
+ * It is NOT a module-level `POLL_INTERVAL_MS` any more: the value is a setting
+ * now, and a constant that the timer did not read would be exactly the kind of
+ * duplicate that drifts from the control it describes.
+ */
+const FALLBACK_POLL_INTERVAL_MS = 5 * 60_000
 
 /**
  * Retry cadence for a status read that FAILED.
@@ -758,6 +771,9 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
   const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
+  /** This card's own successful write of the refresh interval, if any. */
+  const [pollIntervalOn, setPollIntervalOn] = useState<number | undefined>(undefined)
+  const [pollIntervalBusy, setPollIntervalBusy] = useState(false)
   /**
    * The CN gateway editor's draft (issue #220). `undefined` = "not edited", so
    * the field shows the SAVED value and a background refresh cannot overwrite
@@ -1052,6 +1068,22 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    * has to say behind a tab.
    */
   const signedIn = status.status === 'signed-in'
+  /**
+   * The refresh cadence to arm, from the Host's answer.
+   *
+   * Read off the ACTIVE region's document, which is the one the timer refreshes.
+   * An absent or unrecognized value falls back to 5 minutes — the same coercion
+   * the Host applies, so a hand-edited profile cannot make the card poll faster
+   * than the setting allows.
+   */
+  const pollIntervalMs = (() => {
+    // `in` rather than a plain read: the union's `{ status: 'error' }` variant
+    // carries no data at all, and a failed re-read must not decide the cadence.
+    const raw = 'pollIntervalMs' in status ? status.pollIntervalMs : undefined
+    return typeof raw === 'number' && WORKBUDDY_POLL_INTERVALS_MS.includes(raw)
+      ? raw
+      : FALLBACK_POLL_INTERVAL_MS
+  })()
 
   /**
    * Whether the ACTIVE region knows of any account at all.
@@ -1073,12 +1105,15 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     // account list is the real precondition for wanting a refresh.
     if (!open || !hasAccounts) return
     const controller = new AbortController()
-    const timer = window.setInterval(() => { void refreshUsage(activeRegion, controller.signal) }, POLL_INTERVAL_MS)
+    const timer = window.setInterval(
+      () => { void refreshUsage(activeRegion, controller.signal) },
+      pollIntervalMs,
+    )
     return () => {
       window.clearInterval(timer)
       controller.abort()
     }
-  }, [open, activeRegion, refreshUsage, status.status])
+  }, [open, activeRegion, refreshUsage, status.status, pollIntervalMs])
 
   /**
    * 设备头设置：卡片打开时读一次。
@@ -1513,6 +1548,49 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    * see `panel-switch.ts`. Publishing only AFTER the write is verified keeps the
    * two from disagreeing: the row never appears for a value the Host refused.
    */
+  /**
+   * The refresh interval, read from the status document first and the settings
+   * snapshot second.
+   *
+   * The document is the fresher of the two (the Host answers with the value it
+   * actually stored), but the settings snapshot is what a save is verified
+   * against, and it is also the only thing available before the first document
+   * lands. Reading both, in that order, means the picker never shows a value the
+   * timer is not using.
+   */
+  const pollIntervalValue = (): number => {
+    // This card's own successful write wins: it is the only source that is
+    // certain to be current the instant a save returns, while the settings
+    // mirror is documented as unreliable for this namespace.
+    if (pollIntervalOn !== undefined) return pollIntervalOn
+    const fromSettings = pollIntervalMsOf(settingsScope?.getSnapshot().value)
+    // Then the Host's answer, which is what the TIMER is actually using — a
+    // picker showing anything else would be describing a cadence nobody runs.
+    if ('pollIntervalMs' in status
+      && typeof status.pollIntervalMs === 'number'
+      && WORKBUDDY_POLL_INTERVALS_MS.includes(status.pollIntervalMs)) {
+      return status.pollIntervalMs
+    }
+    return fromSettings
+  }
+
+  const changePollInterval = async (intervalMs: number): Promise<void> => {
+    if (settingsScope === undefined) return
+    setPollIntervalBusy(true)
+    try {
+      await writePollIntervalMs(settingsScope, intervalMs)
+      if (mounted.current) setPollIntervalOn(intervalMs)
+      // Re-read so the new cadence is visible in the very document the timer
+      // will next read — a save that only changed local state would leave the
+      // card polling at the OLD interval until the next unrelated refresh.
+      await refreshUsage(activeRegion)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setPollIntervalBusy(false)
+    }
+  }
+
   const toggleSidebarPanel = async (enabled: boolean): Promise<void> => {
     if (settingsScope === undefined) return
     setSidebarPanelBusy(true)
@@ -2888,6 +2966,47 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       </div>
     )
 
+  /**
+   * The refresh cadence, as a five-option picker.
+   *
+   * It lives in the capability panel because it commits on the click like every
+   * other control there — no Save button. A dropdown rather than a free number
+   * because the offered set IS the validation: the same five values are what the
+   * Host accepts, so the control cannot produce something the Host refuses.
+   *
+   * Placed last among the capability groups: it changes how often the plugin
+   * ASKS, not what it may do, and it is the one control here whose effect is
+   * purely about request volume.
+   */
+  const pollIntervalPreference = (
+    <div className="dsm-workbuddy-prefs">
+      <span className="dsm-workbuddy-pref-hint">{t('row.pollIntervalLead')}</span>
+      <label className="dsm-workbuddy-pref dsm-workbuddy-upstream-pref" title={t('row.pollIntervalHint')}>
+        <span className="dsm-workbuddy-pref-copy">
+          <span className="dsm-workbuddy-pref-label">{t('row.pollIntervalLabel')}</span>
+          <span className="dsm-workbuddy-pref-hint">{t('row.pollIntervalHint')}</span>
+          <select
+            className="dsm-workbuddy-credit-position"
+            value={String(pollIntervalValue())}
+            disabled={!canWrite || saving || poolBusy || pollIntervalBusy}
+            aria-label={t('row.pollIntervalAria')}
+            onChange={(event: { currentTarget: { value: string } }) => {
+              const next = Number(event.currentTarget.value)
+              if (!WORKBUDDY_POLL_INTERVALS_MS.includes(next)) return
+              void changePollInterval(next)
+            }}
+          >
+            <option value={String(60_000)}>{t('row.pollInterval1m')}</option>
+            <option value={String(5 * 60_000)}>{t('row.pollInterval5m')}</option>
+            <option value={String(10 * 60_000)}>{t('row.pollInterval10m')}</option>
+            <option value={String(30 * 60_000)}>{t('row.pollInterval30m')}</option>
+            <option value={String(60 * 60_000)}>{t('row.pollInterval60m')}</option>
+          </select>
+        </span>
+      </label>
+    </div>
+  )
+
   const sidebarPanelPreference = (
     /* Wrapped in `.prefs` like every other group as of 5.20.0. It used to be a
        bare <label>, which made it the only one of the five blocks that was not a
@@ -4024,6 +4143,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 {channelRejectContinuePreference}
                 {dropAllThinkingPreference}
                 {sidebarPanelPreference}
+                {pollIntervalPreference}
                 {/* WHAT THE PLUGIN LOOKS LIKE, as opposed to what it may do.
                     It lives in this panel rather than under 「更多设置」 because it
                     applies on the click with no Save button — the same contract as

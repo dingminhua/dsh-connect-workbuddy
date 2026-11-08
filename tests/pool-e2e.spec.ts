@@ -807,6 +807,82 @@ async function waitFor(done: () => Promise<boolean>, label: string): Promise<voi
   throw new Error(`timed out waiting for ${label}`)
 }
 
+describe('the refresh interval is a real, validated setting', () => {
+  const SAVE_PATH = '/plugins/dsh-connect-workbuddy/__save'
+
+  /** POST a save, the way the card's dropdown does. */
+  async function save(field: string, value: unknown): Promise<{ status: number, body: Record<string, unknown> }> {
+    const route = routes.find(entry => entry.path === SAVE_PATH)
+    if (route === undefined) throw new Error('the save route was not registered')
+    const { res, status, body } = response()
+    await route.handler({
+      method: 'POST',
+      url: SAVE_PATH,
+      headers: { host: '127.0.0.1:62283' },
+      // The handler reads the body as a stream; a one-shot `on`-emitting double
+      // is enough for the two listeners it installs.
+      on(event: string, handler: (chunk?: unknown) => void) {
+        if (event === 'data') handler(Buffer.from(JSON.stringify({ field, value })))
+        if (event === 'end') handler()
+      },
+    } as never, res as never)
+    return { status: status(), body: body() }
+  }
+
+  it('accepts every offered interval and answers with what it stored', async () => {
+    // The dropdown can only produce these five values, so every one of them must
+    // be writable through the same route the card uses — otherwise the control
+    // offers a choice the Host refuses.
+    const authFile = await writeAuthFixture(root)
+    await mount({ authFile, regions: { cn: { enabled: true } } })
+    for (const interval of [60_000, 5 * 60_000, 10 * 60_000, 30 * 60_000, 60 * 60_000]) {
+      const { status, body } = await save('pollIntervalMs', interval)
+      expect(status, `interval ${String(interval)}`).toBe(200)
+      expect((body['value'] as { pollIntervalMs?: number } | undefined)?.pollIntervalMs).toBe(interval)
+    }
+  })
+
+  it('carries the configured interval on the status document the card polls', async () => {
+    // The card arms its timer from THIS document, so a value that is stored but
+    // never reported would leave the card polling at the old cadence. Mounted
+    // with the value already in the config, because the settings double below
+    // keeps its own state — this asserts the READ side, and the save route's
+    // write side is the test above.
+    const authFile = await writeAuthFixture(root)
+    await mount({ authFile, regions: { cn: { enabled: true } }, pollIntervalMs: 30 * 60_000 })
+    const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+    expect(body['pollIntervalMs']).toBe(30 * 60_000)
+  })
+
+  it('coerces an out-of-set configured value to the default, so the card cannot poll faster', async () => {
+    // A hand-edited `cordis.patch.yml` can carry any number, and the card arms
+    // `setInterval` from this answer: `0` would poll continuously. The Host must
+    // therefore coerce on the way OUT, not merely validate on the way in.
+    //
+    // MUTATION NOTE: this coercion exists TWICE on purpose — `pollIntervalOf`
+    // in `src/index.ts` reads the config, and `workBuddyWebStatus` re-checks
+    // whatever the dependency answers. Deleting EITHER one alone leaves this
+    // test green, which is the point of the duplication (a stale caller or an
+    // older Host must not be able to arm a bad cadence); deleting BOTH turns it
+    // red with "a 0 interval must never reach the card".
+    const authFile = await writeAuthFixture(root)
+    await mount({ authFile, regions: { cn: { enabled: true } }, pollIntervalMs: 0 })
+    const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+    // NOT `toBe(undefined)` and not the raw 0: the coerced default must be what
+    // the card arms.
+    expect(body['pollIntervalMs'], 'a 0 interval must never reach the card').toBe(5 * 60_000)
+  })
+
+  it('reports the 5-minute default before anything was saved', async () => {
+    // An upgrade must move the cadence to the new default rather than leave the
+    // card on the old hard-coded minute.
+    const authFile = await writeAuthFixture(root)
+    await mount({ authFile, regions: { cn: { enabled: true } } })
+    const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+    expect(body['pollIntervalMs']).toBe(5 * 60_000)
+  })
+})
+
 describe('the automatic check-in: the poll finds an unchecked account and claims it (#191/#232)', () => {
   /**
    * The requirement, stated as a test: with the switch on, a run that DISCOVERS
