@@ -30,13 +30,12 @@ case "keyed":
   if (options.key === undefined) throw new Error(`keyed slot "…" requires options.key`)
 ```
 
-这不是可以绕过的细节，而是一条**硬约束**。问题是：**所有已发布的第三方贡献者都注册的是
-无 key 条目**——而且这恰恰是宿主自己教的。
+这不是可以绕过的细节，而是一条**硬约束**。问题是：**所有已发布的第三方贡献者注册的
+都是无 key 条目**。
 
-- `dsh-client-ui-model-selection` 的契约注册表把该槽登记为 `registerOptions: []`；
-- 同一份 README 给出的示例就是无 key 的：`ctx.slots.register({ name: 'conversation.input.model.label' }, …)`。
-
-于是「照文档写」等于「注册无 key 条目」。本族的三个插件（workbuddy / trae / qoder）
+一个可验证的解释是：在 `single` 语义下 `key` 完全无意义（单元格恒为 `undefined`），
+所以「照当时的契约写」自然写出无 key 的注册——`key` 是只有 `keyed` 才需要的字段，
+而此前没有任何文档说过这个槽会变成 `keyed`。本族的三个插件（workbuddy / trae / qoder）
 此前每个版本都是这个形状，而且每个都把注册包在**吞错 try/catch** 里（因为
 `inject()` 可能延迟执行回调，延迟抛出的错误会被渲染器从 `queueMicrotask` 重新抛出，
 调用处的 try/catch 够不着——trae 为这条付过 issue #74 的代价）。
@@ -162,8 +161,9 @@ the right target.
 
 **(1) `keyed` requires `options.key`** — `register()` throws
 `keyed slot "…" requires options.key` otherwise. Every shipped third-party contributor
-registers a *keyless* entry, and that is what your own contract registry
-(`registerOptions: []`) and README example teach. Combined with the fact that every member
+registers a *keyless* entry — which is the natural thing to write under `single`
+semantics, where `key` is meaningless because the cell is always `undefined`.
+Combined with the fact that every member
 of this family wraps its registration in a swallowing try/catch (a deferred `inject()`
 callback throw is re-raised from a `queueMicrotask`, unreachable from a call-site catch),
 a declaration-only flip throws for all of them and shows up as "the labels just vanished".
