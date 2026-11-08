@@ -77,6 +77,17 @@ const PROVIDER_REGIONS: ReadonlyMap<string, WorkBuddyWebRegion> = new Map([
 ])
 
 /**
+ * Every provider id this plugin owns, as a list.
+ *
+ * Exported because on a `keyed` host the label seat is one registration PER
+ * provider id — the registration side needs the same list the component uses to
+ * decide "is this row mine", and two copies of it would drift. Order is
+ * irrelevant to the registry (each id is its own cell); it is stable so the
+ * diagnostics line reads the same on every boot.
+ */
+export const WORKBUDDY_PROVIDER_IDS: readonly string[] = [...PROVIDER_REGIONS.keys()]
+
+/**
  * The region a provider id serves, or `undefined` for a provider that is not
  * this plugin's.
  *
@@ -497,6 +508,17 @@ export interface WorkBuddyModelLabelProps {
  * any other contributor (name + price + promotion + load + new-model mark), so
  * it should be the one that takes the cell when several want it.
  *
+ * WHAT CHANGES WHEN THE HOST KEYS THE SLOT — and why the number stays. On a host
+ * that declares this slot `keyed`, the seat is registered once per provider id
+ * (see `modelLabelSeats` in `./model-label-seat.ts`), each `key` is its own
+ * cell, and priority stops deciding WHO IS VISIBLE: qoder's `-101` and trae's
+ * `-102` no longer share a cell with this `-105`, so none of the three can
+ * shadow another. Priority keeps exactly one meaning inside a cell — the
+ * tie-breaker between two registrations that claim the SAME provider id, where
+ * an equal value throws and the lowest renders. The value is therefore not
+ * lowered to keep winning an auction that no longer happens; it is kept because
+ * it is this plugin's rank for its own rows.
+ *
  * WHAT THIS PLUGIN DELIBERATELY DOES NOT DO. It does not read the slot ledger,
  * does not look for another plugin's registration, and does not render another
  * plugin's component. Foreign rows get the plain catalog name PLUS the model's
@@ -534,6 +556,21 @@ export const MODEL_LABEL_PRIORITY = -105
  * provider published one. There is no forwarding and no consultation of other
  * plugins' registrations — see `MODEL_LABEL_PRIORITY`.
  *
+ * WHY THE FOREIGN BRANCH STILL EXISTS ON A KEYED HOST. It is unreachable there —
+ * each seat is registered under one provider id, the owner dispatches with
+ * `entryKey: provider.id`, so a lookup only ever finds the entry whose key
+ * matches the row it is drawing. But ONE build serves both contracts
+ * (`./model-label-seat.ts` derives the seats from the host's declaration), and
+ * on a `single` host this branch is not just reachable, it is the whole row:
+ * that host renders one winner for every provider. Deleting it would fix the
+ * keyed case by breaking the single one.
+ *
+ * Its continued presence is therefore also the cheapest possible check that the
+ * seat keys are right: on a keyed host, reaching this branch with a WorkBuddy
+ * provider id means a seat was registered under the wrong key, and the row has
+ * silently degraded to the host's fallback — visible as a missing load badge on
+ * exactly those rows, nowhere else.
+ *
  * @param props - The host's model identity and the placement of this label.
  * @returns The catalog name, the promotion chip when one holds, the load badge
  *          when the probe reported one, or a sibling's badge on a foreign row.
@@ -547,6 +584,14 @@ export function WorkBuddyModelLabel(props: WorkBuddyModelLabelProps): ReactEleme
     // badge this is the plain catalog name, which is the slot contract's
     // minimum — see `HostBadgeChip` for why drawing a sibling's badge is data,
     // not the inter-plugin linkage `docs/DESIGN.md` §零 rules out.
+    //
+    // On a `keyed` host this branch cannot be reached for a provider id this
+    // plugin registered (see the note above the component): the RENDERER — not
+    // this component — matches the dispatch key against the row's provider id
+    // before calling us, so a WorkBuddy row finds the WorkBuddy seat. Nothing
+    // here reads the ledger, and it must not start: the `entries()` call that
+    // once looked like one lives in the sibling qoder plugin, not here.
+    // Reaching this branch on a keyed host means the seat key is wrong.
     //
     // THE BADGE IS ALWAYS AFTER THE NAME, ON EVERY PLACEMENT. The host's own
     // fallback moves it BEFORE the name on the trigger and AFTER it in menus;

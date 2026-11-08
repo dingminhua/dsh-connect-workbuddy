@@ -111,11 +111,17 @@ export interface LlmModelInfo {
 
 ## 先选一个 priority（不做这一步，另外四步都白做）
 
+> **2026-11-08 更正：下面这一整节是 `single` 槽的规则，宿主改成 `keyed` 后其核心断言作废。**
+> 正确的做法是**按槽的声明注册**：`keyed` 下每个 provider id 一格，优先级不再决定谁可见
+> （见文末「宿主把槽改成 `keyed` 之后」）。本节保留，因为**当前每个已发布宿主仍然是
+> `single`**，读它才能理解正在发生的现象。
+
 `single` 槽的胜负规则是：**priority 数值最小的那个渲染**，其余注册虽然成功但永远不被调用。
 而**同一优先级第二次注册会直接抛错**（见「现象与原因」里的 `SlotCore.register` 原文），
 错误常被 try/catch 吞成一行 `console.error`，页面看起来正常、胶囊就是不出现——极难排查。
 
-所以每个同族插件都必须**显式写一个负的、族内互不相同的 priority**，绝不能用默认的 `0`：
+所以每个同族插件在 `single` 宿主上都必须**显式写一个负的、族内互不相同的 priority**，
+绝不能用默认的 `0`：
 
 | 插件 | priority | 说明 |
 | --- | --- | --- |
@@ -124,7 +130,7 @@ export interface LlmModelInfo {
 | trae | `-102` | 注册成功，不渲染 |
 | qoder | `-101` | 注册成功，不渲染 |
 
-三条硬要求：
+三条硬要求（**仅 `single` 宿主**）：
 
 1. **必须 < 0**，且避开宿主自带插件占用的 `0`。
 2. **族内互不相同**，否则第二个装上的会注册失败。
@@ -133,6 +139,99 @@ export interface LlmModelInfo {
 
 > 谁赢谁就负责画全族的胶囊。所以**每一个**同族插件都要实现第 4 步（复现别家的行），
 > 不能赌自己永远赢：用户装了什么、谁先注册，都不是你能控制的。
+
+### 宿主把槽改成 `keyed` 之后
+
+`keyed` 是这次的根治路径。它和 `list` 不是一回事——`list` 每次调用渲染**全部**存活行，
+实现不了「一个 provider 一行」，而且要求 `options.id`（同 id 同优先级抛错）；
+`chain` 按 `select()` 选唯一赢家，语义同 `single`。三者里只有 `keyed` 成立。
+
+插件侧要做的只有一件：**按宿主的声明决定注册几条**。
+
+```ts
+// 关键：kind 写在宿主包里，插件自己的 SlotMap 增强不代表运行中的声明。
+const kind = ctx.slots.spec('conversation.input.model.label')?.kind
+const seats = kind === 'keyed'
+  ? MY_PROVIDER_IDS.map(id => ({ name: SLOT, key: id, priority: MY_PRIORITY }))
+  : [{ name: SLOT, priority: MY_PRIORITY }]
+seats.forEach(seat => ctx.slots.register(seat, MyModelLabel))
+```
+
+四条注意：
+
+1. **`keyed` 强制要求 `key`。** 没有 `key` 的注册会抛
+   `keyed slot "…" requires options.key`，而本族每个插件都把注册包在吞错 try/catch 里，
+   于是表现就是「标签悄悄消失」。所以**不能只改宿主的声明**，插件必须同时发版——否则
+   改口那天全族一起静默失效。
+2. **`single` 宿主上不能注册多条。** 第二条会在第一条已落地之后抛
+   `single slot … already has a registration at priority …`，即「半注册」。
+3. 所以**一个构建要同时服务两种宿主**：运行时读 `kind`，读不到（老宿主没有 `spec()`、
+   服务未就绪、未声明的 kind）就退回历史上的单条。
+4. `priority` 不再决定**可见性**，但仍是**同一格内**的裁决（两个插件抢同一个 provider id：
+   同值抛错、低者渲染）。三家 `-101` / `-102` / `-105` 之间不再有压制关系，数值**不必**
+   继续下探——停战靠的是换槽的基数，不是再压一次价。
+
+`keyed` 下第 4 步（复现别家的行）在**运行时走不到**：每条注册只在自己 provider 的行上被
+调用。但那一步仍然必须实现，因为一个构建同时服务两种宿主，而 `single` 宿主上它就是整行。
+它还是最便宜的哨兵：如果某个自己 provider 的行走进了外来行分支，说明 `key` 写错了。
+
+### ⚠️ 改声明不够：宿主还必须传 `entryKey`
+
+**这是最容易被忽略、而且最坏的一步。** keyed 的派发依赖**两个**独立事实：
+
+1. 槽的声明是 `keyed`（插件侧读它决定注册几条）；
+2. 渲染调用点传了 `{ entryKey: provider.id }`（宿主侧决定派发给哪个 key 的格子）。
+
+渲染器的 keyed 分支逐字是：
+
+```js
+if (spec.kind === "keyed") {
+  const entry = host.entriesOfSlot(slotKey).find(e => e.options.key === opts?.entryKey)
+  if (!entry) return entries.some(e => e.options.key === opts?.entryKey) ? deadCell() : <>{opts?.fallback ?? null}</>
+  return guarded(entry, entryKeyOf(entry))
+}
+```
+
+`opts.entryKey` 是 `undefined` 时，`.find()` 匹配不到任何「以 provider id 为 key」的条目，
+`entries.some()` 也是 false，于是**每一行**都渲染 `opts.fallback`。
+
+而 `@deepseek-ai/dsh-client-ui-model-selection@0.2.2-rc.1` 里渲染这个槽**只有一个**调用点，
+第三个参数只有 `fallback`、**没有 `entryKey`**：
+
+```js
+renderSlot("conversation.input.model.label",
+  { provider, model, placement, selected },
+  { fallback: model.badge === void 0 ? model.name : <badge> })
+```
+
+结论：**只把声明改成 `keyed`，全族的标签会一起消失，而且不报错。** 插件侧的注册成功、
+inject 回调也跑了、没有任何异常和日志——只是那个组件再也不会被调用。这正是这一系列
+问题里最难排查的一类。
+
+所以上游的最小改动是**两处**：
+
+```diff
+- children: { "conversation.input.model.label": { kind: "single", scope: "session", inline: true } }
++ children: { "conversation.input.model.label": { kind: "keyed", scope: "session", inline: true } }
+
+  children: renderSlot("conversation.input.model.label",
+    { provider, model, placement, selected },
+-   { fallback: model.badge === void 0 ? model.name : <badge> })
++   { fallback: model.badge === void 0 ? model.name : <badge>, entryKey: provider.id })
+```
+
+顺带一个放大器：宿主自己的契约注册表把该槽登记为 `registerOptions: []`，并给了一个
+**无 key** 的注册示例（README 同样如此）。也就是说「无 key 注册」是它**文档化的写法**，
+任何照文档写的第三方贡献者都注册无 key 条目——第二处改动缺失时，他们全体一起失效。
+
+### 一个必须承认的现实
+
+本族三个插件**当前无法验证**这个前提：读得到 `spec().kind`，但读不到宿主的调用点传了
+什么。所以「注册了两格」不等于「会被调用」。宿主升级后请先按这个顺序自查：
+
+1. `window.__dshWorkBuddyModelLabel__`（qoder/trae 无此视图）里的 `slotKind` 是否变成
+   `keyed`、`seats` 是否等于 provider 数；
+2. 若两者都对而标签仍然消失，问题在**第 2 个前提**，不在插件里——去查宿主的调用点。
 
 ## 具体做法（5 步）
 

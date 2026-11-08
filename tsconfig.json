@@ -55,6 +55,8 @@
     "tests/busy-icon-card.spec.tsx",
     "tests/model-label-slot.spec.tsx",
     "tests/model-label-slot-coexistence.spec.tsx",
+    "tests/model-label-seat.spec.tsx",
+    "tests/model-label-wiring.spec.tsx",
     "tests/cli-bridge-live-pill.spec.tsx",
     "tests/issue120-picker-rate-duplicate.spec.tsx",
     "tests/card-media-models.spec.tsx",

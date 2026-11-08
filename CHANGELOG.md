@@ -1,5 +1,82 @@
 # Changelog
 
+## 5.21.0 (2026-11-08)
+
+> 版本号是 **minor**：注册的**条数**随宿主的声明变化（`single` 一条、`keyed` 每个
+> provider 一条）。不改配置键、不动路由、不改用户可见的文案。
+
+### 模型标签槽：按宿主的声明注册，为 `keyed` 做好准备
+
+`conversation.input.model.label` 的 kind 写在宿主包里（`ui-model-selection`）。
+在它改口之前是 `single`：只有一格，三家连接器只能按 `-101` / `-102` / `-105`
+互相压价，而且每一轮都有人再往下压一格。目标形态是 `keyed`——每个 `options.key`
+自成一格，宿主按 `provider.id` 派发 `{ entryKey }`，没人贡献的 provider 落回宿主
+自己的 fallback。
+
+本版做的是一件插件侧唯一该做的事：**注册几条跟着宿主声明的 kind 走。**
+
+- 新增 `src/client/model-label-seat.ts`：运行时读 `ctx.slots.spec(key)?.kind`，
+  `keyed` 就为 `workbuddy` / `workbuddy-global` 各注册一格，其余情况（含读不到）
+  保持历史上的单条。**一个构建同时服务两条宿主线**，宿主改口那天不需要重新发版。
+  读不到时退回单条是保守方向：那正是每个已发布版本的行为。
+- 诊断视图新增 `slotKind` / `seats`：选择器只有一个症状（没有徽标），但对应两种
+  完全不同的处境——`single` 宿主上被同优先级的对手抢了格子，和 `keyed` 宿主上漏了
+  某个 provider。有了这两个字段，报告就能区分它们，而两者的修法互为对方的 bug。
+
+### 为什么不能只改宿主
+
+两个方向都会**静默**失败，因为这里的注册包在吞错 try/catch 里：
+
+| 情况 | 结果 |
+| --- | --- |
+| keyed 的两条打到 `single` 宿主 | 第二条抛 `already has a registration`，第一条已落地 → 半注册 |
+| 无 key 的一条打到 `keyed` 宿主 | 抛 `keyed slot … requires options.key` → 标签消失 |
+
+`keyed` **强制要求 `key`**，这是上游提案里没写的第一道陷阱：**此前已发布**的本族每个
+版本都注册一条无 key 的条目，只改宿主声明会让它们一起失效（本版之后的新构建会跟着
+声明走，所以受影响的正是「已经装在用户机器上」的那些版本）。第二道陷阱见下一节。
+
+`MODEL_LABEL_PRIORITY = -105` 不改。keyed 下它不再决定可见性，只剩「同一格内谁先」；
+三家之间不再有压制关系——停战靠的是换槽的基数，不是再压一次价。
+
+外来行分支保留：keyed 下运行时走不到，但一个构建要同时服务两种宿主，而 `single`
+宿主上它就是整行文字。它同时也是最便宜的哨兵——自己的行若走进那一支，说明 `key`
+写错了。
+
+### 文档更正：是 `keyed`，不是 `list`
+
+`docs/DESIGN.md` §零 第 3 条与 `docs/MODEL-LABEL-SPEC.md` 此前都说「把槽改成
+`list` 或 `chain` 是唯一根治方向」。那两条判断都不成立：`list` 每次调用渲染
+**全部**存活行，做不出「一个 provider 一行」，而且要求 `options.id`（同 id 同
+优先级抛错）；`chain` 按 `select()` 选唯一赢家，语义同 `single`。只有 **`keyed`**
+成立。两处已更正（5.20.31 那条历史结论也已就近标注）。
+
+### 关键前提：改声明不够，宿主还必须传 `entryKey`
+
+这一条是复核实机产物时发现的，值得单独写下来——**光把槽声明成 `keyed` 会让全族
+的标签一起消失，而且不报错。**
+
+`@deepseek-ai/dsh-client-ui-model-selection@0.2.2-rc.1` 里渲染这个槽只有一个调用点：
+
+```js
+renderSlot("conversation.input.model.label",
+  { provider, model, placement, selected },
+  { fallback: model.badge === void 0 ? model.name : <badge> })
+```
+
+第三个参数只有 `fallback`，**没有 `entryKey`**。而渲染器的 keyed 分支是
+`entriesOfSlot(key).find(e => e.options.key === opts?.entryKey)`——`opts.entryKey`
+是 `undefined` 时匹配不到任何「以 provider id 为 key」的条目，于是**每一行**都走
+`fallback`。插件侧的注册**成功**，没有抛错，也没有日志，只是再也不会被调用。
+
+所以上游要改的是两处：**声明改成 `keyed`，且调用点补 `{ entryKey: provider.id }`**。
+缺第二处时，本版本的代码无法自检（注册成功、回调也跑了），症状是「标签没了且没有
+错误」——正是这次想根治的那种静默。
+
+顺带：宿主自己的契约注册表把该槽登记为 `registerOptions: []` 并给了一个**无 key** 的
+示例，README 同样如此。也就是说「无 key 注册」是它**文档化的写法**，这会放大上面
+那个陷阱的半径——所有照文档写的第三方贡献者都会中招。
+
 ## 5.20.32 (2026-11-08)
 
 > **导入闭环修好了；历史思考可以按需剥掉；页面宽度回到原来的样子。**
@@ -205,9 +282,19 @@ Tests 3320 → 3323（新增 4 条：静默、灰点、分隔符、面板那一�
 **这只是把问题挪到了另一边，不是修复。** `single` 语义下赢家要画所有行，
 所以 trae 和 qoder 的胶囊现在会从选择器里消失——和我们之前遭遇的一模一样。
 
-真正的修复在宿主一侧：这个槽位应该是 `list` 而不是 `single`。已向上游提交讨论，
-理由和实测数据都在里面。`docs/DESIGN.md` §零 早就把这个方向列为「唯一能根治」的，
-这次终于有了真实案例。
+真正的修复在宿主一侧：这个槽位**不该是 `single`**。已向上游提交讨论，理由和实测数据都在里面。
+`docs/DESIGN.md` §零 早就把这个方向列为「唯一能根治」的，这次终于有了真实案例。
+
+> **2026-11-08 更正：是 `keyed`，不是 `list`。** 当时这条写的是 `list`，那个判断是错的：
+> `list` 每次调用把**全部**存活行一起渲染，做不出「一个 provider 一行」；它还要求每条注册
+> 带 `options.id`，同 id 同优先级抛错——只是把「抢一格」换成「抢一个 id」。`chain` 更不行，
+> 它按 `select()` 选唯一赢家，语义与 `single` 相同。**`keyed` 才是**：每个 `options.key`
+> 自成一格，宿主按 `provider.id` 派发 `{ entryKey }`，没人贡献的 provider 落回宿主自己的
+> fallback。三家的注册也已按宿主的声明准备好（见 5.21.0）。
+>
+> ⚠️ 但**改声明不够**：实机产物里宿主渲染该槽的调用点并没有传 `entryKey`，只改了声明
+> 会让**每一行**都落到 fallback，插件注册成功却再也不被调用（无异常、无日志）。完整
+> 的上游要求见 5.21.0 的「关键前提」一节。
 
 ### 测试
 

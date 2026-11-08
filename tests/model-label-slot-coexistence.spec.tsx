@@ -490,13 +490,24 @@ describe('no inter-plugin coordination (project invariant)', () => {
   })
 
   it('declares only its own priority, never another plugin\'s', () => {
-    // The registration is self-contained: a name and our own constant. No
-    // probing, no negotiation, nothing that would break if another contributor
-    // changed its mind about priorities.
+    // The registration is self-contained: a name, our own constant, and (on a
+    // keyed host) our own provider ids. No probing of other registrants, no
+    // negotiation, nothing that would break if another contributor changed its
+    // mind about priorities.
+    //
+    // The literal `register({ name, priority })` call is gone: how many seats to
+    // claim is now DERIVED from the host's declared kind (`modelLabelSeats`), so
+    // the shape lives in `src/client/model-label-seat.ts` and this entry point
+    // passes its plan through. What must stay true here is that the plan is
+    // built from THIS plugin's constant and THIS plugin's provider list.
     const source = readFileSync(join(process.cwd(), 'src/client/index.tsx'), 'utf8')
-    const registration = /register\(\s*\{\s*name: 'conversation\.input\.model\.label',\s*priority: MODEL_LABEL_PRIORITY\s*\}/.exec(source)
-    expect(registration).not.toBeNull()
-    // And nothing in the label path enumerates other registrants.
+    expect(source).toMatch(/modelLabelSeats\(\{/)
+    expect(source).toMatch(/priority: MODEL_LABEL_PRIORITY/)
+    expect(source).toMatch(/providerIds: WORKBUDDY_PROVIDER_IDS/)
+    // And nothing in the label path enumerates other registrants. (`spec()` is
+    // a declaration read — the slot's KIND — not a ledger walk; the assertion
+    // below distinguishes them.)
     expect(source).not.toMatch(/slots\.entries\s*\(/)
+    expect(source).not.toMatch(/entriesOfSlot\s*\(/)
   })
 })

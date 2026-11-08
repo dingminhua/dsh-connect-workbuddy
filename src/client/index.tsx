@@ -38,7 +38,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { WorkBuddyCard } from './WorkBuddyCard.tsx'
 import type { WorkBuddyCardInjected } from './WorkBuddyCard.tsx'
 import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
-import { MODEL_LABEL_PRIORITY, WorkBuddyModelLabel } from './WorkBuddyModelLabel.tsx'
+import { MODEL_LABEL_PRIORITY, WORKBUDDY_PROVIDER_IDS, WorkBuddyModelLabel } from './WorkBuddyModelLabel.tsx'
+import { declaredSlotKind, modelLabelSeats, registerModelLabelSeats } from './model-label-seat.ts'
 import { CodebuddyLive } from './CodebuddyLive.tsx'
 import { selectQuotaNoticeClaim, WorkBuddyQuotaNotice } from './WorkBuddyQuotaNotice.tsx'
 import { en, zh } from './locales.ts'
@@ -150,6 +151,8 @@ export function publishModelLabelState(
     dispose?: (() => void) | undefined
     askedAt?: number | undefined
     rebinds?: number | undefined
+    slotKind?: string | undefined
+    seats?: number | undefined
   },
   target: { warn?: (message: string) => void } & Record<string, unknown> = globalThis as never,
 ): Record<string, unknown> | undefined {
@@ -160,6 +163,19 @@ export function publishModelLabelState(
     rebinds: state.rebinds,
     failure: state.failure,
     claimed: state.dispose !== undefined,
+    /**
+     * Which shape the host's declaration allowed, and how many seats were
+     * claimed for it.
+     *
+     * Without these two the picker has ONE symptom ("no badges") for two very
+     * different situations: a `single` host where an equal-priority rival won
+     * the cell, and a `keyed` host where a provider id was missed. `slotKind`
+     * says which contract was in force; `seats` says what this plugin did with
+     * it. `<provider count>` on a keyed host and `1` on a single host are the
+     * only healthy pairs.
+     */
+    slotKind: state.slotKind,
+    seats: state.seats,
     at: Date.now(),
   }
   try {
@@ -428,6 +444,18 @@ export function apply(ctx: WorkBuddyClientContext): void {
      * ordering, the measured evidence, and the deliberate absence of any
      * inter-plugin coordination (project invariant, `docs/DESIGN.md` §零).
      *
+     * HOW MANY SEATS, AND WHY THAT IS READ AT MOUNT. `single` holds one cell, so
+     * exactly one registration is legal there. A `keyed` host gives each
+     * `options.key` its own cell, and one cell per provider id is what this
+     * plugin actually wants: it then draws its OWN rows and nothing else, qoder
+     * and trae stop sharing a cell with it, and a provider with no contribution
+     * falls through to the host's own fallback. Which of the two shapes is
+     * legal is the HOST's declaration, not this plugin's choice, so the kind is
+     * read from `ctx.slots.spec(...)` at mount and the seat list is derived from
+     * it (`./model-label-seat.ts`). One build therefore serves both lines — and
+     * a host that cannot be inspected gets the single seat, which is what every
+     * released version of this plugin already does.
+     *
      * THE COST IS PAID ON ANOTHER PLUGIN'S ROWS, and it is worth stating where
      * the registration happens: holding this cell means the host's own
      * `dsh-client-ui-deepseek-model-label-1017` badge is NOT rendered on the
@@ -435,7 +463,9 @@ export function apply(ctx: WorkBuddyClientContext): void {
      * to fix by inspecting the slot ledger — it is the price of §零, recorded in
      * `docs/DESIGN.md` and argued in the 5.8.2 CHANGELOG. Issue #138 is a user
      * meeting that price for the first time; the disposition is to state it
-     * plainly rather than to coordinate at runtime.
+     * plainly rather than to coordinate at runtime. On a `keyed` host that price
+     * is not paid at all: each provider keeps its own cell, so 1017's badge
+     * returns to the DeepSeek rows without anyone negotiating.
      */
     /**
      * WHY THIS RECORDS AN OUTCOME, not just a disposer.
@@ -474,11 +504,42 @@ export function apply(ctx: WorkBuddyClientContext): void {
       askedAt?: number
       /** How many times `rebindSlots` has run — proves the client half booted. */
       rebinds?: number
+      /**
+       * The kind the running host declared for the label slot, as read at mount.
+       *
+       * `undefined` means the host did not answer the inspection (an older line
+       * without `spec()`, or a throw) — NOT that the slot is missing. The
+       * published view needs it because "we registered one seat on a keyed host"
+       * and "we registered two seats on a single host" are different bugs that
+       * look identical from the picker.
+       */
+      slotKind?: string
+      /** How many registrations this plugin made for the slot. */
+      seats?: number
     } = {}
     /** The verdict for the console line (see `modelLabelVerdictOf`). */
     const modelLabelVerdict = (): string => modelLabelVerdictOf(modelLabelState)
     const registerModelLabel = (): (() => void) | undefined => {
       modelLabelState.askedAt = Date.now()
+      /**
+       * The refusal path, shared by the eager and the deferred call.
+       *
+       * REPUBLISHES, and that is not cosmetic. `rebindSlots` publishes once, and
+       * on the normal boot it publishes BEFORE this callback exists: `inject()`
+       * defers the callback until `conversation.input.model` mounts, so the
+       * published view is a snapshot of a registration that has not happened
+       * yet. Without this line the failure lands in a state object that nothing
+       * reads again, and `window.__dshWorkBuddyModelLabel__` keeps
+       * `failure: undefined` with verdict `parent-not-mounted` — the exact
+       * opposite of the truth, in the surface built to state it.
+       */
+      const refuse = (error: unknown): undefined => {
+        const message = error instanceof Error ? error.message : String(error)
+        modelLabelState.failure = message
+        console.error('[dsh-connect-workbuddy] model label slot failed to register (host provider unaffected):', error)
+        publishModelLabelState(modelLabelState)
+        return undefined
+      }
       try {
         return ctx.slots.inject('conversation.input.model.label' as never, () => {
           // THIS LINE IS THE EVIDENCE. The host calls back only after
@@ -486,18 +547,55 @@ export function apply(ctx: WorkBuddyClientContext): void {
           // if the row never appears, the callback never runs and NOTHING throws
           // (see the note above `modelLabelState`).
           modelLabelState.injectRanAt = Date.now()
-          return (ctx.slots as unknown as {
-            register(options: { name: string, priority: number }, component: unknown): () => void
-          }).register(
-            { name: 'conversation.input.model.label', priority: MODEL_LABEL_PRIORITY },
-            WorkBuddyModelLabel,
-          )
+          // The KIND is the host's declaration, read from the live registry — a
+          // plugin's `SlotMap` augmentation describes what this build hopes for,
+          // not what the running host declared. See `modelLabelSeats`.
+          const kind = declaredSlotKind(ctx.slots, 'conversation.input.model.label')
+          const seats = modelLabelSeats({
+            name: 'conversation.input.model.label',
+            kind,
+            providerIds: WORKBUDDY_PROVIDER_IDS,
+            priority: MODEL_LABEL_PRIORITY,
+          })
+          const registry = ctx.slots as unknown as {
+            register(
+              options: { name: string, priority: number, key?: string },
+              component: unknown,
+            ): () => void
+          }
+          // ATOMIC: 2–3 seats, any one of which can be refused. A plain `.map()`
+          // would strand the seats that already landed (their disposers would
+          // die with the thrown array), leaving live cells nothing can release —
+          // see `registerModelLabelSeats`.
+          //
+          // THE CATCH IS INSIDE THE CALLBACK, on purpose. `inject()` does not
+          // necessarily run its callback now: when the slot is not declared yet
+          // it subscribes and runs it LATER, and a later throw is re-thrown by
+          // the renderer's own `changed()` handler out of a `queueMicrotask`,
+          // where no call-site try/catch can reach it — the user gets a renderer
+          // error banner on the first paint after a restart. Keeping the catch
+          // here turns every refusal into the log line and the diagnostics state
+          // that exist to explain it. (Trae paid for this lesson in issue #74;
+          // the seat list is 2 entries now, so a refusal is twice as reachable.)
+          try {
+            const dispose = registerModelLabelSeats(seats, seat => registry.register(seat, WorkBuddyModelLabel))
+            modelLabelState.slotKind = kind ?? 'unknown'
+            modelLabelState.seats = seats.length
+            // Republish for the same reason `refuse` does: the one publish in
+            // `rebindSlots` runs before a deferred callback ever executes, so
+            // without this the two fields above would never reach `window`.
+            publishModelLabelState(modelLabelState)
+            return dispose
+          } catch (error: unknown) {
+            refuse(error)
+            // The callback's contract is a disposer, never `undefined`.
+            return () => {}
+          }
         })
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error)
-        modelLabelState.failure = message
-        console.error('[dsh-connect-workbuddy] model label slot failed to register (host provider unaffected):', error)
-        return undefined
+        // Only reachable when `inject()` itself throws, i.e. the slot is not
+        // declared at all on this host.
+        return refuse(error)
       }
     }
 

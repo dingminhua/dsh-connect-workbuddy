@@ -49,12 +49,39 @@ describe('publishModelLabelState', () => {
     expect(view).toMatchObject({ injectRanAt: undefined, failure: undefined, claimed: false })
   })
 
+  it('publishes WHICH slot contract was in force and how many seats were claimed', () => {
+    // `slotKind` + `seats` exist because the picker has ONE symptom — no badges —
+    // for two completely different situations: a `single` host where an
+    // equal-priority rival took the cell, and a `keyed` host where a provider id
+    // was missed. Without these two fields a report cannot tell them apart, and
+    // the fix for one is the bug for the other.
+    const keyed = target()
+    publishModelLabelState(
+      { injectRanAt: 1, dispose: () => {}, slotKind: 'keyed', seats: 2 },
+      keyed as never,
+    )
+    expect((keyed as never as Record<string, unknown>)['__dshWorkBuddyModelLabel__']).toMatchObject({
+      slotKind: 'keyed',
+      seats: 2,
+      claimed: true,
+    })
+
+    // A host that could not be inspected publishes `unknown` — NOT a guess, and
+    // not `undefined`, which would be indistinguishable from "never reached".
+    const unknownKind = target()
+    publishModelLabelState({ injectRanAt: 1, slotKind: 'unknown', seats: 1 }, unknownKind as never)
+    expect((unknownKind as never as Record<string, unknown>)['__dshWorkBuddyModelLabel__']).toMatchObject({
+      slotKind: 'unknown',
+      seats: 1,
+    })
+  })
+
   it('warns exactly once about a failure, never about success', () => {
     const bad = target()
-    publishModelLabelState({ failure: 'single slot already has a registration at priority -0.5' }, bad as never)
+    publishModelLabelState({ failure: 'keyed slot "conversation.input.model.label" requires options.key' }, bad as never)
     const badRecord = bad as never as Record<string, unknown>
     expect(badRecord['__dshWorkBuddyModelLabel__']).toMatchObject({
-      failure: 'single slot already has a registration at priority -0.5',
+      failure: 'keyed slot "conversation.input.model.label" requires options.key',
       claimed: false,
     })
     const warnings = (bad as unknown as { warnings: string[] }).warnings
