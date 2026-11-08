@@ -802,30 +802,83 @@ function jsonPrivate(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-/** Request-body cap for the probe route: model ids only, never content. */
+/** Request-body cap for the PROBE route: model ids only, never content. */
 const PROBE_BODY_LIMIT = 64 * 1024
 
 /**
- * Read a small JSON request body.
+ * Request-body cap for routes that carry a FILE the user chose.
  *
- * Bounded, unlike the settings route's reader: this endpoint takes a list of
- * model ids and has no legitimate use for a large payload, so an oversized body
- * is refused rather than buffered.
+ * WHY THIS IS NOT `PROBE_BODY_LIMIT` (issue #229, second report). The transfer
+ * route takes the whole text of an account-export file, and those are not small:
+ * a single account from a sibling tool measured 108 KiB, because the file carries
+ * two raw upstream snapshots (`quota_raw` + `usage_raw`, ~59 KiB together) that
+ * this plugin never reads. One account already exceeded the probe's 64 KiB, so a
+ * perfectly valid import failed — with the *worst possible* error message (the
+ * socket was destroyed, so the browser reported `Failed to fetch`).
+ *
+ * The number matches the chat route's limit for the same reason: a cap exists to
+ * stop unbounded buffering, not to express an opinion about how big a user's
+ * export file is allowed to be.
  */
-function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+const TRANSFER_BODY_LIMIT = 64 * 1024 * 1024
+
+/**
+ * Raised when a request body exceeds its route's cap.
+ *
+ * A CLASS, not a message, so the caller can answer 413 instead of 500: the
+ * protocol says the client sent too much, and a 500 would send the reader
+ * looking for a server-side fault that does not exist. Same reasoning (and the
+ * same shape) as `RequestBodyTooLargeError` in `shim.ts`.
+ */
+export class JsonBodyTooLargeError extends Error {
+  constructor(readonly limitBytes: number) {
+    super('request body too large (limit ' + String(limitBytes) + ' bytes)')
+    this.name = 'JsonBodyTooLargeError'
+  }
+}
+
+/**
+ * Read a JSON object request body, bounded.
+ *
+ * AN OVER-LIMIT BODY IS STOPPED, NOT DESTROYED (issue #229). This used to call
+ * `req.destroy()`, which tears down the SOCKET — so the error response could
+ * never reach the client, and the browser reported a bare `Failed to fetch`.
+ * The user then had no way to learn that the file was merely too large. The
+ * chat route fixed exactly this in #174 ("the 413 can never reach the client
+ * ... it saw a reset connection instead of an answer"); this reader was left
+ * behind, and because the transfer route is the one route that takes a FILE, it
+ * is the place the flaw actually bit. So the stream is paused and its listeners
+ * dropped, the response still goes out, and the caller answers 413.
+ *
+ * @param req - The request to read.
+ * @param limitBytes - The route's cap; defaults to the probe's small limit.
+ */
+function readJsonBody(
+  req: IncomingMessage,
+  limitBytes: number = PROBE_BODY_LIMIT,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
+    let settled = false
     req.on('data', (chunk: Buffer) => {
+      if (settled) return
       size += chunk.length
-      if (size > PROBE_BODY_LIMIT) {
-        reject(new Error('request body too large'))
-        req.destroy()
+      if (size > limitBytes) {
+        settled = true
+        // Drop what was buffered before answering: holding a partial multi-MB
+        // body while writing a one-line error is pure waste.
+        chunks.length = 0
+        req.removeAllListeners('data')
+        req.removeAllListeners('end')
+        req.pause()
+        reject(new JsonBodyTooLargeError(limitBytes))
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (settled) return
       try {
         const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -2362,7 +2415,10 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             // let it reach a cache.
             return jsonPrivate(res, 200, answer)
           }
-          const body = await readJsonBody(req) as { text?: unknown, indexes?: unknown }
+          // THE FILE ROUTE GETS THE FILE CAP, not the probe's. `text` is the whole
+          // export file, and a single account from a sibling tool measured 108 KiB
+          // (issue #229) — past the probe's 64 KiB, so a valid import failed.
+          const body = await readJsonBody(req, TRANSFER_BODY_LIMIT) as { text?: unknown, indexes?: unknown }
           if (typeof body.text !== 'string' || body.text.trim() === '') {
             return json(res, 400, { error: 'text must be the transfer file\'s JSON content' })
           }
@@ -2377,6 +2433,12 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           }
           return json(res, 200, await transfer.importAccounts(region, body.text, indexes))
         } catch (error: unknown) {
+          // TOO LARGE IS THE CLIENT'S ERROR, NOT OURS (issue #229): 413 is what the
+          // protocol says, and 500 sends the reader hunting for a server-side fault
+          // that does not exist. The message names the limit so the user can act.
+          if (error instanceof JsonBodyTooLargeError) {
+            return json(res, 413, { error: safeMessage(error) })
+          }
           json(res, 500, { error: safeMessage(error) })
         }
       },

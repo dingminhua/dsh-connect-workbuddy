@@ -698,6 +698,104 @@ describe('registerWorkBuddyStatusRoute', () => {
     }
   }
 
+  /**
+   * A request double that replays `body` as chunks the moment a listener is
+   * attached — which is how a real `IncomingMessage` behaves: the handler calls
+   * `on('data', …)` and the bytes follow. Attaching all listeners before
+   * emitting would deadlock the handler, which awaits the body.
+   */
+  function streamingReq(body: string, chunkSize: number, url: string) {
+    const queue: { ev: string, cb: (c?: Buffer) => void }[] = []
+    let started = false
+    let destroyed = false
+    const start = (): void => {
+      if (started) return
+      started = true
+      // DEFERRED BY ONE TURN, like a real socket. Emitting synchronously from
+      // inside the first `on('data')` call would fire every chunk (and `end`)
+      // before the reader has attached its `end` listener — a deadlock that the
+      // route would never see from a real `IncomingMessage`.
+      queueMicrotask(() => {
+        for (let at = 0; at < body.length; at += chunkSize) {
+          const chunk = Buffer.from(body.slice(at, at + chunkSize))
+          for (const entry of queue) if (entry.ev === 'data') entry.cb(chunk)
+        }
+        for (const entry of queue) if (entry.ev === 'end') entry.cb()
+      })
+    }
+    return {
+      method: 'POST',
+      url,
+      headers: { origin: 'http://127.0.0.1', host: '127.0.0.1:62283' },
+      on: (ev: string, cb: (c?: Buffer) => void) => {
+        queue.push({ ev, cb })
+        if (ev === 'data') start()
+      },
+      removeAllListeners: (ev: string) => {
+        for (let at = queue.length - 1; at >= 0; at -= 1) if (queue[at]!.ev === ev) queue.splice(at, 1)
+      },
+      pause: () => {},
+      // RECORDED, not thrown: the reader calls this from inside its own
+      // `on('data')` handler, so a throw here is swallowed by the stream's
+      // emitter and would prove nothing. The test asserts on the flag instead.
+      destroyed: () => destroyed,
+      destroy: () => { destroyed = true },
+    }
+  }
+
+  it('accepts a 110 KiB transfer upload instead of resetting the connection (issue #229)', async () => {
+    // THE REPORTED FAILURE, reproduced: a Cockpit-Tools export is ~108 KiB, and
+    // the transfer route used to share the probe's 64 KiB cap. Over it, the
+    // reader called `req.destroy()`, so no response could be sent at all and the
+    // browser surfaced a bare `Failed to fetch`.
+    const seen: string[] = []
+    const handler = await mountTransferHandler({
+      transfer: {
+        exportAccounts: async () => ({ accounts: [] }),
+        importAccounts: async () => ({ imported: 0, skipped: 0 }),
+        previewImport: async (_region, text) => {
+          seen.push(text)
+          return { accounts: [], total: 0 }
+        },
+      },
+    })
+    const req = streamingReq(
+      JSON.stringify({ text: 'x'.repeat(110_000) }),
+      16 * 1024,
+      '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=preview',
+    )
+    const { res, status } = response()
+    await handler(req as never, res)
+    expect(status()).toBe(200)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.length).toBe(110_000)
+  })
+
+  it('answers 413 with a readable message when a body really is over the cap', async () => {
+    // The cap still has to bite — just not silently. A named error class is what
+    // lets the route answer 413 rather than 500: too large is the CLIENT's error,
+    // and a 500 would send the reader looking for a server-side fault.
+    const handler = await mountTransferHandler({
+      transfer: {
+        exportAccounts: async () => ({ accounts: [] }),
+        importAccounts: async () => ({ imported: 0, skipped: 0 }),
+        // Reached only if the cap fails to bite — which is itself the assertion.
+        previewImport: async () => ({ accounts: [], total: 0 }),
+      },
+    })
+    const body = JSON.stringify({ text: 'x'.repeat(65 * 1024 * 1024) })
+    const req = streamingReq(body, 1024 * 1024, '/plugins/dsh-connect-workbuddy/transfer?region=cn&action=preview')
+    const { res, status, body: bodyOf } = response()
+    await handler(req as never, res)
+    expect(status()).toBe(413)
+    // THE POINT OF THE FIX: the response still reaches the client. Destroying the
+    // socket is what turned this into a bare `Failed to fetch`.
+    expect(req.destroyed()).toBe(false)
+    // The message names the limit, so the user can act on it instead of reading
+    // a bare `Failed to fetch`.
+    expect((bodyOf() as { error: string }).error).toContain('request body too large')
+  })
+
   it('refuses a GET on the transfer route with 405 before reading anything', async () => {
     const handler = await mountTransferHandler()
     const { res, status } = response()

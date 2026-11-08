@@ -149,6 +149,31 @@ export function AccountTransfer({ t, region, accounts, onChanged }: AccountTrans
     }
   }
 
+  /**
+   * Turn a transport-level failure into something a person can act on.
+   *
+   * `fetch()` rejects with a bare `TypeError: Failed to fetch` whenever no HTTP
+   * response arrives at all — the connection was reset, or the text could not be
+   * posted. Rendered verbatim that reads like a bug in the plugin (issue #229:
+   * the user saw "传输失败：Failed to fetch" and had nothing to go on). The two
+   * causes worth naming are a file too large to upload and a local service that
+   * is not answering; anything else keeps its own message, which is more
+   * informative than a generic one.
+   *
+   * Note this is the CLIENT's guess: the server now answers 413 for an oversized
+   * body, so a size problem usually arrives as a normal error response and never
+   * reaches here. This path is what is left when the request dies before an
+   * answer — which is also what a half-open local port looks like.
+   */
+  const transportMessage = (error: unknown, text: string): string => {
+    if (!(error instanceof TypeError)) return error instanceof Error ? error.message : String(error)
+    const kilobytes = Math.round(new Blob([text]).size / 1024)
+    // One message naming BOTH plausible causes and the file's own size: the
+    // client cannot tell a reset connection from a service that is not up, and
+    // guessing between them would be worse than naming both.
+    return t('row.transferNoService', { size: String(kilobytes) })
+  }
+
   const readImportFile = async (file: File): Promise<void> => {
     setPhase({ kind: 'importing' })
     try {
@@ -170,9 +195,7 @@ export function AccountTransfer({ t, region, accounts, onChanged }: AccountTrans
       setImportSelected(new Set(body.accounts.filter(entry => entry.hasToken).map(entry => entry.index)))
       setPhase({ kind: 'idle' })
     } catch (error: unknown) {
-      if (mounted.current) {
-        setPhase({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
-      }
+      if (mounted.current) setPhase({ kind: 'error', message: transportMessage(error, importText.current) })
     }
   }
 

@@ -59,7 +59,43 @@ export function parseTransferFile(text: string): WorkBuddyTransferRecord[] {
       throw new Error('transfer file item ' + (index + 1) + ' is not an account object')
     }
   }
-  return records as WorkBuddyTransferRecord[]
+  // STRIP THE REDUNDANT SNAPSHOTS (issue #229, second report).
+  //
+  // Files from sibling tools carry the raw upstream responses they happened to
+  // fetch — `quota_raw`, `usage_raw` and friends — which this plugin never reads
+  // (`credentialOfTransferRecord` below takes only the contract fields, and
+  // `transferRecordOf` never writes them). They are pure ballast: one account
+  // measured 108 KiB with them, 8 KiB without, and the size alone was enough to
+  // fail the upload before it ever reached the parser.
+  //
+  // Stripping here rather than rejecting is deliberate: a `*_raw` key is not
+  // evidence of a malformed file, it is what these tools emit, so refusing would
+  // punish the exact files this importer exists to accept. Only keys ENDING in
+  // `_raw` are dropped, and `auth_raw` is exempt — it is the one raw document the
+  // importer genuinely uses (see `uinOfRaw`).
+  return records.map(item => stripRedundantRaw(item as WorkBuddyTransferRecord))
+}
+
+/**
+ * Drop `*_raw` snapshots the importer never reads, keeping `auth_raw`.
+ *
+ * `auth_raw` is exempt because it carries the billing `uin`, which is what makes
+ * a re-imported account converge on the same vault id — dropping it would change
+ * behaviour, not just size.
+ */
+function stripRedundantRaw(record: WorkBuddyTransferRecord): WorkBuddyTransferRecord {
+  let changed = false
+  const kept: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (key !== 'auth_raw' && key.endsWith('_raw')) {
+      changed = true
+      continue
+    }
+    kept[key] = value
+  }
+  // Return the original object when there is nothing to drop, so callers that
+  // compare identity (tests, and `mergeTransferRecords`' dedupe) are unaffected.
+  return changed ? kept as unknown as WorkBuddyTransferRecord : record
 }
 
 /**

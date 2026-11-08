@@ -279,3 +279,81 @@ describe('mergeTransferRecords', () => {
     expect(merged.changes.size).toBe(8)
   })
 })
+
+
+/**
+ * ISSUE #229, SECOND REPORT: a sibling tool's export is rejected before parsing.
+ *
+ * The first round of that issue fixed the wrapper (`{accounts: [...]}`). The
+ * user then reported the OTHER half: a Cockpit-Tools file of ONE account is
+ * 108 KiB — because it carries `quota_raw` and `usage_raw` snapshots that this
+ * plugin never reads — and the upload died with a bare `Failed to fetch` before
+ * any parser ran (the transfer route shared the probe's 64 KiB body cap and
+ * destroyed the socket on overflow). So there are two independent defects here
+ * and both must stay fixed: the file's SIZE must not decide whether it imports,
+ * and the redundant snapshots must not be carried forward.
+ *
+ * These cases pin the second one. The route-level cap is pinned in
+ * `web-status.spec.ts`, where the reader lives.
+ */
+/**
+ * One account in the shape a sibling tool exports, with the REAL measured
+ * payload sizes: `access_token` ~1568 chars, `refresh_token` ~1570, and the two
+ * raw snapshots that dominate — `quota_raw` ~29 KiB, `usage_raw` ~29 KiB.
+ * A single such account measured 108 KiB on disk.
+ */
+function cockpitAccount(extraQuotaBytes = 0) {
+  return {
+    access_token: 'x'.repeat(1568),
+    refresh_token: 'y'.repeat(1570),
+    uid: '100000000001',
+    nickname: '账号A',
+    email: 'someone@example.com',
+    domain: 'workbuddy.cn',
+    expiresAt: Date.now() + 3_600_000,
+    auth_raw: { auth: { t: 1 }, account: { uin: '100000000001' } },
+    quota_raw: { blob: 'q'.repeat(29_687 + extraQuotaBytes) },
+    usage_raw: { blob: 'u'.repeat(29_392) },
+  }
+}
+
+describe('redundant raw snapshots (issue #229)', () => {
+  it('strips *_raw snapshots but keeps auth_raw', () => {
+    const file = JSON.stringify([cockpitAccount()])
+    const before = Buffer.byteLength(file)
+    const records = parseTransferFile(file)
+    const after = Buffer.byteLength(JSON.stringify(records))
+    // Measured: 62 KiB down to 3.3 KiB for ONE account. Pinning a ratio rather
+    // than an exact byte count keeps this honest under any future field change.
+    expect(after).toBeLessThan(before / 4)
+    expect(records).toHaveLength(1)
+    expect(records[0]).not.toHaveProperty('quota_raw')
+    expect(records[0]).not.toHaveProperty('usage_raw')
+    expect(records[0]).toHaveProperty('auth_raw')       // uin lives here
+    expect(after).toBeLessThan(before * 0.3)
+  })
+
+  it('the credential still imports correctly after stripping', () => {
+    const records = parseTransferFile(JSON.stringify([cockpitAccount()]))
+    const cred = credentialOfTransferRecord(records[0]!)
+    expect(cred).toBeDefined()
+    expect(cred?.accessToken).toHaveLength(1568)
+    expect(cred?.uid).toBe('100000000001')
+    // `auth_raw` survives BECAUSE it carries the billing `uin`: dropping it would
+    // change which vault account a re-import lands on, not just the file size.
+    expect(records[0]!['auth_raw']).toBeDefined()
+  })
+
+  it('a bare array with no *_raw keys is returned unchanged (identity)', () => {
+    const file = JSON.stringify([{ access_token: 'abc', uid: 'u1' }])
+    const records = parseTransferFile(file)
+    expect(records[0]).toHaveProperty('access_token', 'abc')
+  })
+
+  it('wrapper forms still parse AND get stripped', () => {
+    const file = JSON.stringify({ accounts: [cockpitAccount()] })
+    const records = parseTransferFile(file)
+    expect(records).toHaveLength(1)
+    expect(records[0]).not.toHaveProperty('quota_raw')
+  })
+})

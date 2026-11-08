@@ -266,6 +266,7 @@ export const en = {
   'row.transferNoToken': 'no token in this record',
   'row.transferCancel': 'Cancel',
   'row.transferError': 'Transfer failed: {message}',
+  'row.transferNoService': 'Could not reach the local plugin service ({size} KiB sent). The file may be too large, or the service may be restarting — try again, and if it keeps failing, trim the file and retry.',
 
   // ---- Account pool ----
   'row.poolTitle': 'Account pool',
@@ -967,6 +968,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.transferNoToken': '此记录没有 token',
   'row.transferCancel': '取消',
   'row.transferError': '传输失败：{message}',
+  'row.transferNoService': '与本地插件服务通信失败（本次发送 {size} KiB）。可能是文件过大，或服务正在重启——请重试；若持续失败，请精简文件后再导入。',
 
   // ---- 账号池 ----
   'row.poolTitle': '账号池',
