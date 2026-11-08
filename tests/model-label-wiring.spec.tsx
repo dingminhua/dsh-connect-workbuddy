@@ -55,12 +55,19 @@ function slotsFixture(options: { kind: 'single' | 'keyed', defer: boolean }) {
     // slot, and the reason the catch has to live inside the callback.
     inject: (key: string, callback: () => () => void) => {
       if (key !== SLOT) return () => {}
-      if (options.defer) deferred.push(callback)
-      else deferred.push(() => { void callback() })
+      if (options.defer) deferred.push(() => { disposers.push(callback()) })
+      else disposers.push(callback())
       return () => {}
     },
   }
-  return { core, slots, flush: () => { for (const run of deferred.splice(0)) run() } }
+  /** Disposers the callbacks returned, in the order they were produced. */
+  const disposers: (() => void)[] = []
+  return {
+    core,
+    slots,
+    disposers,
+    flush: () => { for (const run of deferred.splice(0)) run() },
+  }
 }
 
 /** The minimum `apply()` touches before the label registration. */
@@ -138,5 +145,46 @@ describe('apply() wiring for the model-label seat', () => {
     expect(published?.slotKind).toBe('keyed')
     expect(published?.seats).toBe(2)
     expect(published?.verdict).toBe('claimed')
+  })
+  it('keeps the pre-existing contract: the returned disposer frees the cell, and only the cell', async () => {
+    // The original requirement, restated so a future "keyed" change cannot
+    // quietly violate it. `rebindSlots` documents its order as DISPOSE FIRST,
+    // then register — so the disposer must genuinely empty the ledger. A
+    // composite that released nothing (or everything, including someone else's
+    // entry) would break the rebind cycle in a way no planner test can see.
+    const { slots, core, flush, disposers } = slotsFixture({ kind: 'single', defer: true })
+    const { apply } = await import('../src/client/index.tsx')
+    apply(ctxFor(slots))
+    flush()
+    const entries = () => (core as unknown as { entries(k: string): unknown[] }).entries(SLOT)
+    expect(entries()).toHaveLength(1)
+    expect(disposers).toHaveLength(1)
+    disposers[0]!()
+    expect(entries()).toHaveLength(0)
+    // Disposing twice is safe (the registry's own disposers are guarded).
+    expect(() => disposers[0]!()).not.toThrow()
+  })
+
+  it('keeps the pre-existing contract: the winning component is still THIS plugin\'s label', async () => {
+    const { slots, core, flush } = slotsFixture({ kind: 'single', defer: true })
+    const { apply } = await import('../src/client/index.tsx')
+    apply(ctxFor(slots))
+    flush()
+    const winner = (core as unknown as {
+      entriesOfSlot(k: string): { component?: { name?: string } }[]
+    }).entriesOfSlot(SLOT)[0]
+    // Not just "some entry won" — it is the full label, which is the feature.
+    expect(winner?.component?.name).toBe('WorkBuddyModelLabel')
+  })
+
+  it('keeps the pre-existing contract: priority is the SHIPPED value on both shapes', async () => {
+    // The priority arms race must not be disturbed by this refactor: -105 on a
+    // single host, and the same -105 inside each keyed cell.
+    const { modelLabelSeats } = await import('../src/client/model-label-seat.ts')
+    const { MODEL_LABEL_PRIORITY, WORKBUDDY_PROVIDER_IDS } = await import('../src/client/WorkBuddyModelLabel.tsx')
+    for (const kind of ['single', 'keyed', undefined] as const) {
+      const seats = modelLabelSeats({ name: SLOT, kind, providerIds: WORKBUDDY_PROVIDER_IDS, priority: MODEL_LABEL_PRIORITY })
+      expect(seats.every(seat => seat.priority === MODEL_LABEL_PRIORITY)).toBe(true)
+    }
   })
 })

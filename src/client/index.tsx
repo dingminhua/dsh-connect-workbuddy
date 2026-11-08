@@ -105,7 +105,11 @@ export const inject = ['slots', 'locale']
  * load stays silent — a warning that fires when nothing is wrong stops being
  * read.
  *
- * Exported for the test; never called outside `rebindSlots`.
+ * Exported for the test. Called from `rebindSlots` (once, before the inject
+ * callback exists) and again from inside the inject callback (the only place
+ * that can observe a DEFERRED refusal or a late-arriving `slotKind`). Two
+ * callers, one state object: the later call always supersedes the earlier, and
+ * the warning is deduplicated so one failure still produces one line.
  *
  * @param state - What the registration path recorded.
  * @param target - Where to publish; defaults to the global object.
@@ -186,11 +190,21 @@ export function publishModelLabelState(
     return undefined
   }
   if (state.failure !== undefined) {
-    try {
-      target.warn?.(
-        '[dsh-connect-workbuddy] the model-picker badges could not be registered: ' + state.failure,
-      )
-    } catch { /* a console that throws must not take the slots with it */ }
+    // ONCE PER FAILURE, not once per publish. This function now runs from two
+    // places — `rebindSlots` and the inject callback — and the callback is the
+    // one that can actually observe a deferred refusal, so both paths reach
+    // here. Warning on every call would print the same message twice for one
+    // failure, which is exactly the "a warning that fires when nothing is new
+    // stops being read" problem the header of this function warns about.
+    const warned = (target as { __dshWorkBuddyModelLabelWarned__?: string })
+    if (warned.__dshWorkBuddyModelLabelWarned__ !== state.failure) {
+      try {
+        target.warn?.(
+          '[dsh-connect-workbuddy] the model-picker badges could not be registered: ' + state.failure,
+        )
+        warned.__dshWorkBuddyModelLabelWarned__ = state.failure
+      } catch { /* a console that throws must not take the slots with it */ }
+    }
   }
   return view
 }

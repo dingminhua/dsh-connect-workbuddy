@@ -95,6 +95,30 @@ describe('publishModelLabelState', () => {
     expect((good as unknown as { warnings: string[] }).warnings).toHaveLength(0)
   })
 
+  it('warns ONCE for one failure even when it is published twice', () => {
+    // `publishModelLabelState` now runs from TWO places: `rebindSlots` (before
+    // the inject callback exists) and the callback itself (the only place that
+    // can see a deferred refusal). The same failure therefore reaches it twice.
+    // Printing the message twice per failure would violate this function's own
+    // contract — "a warning that fires when nothing is new stops being read".
+    const once = target()
+    publishModelLabelState({ failure: 'boom' }, once as never)
+    publishModelLabelState({ failure: 'boom' }, once as never)
+    expect((once as unknown as { warnings: string[] }).warnings).toHaveLength(1)
+
+    // A DIFFERENT failure is new information, so it must still be said.
+    const twice = target()
+    publishModelLabelState({ failure: 'boom' }, twice as never)
+    publishModelLabelState({ failure: 'different' }, twice as never)
+    expect((twice as unknown as { warnings: string[] }).warnings).toHaveLength(2)
+
+    // And a healthy publish is silent, however many times it runs.
+    const quiet = target()
+    publishModelLabelState({ injectRanAt: 1, slotKind: 'single', seats: 1 }, quiet as never)
+    publishModelLabelState({ injectRanAt: 1, slotKind: 'keyed', seats: 2 }, quiet as never)
+    expect((quiet as unknown as { warnings: string[] }).warnings).toHaveLength(0)
+  })
+
   it('survives a frozen global and a throwing console', () => {
     // This runs inside `rebindSlots`; a throw here would take the whole slot
     // list down with it, turning a missing badge into a missing card.
