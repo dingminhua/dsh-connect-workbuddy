@@ -126,7 +126,8 @@ import {
   localDayKey,
   nextDelayMs,
   pendingTargets,
-  summarizeAutoCheckin,
+  checkinReadingFresh,
+  todaySummary,
   AUTO_CHECKIN_IDLE_MS,
 } from './auto-checkin.ts'
 import type { AutoCheckinState } from './auto-checkin.ts'
@@ -1664,6 +1665,11 @@ export function apply(ctx: Context, config: Config): void {
    * Invalidated by this plugin's own check-in batch (the only writer that can
    * change the answer during a session), so the user sees their result
    * immediately instead of waiting out the TTL.
+   *
+   * A reading is ALSO bounded by the local day, not just by the TTL — see
+   * `checkinReadingFresh`. Both readers go through it, because an entry is an
+   * answer to "has this account checked in TODAY" and a `true` read at 23:58
+   * must not be served at 00:08.
    */
   const checkinStateCache: Partial<
     Record<WorkBuddyRegion, Record<string, { checkedIn: boolean, atMs: number }>>
@@ -3231,8 +3237,12 @@ export function apply(ctx: Context, config: Config): void {
           // check-in runs or the day rolls over — so re-reading it on every
           // poll meant ~14,400 requests/day for a 10-account pool. A check-in
           // this plugin performs invalidates its own entry (see `checkin`).
+          //
+          // "Fresh" includes the local day (issue #232): the TTL alone would
+          // serve yesterday's reading across midnight, and the poll would then
+          // report an account as done on a day nobody claimed it.
           const cached = checkinStateCache[region]?.[account.id]
-          if (cached !== undefined && now - cached.atMs < CHECKIN_CACHE_MS) {
+          if (cached !== undefined && checkinReadingFresh(cached.atMs, now, CHECKIN_CACHE_MS)) {
             return [account.id, cached.checkedIn] as const
           }
           const credential = await store.credentialFor(account.id).catch(() => undefined)
@@ -3263,7 +3273,9 @@ export function apply(ctx: Context, config: Config): void {
         const state = checkinStateCache[region] ?? {}
         const cached: Record<string, boolean> = {}
         for (const [accountId, entry] of Object.entries(state)) {
-          if (now - entry.atMs >= CHECKIN_CACHE_MS) continue
+          // Day-bounded as well as TTL-bounded (issue #232): a reading taken
+          // yesterday answers a different question than today's column asks.
+          if (!checkinReadingFresh(entry.atMs, now, CHECKIN_CACHE_MS)) continue
           cached[accountId] = entry.checkedIn
         }
         return cached
@@ -3385,7 +3397,12 @@ export function apply(ctx: Context, config: Config): void {
         if (state === undefined) return undefined
         // The denominator came with the state, so this runs on the card's poll
         // without enumerating the credential store (see `scopeSize`).
-        return summarizeAutoCheckin(state)
+        //
+        // Day-checked (issue #232): a finished day is not rewritten until the
+        // next tick, which can be up to `AUTO_CHECKIN_IDLE_MS` after midnight —
+        // reporting yesterday's progress as today's is how the card came to say
+        // 「今日：N 个全部已签」 while every row read 未签到.
+        return todaySummary(state, Date.now())
       },
       checkin: async region => {
         const rows = await checkinAllAccounts(

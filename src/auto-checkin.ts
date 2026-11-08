@@ -269,6 +269,44 @@ export function summarizeAutoCheckin(state: AutoCheckinState): AutoCheckinSummar
 }
 
 /**
+ * Today's summary — `undefined` when `state` is not today's.
+ *
+ * The day check is NOT a nicety (issue #232). The state is only rewritten when a
+ * tick runs, and after a finished day the next tick is an idle heartbeat up to
+ * {@link AUTO_CHECKIN_IDLE_MS} away — so for the first half hour of a new local
+ * day the in-memory state still describes YESTERDAY. Summarizing it as today made
+ * the card announce 「今日：N 个全部已签」 at 00:08 while every row underneath
+ * read 未签到, i.e. the one place that is supposed to prove the runner works
+ * claimed the opposite of the truth.
+ *
+ * `undefined` (rather than a zeroed summary) is what the card already renders as
+ * "no status line", and it is the honest answer: nothing has run today yet. The
+ * zeroed variant would invent a denominator for a day no attempt has measured.
+ */
+export function todaySummary(state: AutoCheckinState, nowMs: number): AutoCheckinSummary | undefined {
+  if (state.day !== localDayKey(nowMs)) return undefined
+  return summarizeAutoCheckin(state)
+}
+
+/**
+ * Whether a cached check-in reading may still be served.
+ *
+ * Two conditions, and the second is the one that took a bug report: a reading is
+ * an answer to "has this account checked in TODAY", so it must not survive local
+ * midnight. The TTL alone would serve a `true` read taken at 23:58 until 00:08,
+ * so the column would assert a check-in that has not happened — the per-account
+ * half of the same lie as {@link todaySummary}.
+ *
+ * The day is derived from `atMs` rather than stored beside it: the read time
+ * already says which day the answer belongs to, and a second field could drift
+ * out of step with it.
+ */
+export function checkinReadingFresh(atMs: number, nowMs: number, ttlMs: number): boolean {
+  if (nowMs - atMs >= ttlMs) return false
+  return localDayKey(atMs) === localDayKey(nowMs)
+}
+
+/**
  * The accounts an attempt should address, in the pool's own order.
  *
  * Only members that are not already done. Enterprise members are dropped HERE

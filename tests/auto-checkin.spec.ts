@@ -3,6 +3,7 @@ import {
   AUTO_CHECKIN_BACKOFF_MS,
   AUTO_CHECKIN_TAIL_MS,
   autoCheckinRegions,
+  checkinReadingFresh,
   emptyAutoCheckinState,
   foldAttempt,
   isDue,
@@ -10,6 +11,7 @@ import {
   nextDelayMs,
   pendingTargets,
   summarizeAutoCheckin,
+  todaySummary,
 } from '../src/auto-checkin.ts'
 import { checkinAllAccounts } from '../src/account-pool-run.ts'
 import type { WorkBuddyPoolCheckinRow, WorkBuddyPoolRunnerDeps } from '../src/account-pool-run.ts'
@@ -147,6 +149,59 @@ describe('summarizeAutoCheckin', () => {
   it('carries the last error through', () => {
     const state = { day: DAY, doneAccountIds: [], scopeSize: 1, failures: 1, lastError: 'boom' }
     expect(summarizeAutoCheckin(state).lastError).toBe('boom')
+  })
+})
+
+describe('todaySummary (issue #232)', () => {
+  const yesterday = new Date(2026, 10, 2, 23, 50, 0).getTime()
+  const justAfterMidnight = new Date(2026, 10, 3, 0, 8, 0).getTime()
+
+  it('reports nothing when the state describes a different day', () => {
+    // The reported symptom: at 00:08 the card announced 「今日：4 个全部已签」
+    // while every row underneath read 未签到. The state had not been rewritten
+    // yet — the next idle tick was still up to 30 minutes away — so the header
+    // was reporting YESTERDAY as today. `undefined` is what the card renders as
+    // "no status line", and it is the honest answer: nothing has run today.
+    const state = { day: '2026-11-02', doneAccountIds: ['a', 'b'], scopeSize: 2, failures: 0 }
+    expect(todaySummary(state, justAfterMidnight)).toBeUndefined()
+  })
+
+  it('reports the state on its own day, including late at night', () => {
+    // The guard must not be so eager that a legitimate 23:50 reading is dropped:
+    // the boundary is the LOCAL day, not a fixed hour.
+    const state = { day: '2026-11-02', doneAccountIds: ['a', 'b'], scopeSize: 2, failures: 0 }
+    expect(todaySummary(state, yesterday)).toMatchObject({ done: 2, total: 2, pending: 0 })
+  })
+
+  it('does not invent a denominator for a day no attempt measured', () => {
+    // A zeroed summary would print 「今日：已签 0 / 0」, which reads as a finished
+    // pool rather than as "today has not been attempted yet".
+    const state = { day: '2026-11-02', doneAccountIds: ['a'], scopeSize: 1, failures: 0 }
+    expect(todaySummary(state, justAfterMidnight)).toBeUndefined()
+  })
+})
+
+describe('checkinReadingFresh (issue #232)', () => {
+  const TTL = 10 * 60_000
+  const lateNight = new Date(2026, 10, 2, 23, 58, 0).getTime()
+  const justAfterMidnight = new Date(2026, 10, 3, 0, 2, 0).getTime()
+
+  it('refuses a reading taken on the previous day, even inside the TTL', () => {
+    // 4 minutes old and comfortably inside the 10-minute TTL, yet it answers
+    // yesterday's question. Serving it is the per-account half of the #232 lie:
+    // the column asserts a check-in that has not happened today.
+    expect(justAfterMidnight - lateNight).toBeLessThan(TTL)
+    expect(checkinReadingFresh(lateNight, justAfterMidnight, TTL)).toBe(false)
+  })
+
+  it('serves a reading taken earlier the same day', () => {
+    expect(checkinReadingFresh(lateNight, lateNight + 60_000, TTL)).toBe(true)
+  })
+
+  it('still expires on the TTL within one day', () => {
+    const morning = new Date(2026, 10, 2, 9, 0, 0).getTime()
+    expect(checkinReadingFresh(morning, morning + TTL, TTL)).toBe(false)
+    expect(checkinReadingFresh(morning, morning + TTL - 1, TTL)).toBe(true)
   })
 })
 

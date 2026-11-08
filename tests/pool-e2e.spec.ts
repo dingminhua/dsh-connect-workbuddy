@@ -791,6 +791,200 @@ describe('the pool: regression guards for the audited defects', () => {
 })
 
 /**
+ * Poll the route until `done` holds, or fail after a generous budget.
+ *
+ * The automatic check-in is a TIMER, so there is no call to await: the assertion
+ * has to wait for the tick to reach the state under test. Polling the route is
+ * the honest way to do that — it is what the card does — and it beats a fixed
+ * `setTimeout` because a slow CI box then takes longer instead of failing.
+ */
+async function waitFor(done: () => Promise<boolean>, label: string): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    if (await done()) return
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  throw new Error(`timed out waiting for ${label}`)
+}
+
+describe('the automatic check-in: the poll finds an unchecked account and claims it (#191/#232)', () => {
+  /**
+   * The requirement, stated as a test: with the switch on, a run that DISCOVERS
+   * an account not checked in today claims it — no button, and no dependence on
+   * firing at midnight. The 30-minute idle heartbeat is fine; what must never
+   * happen is discovering the gap and doing nothing.
+   */
+  it('claims an account the status read reports as not checked in', async () => {
+    const authFile = await writeAuthFixture(root)
+    const accountId = await discoverAccountId(authFile)
+    let claims = 0
+    let statusReads = 0
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown) => {
+      const text = String(url)
+      if (text.includes('checkin-activity-status')) {
+        statusReads += 1
+        // Not checked in today: exactly the state the poll is supposed to act on.
+        return new Response(JSON.stringify({
+          code: 0,
+          data: { today_checked_in: false, active: true, streak_days: 0 },
+        }), { status: 200 })
+      }
+      if (text.includes('daily-checkin')) {
+        claims += 1
+        return new Response(JSON.stringify({
+          code: 0,
+          data: { credit: 10, streak_days: 1, is_streak_day: false },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 })
+    }) as typeof fetch
+    try {
+      await mount({
+        authFile,
+        regions: {
+          cn: {
+            enabled: true,
+            lastCatalog: [{
+              id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
+            }],
+            pool: { enabled: true, autoCheckin: true, memberAccountIds: [accountId] },
+          },
+        },
+      })
+      await waitFor(async () => claims > 0, 'the automatic check-in to claim')
+      // The status read came FIRST — the claim is not blind. That ordering is the
+      // idempotency guarantee: a blind claim would be a second write path.
+      expect(statusReads).toBeGreaterThan(0)
+      // And the card is told the day is done, so the work is observable.
+      const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+      const pool = body['pool'] as { autoCheckinToday?: { done: number, total: number, pending: number } } | undefined
+      expect(pool?.autoCheckinToday).toMatchObject({ done: 1, total: 1, pending: 0 })
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('does NOT claim when the status read says the account is already checked in', async () => {
+    // The other half of the same rule, and the one that must survive any change
+    // to the poll: "found unchecked" is what authorises the write. An account
+    // already done today must be reported, never re-claimed.
+    const authFile = await writeAuthFixture(root)
+    const accountId = await discoverAccountId(authFile)
+    let claims = 0
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown) => {
+      const text = String(url)
+      if (text.includes('checkin-activity-status')) {
+        return new Response(JSON.stringify({
+          code: 0,
+          data: { today_checked_in: true, active: true },
+        }), { status: 200 })
+      }
+      if (text.includes('daily-checkin')) {
+        claims += 1
+        return new Response(JSON.stringify({ code: 0, data: { credit: 0 } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 })
+    }) as typeof fetch
+    try {
+      await mount({
+        authFile,
+        regions: {
+          cn: {
+            enabled: true,
+            lastCatalog: [{
+              id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
+            }],
+            pool: { enabled: true, autoCheckin: true, memberAccountIds: [accountId] },
+          },
+        },
+      })
+      // Wait for the tick to have RECORDED the day as done — that is when a
+      // wrongful claim would have happened.
+      await waitFor(async () => {
+        const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+        const pool = body['pool'] as { autoCheckinToday?: { pending: number } } | undefined
+        return pool?.autoCheckinToday?.pending === 0
+      }, 'the tick to settle')
+      expect(claims).toBe(0)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})
+
+describe('the automatic check-in status line does not survive midnight (#232)', () => {
+  it('stops reporting yesterday\'s completion as today\'s', async () => {
+    // THE REPORT: at 00:08 the card read 「今日：4 个全部已签」 while every row
+    // underneath read 未签到. The state had not been rewritten yet — the next
+    // idle tick was up to 30 minutes away — so the header asserted a completed
+    // day that had not started. The fix is in the READ path, not the timer: the
+    // user explicitly did not ask for midnight-precise scheduling.
+    const authFile = await writeAuthFixture(root)
+    const accountId = await discoverAccountId(authFile)
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: unknown) => {
+      const text = String(url)
+      if (text.includes('checkin-activity-status')) {
+        return new Response(JSON.stringify({
+          code: 0,
+          data: { today_checked_in: false, active: true },
+        }), { status: 200 })
+      }
+      if (text.includes('daily-checkin')) {
+        return new Response(JSON.stringify({
+          code: 0,
+          data: { credit: 10, streak_days: 1 },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 })
+    }) as typeof fetch
+    try {
+      await mount({
+        authFile,
+        regions: {
+          cn: {
+            enabled: true,
+            lastCatalog: [{
+              id: 'free', name: 'Free', contextWindow: 1000, maxTokens: 100, creditMultiplier: 0,
+            }],
+            pool: { enabled: true, autoCheckin: true, memberAccountIds: [accountId] },
+          },
+        },
+      })
+      await waitFor(async () => {
+        const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+        const pool = body['pool'] as { autoCheckinToday?: { done: number } } | undefined
+        return pool?.autoCheckinToday?.done === 1
+      }, 'today to be reported as done')
+      // Non-vacuous: the line IS there on the day it describes.
+      const today = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+      expect((today.body['pool'] as { autoCheckinToday?: unknown }).autoCheckinToday).toBeDefined()
+
+      // Now stand at 00:08 the next morning, with the idle timer still pending —
+      // i.e. exactly the reported situation. Only the clock moves.
+      const tomorrow = new Date()
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      tomorrow.setHours(0, 8, 0, 0)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(tomorrow)
+      try {
+        const { body } = await call(WORKBUDDY_USAGE_PATH, { url: `${WORKBUDDY_USAGE_PATH}?region=cn` })
+        const pool = body['pool'] as { autoCheckin?: boolean, autoCheckinToday?: unknown } | undefined
+        // The switch is still ON — only the claim about today must go away.
+        expect(pool?.autoCheckin).toBe(true)
+        expect(pool?.autoCheckinToday, 'yesterday\'s completion must not be reported as today\'s').toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})
+
+/**
  * Strip comments and string literals from a source excerpt.
  *
  * The guards below ask "does this code CALL X", and a source-text search alone
