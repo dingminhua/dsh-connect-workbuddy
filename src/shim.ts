@@ -286,7 +286,7 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   soft_rate: 429,
   // Same status as `soft_rate`, because that is what the upstream returned — the
   // distinction lives in `code`/`type`, not in a relabelled status. See
-  // KIND_HOST_CODE for why the host must not read this as an account limit.
+  // NO_RETRY_HEADERS for why only `soft_rate` is reported once (issue #225).
   model_busy: 429,
   session_dead: 401,
   policy_reject: 403,
@@ -312,22 +312,30 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
  * phrases out of `type + " " + code + " " + message` — see
  * `isQuotaExceededError` in `@deepseek-ai/dsh-llm`. Only `RATE_LIMIT`, `SERVER`,
  * `TIMEOUT`, `TRANSPORT` and `EMPTY_RESPONSE` are in its retry set, so the
- * spelling decides which of two very different things happens next.
+ * spelling decides which of two very different things happens next. A response
+ * carrying `x-should-retry: false` is checked BEFORE those phrases, though: see
+ * `NO_RETRY_HEADERS`, which is what lets `soft_rate` stay untranslated (#225).
  *
- * `soft_rate` is the one kind that spelling got wrong. The upstream's 429 says
- * "usage exceeds the frequency limit, and it resets at 13:37" — hours away, not
- * two seconds. Sent as `soft_rate` it reads as an ordinary rate limit, enters
- * the in-place retry set, and spends the whole retry budget on an endpoint that
- * cannot recover within it; by the time cross-provider failover is offered, the
- * turn has already failed. The upstream's own words are Chinese, so the
- * phrase-based classifier cannot see the distinction either — the label is the
- * only channel left to carry it.
+ * `soft_rate` does NOT need a translation (issue #225). Two experiments on the
+ * host settle it: with `code: quota_exceeded` the host classifies `QUOTA` and
+ * the chat client substitutes its hard-coded 「当前请求的额度已用尽」, discarding
+ * the upstream's own words; with `code: soft_rate` it classifies `RATE_LIMIT`,
+ * which is outside the substitution list, so the ORIGINAL message — with the
+ * reset time and the "switch models" advice — is what the user reads.
  *
- * `quota_exceeded` is the minimal honest translation: it is the WORDS the host
- * recognises, and it matches what the upstream is actually saying. The HTTP
- * status stays 429 (that is what the upstream returned — relabelling it 402
- * would misreport the upstream), and the upstream's own message is still passed
- * through verbatim for a human to read.
+ * `RATE_LIMIT` is in `DEFAULT_RETRYABLE_CODES`, so removing the translation
+ * alone would buy the sentence back at the cost of five in-place retries. That
+ * trade-off is dissolved by the header, not by the spelling: `x-should-retry:
+ * false` is checked before the status-based rules in `isRetryableProviderError`
+ * and in the pinned OpenAI SDK's `shouldRetry`, so a response carrying
+ * `NO_RETRY_HEADERS` is reported once and never retried. The two knobs are
+ * independent — the code spelling keeps the upstream's words on screen, the
+ * header keeps the request out of the retry set.
+ *
+ * The HTTP status stays 429 (that is what the upstream returned — relabelling
+ * it 402 would misreport the upstream). `type` stays `soft_rate`, NOT
+ * `rate_limit_error`: the kind still names the upstream's 6004 in logs and bug
+ * reports.
  *
  * Every other kind already lands outside the retry set by its status alone
  * (`hard_credit` 402 → quota, `session_dead` 401 → auth, 502/400 → other), so
@@ -364,10 +372,13 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
  * exactly what a 14003 is: measured against the same credential and second,
  * five consecutive sends gave 200/200/200/200/429.
  *
- * `soft_rate` keeps the translation, and the contrast is the whole point: its
- * reset is hours away, so the retry budget cannot produce an answer and must
- * not be spent. One word, two opposite temporal claims — so the spelling
- * follows the clock, not the status code both share.
+ * `soft_rate` and `model_busy` now differ by the HEADER, not by the code: both
+ * keep their own kind and both classify as `RATE_LIMIT`; `model_busy` (a 14003,
+ * seconds away) is retried because it does not carry `NO_RETRY_HEADERS`, while
+ * `soft_rate` (a 6004 whose reset is hours away) is reported once. Re-reading
+ * the `model_busy` note below: its conclusion — that leaving it untranslated is
+ * what restored both the honest sentence AND the bounded retry — still holds,
+ * and this change deliberately leaves that note untouched.
  *
  * `channel_reject` is not listed, and the reason is the same rule applied to a
  * third clock: the gate's verdict is DETERMINISTIC for a given prompt, so an
@@ -376,16 +387,15 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
  * prompt). Its 400 already places it outside the host's retry set, so `type`
  * alone, untranslated, is the honest spelling.
  */
-const KIND_HOST_CODE: Partial<Readonly<Record<UpstreamErrorKind, string>>> = {
-  soft_rate: 'quota_exceeded',
-}
+const KIND_HOST_CODE: Partial<Readonly<Record<UpstreamErrorKind, string>>> = {}
 
 /**
  * The `code` to write for an upstream failure, given its classified kind.
  *
  * `type` deliberately stays the plugin's own kind: it is what a human reads in
  * a log or a bug report, and it keeps the two fields individually meaningful.
- * Only `code` carries the host-facing translation.
+ * `code` carries the host-facing spelling; with `KIND_HOST_CODE` empty it is
+ * simply the kind itself (issue #225).
  */
 function hostErrorCode(kind: UpstreamErrorKind): string {
   return KIND_HOST_CODE[kind] ?? kind
@@ -412,7 +422,7 @@ function writeJson(
  * `code` defaults to `type`, which is right for every error THIS shim raises on
  * its own (`unauthorized`, `not_found`, …): those are not upstream failures and
  * must not be disguised as one. The upstream failure path passes an explicit
- * `code` so the host classifies it correctly — see {@link KIND_HOST_CODE}.
+ * `code` so the host classifies it correctly — see {@link hostErrorCode}.
  */
 function writeOpenAIError(
   res: ServerResponse,
@@ -2256,6 +2266,11 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         result.kind,
         `workbuddy 上游失败：${failoverReasonText(result)}（http ${result.status}）${note}${why}${stamp}。${body}`,
         hostErrorCode(result.kind),
+        // issue #225: a 6004 resets hours away, so it must be reported ONCE.
+        // The host's phrase classifier sees `soft_rate` as RATE_LIMIT; this
+        // header is what keeps it out of the in-place retry set (see
+        // NO_RETRY_HEADERS and tests/queue-no-retry.spec.ts).
+        result.kind === 'soft_rate' ? NO_RETRY_HEADERS : undefined,
       )
       return
     }
