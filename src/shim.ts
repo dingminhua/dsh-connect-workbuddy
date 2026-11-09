@@ -22,7 +22,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
-import { workbuddyAccountId } from './auth.ts'
+import { preferredAccountName, workbuddyAccountId } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyRefusalReport } from './off-thinking.ts'
 import { usageOfChunk } from './body-report.ts'
@@ -1030,17 +1030,26 @@ function callsFrame(
 }
 
 /**
- * How to name a pool account in a sentence the USER reads.
+ * How to name a pool account in a sentence the USER reads (issue #234).
  *
- * Prefers the phone number (`uin`) because that is what the pool table shows and
- * what a person recognises; the nickname and the opaque account id are fallbacks
- * so this can never render an empty name. Deliberately NOT the hashed account id
- * on its own: a 24-character hex digest identifies an account to the plugin, but
- * to the person reading the answer it identifies nothing.
+ * The NAME comes first, in the very order the card and the pool table use —
+ * `preferredAccountName` (display name, then the enterprise-side name, then the
+ * login alias). The notice used to lead with `uin`, which is the phone number:
+ * a reporter read 「330135985725」 and could not tell whether that was an
+ * account at all, let alone which one. Every other surface names an account by
+ * its name, so this one must too.
+ *
+ * The identifier survives only as a LAST resort, for the account the desktop
+ * app published no name for — an unnamed account still has to be pointed at,
+ * and a number the user can match against a row beats a sentence that names
+ * nobody. Deliberately NOT the hashed account id while a `uin` exists: a
+ * 24-character hex digest identifies an account to the plugin, but to the
+ * person reading the answer it identifies nothing.
  */
 function describeAccount(credential: WorkBuddyCredential): string {
+  const name = preferredAccountName(credential)
+  if (name !== '') return name
   if (credential.uin !== undefined && credential.uin !== '') return credential.uin
-  if (credential.nickname !== undefined && credential.nickname !== '') return credential.nickname
   return workbuddyAccountId(credential)
 }
 

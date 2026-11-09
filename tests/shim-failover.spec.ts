@@ -41,10 +41,10 @@ const SELECTED = credentialFor('selected')
 const SELECTED_ID = workbuddyAccountId(SELECTED)
 
 /** A store whose selection never moves, which is the whole point. */
-function storeWith(others: readonly WorkBuddyCredential[]): WorkBuddyCredentialStore {
-  const byId = new Map([SELECTED, ...others].map(c => [workbuddyAccountId(c), c]))
+function storeWith(others: readonly WorkBuddyCredential[], selected: WorkBuddyCredential = SELECTED): WorkBuddyCredentialStore {
+  const byId = new Map([selected, ...others].map(c => [workbuddyAccountId(c), c]))
   return {
-    resolve: async () => SELECTED,
+    resolve: async () => selected,
     credentialFor: async (accountId: string) => byId.get(accountId),
   } as unknown as WorkBuddyCredentialStore
 }
@@ -58,6 +58,8 @@ function mount(options: {
   chatStream: (credential: WorkBuddyCredential, body: string) => Promise<WorkBuddyChatResult>
   failover?: Failover
   others?: readonly WorkBuddyCredential[]
+  /** The account `resolve()` returns; `SELECTED` unless a test needs a name. */
+  selected?: WorkBuddyCredential
   shortfall?: () => Promise<string | undefined>
   logger?: { warn: (...args: unknown[]) => void, error: (...args: unknown[]) => void }
 }): WorkBuddyShim {
@@ -68,7 +70,7 @@ function mount(options: {
     },
   } as unknown as WorkBuddyUpstreamClient
   return createWorkBuddyShim({
-    store: storeWith(options.others ?? []),
+    store: storeWith(options.others ?? [], options.selected),
     client,
     catalog: new WorkBuddyCatalog(),
     ...options.logger === undefined ? {} : { logger: options.logger },
@@ -768,8 +770,9 @@ describe('a failover says so in the answer', () => {
     const response = await chat(shim)
     expect(response.status).toBe(200)
     const text = contentOf(response.body)
-    // The notice is there, names the account left behind (by `uin`, which is what
-    // the pool table shows) and gives the reason a person can act on.
+    // The notice is there, names the account left behind (this fixture publishes
+    // no display name, so the `uin` is the last resort — see the issue-#234 case
+    // below for the labelled form) and gives the reason a person can act on.
     expect(text).toContain('dsh-connect-workbuddy')
     expect(text).toContain('selected')
     expect(text).toContain('被限流')
@@ -825,6 +828,44 @@ describe('a failover says so in the answer', () => {
     expect(text).toContain('Straight answer.')
     expect(text).not.toContain('已改用池中另一个账号')
     expect(attemptsOf()).toEqual([SELECTED_ID])
+  })
+
+  it('names the account left behind by its NAME, not by its phone number (issue #234)', async () => {
+    // The reporter read 「330135985725」 and could not tell what that was. Every
+    // other surface (card, pool table, composer panel) calls an account by its
+    // name, so the one sentence that explains a switch must use the same label.
+    const other = credentialFor('other')
+    const named = { ...SELECTED, nickname: 'Beta', displayName: 'Beta Display' }
+    shim = mount({
+      selected: named,
+      others: [other],
+      chatStream: async credential => (credential.uin === 'selected' ? RATE_LIMITED : answering('Recovered.')),
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const text = contentOf((await chat(shim)).body)
+    expect(text).toContain('被限流')
+    // The DISPLAY name (first in `preferredAccountName`'s order), not the alias.
+    expect(text).toContain('「Beta Display」')
+    // And the bare identifier is gone: it is what the report was about.
+    expect(text).not.toContain('「selected」')
+  })
+
+  it('falls back to the uin only when the app published no name at all', async () => {
+    // An unnamed account still has to be pointed at, and a number the user can
+    // match against a row is better than a sentence that names nobody. This is
+    // ALSO the shape every other fixture in this file has, which is why the
+    // notice assertions above still read `selected`.
+    const other = credentialFor('other')
+    shim = mount({
+      others: [other],
+      chatStream: async credential => (credential.uin === 'selected' ? RATE_LIMITED : answering('Recovered.')),
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    expect(contentOf((await chat(shim)).body)).toContain('「selected」')
   })
 
   it('says nothing when the request failed on every account', async () => {
