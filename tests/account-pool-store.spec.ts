@@ -6,6 +6,7 @@ import {
   readPoolProbes,
   workbuddyPoolStorePath,
   writePoolProbes,
+  reconcilePoolCredits,
 } from '../src/account-pool-store.ts'
 
 /**
@@ -14,6 +15,40 @@ import {
  */
 let home: string
 let previousHome: string | undefined
+
+describe('reconcilePoolCredits', () => {
+  it('removes the old monthly exclusion after a later positive balance read, without fabricating a test', async () => {
+    await writePoolProbes('cn', { alpha: { outcome: 'out-of-credit', atMs: 100, retryAtMs: 100 + 21 * 86_400_000 } })
+    await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 101, total: 20 }])
+    expect((await readPoolProbes('cn'))['alpha']).toBeUndefined()
+  })
+
+  it('keeps zero, invalid and unread balances excluded even after the recorded refresh time', async () => {
+    for (const total of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await writePoolProbes('cn', { alpha: { outcome: 'out-of-credit', atMs: 100, retryAtMs: 101 } })
+      await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 200, total }])
+      expect((await readPoolProbes('cn'))['alpha']?.outcome).toBe('out-of-credit')
+    }
+    await reconcilePoolCredits('cn', [])
+    expect((await readPoolProbes('cn'))['alpha']?.outcome).toBe('out-of-credit')
+  })
+
+  it('preserves a failure written while the balance query was in flight and isolates regions', async () => {
+    await writePoolProbes('cn', { alpha: { outcome: 'out-of-credit', atMs: 102 } })
+    await writePoolProbes('global', { alpha: { outcome: 'out-of-credit', atMs: 1 } })
+    await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 101, total: 20 }])
+    expect((await readPoolProbes('cn'))['alpha']?.atMs).toBe(102)
+    expect((await readPoolProbes('global'))['alpha']?.outcome).toBe('out-of-credit')
+  })
+
+  it('does not clear rate limits, rejected credentials or account restrictions when credits arrive', async () => {
+    for (const outcome of ['rate-limited', 'credential-rejected', 'account-restricted'] as const) {
+      await writePoolProbes('cn', { alpha: { outcome, atMs: 100 } })
+      await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 101, total: 20 }])
+      expect((await readPoolProbes('cn'))['alpha']?.outcome).toBe(outcome)
+    }
+  })
+})
 
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'wb-pool-'))

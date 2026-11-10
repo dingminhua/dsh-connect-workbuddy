@@ -359,7 +359,8 @@ export function parseUpstreamResetAt(message: string): number | undefined {
 }
 
 /**
- * The cooldown the upstream stated, if it stated one.
+ * The upstream reset metadata, if stated. A credit-package refresh timestamp
+ * is retained for diagnostics; it is not a minimum wait or recovery evidence.
  *
  * Three sources, in order of authority:
  *
@@ -370,13 +371,13 @@ export function parseUpstreamResetAt(message: string): number | undefined {
  *    this service: a 429 from the Chinese gateway carries code 6004 and a
  *    `将在 … 重置` sentence, with no `Retry-After` header at all.
  * 3. The region's monthly quota refresh point, but ONLY for an out-of-credit
- *    outcome. A quota that resets at a known time is the one case where "when
- *    can I use this again" has a real answer even without a header — and it is
- *    the answer for the most common real limit on this service.
+ *    outcome. Check-in or a purchase can replenish credits earlier, so callers
+ *    must not render this metadata as a recovery countdown or release the
+ *    account when the timestamp passes.
  *
- * A limited outcome with none of the three returns `{}`, which the card renders
- * as "the upstream did not say when". That remains the honest answer for a
- * genuinely timeless failure; inventing a number here would be pure fiction.
+ * A limited outcome with none of the three returns `{}`. Rate-limit views state
+ * that no time was given; credit-exhaustion views name the replenishment action
+ * instead. Neither view invents a countdown.
  *
  * An `ok` outcome ALWAYS returns `{}`, whatever headers or body came with it.
  * A successful probe has already answered "can this account serve right now?"

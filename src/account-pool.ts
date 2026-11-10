@@ -94,10 +94,12 @@ export interface WorkBuddyPoolProbe {
    */
   source?: WorkBuddyPoolProbeSource
   /**
-   * When this account may be usable again, when the upstream stated a time.
+   * The upstream's reset timestamp, interpreted according to the outcome.
    *
    * Present for a `rate-limited` outcome whose failure body carried a reset
    * sentence, and for an `out-of-credit` outcome with a known quota refresh.
+   * For credit exhaustion this is package metadata, not a minimum wait or
+   * proof of replenishment; later positive balance evidence clears the failure.
    * ABSENT when the upstream named no time — that absence is meaningful and
    * must never be turned into a locally invented countdown.
    */
@@ -338,7 +340,9 @@ export function exclusionOf(
       // "walk every member into the same wall" behaviour issue #56 reports.
       return retryDue(probe, nowMs, MODEL_BUSY_COOLDOWN_MS) ? undefined : 'model-busy'
     case 'out-of-credit':
-      return retryDue(probe, nowMs) ? undefined : 'out-of-credit'
+      // Time alone cannot establish that check-in or purchased credits arrived.
+      // A later positive balance reading clears the recorded failure.
+      return 'out-of-credit'
     case 'policy-rejected':
       // NOT the `default` branch. A content-policy refusal is a fact about ONE
       // REQUEST, not about the account: the server refused that message's
@@ -371,11 +375,10 @@ export function exclusionOf(
 /**
  * Whether an account's cooldown has elapsed (or was never stated).
  *
- * The fallback is the ONLY thing a transient outcome relies on: `cooldownOf`
- * attaches `retryAtMs` for a rate limit or a drained quota, never for a
- * transport failure, so `atMs + POOL_UNKNOWN_COOLDOWN_MS` is what brings those
- * back. That is deliberate — the alternative is a permanent exclusion decided by
- * an event that said nothing about the account.
+ * Transient failures without a stated retry time use the local short window.
+ * Credit exhaustion is cleared by later positive balance evidence or an explicit
+ * successful pool test; ordinary chat success does not update the probe store.
+ * It does not call this helper.
  *
  * `fallbackMs` lets one outcome carry a SHORTER clock than the generic one: the
  * model-scoped throttle is upstream's own "about a minute", and applying the
@@ -462,6 +465,8 @@ export function rankPool(
     if (!order.has(id)) order.set(id, index)
   }
   const rows = members.map(member => {
+    // A zero balance does not rule out free models. Keep this verdict identical
+    // to the panel and shortfall explanation: only a recorded failure excludes.
     const excludedBy = exclusionOf(member.probe, nowMs)
     return {
       account: member.account,

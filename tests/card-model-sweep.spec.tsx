@@ -92,6 +92,21 @@ function sweepButtons(container: HTMLElement): { enabled: HTMLButtonElement | un
 }
 
 describe('the sweep buttons', () => {
+  it('renders depleted model results without a monthly refresh date or recovery countdown', async () => {
+    const { m } = await render({ verdictFor: () => ({
+      outcome: 'out-of-credit', retryAtMs: Date.now() + 21 * 86_400_000,
+    }) })
+    const { enabled } = sweepButtons(m.container)
+    await m.click(enabled as Element)
+    await m.settle()
+    const result = m.container.querySelector('.dsm-workbuddy-model-probe-result')?.textContent ?? ''
+    expect(result).toContain('row.poolExcludedOutOfCredit')
+    expect(result).toContain('row.creditAwaitReplenishment')
+    expect(result).not.toContain('row.probeOutOfCreditAt')
+    expect(result).not.toContain('row.recovers')
+    expect(result).not.toContain('row.remaining')
+  })
+
   it('renders exactly ONE sweep button, and no "all models" variant', async () => {
     const { m } = await render()
     const { enabled } = sweepButtons(m.container)

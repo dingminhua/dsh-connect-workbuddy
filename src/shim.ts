@@ -192,9 +192,10 @@ export interface WorkBuddyShimOptions {
    * token REFRESH in one place (`store.resolve()`) instead of duplicating it on
    * a path that would silently send expired tokens.
    *
-   * Absent means the store's own selection always serves.
+   * The optional signal releases a request waiting for pool recovery on client
+   * disconnect. Absent means the store's own selection always serves.
    */
-  prepareAccount?: () => Promise<void>
+  prepareAccount?: (signal?: AbortSignal) => Promise<void>
   /**
    * Called for every attempt that failed upstream, before the next one is tried.
    *
@@ -1680,13 +1681,27 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       writeOpenAIError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
       return
     }
+    const controller = new AbortController()
+    // Watch the response before account preparation as well as model streaming.
+    //
+    // `req.on('close')` cannot express "the client hung up" here: Node emits it
+    // as soon as the request STREAM ends, independently of whether the response
+    // reader is still connected. Listening before `readBody` would cancel normal
+    // requests; listening afterwards missed real disconnects in earlier tests. The
+    // response's `close` fires on actual socket teardown instead, which is the
+    // event that means the reader is gone: mid-flight it aborts the upstream
+    // call, and on a normal completion it arrives after `res.end` and changes
+    // nothing.
+    res.on('close', () => controller.abort())
+
     // Let the plugin point the store at whoever the pool's ranking picks for
     // this request BEFORE resolving. Failure is not fatal: the request then goes
     // to whatever the store already had, which is the user's own account — the
     // same behaviour as a plugin with no pool at all.
-    await prepareAccount?.().catch(error => {
+    await prepareAccount?.(controller.signal).catch(error => {
       logger?.warn('dsh-connect-workbuddy: pool account selection failed', error)
     })
+    if (controller.signal.aborted) return
 
     let credential
     try {
@@ -1715,20 +1730,6 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         logger?.warn('dsh-connect-workbuddy: body report failed', error)
       }
     }
-
-    const controller = new AbortController()
-    // Watch the RESPONSE, not the request.
-    //
-    // `req.on('close')` cannot express "the client hung up" here: Node emits it
-    // as soon as the request STREAM ends — which `readBody` has already done —
-    // so a listener attached after the read never fires at all (measured: the
-    // signal stayed un-aborted through a real disconnect), and one attached
-    // BEFORE the read fires immediately and would abort every request. The
-    // response's `close` fires on actual socket teardown instead, which is the
-    // event that means the reader is gone: mid-flight it aborts the upstream
-    // call, and on a normal completion it arrives after `res.end` and changes
-    // nothing.
-    res.on('close', () => controller.abort())
 
     // Retry the SAME prepared body against the pool's other usable accounts,
     // in the plugin's order, until one serves it or none is left.

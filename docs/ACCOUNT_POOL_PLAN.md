@@ -24,7 +24,7 @@
 | 每日签到 | `POST /v2/billing/meter/daily-checkin` + `fetchCheckinStatus()` | 「一键签到所有账号」逐个调用即可 |
 | 签到状态 | `checkin-activity-status` | 幂等判断，避免重复领取 |
 | 积分 | `fetchCredits()` → `WorkBuddyWebCredits{total, packages, expiringSoon, nearestExpiryMs}` | 「按积分轮换」的排序键 |
-| 模型可用性测试 | `probeModel()` / `WORKBUDDY_PROBE_PATH` | 「测试 deepseek-v4.1-flash 是否可用」直接复用，含 `rate-limited` / `out-of-credit` 的**上游真实恢复时间** |
+| 模型可用性测试 | `probeModel()` / `WORKBUDDY_PROBE_PATH` | 「测试 deepseek-v4.1-flash 是否可用」直接复用；`rate-limited` 使用上游冷却时间，`out-of-credit` 的月度刷新记录不代表最早恢复时间 |
 | 区域路径 | `withWorkBuddyRegion()` / `regionOfStatusUrl()` | 所有新路由沿用 `?region=` 约定，国际版可零成本复用 |
 
 `deepseek-v4.1-flash` 已在国内版 catalog 中（`src/catalog.ts:59`，`creditMultiplier: 0`，即**免费**），所以「一键测试所有账号」的默认目标模型就是它。
@@ -62,7 +62,7 @@
 | --- | --- | --- |
 | `ok` | 此刻可用 | **可入选**，记录 `elapsedMs` |
 | `rate-limited` | 模型没问题，只是被限流 | **暂时出池**，按上游给出的重置时间回池 |
-| `out-of-credit` | 积分耗尽 | **出池**，按 `quota-refresh` 时间回池 |
+| `out-of-credit` | 积分耗尽 | **出池**，后发正余额查询确认到账后回池；签到后立即核对，界面查询与请求前限频核对均可恢复 |
 | `credential-rejected` / `unavailable` / `failed` / `not-found` | 凭据或链路问题 | 出池，并提示重新检测账号 |
 
 > 关键点：`rate-limited` ≠ 不可用。若把它当成「不可用」就永久剔除，正好丢掉功能想利用的那些账号。
