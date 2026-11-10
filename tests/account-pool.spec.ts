@@ -57,6 +57,17 @@ function model(
 }
 
 describe('pickFreeModel', () => {
+  it('keeps zero-credit untested and successful free-model accounts eligible under the shared verdict', () => {
+    for (const probe of [undefined, { outcome: 'ok' as const, atMs: NOW }]) {
+      const input = member('free-account', { credits: 0, ...probe === undefined ? {} : { probe } })
+      const ranked = rankPool([input], NOW)[0]
+      expect(ranked?.excludedBy).toBeUndefined()
+      expect(ranked?.excludedBy).toBe(exclusionOf(probe, NOW))
+    }
+    const failed = member('depleted-account', { credits: 0, probe: { outcome: 'out-of-credit', atMs: NOW } })
+    expect(rankPool([failed], NOW)[0]?.excludedBy).toBe(exclusionOf(failed.probe, NOW))
+  })
+
   it('picks a multiplier of exactly zero', () => {
     const picked = pickFreeModel([model('paid', 100_000, 0.79), model('free', 200_000, 0)])
     expect(picked?.id).toBe('free')
@@ -186,9 +197,10 @@ describe('exclusionOf', () => {
     expect(exclusionOf(probe, NOW)).toBe('out-of-credit')
   })
 
-  it('returns an out-of-credit account once the quota refreshes', () => {
+  it('keeps an out-of-credit account excluded until a balance read confirms replenishment', () => {
     const probe = { outcome: 'out-of-credit' as const, atMs: NOW, retryAtMs: NOW + 3_600_000 }
-    expect(exclusionOf(probe, NOW + 3_600_001)).toBeUndefined()
+    expect(exclusionOf(probe, NOW + 3_600_001)).toBe('out-of-credit')
+    expect(exclusionOf({ outcome: 'out-of-credit', atMs: NOW }, NOW + 86_400_000)).toBe('out-of-credit')
   })
 
   it('excludes a rejected credential regardless of any cooldown', () => {

@@ -302,3 +302,38 @@ export async function writePoolProbes(
     // "measured a moment ago, but not remembered", never to a failed action.
   }
 }
+
+/**
+ * 只有失败记录写入之后发起的余额查询，才能解除积分耗尽状态。
+ * 持锁重读可避免较早的查询结果覆盖并发请求刚记录的新失败；其他异常保持原样。
+ * 删除失败记录只表示余额恢复，不会伪造一次成功的模型测试。
+ * 恢复后界面会显示“未测试”：这里删除的是最近失败记录，存储结构没有保留此前
+ * 成功测试的历史，余额到账也不能证明某个模型可用；再次测试才会产生新的结论。
+ */
+export async function reconcilePoolCredits(
+  region: WorkBuddyRegion,
+  readings: readonly { accountId: string, startedAtMs: number, total: number }[],
+): Promise<Readonly<Record<string, WorkBuddyPoolProbe>>> {
+  const path = workbuddyPoolStorePath(region)
+  try {
+    return await withFileLock(path, async () => {
+      const probes = await readPoolProbes(region)
+      let changed = false
+      for (const reading of readings) {
+        const probe = probes[reading.accountId]
+        if (probe?.outcome !== 'out-of-credit' || probe.atMs >= reading.startedAtMs) continue
+        if (!Number.isFinite(reading.total) || reading.total <= 0) continue
+        delete probes[reading.accountId]
+        changed = true
+      }
+      if (changed) {
+        const document: PoolDocument = { version: STORE_FORMAT_VERSION, probes }
+        await writeFileAtomic(path, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 })
+      }
+      return probes
+    })
+  } catch {
+    // 写入失败时保留磁盘中的状态，不将未保存的恢复结果用于选号。
+    return readPoolProbes(region)
+  }
+}

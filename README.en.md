@@ -170,7 +170,7 @@ The last two rows are deliberate: check-in and testing are MANUAL actions over t
 
 1. **Usable first** — an account a measurement rules out (limited with its cooldown unexpired, credential rejected, upstream unreachable) sorts last and is not chosen;
 2. **Expiring credits first** — points lapsing within three days are lost if unspent, so an account holding any comes first, the soonest-lapsing one ahead of the rest, and between two of them the larger amount at risk wins;
-3. **Higher credit balance first.** Among accounts with nothing expiring, the largest balance goes first. Credits take part **only when a fresh reading exists** (what the card's poll, a batch test or a save collected; valid for 10 minutes). The request path **never** fetches credits — that is an upstream call per member, and one page of chat would turn into N extra requests;
+3. **Higher credit balance first.** Among accounts with nothing expiring, the largest balance goes first. Credits take part **only when a fresh reading exists** (what the card's poll, a batch test or a save collected; valid for 10 minutes). Normal ranking uses cached balances; a separate throttled recovery read checks only members with recorded credit exhaustion;
 4. **Freshest credential first**;
 5. The account id closes the order, making it **total** and reproducible rather than jittering with the roster's order.
 
@@ -184,11 +184,13 @@ The last two rows are deliberate: check-in and testing are MANUAL actions over t
 | --- | --- |
 | Usable | Eligible |
 | Rate limited | Out of the pool **temporarily**, returning on the reset time the upstream stated (and when it states none, the card says so rather than **inventing a countdown**) |
-| Out of credit | Out of the pool, returning at the monthly package's refresh time |
+| Out of credit | Excluded until a later positive balance confirms replenishment; the monthly refresh is not a recovery countdown |
 | Credential rejected / model not found / upstream unreachable / failed | Out of the pool until a later probe refreshes the result |
 | **Account restricted upstream** | **Benched for good; waiting fixes nothing** (5.8.0). The upstream names this ACCOUNT ("unusual activity"), so automatic failover **does** route around it. That is the opposite of a channel-verification refusal, which is about the REQUEST: switching accounts there would only burn credit on the same 400, so the plugin does not switch. The only real way back is a **manual "test"** of that account: the pool id is a hash of `uin`/`uid`, so re-authorising produces the same id and nothing clears the stored measurement (a re-login does **not** lift this bench). Re-test after the upstream lifts the restriction and it becomes a candidate again. The plugin **invents no countdown**; the bench only removes it from rotation — with no usable candidate left the request still falls to your saved account |
 
 The key line: **"rate limited" is not "unusable"**. It is precisely the state most worth waiting on — treating it as permanently dead throws away the accounts that would have served you best.
+
+Credit recovery requires balance evidence, not elapsed time. Manual and automatic check-in immediately refresh balances and selection, and card refreshes also reconcile credit failures. With no card open, requests check only depleted members, at most once per minute per region; concurrent requests share the query. If a usable member already exists, recovery runs in the background; otherwise the request waits for that shared result until completion or client disconnection. Recovery updates existing ranking balances without extending the cache lifetime, and newer whole-pool readings take precedence. Zero, invalid or failed readings retain the failure. Recovery text distinguishes check-in, tomorrow's check-in and waiting for replenishment. Removing the latest failure leaves the row as untested; it does not fabricate a successful model test. A zero balance alone does not exclude an account, since free models may still work. An explicit successful pool test updates the verdict; ordinary chat success does not write a probe record.
 
 ### Manual selection: there is no account dropdown any more
 

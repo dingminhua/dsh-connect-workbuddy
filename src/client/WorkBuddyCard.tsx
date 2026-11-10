@@ -93,6 +93,7 @@ import { busyIcon } from './busy-icon.tsx'
 import { promoBadgeColor, promoBadgeLabel, promoBadgeTooltip, uiLanguage } from './promo-badge.ts'
 import { inlineProbeReason } from './probe-reason.ts'
 import { remainingText } from './remaining.ts'
+import { availabilityLine } from './account-state.ts'
 import { IconStylePreference, PluginIcon } from './plugin-icon.tsx'
 import { updateStickyTabs } from './series-layout.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
@@ -531,13 +532,10 @@ function probeResultView(
         tone: 'warn',
       }
     case 'out-of-credit':
-      // Only a quota-reset answer is a real time; without one, the honest text
-      // is the same "no time given" the rate-limit branch uses.
+      // The stored monthly refresh is not an earliest recovery date. Reuse the
+      // pool wording; a model result has no account-specific check-in evidence.
       return {
-        text: result.retryAtMs === undefined
-          ? t('row.probeOutOfCreditUnknown')
-          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) })
-            + retrySuffix(t, result.retryAtMs, nowMs),
+        text: `✗ ${availabilityLine(t, { probe: result }, nowMs)}`,
         tone: 'bad',
       }
     case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }

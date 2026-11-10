@@ -1049,3 +1049,44 @@ describe('a failed request explains why the pool had nowhere to go', () => {
     expect(response.body).not.toContain('should never be read')
   })
 })
+
+
+describe('request cancellation during pool preparation', () => {
+  it('passes disconnect cancellation before resolving or sending a model request', async () => {
+    let release: (() => void) | undefined
+    let signalSeen: AbortSignal | undefined
+    const resolveAccount = vi.fn(async () => SELECTED)
+    const chatStream = vi.fn(async () => ok())
+    shim = createWorkBuddyShim({
+      store: { resolve: resolveAccount } as unknown as WorkBuddyCredentialStore,
+      client: { chatStream } as unknown as WorkBuddyUpstreamClient,
+      catalog: new WorkBuddyCatalog(),
+      prepareAccount: async signal => {
+        signalSeen = signal
+        await new Promise<void>(resolve => {
+          release = resolve
+          signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+      },
+    })
+    await shim.ready
+    const controller = new AbortController()
+    const request = fetch(`${shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', authorization: `Bearer ${shim.token()}` },
+      body: JSON.stringify({ model: 'fixture-model', messages: [] }), signal: controller.signal,
+    }).catch(() => undefined)
+    try {
+      await vi.waitFor(() => expect(signalSeen).toBeDefined())
+      controller.abort()
+      await request
+      await vi.waitFor(() => expect(signalSeen?.aborted).toBe(true))
+      await new Promise(resolve => setTimeout(resolve, 25))
+      expect(resolveAccount).not.toHaveBeenCalled()
+      expect(chatStream).not.toHaveBeenCalled()
+    } finally {
+      controller.abort()
+      release?.()
+      await request
+    }
+  })
+})

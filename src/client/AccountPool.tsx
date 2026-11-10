@@ -993,8 +993,8 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       // rule `availabilityLine` states: an `ok` record never waits, whatever
       // instant came with it (an `ok` probe carries the monthly quota reset), and
       // an exhausted quota or a rejected credential is not cleared by waiting —
-      // re-probing those spends a request to learn what the verdict already says
-      // (and, for the quota, the same answer until the month turns over).
+      // Credit recovery is confirmed by a balance read after check-in, top-up
+      // or package refresh, rather than a paid model probe on a timer.
       if (probe.outcome !== 'rate-limited' && probe.outcome !== 'model-busy') continue
       // A cooldown that still RUNS is not this state: the row already states its
       // countdown (「… 之后可再用」), and the number it states is the upstream's own
@@ -1994,8 +1994,9 @@ function renderAccountRow(input: {
   // the pool has already put the account back among its candidates. Rendering the
   // second as 「未测试」 would be a new falsehood — the account WAS tested, and the
   // provenance line beside it still dates that test.
-  const measuredButSilent = probe !== undefined && availabilityLine(t, account) === undefined
-  const outcomeLine = availabilityLine(t, account)
+  const availability = { ...account, checkinSupported }
+  const measuredButSilent = probe !== undefined && availabilityLine(t, availability) === undefined
+  const outcomeLine = availabilityLine(t, availability)
     ?? (probe === undefined ? t('row.poolNeverTested') : undefined)
   // The reason worth inlining, from the ONE rule both tables share (see
   // `probe-reason.ts`). It is absent for a limited account — whose body just

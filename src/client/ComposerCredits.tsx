@@ -302,6 +302,8 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   if (t === undefined) throw new Error('Composer credits readout requires its translation function')
   const owned = provider === undefined ? undefined : WORKBUDDY_COMPOSER_PROVIDERS[provider]
   const activeRegion = region ?? owned
+  const activeRegionRef = useRef(activeRegion)
+  activeRegionRef.current = activeRegion
 
   const [usage, setUsage] = useState<WorkBuddyWebUsage | undefined>(undefined)
   /**
@@ -348,7 +350,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
   const [open, setOpen] = useState(false)
-  const inFlight = useRef(false)
+  const inFlight = useRef<{ region: WorkBuddyWebRegion, signal: AbortSignal | undefined, task: Promise<void> } | undefined>(undefined)
   /** A batch is running; guards a second press that lands before `setTesting`. */
   const testingRef = useRef(false)
   /** Account-table reads in flight; see `fetchAccountCredits`. */
@@ -411,27 +413,42 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   })
   useDismissOnOutsidePointer(rootRef, open, setOpen, panelRef)
 
-  const fetchUsage = useCallback(async (signal?: AbortSignal): Promise<void> => {
-    if (inFlight.current || activeRegion === undefined) return
-    inFlight.current = true
+  const fetchUsage = useCallback(async (signal?: AbortSignal, force = false): Promise<void> => {
+    if (activeRegion === undefined || signal?.aborted || activeRegionRef.current !== activeRegion) return
+    // A completed read can satisfy another caller in the same region. A read
+    // cancelled by closing/opening the panel cannot: wait for its cleanup, then
+    // start the replacement instead of silently losing the immediate refresh.
+    // Explicit account changes force a new read after the write: an older
+    // in-flight response still describes the account selected before that action.
+    while (inFlight.current !== undefined) {
+      const pending = inFlight.current
+      await pending.task
+      if (signal?.aborted || activeRegionRef.current !== activeRegion) return
+      if (!force && pending.region === activeRegion && pending.signal?.aborted !== true) return
+    }
+    const task = (async (): Promise<void> => {
+      try {
+        const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, activeRegion), {
+          headers: { accept: 'application/json' },
+          credentials: 'same-origin',
+          ...signal === undefined ? {} : { signal },
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const value = await response.json() as WorkBuddyWebUsage
+        if (!mounted.current || signal?.aborted === true || activeRegionRef.current !== activeRegion) return
+        setUsage(value)
+        setLastRefresh(Date.now())
+        setFailed(false)
+      } catch {
+        // A failed refresh keeps the previously displayed reading.
+        if (mounted.current && signal?.aborted !== true && activeRegionRef.current === activeRegion) setFailed(true)
+      }
+    })()
+    inFlight.current = { region: activeRegion, signal, task }
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, activeRegion), {
-        headers: { accept: 'application/json' },
-        credentials: 'same-origin',
-        ...signal === undefined ? {} : { signal },
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const value = await response.json() as WorkBuddyWebUsage
-      if (!mounted.current || signal?.aborted === true) return
-      setUsage(value)
-      setLastRefresh(Date.now())
-      setFailed(false)
-    } catch {
-      // Keep the previous value: a stale number is better than a blank row for
-      // a balance that almost certainly did not change.
-      if (mounted.current && signal?.aborted !== true) setFailed(true)
+      await task
     } finally {
-      inFlight.current = false
+      inFlight.current = undefined
     }
   }, [activeRegion])
 
@@ -458,9 +475,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
    * slow tick started earlier must not overwrite the press that superseded it —
    * which would silently re-draw a mark the press had just cleared.
    */
-  const fetchAccountCredits = useCallback(async (signal?: AbortSignal, force?: boolean): Promise<void> => {
-    if (activeRegion === undefined) return
-    if (!force && accountsInFlight.current > 0) return
+  const fetchAccountCredits = useCallback(async (signal?: AbortSignal, force?: boolean): Promise<boolean> => {
+    if (activeRegion === undefined || signal?.aborted || activeRegionRef.current !== activeRegion) return false
+    if (!force && accountsInFlight.current > 0) return false
     const generation = ++accountsReadGeneration.current
     accountsInFlight.current += 1
     try {
@@ -471,10 +488,10 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data = await response.json() as { accounts?: unknown }
-      if (!mounted.current || signal?.aborted === true) return
+      if (!mounted.current || signal?.aborted === true || activeRegionRef.current !== activeRegion) return false
       // Superseded while in flight: applying now would restore rows a newer read
       // has already replaced.
-      if (generation !== accountsReadGeneration.current) return
+      if (generation !== accountsReadGeneration.current) return false
       if (Array.isArray(data.accounts)) {
         setAccountCredits(data.accounts as WorkBuddyWebAccountCredit[])
         // The footer's clock moves for THIS read too. It answers "when did the
@@ -484,8 +501,10 @@ export function ComposerCredits(props: ComposerCreditsProps) {
         // the same "is this stale?" question the frozen marks raised.
         setLastRefresh(Date.now())
       }
+      return true
     } catch {
-      // Keep the previous rows; see above.
+      // A failed read retains the previous rows; the usage read can still run.
+      return true
     } finally {
       accountsInFlight.current -= 1
     }
@@ -501,7 +520,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   // back on, the scope subscription (or a remount) brings us back.
   const hostHidden = hostCreditsShownOf(usage) === false
   useEffect(() => {
-    if (owned === undefined || hostHidden) return undefined
+    // While open, the panel owns the usage cadence so two timers cannot read
+    // the same document every five minutes. Closing restores the readout timer.
+    if (owned === undefined || hostHidden || open) return undefined
     let cancelled = false
     let timer: number | undefined
     const controller = new AbortController()
@@ -514,7 +535,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (timer !== undefined) window.clearInterval(timer)
       controller.abort()
     }
-  }, [owned, hostHidden, fetchUsage])
+  }, [owned, hostHidden, open, fetchUsage])
 
   /**
    * Per-account figures are read on OPEN, then kept fresh while the panel stays
@@ -538,10 +559,23 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     let cancelled = false
     let timer: number | undefined
     const controller = new AbortController()
-    void fetchAccountCredits(controller.signal).finally(() => {
+    // 余额和状态来自两个接口，必须在同一轮轮询中更新，避免正余额仍配旧失败提示。
+    let refreshing = false
+    const refreshPanel = async (force = false): Promise<void> => {
+      if (refreshing || cancelled) return
+      refreshing = true
+      try {
+        const completed = await fetchAccountCredits(controller.signal, force)
+        if (completed && !cancelled) await fetchUsage(controller.signal)
+      } finally {
+        refreshing = false
+      }
+    }
+    // Opening or changing region replaces any cancelled previous table read.
+    void refreshPanel(true).finally(() => {
       if (cancelled) return
       timer = window.setInterval(
-        () => { void fetchAccountCredits(controller.signal) },
+        () => { void refreshPanel() },
         refreshIntervalMs,
       )
     })
@@ -550,7 +584,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (timer !== undefined) window.clearInterval(timer)
       controller.abort()
     }
-  }, [open, activeRegion, fetchAccountCredits, refreshIntervalMs])
+  }, [open, activeRegion, fetchAccountCredits, fetchUsage, refreshIntervalMs])
 
   // Escape closes the panel, matching the neighbouring popovers.
   useEffect(() => {
@@ -581,7 +615,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     setFailed(false)
     try {
       await writeAccountSlot(settingsScope, activeRegion, accountId)
-      await fetchUsage()
+      await fetchUsage(undefined, true)
       // `true`: the row this user clicked must come back re-read. Skipping this
       // because a tick was in flight would leave the marker (and the balance)
       // describing the account the panel was showing BEFORE the switch.
@@ -674,7 +708,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (mounted.current) setTesting(false)
       // `true`: a press must reach the upstream even if a timer tick is in
       // flight, and it claims the newest generation so its answer lands.
-      await Promise.all([fetchUsage(), fetchAccountCredits(undefined, true)])
+      await Promise.all([fetchUsage(undefined, true), fetchAccountCredits(undefined, true)])
     }
   }, [activeRegion, fetchUsage, fetchAccountCredits, t])
 
@@ -1001,9 +1035,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                       // question (which account this endpoint reports it can
                       // switch FROM), i.e. the button's disabled state.
                       const live = poolRow === undefined ? current : poolRow.current
-                      const availability = poolRow ?? {
-                        excludedBy: row.excludedBy,
-                        probe: undefined,
+                      const availability = {
+                        ...(poolRow ?? { excludedBy: row.excludedBy, probe: undefined }),
+                        checkinSupported: usage?.status === 'signed-in' && usage.pool?.checkinSupported === true,
                       }
                       // Why this account cannot serve right now, in the same
                       // WHAT the row prints, and what it only whispers.
