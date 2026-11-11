@@ -5,8 +5,8 @@
  * live here rather than being re-derived per route. A previous version kept the
  * Host check inside `shim.ts` and only the Origin check inside `web-status.ts`,
  * which meant the shim's chat route had both guards while the settings card's
- * thirteen routes (ten POST + three GET) had one — the asymmetry was invisible
- * because each file looked internally consistent.
+ * routes had one — the asymmetry was invisible because each file looked
+ * internally consistent.
  *
  * - **Host** answers "is this request addressed to the interface it landed on?".
  *   A DNS-rebinding page sends requests whose `Host` is the *attacker's* domain

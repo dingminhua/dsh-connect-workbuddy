@@ -1,5 +1,79 @@
 # Changelog
 
+## 5.21.4 (2026-11-11)
+
+> 版本号是 **patch**：修一个开关的取值时机、一条预热链的启动时机，不动配置键与路由语义。
+> 来自 PR #239（AMagicPear）。
+
+### 修复：SDK 总开关勾上之后，下面那行仍写「已在设置里关闭」
+
+现象是自相矛盾的：勾上「启用真实设备 SDK」，状态行还是 `已在设置里关闭`，还多出两行红字
+`the real-device SDK is turned off in this plugin's settings`；同一次
+`GET /device-sdk` 里 `sdkEnabled: true` 与 `sdk.state: "disabled"` 并存。
+
+根因是同一个配置项被读成了**两份真值**：
+
+- `apply()` 里写 `const flag = unwrapVolatile(config.deviceSdkEnabled) === true`，把这个
+  布尔**求值一次**传给 `createTuringSdk({ enabled })`，句柄活到卸载；
+- 卡片勾选框走 `readEnabled()`，每次请求**现读**活引用。
+
+`deviceSdkEnabled` 是 `asVolatile` 字段，拨动开关只发 `loader/volatile-update`、**不重挂
+插件**。于是配置已经是 `true`，句柄里那枚快照还是挂载时的 `false`，`probe()` 永远答
+`disabled`——勾选框和状态行从此各说各话。
+
+- `deviceSdkEnabled` 改成函数，SDK 句柄收 `get enabled()`，与 `readEnabled()` 共用同一份
+  活值。这是**唯一**一处需要修的地方：其余 volatile 字段本来就每次现读。
+- 顺带统一了同一字段的两种默认值解释。挂载处是 `=== true`（`undefined` → 关），读开关处
+  曾写 `!== false`（`undefined` → 开），于是老配置缺这一项时界面显示"开"而 SDK 实际是关的。
+  现在两处都是 `=== true`，与 schema 的 `default(false)` 同一个答案。
+
+### 修复：关着启动的进程，打开开关后永远没有预热定时器
+
+`startAutoRefresh()` 也只在挂载时判一次。新增 `syncDeviceSdk()` 挂在
+`loader/volatile-update` 上：开则补建（内部幂等），关则立即拆除。
+
+这条修复原 PR 没有测试，合入时补了一条：先用空目录让 `probe()` 答 `missing`（不起子进程），
+断言挂载后 `lastAttemptMs` 不存在，再拨开开关并等它出现。`lastAttemptMs` 只由
+`fetchOnce()` 写，`probe()` 不碰，所以它出现证明的是**定时链存在**，而不是"又读了一次快照"。
+变异验证：删掉 `loader/volatile-update` 里那行 `syncDeviceSdk()`，该用例转红。
+
+### 收敛：状态路由的守卫样板
+
+`src/web-status.ts` 的 16 条路由原来各抄一遍「方法判断 → `requireLoopback` → 区域解析 →
+`try/catch → 500`」，抄漏一道没有编译错误，却是真实的 DNS-rebinding / 跨区泄漏面。引入
+`raw` / `endpoint` / `endpointRegion` 三个薄封装，handler 只写业务。
+
+`ready` 排在区域解析**之前**是刻意的：`models` / `media` 这类路由要先答「宿主没有这项能力」
+的 503，反过来会让一个缺区域参数的请求先拿到 400。`pool`（嵌套 try）、`__save`（错误体带
+`errorName`）、`transfer`（413 分支）、device 两条（一条路由两种方法）有各自理由，保持原样。
+
+| 指标 | 前 | 后 |
+|---|---|---|
+| `requireLoopback` | 16 | 6 |
+| `405` 分支 | 16 | 6 |
+| `500` 应答合计 | 22 | 12 |
+| 其中「兜底 500」 | 12 | 2 |
+| `web-status.ts` 行数 | 2701 | 2594 |
+
+**路由卸载不再手写。** 注册时自动收进一个 disposer 数组——`benefit/claim` 曾漏了那一行
+（issue #86），热重载时宿主因重复注册同路径而抛错，后面的路由全部注册不上，卡片半数按钮答
+405。"新加路由忘了加卸载"这一类错误因此不再可能发生。
+
+其余顺手收敛：生图/视频两份 ~85% 相同的注册状态机合成一个 `mountOptionalTool`（逐区 opt-in
+判据仍各自独立）；卡片里 7 处相同 `catch` 收成 `fail()`，内联复制的"清空目录"块改为复用
+`saveDir('')`；删掉 `WorkerAnswer` 里从未被读的 5 个字段、零引用的
+`WorkBuddyDeviceSdkAction`，以及两处过时的「thirteen routes」注释（其中一处在
+`src/loopback.ts`，原 PR 只改了 `web-status.ts` 那一份）。
+
+变异验证：从 `raw` 里删掉方法闸与 loopback 两道守卫，`tests/web-status.spec.ts` 与
+`tests/pool-route.spec.ts` 共 13 条转红。
+
+### 验证
+
+- `pnpm run check` 全绿（typecheck → build → check:pii → test）。
+- CI（ubuntu-latest / windows-latest / pi-ai 1.1.0）三个 job 全绿。
+- 回归断言只加在既有用例里，没有新增文件；两条修复各做过变异验证。
+
 ## 5.21.3 (2026-11-09)
 
 > 版本号是 **patch**：只改一句回复里的账号称谓，不动配置键、路由与重试策略。

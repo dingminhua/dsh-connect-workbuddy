@@ -298,8 +298,7 @@ import {
   // rule heals both halves (the "restart reset" report).
   regionsMapOf,
   regionsFieldIsCorrupt,
-  // Imported for this module's own use AND re-exported below, so moving the
-  // implementation to the shared bridge did not change the public API.
+  // 从 shared bridge 转出给消费者（`WorkBuddy.unwrapVolatileDeep`），本文件不直接用。
   unwrapVolatileDeep,
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
@@ -1580,30 +1579,27 @@ export function apply(ctx: Context, config: Config): void {
    * 卸载，而设置随时会变，所以目录每次 `probe` 现问一次。`deviceProfiles` 读盘有
    * 5 秒缓存，保存会立即失效它。
    *
-   * ⚠️ **总开关优先于预热**（`deviceSdkEnabled`）：关掉就不建定时器、不预取。
-   * 留着 `createTuringSdk()` 本身是因为端口（`createDeviceSdkPort`）仍要能回答
-   * "这个功能被关掉了"——它读到的是 `disabled` 状态，而不是一块空白面板。
-   */
-  /**
-   * 总开关：**默认关**（`default(false)`）。
+   * 总开关只留**一份活真值**。曾经这里写 `const flag = unwrapVolatile(...) === true`
+   * 把布尔在 apply 期求值一次传给句柄，而 `readEnabled()` 却每次现读活引用——
+   * volatile 字段就地修改、插件不重挂，于是「勾选框是开的、probe 永远答 disabled」。
+   * 现在两处共用 `deviceSdkEnabled()`。句柄即使关掉也保留，因为端口仍要能回答
+   * "这个功能被关掉了"（`disabled`），而不是给一块空白面板。
    *
-   * 与档位默认值一致：档位默认「虚拟值」本来就不发这个 token，那么默认去发现
-   * SDK、起子进程、每 10 分钟取一次，取到的东西一次也用不上。更一般地说，一个
-   * 会碰用户机器上第三方原生模块的能力，默认该由用户主动打开。
-   *
-   * `=== true` 而不是 `!== false`：`undefined`（老配置文件里没有这个字段）必须
-   * 落到"关"，与 `default(false)` 同一个答案。写成 `!== false` 会让"未设置"和
-   * "显式开启"分叉，升级后老用户静默拿到与 schema 默认相反的行为。
+   * `=== true`：`undefined`（老配置没有这一项）落到"关"，与 `default(false)` 一致。
    */
-  const deviceSdkEnabled = unwrapVolatile(config.deviceSdkEnabled) === true
+  const deviceSdkEnabled = (): boolean => unwrapVolatile(config.deviceSdkEnabled) === true
   const turing = createTuringSdk({
     productVersion: APP_VERSION,
     dirSource: () => deviceProfiles.sdkDir(),
-    // 关掉之后连发现链都不该跑：目录仍然解析得出来，但 probe 直接答 disabled，
-    // 因此不会有任何一次子进程被创建。
-    enabled: deviceSdkEnabled,
+    // getter 而非求值后的布尔：句柄活到卸载，设置随时会变。
+    get enabled() { return deviceSdkEnabled() },
   })
-  if (deviceSdkEnabled) turing.startAutoRefresh()
+  /** 让预热链跟随开关：开则补建（内部幂等），关则立即拆除。 */
+  const syncDeviceSdk = (): void => {
+    if (deviceSdkEnabled()) turing.startAutoRefresh()
+    else turing.stopAutoRefresh()
+  }
+  syncDeviceSdk()
   ctx.effect(() => () => { turing.stopAutoRefresh() })
 
   /**
@@ -2541,130 +2537,87 @@ export function apply(ctx: Context, config: Config): void {
       })))
   }
 
-  // 生图工具：跟随**两个区**的开关，而不是在 apply 期判一次。
-  //
-  // 挂不挂由 `imageToolRegionOf` 决定：任一区「开着 + 用户显式打开了自主生图」
-  // 就注册。以前只挂国内区，因为 `text-to-image` 模型只出现在国内区的产品配置里
-  // （`hunyuan-image-alpha`）；2026-10-25 实测国际区也有一条
-  // （`hy-image-3.5`，同时带 `text-to-image` 与 `image-to-image`），国际区账号
-  // 因此能真画图，而不是一个每次调用都报「没有生图模型」的按钮。两区单价不同
-  // （国内区 5.71、国际区 0.03 积分/张），所以工具文案不再写死一张的价钱，
-  // 改为回报上游结算里真实的 `data.usage.credit`。
-  //
-  // `tools` 是宿主自己的服务（`class Tools extends Service`，服务名 `tools`），
-  // 用 `ctx.inject` 等它出现再注册，而不是 apply 期间 `ctx.get()` 采样一次：
-  // 采样会静默丢掉工具（同 webServer 的注释）。
-  //
-  // 开关是**注册与否**的门，必须读活值：`regions` 是 volatile 字段，用户拨动
-  // 国内区开关走的是 volatile-only 更新（loader 只发 `loader/volatile-update`，
-  // 不重新 apply），所以 `if (regionEnabled(...))` 只在 apply 期求值一次的话，
-  // 启动时关着的用户之后打开永远看不到这个工具，而启动时开着的用户关掉之后
-  // 工具还挂着、只在调用时报「未登录」——把「区域已关闭」说成「没登录」。
-  let imageTools: ToolsServiceLike | undefined
-  let disposeImageTool: (() => void) | undefined
-  const syncImageTool = (value: Config): void => {
-    // TWO gates, both required: SOME enabled region must have an image model
-    // (both do since 2026-10-25 — CN `hunyuan-image-alpha`, global
-    // `hy-image-3.5`), and the user must have opted in for THAT region to let
-    // the model spend credits on its own. `imageToolEnabled` is opt-IN, so an
-    // upgrade never hands anyone a spending capability they did not ask for.
-    const wanted = imageToolRegionOf(value) !== undefined
-    if (wanted && disposeImageTool === undefined && imageTools !== undefined) {
-      disposeImageTool = registerWorkBuddyImageTool(imageTools, {
-        // 每次调用都重新挑区、重新解析凭据：用户可能在两次调用之间换账号、
-        // 关掉某个区，或把「自主生图」从国内区挪到国际区。
-        //
-        // 只挑**开着且显式打开**的区。给一个没被授权的区画图，等于绕过用户
-        // 按区做出的选择（开关是逐区的，见 `imageToolRegionOf`）。`resolve()`
-        // 在未登录时会抛，这里折成「试下一个被授权的区」，最后落成 undefined，
-        // 让工具给出「没有可用账号」而不是一个原始异常。
-        resolveCredential: async () => {
-          const live = current()
-          for (const region of REGION_KEYS) {
-            if (!regionEnabled(live, region)) continue
-            if (regionStateOf(live, region).imageToolEnabled !== true) continue
-            try {
-              return await stacks[region].store.resolve()
-            } catch {
-              continue
-            }
-          }
-          return undefined
-        },
-        listMediaModels: (credential, signal) => client.fetchMediaModels(credential, signal),
-        generateImage: (credential, request, signal) => client.generateImage(credential, request, signal),
-        editImage: (credential, request, signal) => client.editImage(credential, request, signal),
-        logger: ctx.logger,
+  /**
+   * 可选工具（生图 / 视频）的注册机。两者曾是两份 85% 相同的状态机：同一套
+   * `wanted && dispose === undefined && tools !== undefined` 闩锁、同一套逐区凭据
+   * 解析、同一套 `ctx.inject(['tools'])` 挂载与卸载。现在只保留差异 —— 门判据、
+   * 执行层工厂 —— 其余一份。
+   *
+   * `tools` 服务可能晚于 apply 出现，所以用 inject 等它；`wanted` 每次读活配置：
+   * 开关是 volatile 字段，loader 只广播、不重挂 apply。
+   */
+  type ToolOptIn = 'imageToolEnabled' | 'videoToolEnabled'
+  function mountOptionalTool(options: {
+    wanted: (value: Config) => boolean
+    register: (tools: ToolsServiceLike) => (() => void) | undefined
+  }): (value: Config) => void {
+    let tools: ToolsServiceLike | undefined
+    let dispose: (() => void) | undefined
+    const sync = (value: Config): void => {
+      const wanted = options.wanted(value)
+      if (wanted && dispose === undefined && tools !== undefined) {
+        dispose = options.register(tools)
+        return
+      }
+      if (!wanted && dispose !== undefined) {
+        dispose()
+        dispose = undefined
+      }
+    }
+    ctx.inject(['tools'], (toolsCtx) => {
+      tools = (toolsCtx as unknown as { tools?: ToolsServiceLike }).tools
+      if (tools === undefined) return
+      sync(current())
+      toolsCtx.effect(() => () => {
+        dispose?.()
+        dispose = undefined
+        tools = undefined
       })
-      return
-    }
-    if (!wanted && disposeImageTool !== undefined) {
-      disposeImageTool()
-      disposeImageTool = undefined
-    }
-  }
-  ctx.inject(['tools'], (toolsCtx) => {
-    imageTools = (toolsCtx as unknown as { tools?: ToolsServiceLike }).tools
-    if (imageTools === undefined) return
-    syncImageTool(current())
-    toolsCtx.effect(() => () => {
-      disposeImageTool?.()
-      disposeImageTool = undefined
-      imageTools = undefined
     })
+    return sync
+  }
+
+  /**
+   * 每次调用现挑区、现解析凭据：用户在两次调用之间换账号或关掉某区都要生效。
+   * `optIn` 必须是该工具自己的逐区开关 —— 生图不能借用视频已授权的区，否则绕过
+   * 用户按区做出的授权。
+   */
+  const toolCredential = (optIn: ToolOptIn) => async (): Promise<WorkBuddyCredential | undefined> => {
+    const live = current()
+    for (const region of REGION_KEYS) {
+      if (!regionEnabled(live, region)) continue
+      if (regionStateOf(live, region)[optIn] !== true) continue
+      try { return await stacks[region].store.resolve() } catch { continue }
+    }
+    return undefined
+  }
+
+  // 生图工具：任一「开着 + 显式授权」的区有生图模型就注册。两区单价不同，工具
+  // 文案不写死价钱，回报上游结算里真实的 `data.usage.credit`。
+  const syncImageTool = mountOptionalTool({
+    wanted: value => imageToolRegionOf(value) !== undefined,
+    register: tools => registerWorkBuddyImageTool(tools, {
+      resolveCredential: toolCredential('imageToolEnabled'),
+      listMediaModels: (credential, signal) => client.fetchMediaModels(credential, signal),
+      generateImage: (credential, request, signal) => client.generateImage(credential, request, signal),
+      editImage: (credential, request, signal) => client.editImage(credential, request, signal),
+      logger: ctx.logger,
+    }),
   })
 
-  // 视频生成工具：架构同生图工具（跟随两个区开关、ctx.inject 等 tools 服务出现、
-  // 注册/卸载读活值），只是执行层是 submitVideo→pollVideoTask→downloadVideo 的
-  // 异步流程（见 video-tool.ts / docs/VIDEO_GEN.md）。选模型复用同一个媒体目录缓存
-  // 与 video 标签（text-to-video / image-to-video）。
-  let videoTools: ToolsServiceLike | undefined
-  let disposeVideoTool: (() => void) | undefined
-  const syncVideoTool = (value: Config): void => {
-    const wanted = videoToolRegionOf(value) !== undefined
-    if (wanted && disposeVideoTool === undefined && videoTools !== undefined) {
-      disposeVideoTool = registerWorkBuddyVideoTool(videoTools, {
-        resolveCredential: async () => {
-          const live = current()
-          for (const region of REGION_KEYS) {
-            if (!regionEnabled(live, region)) continue
-            if (regionStateOf(live, region).videoToolEnabled !== true) continue
-            try {
-              return await stacks[region].store.resolve()
-            } catch {
-              continue
-            }
-          }
-          return undefined
-        },
-        listMediaModels: (credential, signal) => client.fetchMediaModels(credential, signal),
-        submitVideo: (credential, request, signal) => client.submitVideo(credential, request, signal),
-        pollVideoTask: (credential, taskId, signal) => client.pollVideoTask(credential, taskId, signal),
-        // 卡片上按模式钉住的模型。读 CURRENT 配置而不是注册时的快照，和上面
-        // resolveCredential 读活值同一个理由：用户可能在两次调用之间改偏好。
-        // 区域由凭据自己的登录域决定，所以「国内区钉了 kling、国际区没钉」
-        // 这种组合能各按各的来。
-        preferredVideoModel: (credential, tag) =>
-          regionStateOf(current(), regionOf(credential.domain)).preferredVideoModels?.[tag],
-        downloadVideo: (credential, url, signal) => client.downloadVideo(credential, url, signal),
-        logger: ctx.logger,
-      })
-      return
-    }
-    if (!wanted && disposeVideoTool !== undefined) {
-      disposeVideoTool()
-      disposeVideoTool = undefined
-    }
-  }
-  ctx.inject(['tools'], (toolsCtx) => {
-    videoTools = (toolsCtx as unknown as { tools?: ToolsServiceLike }).tools
-    if (videoTools === undefined) return
-    syncVideoTool(current())
-    toolsCtx.effect(() => () => {
-      disposeVideoTool?.()
-      disposeVideoTool = undefined
-      videoTools = undefined
-    })
+  // 视频工具：同一注册机，执行层是 submitVideo→pollVideoTask→downloadVideo。
+  const syncVideoTool = mountOptionalTool({
+    wanted: value => videoToolRegionOf(value) !== undefined,
+    register: tools => registerWorkBuddyVideoTool(tools, {
+      resolveCredential: toolCredential('videoToolEnabled'),
+      listMediaModels: (credential, signal) => client.fetchMediaModels(credential, signal),
+      submitVideo: (credential, request, signal) => client.submitVideo(credential, request, signal),
+      pollVideoTask: (credential, taskId, signal) => client.pollVideoTask(credential, taskId, signal),
+      preferredVideoModel: (credential, tag) =>
+        regionStateOf(current(), regionOf(credential.domain)).preferredVideoModels?.[tag],
+      downloadVideo: (credential, url, signal) => client.downloadVideo(credential, url, signal),
+      logger: ctx.logger,
+    }),
   })
 
   // Optional CLI route (`codebuddy_ask` + `/codebuddy`).
@@ -2932,14 +2885,11 @@ export function apply(ctx: Context, config: Config): void {
       sdk: turing,
       mode: async () => (await readDeviceSettings()).mode,
       /**
-       * 总开关走插件配置（`Config.deviceSdkEnabled`），不走设备设置文件。
-       *
-       * `read` 取的是 `current()`——也就是宿主交给 `apply()` 的那份活的引用，
-       * 所以 `ctx.settings.update` 写完它就能读到新值（`asVolatile` 会就地改）。
-       * 回 `undefined` 让卡片把开关标成不可用，而不是把它画成"关"。
+       * 总开关走插件配置（`Config.deviceSdkEnabled`），与 SDK 句柄的 `enabled`
+       * getter 共用同一个 `deviceSdkEnabled()`，因此勾选框与 probe 不会分叉。
        */
       enabled: {
-        read: async () => unwrapVolatile(config.deviceSdkEnabled) !== false,
+        read: async () => deviceSdkEnabled(),
         write: writeDeviceSdkEnabled,
       },
     }),
@@ -4430,6 +4380,9 @@ export function apply(ctx: Context, config: Config): void {
       // The auto check-in switch lives in the same volatile region slot, so this
       // is also where turning it on or off takes effect — without a restart.
       syncAutoCheckin()
+      // 总开关同样是 volatile：不重挂，所以预热链要在这里跟随，否则关着启动的
+      // 进程打开开关后永远没有定时器（只有一次请求才偶尔取到 token）。
+      syncDeviceSdk()
     })
 
   // Initial wiring: selections, per-region catalogs from the saved state.

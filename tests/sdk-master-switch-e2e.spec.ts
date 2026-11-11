@@ -32,9 +32,12 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import { afterEach, describe, expect, it } from 'vitest'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as WorkBuddy from '../src/index.ts'
 import { WORKBUDDY_DEVICE_SDK_PATH } from '../src/status-paths.ts'
+import { TURING_SDK_DIR_ENV } from '../src/turing-sdk.ts'
 
 /** The id the live Desktop profile patch mounts this plugin under. */
 const SERVED_ID = 'include:dsh-connect-workbuddy'
@@ -162,6 +165,7 @@ afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
   liveConfig = {}
+  vi.unstubAllEnvs()
 })
 
 describe('the SDK master switch saves on a host whose entry id differs from the constant', () => {
@@ -182,7 +186,12 @@ describe('the SDK master switch saves on a host whose entry id differs from the 
     // The write really landed in the document, not just in the answer.
     expect(liveConfig['deviceSdkEnabled']).toBe(true)
     // ...and the next read reports the stored value, which is what redraws the box.
-    expect((await readReport()).body['sdkEnabled']).toBe(true)
+    const report = (await readReport()).body
+    expect(report['sdkEnabled']).toBe(true)
+    // The same snapshot must not still say "disabled": the switch used to be a
+    // construction-time boolean while this field read the live config, so on a
+    // host that does not remount the plugin the box and the status row disagreed.
+    expect((report['sdk'] as { state: string }).state).not.toBe('disabled')
   })
 
   it('turns OFF again, so the switch is a switch and not a one-way latch', async () => {
@@ -193,5 +202,43 @@ describe('the SDK master switch saves on a host whose entry id differs from the 
     expect(saved.status).toBe(200)
     expect(liveConfig['deviceSdkEnabled']).toBe(false)
     expect((await readReport()).body['sdkEnabled']).toBe(false)
+  })
+
+  /**
+   * The prewarm chain must FOLLOW the switch, not be judged once at mount.
+   *
+   * `deviceSdkEnabled` is volatile, so a tick or untick reaches the plugin as a
+   * `loader/volatile-update` and the plugin is NOT remounted. The chain used to
+   * be started (or not) exactly once inside `apply()`, so a process that booted
+   * with the switch off never got a timer afterwards — the card then sat at
+   * "已加载、没取过" until some request happened to fetch a token.
+   *
+   * WHY `lastAttemptMs` IS THE SIGNAL. It is set by `fetchOnce()` — i.e. only by
+   * a real prewarm attempt — and never by `probe()`, which is all the GET route
+   * does. So its appearance proves the chain exists, not merely that a snapshot
+   * was taken. The SDK directory is pointed at an empty one (`TURING_SDK_DIR_ENV`)
+   * so `probe()` fails the binding check and answers `missing` WITHOUT spawning a
+   * child process: the claim under test is the timer, not the vendor SDK.
+   */
+  it('starts the prewarm chain when the switch is turned on after mount', async () => {
+    vi.stubEnv(TURING_SDK_DIR_ENV, join(tmpdir(), 'dsh-workbuddy-no-sdk-here'))
+    await mount({ deviceSdkEnabled: false })
+
+    const tokenOf = async (): Promise<Record<string, unknown>> =>
+      (await readReport()).body['token'] as Record<string, unknown>
+
+    // Booted off: no chain, so nothing has ever tried to fetch a token. The
+    // wait is what makes this a fact rather than a race with a timer we are
+    // about to prove does not exist.
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect((await tokenOf())['lastAttemptMs']).toBeUndefined()
+
+    const saved = await toggle(true)
+    expect(saved.status).toBe(200)
+
+    // Turning it on takes effect in place — no remount, no restart.
+    await vi.waitFor(async () => {
+      expect((await tokenOf())['lastAttemptMs']).toBeTypeOf('number')
+    }, { timeout: 10_000 })
   })
 })

@@ -355,11 +355,7 @@ interface WorkerAnswer {
   token?: string
   supported?: boolean
   node?: string
-  platform?: string
-  arch?: string
-  sdkDir?: string
   loadError?: string | null
-  ms?: number
 }
 
 /**

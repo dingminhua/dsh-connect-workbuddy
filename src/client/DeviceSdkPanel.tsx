@@ -93,6 +93,9 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
   const [sdkMasterEnabled, setSdkMasterEnabled] = useState<boolean | undefined>(undefined)
   const [savingMaster, setSavingMaster] = useState(false)
 
+  /** 七处 `catch` 原本各写一遍同样的展平；收成一个。 */
+  const fail = (cause: unknown): void => setError(cause instanceof Error ? cause.message : String(cause))
+
   const load = useCallback(async (refresh: boolean) => {
     if (path === '') return
     setBusy(true)
@@ -105,7 +108,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
       // 重取会换一枚 token，之前显示的那份已经不是它了。
       if (refresh) { setValue(undefined); setCopied(false) }
     } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      fail(cause)
     } finally {
       setBusy(false)
       setLoading(false)
@@ -173,9 +176,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
       const full = await revealDeviceSdk(path)
       if (full === undefined) setError(t('sdk.noValue'))
       else setValue(full)
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    }
+    } catch (cause: unknown) { fail(cause) }
   }
 
   const copy = async (): Promise<void> => {
@@ -186,69 +187,50 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
       await navigator.clipboard.writeText(full)
       setCopied(true)
       window.setTimeout(() => { setCopied(false) }, 2000)
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    }
+    } catch (cause: unknown) { fail(cause) }
   }
 
   /**
-   * 保存目录：写盘之后**立刻重探一次**。
-   *
-   * 只写不重探会让用户看见"已保存"而状态行还是旧的——那正是这条意见要消掉的
-   * 迷雾（`dirSource` 让新目录下一次 `probe` 就生效，所以这里必须主动触发那一次）。
+   * 保存目录：写盘之后**立刻重探一次**。清空按钮复用同一条路径（原来内联重写了
+   * 整个 try/catch/finally，是这份面板里最明显的一处复制粘贴）。
    */
-  const saveDir = async (): Promise<void> => {
+  const saveDir = async (dir: string = draftDir.trim()): Promise<void> => {
     if (settingsPath === '') return
     setSavingDir(true)
     setError(undefined)
     setSavedNote(false)
     try {
-      const next = await putDeviceSdk(settingsPath, { sdkDir: draftDir.trim() })
+      const next = await putDeviceSdk(settingsPath, { sdkDir: dir })
       setSdkDir(next.sdkDir)
       setDraftDir(next.sdkDir)
       setSavedNote(true)
       await load(true)
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setSavingDir(false)
-    }
+    } catch (cause: unknown) { fail(cause) } finally { setSavingDir(false) }
   }
 
-  const saveFallback = async (value: boolean): Promise<void> => {
+  const saveFallback = async (nextValue: boolean): Promise<void> => {
     if (settingsPath === '') return
     setSavingFallback(true)
     setError(undefined)
     try {
-      const next = await putDeviceSdk(settingsPath, { sdkFallbackToVirtual: value })
+      const next = await putDeviceSdk(settingsPath, { sdkFallbackToVirtual: nextValue })
       setFallback(next.sdkFallbackToVirtual)
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setSavingFallback(false)
-    }
+    } catch (cause: unknown) { fail(cause) } finally { setSavingFallback(false) }
   }
 
   /**
-   * 切换 SDK 总开关。
-   *
-   * 写完之后**重读一次快照**：关掉之后状态行必须立刻变成 `disabled`，而那一条是
-   * 从 `GET /device-sdk` 算出来的——只改本地 state 会让"已关"与下面那行"正常"
-   * 并存，正是这一页最不该出现的自相矛盾。
+   * 切换 SDK 总开关。写完重读一次快照：状态行是从 `GET /device-sdk` 算的，
+   * 只改本地 state 会让"已关"与下面那行"正常"并存。
    */
-  const saveMaster = async (value: boolean): Promise<void> => {
+  const saveMaster = async (nextValue: boolean): Promise<void> => {
     if (path === '') return
     setSavingMaster(true)
     setError(undefined)
     try {
-      await setDeviceSdkEnabled(path, value)
-      setSdkMasterEnabled(value)
+      await setDeviceSdkEnabled(path, nextValue)
+      setSdkMasterEnabled(nextValue)
       await load(false)
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setSavingMaster(false)
-    }
+    } catch (cause: unknown) { fail(cause) } finally { setSavingMaster(false) }
   }
 
   const sdk = report?.sdk
@@ -383,21 +365,7 @@ export function DeviceSdkPanel(props: DeviceSdkPanelProps): ReactElement | null 
                     type="button"
                     className="dsm-btn dsm-btn-outline"
                     disabled={savingDir}
-                    onClick={() => { setDraftDir(''); void (async () => {
-                      setSavingDir(true)
-                      setError(undefined)
-                      try {
-                        const next = await putDeviceSdk(settingsPath, { sdkDir: '' })
-                        setSdkDir(next.sdkDir)
-                        setDraftDir('')
-                        setSavedNote(true)
-                        await load(true)
-                      } catch (cause: unknown) {
-                        setError(cause instanceof Error ? cause.message : String(cause))
-                      } finally {
-                        setSavingDir(false)
-                      }
-                    })() }}
+                    onClick={() => { void saveDir('') }}
                   >
                     {t('sdk.dirClear')}
                   </button>
