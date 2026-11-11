@@ -29,6 +29,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { sidebarPanelEnabledOf, writeSidebarPanelEnabled } from '../src/client/account-selection.ts'
+import { Config } from '../src/index.ts'
 import {
   resetSidebarPanelWanted, setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted,
 } from '../src/client/panel-switch.ts'
@@ -71,31 +72,7 @@ function signedIn(extra: Record<string, unknown> = {}): Record<string, unknown> 
   }
 }
 
-describe('the switch reads OFF unless explicitly on', () => {
-  it('reads OFF for every shape that is not an explicit true', () => {
-    expect(sidebarPanelEnabledOf(undefined)).toBe(false)
-    expect(sidebarPanelEnabledOf({})).toBe(false)
-    expect(sidebarPanelEnabledOf({ sidebarPanel: false })).toBe(false)
-    // A stringified boolean is a settings-file typo, not consent.
-    expect(sidebarPanelEnabledOf({ sidebarPanel: 'true' })).toBe(false)
-    expect(sidebarPanelEnabledOf({ sidebarPanel: 1 })).toBe(false)
-    // A neighbouring switch must never be mistaken for this one.
-    expect(sidebarPanelEnabledOf({ cliBridge: { enabled: true } })).toBe(false)
-  })
-
-  it('reads ON only for an explicit boolean true', () => {
-    expect(sidebarPanelEnabledOf({ sidebarPanel: true })).toBe(true)
-  })
-
-  it('is OFF by default in the Host schema', () => {
-    // The description string is long; the DEFAULT is what matters, and it must
-    // be `false` — an absent field has to render no row.
-    const schema = source('index.ts')
-    const declaration = /sidebarPanel:\s*asVolatile\(([\s\S]*?)\n\s*\)\s*as unknown as z<boolean>/.exec(schema)
-    expect(declaration, 'sidebarPanel must be declared as a volatile boolean in Config').not.toBeNull()
-    expect(declaration?.[1]).toContain('.default(false)')
-  })
-
+describe('the switch is writable through the card route', () => {
   it('is allowed to be written through the __save route', () => {
     const route = source('web-status.ts')
     const allowList = /const UPSTREAM_SWITCH_FIELDS[\s\S]*?\n\]\)/.exec(route)
@@ -103,6 +80,34 @@ describe('the switch reads OFF unless explicitly on', () => {
     // A closed allow-list is the whole point: an unlisted field is refused, so
     // the card's writer must have its field listed here or every save 400s.
     expect(allowList?.[0]).toContain("'sidebarPanel'")
+  })
+})
+
+describe('the schema default of sidebarPanel', () => {
+  it('is OFF in the Host schema itself', () => {
+    /**
+     * Read the SCHEMA's own default, not a hand-built config.
+     *
+     * `Config({})` cannot answer this: the volatile wrapper hands back a live
+     * reference, so the field reads as `{}` whatever the default is. That is
+     * exactly why this used to be a regex over `src/index.ts` — and why that
+     * regex was worth replacing rather than deleting: it broke on any schema
+     * reformatting while saying nothing about behaviour, yet with it gone
+     * NOTHING pinned the default. Verified by mutation: flipping `.default(false)`
+     * to `.default(true)` left the entire suite green.
+     *
+     * Schemastery records the default in `meta`, so the declaration can be read
+     * as data. One row claims a global sidebar seat shared by every bundle; an
+     * absent field has to render no row.
+     */
+    const declaration = (Config as unknown as {
+      dict?: Record<string, { meta?: Record<string, unknown> }>
+    }).dict?.['sidebarPanel']
+    expect(declaration, 'sidebarPanel must still be declared in Config').toBeDefined()
+    expect(declaration?.meta?.['default']).toBe(false)
+    // Volatile, or a change would need a plugin reload to take effect — the
+    // card writes it through `__save` and expects the row to appear at once.
+    expect(declaration?.meta?.['volatile']).toBe(true)
   })
 })
 

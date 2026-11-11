@@ -1772,15 +1772,11 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       })
     }
 
-    /** 不带区域参数的路由（区域参数会让 `requestRegion` 把一个合法读答成 400）。 */
-    function endpoint(
-      spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
-      handle: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void,
-    ): void {
-      raw(spec, handle)
-    }
-
-    /** 带区域参数的路由：区域解析在 try 之外，与原来的顺序一致。 */
+    /**
+     * 带区域参数的路由：区域解析在 try 之外，与原来的顺序一致。
+     * 不带区域参数的路由直接调 `raw`——区域参数会让 `requestRegion` 把一个
+     * 合法读答成 400（`cli-live` 就是这种）。
+     */
     function endpointRegion(
       spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
       handle: (req: IncomingMessage, res: ServerResponse, region: WorkBuddyRegion) => Promise<void> | void,
@@ -2423,7 +2419,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * leave a ghost pill describing a turn that already ended. Answering an
      * empty document keeps "off" inside the same code path as "no turns".
      */
-    endpoint({ path: WORKBUDDY_CLI_LIVE_PATH, method: 'GET' }, (_req, res) => {
+    raw({ path: WORKBUDDY_CLI_LIVE_PATH, method: 'GET' }, (_req, res) => {
       json(res, 200, deps.cliLive?.() ?? { turns: [], serverTime: Date.now() })
     })
     /**

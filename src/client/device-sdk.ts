@@ -5,50 +5,26 @@
  * 单独一个动作，是因为它会进剪贴板、会被截图——默认只给掩码，看与复制各要一次
  * 显式操作。
  *
+ * 响应形状**不在这里另写一份**：那是同一个协议的两份定义，改一边忘一边就会让浏览器
+ * 静默读错字段。类型取自 Host 的实现模块（`import type`，构建时擦除，不会把
+ * `node:fs` 带进浏览器包）。
+ *
+ * 但**校验要留**：`normalize` 不是重复劳动，它是这块面板的兜底。宿主版本对不上、
+ * 或响应只到一半时，它把缺字段折成 `undefined` 让面板显示"不可用"，而不是让
+ * `report.sdk.state` 抛错、把整个卡片交给错误边界。
+ *
  * @module dsh-connect-workbuddy/client/device-sdk
  */
 
-/** 设备头档位。 */
-export type DeviceSdkTier = 'virtual' | 'real'
+import type { TuringSdkInfo, TuringTokenReadout, WorkBuddyDeviceSdkReport } from '../turing-sdk.ts'
 
-/** SDK 自身的加载状态（`probe` 的结论，不需要网络）。 */
-export interface DeviceSdkInfo {
-  /** `disabled` = 用户把总开关关了；与 `missing`（这台机器没装）是两回事。 */
-  state: 'ready' | 'unsupported' | 'missing' | 'error' | 'disabled'
-  /** `win32-x64` 之类。 */
-  bundle: string
-  path: string
-  platform: string
-  arch: string
-  /** 子进程运行时。 */
-  runtime: string
-  reason?: string
-}
-
-/** 当前这枚 token 的状态。**不含值**，只有掩码与长度。 */
-export interface DeviceSdkToken {
-  state: 'ok' | 'stale' | 'unavailable' | 'idle'
-  masked: string
-  length: number
-  fetchedAtMs?: number
-  lastAttemptMs?: number
-  reason?: string
-}
-
-/** What `GET /device-sdk` answers. */
-export interface DeviceSdkReport {
-  tier: DeviceSdkTier
-  sdk: DeviceSdkInfo
-  token: DeviceSdkToken
-  /**
-   * SDK 总开关的当前值（`Config.deviceSdkEnabled`）。
-   *
-   * 缺席 = 这个 Host 没有 settings 服务，卡片据此把开关标成不可用。缺席与
-   * `false` 必须能分开：前者是"这个宿主做不到"，后者是"用户关掉了"。
-   */
+/** `GET /device-sdk` 的答案：Host 快照 + 总开关的当前值。 */
+export type DeviceSdkReport = WorkBuddyDeviceSdkReport & {
+  /** 缺席 = 这个 Host 没有 settings 服务，卡片据此把开关标成不可用。 */
   sdkEnabled?: boolean
 }
 
+/** 校验并折成 Host 的类型；形状不认识时返回 `undefined`，面板据此显示"不可用"。 */
 function normalize(body: unknown): DeviceSdkReport | undefined {
   if (typeof body !== 'object' || body === null) return undefined
   const record = body as Record<string, unknown>
@@ -59,30 +35,32 @@ function normalize(body: unknown): DeviceSdkReport | undefined {
   const tokenRecord = token as Record<string, unknown>
   const sdkState = sdkRecord['state']
   const tokenState = tokenRecord['state']
+  const info: TuringSdkInfo = {
+    state: sdkState === 'ready' || sdkState === 'unsupported' || sdkState === 'missing'
+      || sdkState === 'error' || sdkState === 'disabled'
+      ? sdkState
+      : 'error',
+    bundle: typeof sdkRecord['bundle'] === 'string' ? sdkRecord['bundle'] : '',
+    path: typeof sdkRecord['path'] === 'string' ? sdkRecord['path'] : '',
+    platform: typeof sdkRecord['platform'] === 'string' ? sdkRecord['platform'] : '',
+    arch: typeof sdkRecord['arch'] === 'string' ? sdkRecord['arch'] : '',
+    runtime: typeof sdkRecord['runtime'] === 'string' ? sdkRecord['runtime'] : '',
+    ...typeof sdkRecord['reason'] === 'string' ? { reason: sdkRecord['reason'] } : {},
+  }
+  const readout: TuringTokenReadout = {
+    state: tokenState === 'ok' || tokenState === 'stale' || tokenState === 'unavailable' || tokenState === 'idle'
+      ? tokenState
+      : 'unavailable',
+    masked: typeof tokenRecord['masked'] === 'string' ? tokenRecord['masked'] : '',
+    length: typeof tokenRecord['length'] === 'number' ? tokenRecord['length'] : 0,
+    ...typeof tokenRecord['fetchedAtMs'] === 'number' ? { fetchedAtMs: tokenRecord['fetchedAtMs'] } : {},
+    ...typeof tokenRecord['lastAttemptMs'] === 'number' ? { lastAttemptMs: tokenRecord['lastAttemptMs'] } : {},
+    ...typeof tokenRecord['reason'] === 'string' ? { reason: tokenRecord['reason'] } : {},
+  }
   return {
     tier: record['tier'] === 'real' ? 'real' : 'virtual',
-    sdk: {
-      state: sdkState === 'ready' || sdkState === 'unsupported' || sdkState === 'missing'
-        || sdkState === 'error' || sdkState === 'disabled'
-        ? sdkState
-        : 'error',
-      bundle: typeof sdkRecord['bundle'] === 'string' ? sdkRecord['bundle'] : '',
-      path: typeof sdkRecord['path'] === 'string' ? sdkRecord['path'] : '',
-      platform: typeof sdkRecord['platform'] === 'string' ? sdkRecord['platform'] : '',
-      arch: typeof sdkRecord['arch'] === 'string' ? sdkRecord['arch'] : '',
-      runtime: typeof sdkRecord['runtime'] === 'string' ? sdkRecord['runtime'] : '',
-      ...typeof sdkRecord['reason'] === 'string' ? { reason: sdkRecord['reason'] } : {},
-    },
-    token: {
-      state: tokenState === 'ok' || tokenState === 'stale' || tokenState === 'unavailable' || tokenState === 'idle'
-        ? tokenState
-        : 'unavailable',
-      masked: typeof tokenRecord['masked'] === 'string' ? tokenRecord['masked'] : '',
-      length: typeof tokenRecord['length'] === 'number' ? tokenRecord['length'] : 0,
-      ...typeof tokenRecord['fetchedAtMs'] === 'number' ? { fetchedAtMs: tokenRecord['fetchedAtMs'] } : {},
-      ...typeof tokenRecord['lastAttemptMs'] === 'number' ? { lastAttemptMs: tokenRecord['lastAttemptMs'] } : {},
-      ...typeof tokenRecord['reason'] === 'string' ? { reason: tokenRecord['reason'] } : {},
-    },
+    sdk: info,
+    token: readout,
     // 只在宿主真的答了布尔时才带上：没有 settings 服务的宿主不该被画成"关"。
     ...typeof record['sdkEnabled'] === 'boolean' ? { sdkEnabled: record['sdkEnabled'] } : {},
   }

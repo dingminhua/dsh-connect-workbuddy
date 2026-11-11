@@ -68,11 +68,35 @@
 变异验证：从 `raw` 里删掉方法闸与 loopback 两道守卫，`tests/web-status.spec.ts` 与
 `tests/pool-route.spec.ts` 共 13 条转红。
 
+### 收敛：opt-in 政策合成一张表，卡片响应类型不再另写一份
+
+PR 的第三个提交，不改任何用户可见行为：
+
+- 「只认字面 `true`」这条政策原先在五个测试文件里各写一遍。它是一条产品决策（会花钱或多挂
+  一块界面的开关，缺省与类型错误都不能被读成同意），现在集中在 `tests/optin-policy.spec.tsx`
+  一张表里，新增开关只加一行。各文件保留自己独有的断言（逐区隔离、写回只动一个字段等）。
+  变异验证：把 `regionImageToolEnabledOf` 从 `=== true` 改成 `!== false`，新旧两处共 4 条转红。
+- 卡片侧的 `DeviceSdkInfo` / `DeviceSdkToken` / `DeviceSdkReport` 与 Host 的三份逐字段相同，
+  改为 `import type` 取 Host 的类型（构建时擦除）。`normalize()` **保留**：宿主版本对不上
+  或响应只到一半时，它把缺字段折成 `undefined` 让面板显示"不可用"，而不是让
+  `report.sdk.state` 抛错、把整块卡片交给错误边界。浏览器包已核对不含 `node:` 内建模块。
+
+**合入时补回一条断言。** 该提交以「行为断言已覆盖」为由删掉了 `sidebarPanel` 的 schema
+默认值断言。实测不成立：把 `.default(false)` 改成 `.default(true)`，整个套件依然是绿的——
+唯一会红的 `privacy-gate` 是另一个原因。`Config({})` 也答不了这个问题（volatile 包装让该字段
+读成 `{}`，与默认值无关）。
+
+补的不是原来那条源码正则（schema 排版一变就红，却不指向任何回归），而是读 schemastery 自己
+记在 `meta` 里的默认值：**是数据，不是文本**。同时钉住 `volatile: true`——卡片经 `__save`
+写入后那一行要立刻出现，重挂才生效就违背了这个开关的用途。
+
 ### 验证
 
-- `pnpm run check` 全绿（typecheck → build → check:pii → test）。
-- CI（ubuntu-latest / windows-latest / pi-ai 1.1.0）三个 job 全绿。
-- 回归断言只加在既有用例里，没有新增文件；两条修复各做过变异验证。
+- `pnpm run check` 全绿（typecheck → build → check:pii → test）：3416 passed / 2 skipped。
+- CI（ubuntu-latest / windows-latest / pi-ai 1.1.0）三个 job 全绿。fork 的首次 run 是
+  `action_required`，需维护者 approve 后才真正开跑——"没有 checks reported"不等于 CI 通过。
+- 变异验证四条：冻结布尔 → `sdk.state` 断言红；删 `syncDeviceSdk()` → 预热链用例红；
+  删 `raw` 的方法闸与 loopback → 13 条红；`sidebarPanel` 默认值翻成 `true` → 新补的断言红。
 
 ## 5.21.3 (2026-11-09)
 

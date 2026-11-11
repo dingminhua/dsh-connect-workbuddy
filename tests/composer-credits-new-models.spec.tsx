@@ -68,25 +68,6 @@ const buttonsOf = (container: HTMLElement): HTMLButtonElement[] =>
 const segmentOf = (buttons: HTMLButtonElement[]): HTMLButtonElement | undefined =>
   buttons.find(button => button.className.includes('dsm-workbuddy-composer-credits-new'))
 
-describe('hostNewModelsShownOf', () => {
-  it('reads OFF for every shape that does not say ON', () => {
-    // OPT-IN, the mirror image of `hostCreditsShownOf` next to it. This is the
-    // single decision that makes the feature default-off, so it is asserted
-    // directly rather than only through a render that could pass for another
-    // reason (e.g. an empty id list).
-    expect(hostNewModelsShownOf(undefined)).toBe(false)
-    expect(hostNewModelsShownOf({ status: 'error' } as never)).toBe(false)
-    expect(hostNewModelsShownOf({ status: 'signed-in' } as never)).toBe(false)
-    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: false } as never)).toBe(false)
-    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: 'yes' } as never)).toBe(false)
-    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: 1 } as never)).toBe(false)
-  })
-
-  it('reads ON only for the literal boolean true', () => {
-    expect(hostNewModelsShownOf({ status: 'signed-in', showNewModelsInMainUi: true } as never)).toBe(true)
-  })
-})
-
 describe('the "· N 新模型" opt-in switch', () => {
   it('renders NOTHING when the switch is absent from the usage document', async () => {
     // Default OFF. The document is the authority and an absent field must read
