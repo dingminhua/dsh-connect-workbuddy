@@ -71,31 +71,7 @@ function signedIn(extra: Record<string, unknown> = {}): Record<string, unknown> 
   }
 }
 
-describe('the switch reads OFF unless explicitly on', () => {
-  it('reads OFF for every shape that is not an explicit true', () => {
-    expect(sidebarPanelEnabledOf(undefined)).toBe(false)
-    expect(sidebarPanelEnabledOf({})).toBe(false)
-    expect(sidebarPanelEnabledOf({ sidebarPanel: false })).toBe(false)
-    // A stringified boolean is a settings-file typo, not consent.
-    expect(sidebarPanelEnabledOf({ sidebarPanel: 'true' })).toBe(false)
-    expect(sidebarPanelEnabledOf({ sidebarPanel: 1 })).toBe(false)
-    // A neighbouring switch must never be mistaken for this one.
-    expect(sidebarPanelEnabledOf({ cliBridge: { enabled: true } })).toBe(false)
-  })
-
-  it('reads ON only for an explicit boolean true', () => {
-    expect(sidebarPanelEnabledOf({ sidebarPanel: true })).toBe(true)
-  })
-
-  it('is OFF by default in the Host schema', () => {
-    // The description string is long; the DEFAULT is what matters, and it must
-    // be `false` — an absent field has to render no row.
-    const schema = source('index.ts')
-    const declaration = /sidebarPanel:\s*asVolatile\(([\s\S]*?)\n\s*\)\s*as unknown as z<boolean>/.exec(schema)
-    expect(declaration, 'sidebarPanel must be declared as a volatile boolean in Config').not.toBeNull()
-    expect(declaration?.[1]).toContain('.default(false)')
-  })
-
+describe('the switch is writable through the card route', () => {
   it('is allowed to be written through the __save route', () => {
     const route = source('web-status.ts')
     const allowList = /const UPSTREAM_SWITCH_FIELDS[\s\S]*?\n\]\)/.exec(route)

@@ -18,23 +18,6 @@ import { fakeScope, mount, stubFetch, t } from './pool-render-helpers.tsx'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
-describe('cliBridgeEnabledOf', () => {
-  it('reads OFF for every shape that is not an explicit true', () => {
-    expect(cliBridgeEnabledOf(undefined)).toBe(false)
-    expect(cliBridgeEnabledOf({})).toBe(false)
-    expect(cliBridgeEnabledOf({ cliBridge: {} })).toBe(false)
-    expect(cliBridgeEnabledOf({ cliBridge: { enabled: false } })).toBe(false)
-    // A stringified boolean is a settings-file typo, not consent.
-    expect(cliBridgeEnabledOf({ cliBridge: { enabled: 'true' } })).toBe(false)
-    // The provider switch is a different setting entirely.
-    expect(cliBridgeEnabledOf({ regions: { cn: { enabled: true } } })).toBe(false)
-  })
-
-  it('reads ON only for an explicit boolean true', () => {
-    expect(cliBridgeEnabledOf({ cliBridge: { enabled: true } })).toBe(true)
-  })
-})
-
 describe('cliBridgeModelOf / cliBridgeEffortOf / cliBridgeRegionOrderOf', () => {
   it('read a pinned value, and "" for every shape that is not a string', () => {
     // '' is the real "not pinned, the CLI runs on its own default" answer.

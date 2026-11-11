@@ -8,12 +8,17 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2024",
-    "lib": ["es2024", "dom"],
+    "lib": [
+      "es2024",
+      "dom"
+    ],
     "jsx": "react-jsx",
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/client",
@@ -74,6 +79,7 @@
     "tests/model-label-diagnostics.spec.ts",
     "tests/plugin-icon.spec.tsx",
     "tests/sticky-boundary.spec.tsx",
-    "tests/poll-interval.spec.tsx"
+    "tests/poll-interval.spec.tsx",
+    "tests/optin-policy.spec.tsx"
   ]
 }

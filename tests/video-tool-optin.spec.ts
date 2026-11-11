@@ -15,22 +15,6 @@ import {
 } from '../src/status-paths.ts'
 
 describe('regionVideoToolEnabledOf', () => {
-  it('reads OFF for every shape that does not say ON', () => {
-    // OPT-IN: absence must never be read as consent, for the same reason as the
-    // image tool — this authorizes spending, so a stale mirror cannot leave it on.
-    expect(regionVideoToolEnabledOf({}, 'cn')).toBe(false)
-    expect(regionVideoToolEnabledOf({ regions: {} }, 'cn')).toBe(false)
-    expect(regionVideoToolEnabledOf({ regions: { cn: {} } }, 'cn')).toBe(false)
-    expect(regionVideoToolEnabledOf({ regions: { cn: { videoToolEnabled: false } } }, 'cn')).toBe(false)
-    // A truthy non-boolean is not consent either.
-    expect(regionVideoToolEnabledOf({ regions: { cn: { videoToolEnabled: 'yes' } } }, 'cn')).toBe(false)
-    expect(regionVideoToolEnabledOf({ regions: { cn: { videoToolEnabled: 1 } } }, 'cn')).toBe(false)
-  })
-
-  it('reads ON only for an explicit boolean true', () => {
-    expect(regionVideoToolEnabledOf({ regions: { cn: { videoToolEnabled: true } } }, 'cn')).toBe(true)
-  })
-
   it('is per-region, so the CN opt-in does not leak into the global tab', () => {
     const value = { regions: { cn: { videoToolEnabled: true } } }
     expect(regionVideoToolEnabledOf(value, 'cn')).toBe(true)

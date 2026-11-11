@@ -23,25 +23,6 @@ import {
 } from '../src/status-paths.ts'
 
 describe('regionImageToolEnabledOf', () => {
-  it('reads OFF for every shape that does not say ON', () => {
-    // OPT-IN, unlike the credit line and the provider switch next to it in the
-    // same slot. Those two are opt-OUT (`!== false`) because their absence
-    // should behave like a fresh install; this one authorizes spending, so
-    // absence must never be read as consent.
-    expect(regionImageToolEnabledOf({}, 'cn')).toBe(false)
-    expect(regionImageToolEnabledOf({ regions: {} }, 'cn')).toBe(false)
-    expect(regionImageToolEnabledOf({ regions: { cn: {} } }, 'cn')).toBe(false)
-    expect(regionImageToolEnabledOf({ regions: { cn: { imageToolEnabled: false } } }, 'cn')).toBe(false)
-    // A truthy non-boolean is not consent either: a hand-edited profile that
-    // wrote `"yes"` or `1` must not unlock spending.
-    expect(regionImageToolEnabledOf({ regions: { cn: { imageToolEnabled: 'yes' } } }, 'cn')).toBe(false)
-    expect(regionImageToolEnabledOf({ regions: { cn: { imageToolEnabled: 1 } } }, 'cn')).toBe(false)
-  })
-
-  it('reads ON only for an explicit boolean true', () => {
-    expect(regionImageToolEnabledOf({ regions: { cn: { imageToolEnabled: true } } }, 'cn')).toBe(true)
-  })
-
   it('is per-region, so the CN opt-in does not leak into the global tab', () => {
     const value = { regions: { cn: { imageToolEnabled: true } } }
     expect(regionImageToolEnabledOf(value, 'cn')).toBe(true)
