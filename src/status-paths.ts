@@ -142,18 +142,17 @@ export const WORKBUDDY_DEVICE_PROFILE_PATH = '/plugins/dsh-connect-workbuddy/dev
  * 真实设备参数（本机安装的桌面端 Turing Shield SDK）的状态与取值。
  *
  * - `GET` → `{ tier, sdk, token }`，`token` 只有掩码与长度。
+ * - `GET` → 状态快照 + `sdkEnabled`。
  * - `POST ?action=refresh` → 强制重取一次，再返回同一形状。
  * - `POST ?action=reveal` → `{ token }`，完整值，**只在用户显式点击时**。
+ * - `POST ?action=enable|disable` → 写总开关。
  *
  * 为什么把"完整值"单独做成一个动作：这是一枚能代表这台机器的凭据，卡片是
  * 一个会被截图、被贴进 issue 的界面。默认只给掩码，复制/查看各要一次显式动作。
  */
 export const WORKBUDDY_DEVICE_SDK_PATH = '/plugins/dsh-connect-workbuddy/device-sdk'
 
-/** Which SDK action a POST means. */
-export type WorkBuddyDeviceSdkAction = 'refresh' | 'reveal'
-
-/** Query parameter selecting it. */
+/** Query parameter selecting the POST action. */
 export const WORKBUDDY_DEVICE_SDK_ACTION_PARAM = 'action'
 
 /** The OAuth session steps. */

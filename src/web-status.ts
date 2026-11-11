@@ -918,7 +918,7 @@ function readJsonBody(
  * Origin alone is not enough. It answers "did a foreign page cause this?", but a
  * DNS-rebinding attack arrives with the attacker's domain in `Host` and no
  * useful Origin, so the Host check is what drops it — and until this function
- * existed, all thirteen routes below (ten POST, three GET) had only the Origin
+ * existed, all of the routes below had only the Origin
  * half while the shim's chat route had both. The asymmetry was invisible per-file.
  *
  * Both halves are cheap and NEITHER IS AUTHENTICATION. A local process — or any
@@ -1730,7 +1730,17 @@ function requestRegion(req: IncomingMessage, res: ServerResponse): WorkBuddyRegi
  */
 export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatusRouteOptions): void {
   ctx.effect(() => {
-    const disposeUsage = ctx.webServer.register({
+    /**
+     * 注册时自动收好 disposer。曾经每个路由 `const disposeX = register(...)`，再
+     * 在末尾手写 16 行 `disposeX()`——`benefit/claim` 漏了一行（issue #86），热重载
+     * 时宿主因重复注册同路径而抛错，后面的路由全部注册不上，卡片半数按钮答 405。
+     * 收成一个数组后，「新加路由忘了加卸载」这一类错误不可能再发生。
+     */
+    const disposers: (() => void)[] = []
+    const route = (entry: Parameters<typeof ctx.webServer.register>[0]): void => {
+      disposers.push(ctx.webServer.register(entry))
+    }
+    route({
       kind: 'exact',
       path: WORKBUDDY_USAGE_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1753,7 +1763,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeAccountCredits = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_ACCOUNT_CREDITS_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1768,7 +1778,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeAccounts = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_ACCOUNTS_REFRESH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1798,7 +1808,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeCheckin = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_CHECKIN_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1819,7 +1829,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeBenefitClaim = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_BENEFIT_CLAIM_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1880,7 +1890,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeRefresh = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_MODELS_REFRESH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1916,7 +1926,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeMediaModels = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_MEDIA_MODELS_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1944,7 +1954,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeProbe = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_PROBE_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -1982,7 +1992,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeTps = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_TPS_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2015,7 +2025,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposePool = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_POOL_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2209,7 +2219,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeDiagWrite = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: '/plugins/dsh-connect-workbuddy/__save',
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2377,7 +2387,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeOAuth = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_OAUTH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2410,7 +2420,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeTransfer = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_TRANSFER_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2496,7 +2506,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * leave a ghost pill describing a turn that already ended. Answering an
      * empty document keeps "off" inside the same code path as "no turns".
      */
-    const disposeCliLive = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_CLI_LIVE_PATH,
       handler: (req: IncomingMessage, res: ServerResponse) => {
@@ -2516,7 +2526,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * 都是**即时生效**——这里没有草稿，因为齿轮改的是"这台机器对外声称自己是谁"，
      * 一个需要点保存才生效的设备身份，会让"我改完到底发出去的是什么"变成猜测。
      */
-    const disposeDeviceProfile = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_DEVICE_PROFILE_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2619,7 +2629,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * 放在 POST 后面不是形式主义——它会进浏览器历史、会被 proxy 记日志、会被截图，
      * 而 `GET` 是三者里最容易被动触发的（预取、刷新、插件间的探测）。
      */
-    const disposeDeviceSdk = ctx.webServer.register({
+    route({
       kind: 'exact',
       path: WORKBUDDY_DEVICE_SDK_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2672,30 +2682,6 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         json(res, 400, { error: "action must be 'refresh', 'reveal', 'enable' or 'disable'" })
       },
     })
-    return () => {
-      // EVERY route registered above must appear here. `benefit/claim` was
-      // missing from this list (issue #86), and the cost is not a stray handler:
-      // the host's WebServer throws on a second register of the same path, so
-      // the leak from mount N makes mount N+1 throw ON this path and abandon
-      // every route registered after it. That is why a hot reload left half the
-      // card's buttons answering `405` with an empty body — the host's own 405,
-      // meaning "no such route".
-      disposeBenefitClaim()
-      disposeRefresh()
-      disposeMediaModels()
-      disposeCheckin()
-      disposeAccounts()
-      disposeUsage()
-      disposeAccountCredits()
-      disposeProbe()
-      disposeTps()
-      disposePool()
-      disposeOAuth()
-      disposeTransfer()
-      disposeDiagWrite()
-      disposeCliLive()
-      disposeDeviceProfile()
-      disposeDeviceSdk()
-    }
+    return () => { for (const dispose of disposers) dispose() }
   }, 'dsh-connect-workbuddy: Web status route')
 }

@@ -182,7 +182,12 @@ describe('the SDK master switch saves on a host whose entry id differs from the 
     // The write really landed in the document, not just in the answer.
     expect(liveConfig['deviceSdkEnabled']).toBe(true)
     // ...and the next read reports the stored value, which is what redraws the box.
-    expect((await readReport()).body['sdkEnabled']).toBe(true)
+    const report = (await readReport()).body
+    expect(report['sdkEnabled']).toBe(true)
+    // The same snapshot must not still say "disabled": the switch used to be a
+    // construction-time boolean while this field read the live config, so on a
+    // host that does not remount the plugin the box and the status row disagreed.
+    expect((report['sdk'] as { state: string }).state).not.toBe('disabled')
   })
 
   it('turns OFF again, so the switch is a switch and not a one-way latch', async () => {
