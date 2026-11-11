@@ -1740,290 +1740,219 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
     const route = (entry: Parameters<typeof ctx.webServer.register>[0]): void => {
       disposers.push(ctx.webServer.register(entry))
     }
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_USAGE_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'GET') {
-          json(res, 405, { error: 'method not allowed' })
-          return
-        }
-        if (!requireLoopback(req, res)) return
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        // `detail=fast` is the card's first paint (issue #77): local state only,
-        // so the account list appears in one round trip no matter how slowly a
-        // billing endpoint answers. Absent or unrecognized means the full
-        // document, which is what every earlier caller gets.
-        const detail = fastDetailOf(req.url ?? '') ? 'fast' : 'full'
-        try {
-          json(res, 200, await workBuddyWebStatus(deps, region, { detail }))
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
-    })
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_ACCOUNT_CREDITS_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          json(res, 200, { accounts: await workBuddyAccountCredits(deps, region) })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
-    })
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_ACCOUNTS_REFRESH_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          const store = deps.store(region)
-          // A MANUAL scan is the user asking what this machine currently has,
-          // so it also clears the accounts they removed earlier. Those removals
-          // exist to survive the AUTOMATIC poll (a hidden desktop account must
-          // not pop back a minute later); this button is the explicit way back,
-          // and without it a removed desktop account could never return.
-          //
-          // The answer is VERIFIED, not assumed, and travels to the card: on
-          // Windows a locked file can defeat both the unlink and the rewrite
-          // (see `clearDismissals`), and silently returning a still-hidden list
-          // would leave the user pressing a button that reports success while
-          // the account they want back stays invisible.
-          const dismissalsCleared = await store.clearDismissals()
-          const accounts = await store.accounts()
-          deps.regionUsable?.(region, accounts.length > 0)
-          json(res, 200, { accounts: accounts.map(toWebAccount), dismissalsCleared })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
-    })
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_CHECKIN_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          const credential = await deps.store(region).resolve()
-          const current = await deps.client.fetchCheckinStatus(credential)
-          if (!current.active) return json(res, 409, { error: 'check-in activity is not active' })
-          if (current.todayCheckedIn) return json(res, 200, { alreadyCheckedIn: true, checkin: current })
-          const claim = await deps.client.claimDailyCheckin(credential)
-          const checkin = await deps.client.fetchCheckinStatus(credential)
-          json(res, 200, { alreadyCheckedIn: false, claim, checkin })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
-    })
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_BENEFIT_CLAIM_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        // A credit grant on a real account. Same guards as check-in (write +
-        // loopback), and it requires an explicit account because the click is
-        // always made ROW BY ROW in the card: there is no batch action, so no
-        // request can spend six accounts' entitlements in one call.
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-        const accountId = url.searchParams.get(WORKBUDDY_POOL_ACCOUNT_PARAM)
-        const kind = url.searchParams.get('kind')
-        if (accountId === null || accountId === '') {
-          return json(res, 400, { error: 'accountId is required' })
-        }
-        if (kind !== 'compensation' && kind !== 'gift') {
-          return json(res, 400, { error: 'kind must be compensation or gift' })
-        }
-        try {
-          // Resolve the credential for THIS account, not the signed-in default:
-          // a claim must never be redirected onto whichever account the pool
-          // happens to prefer at that moment.
-          const credential = await deps.store(region).credentialFor(accountId)
-          if (credential === undefined) return json(res, 404, { error: 'no credential for this account' })
-          // The upstream's READ endpoints advertise campaigns to enterprise
-          // members even though every WRITE answers `10001 企业账号不支持该操作`.
-          // Refuse here so the card cannot turn a known-unsupportable click into
-          // an opaque upstream 500 (issue #129).
-          if (credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
-            return json(res, 409, { error: 'enterprise-account-unsupported' })
+
+    /**
+     * 路由骨架：方法闸 → loopback → 可选前置条件 → 区域 → try/catch → 500。
+     *
+     * 这几道闸原先在每个 handler 里各抄一遍（16 处 `requireLoopback`、16 处
+     * `405`、22 处 `500`）。抄漏一道不会有任何编译错误，却是一个真实的
+     * DNS-rebinding 或跨区泄漏面——见 `requireLoopback` 自己的注释。收进这里
+     * 之后，handler 只写业务，也不可能漏闸。
+     *
+     * `ready` 在区域解析**之前**跑：`models` / `media` 这类路由要先答「宿主没有
+     * 这项能力」的 503，再谈区域；反过来会让一个缺区域参数的请求先拿到 400。
+     */
+    function raw(
+      spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
+      run: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void,
+    ): void {
+      route({
+        kind: 'exact',
+        path: spec.path,
+        handler: async (req: IncomingMessage, res: ServerResponse) => {
+          if (req.method !== spec.method) return json(res, 405, { error: 'method not allowed' })
+          if (!requireLoopback(req, res)) return
+          if (spec.ready !== undefined && !spec.ready(res)) return
+          try {
+            await run(req, res)
+          } catch (error: unknown) {
+            json(res, 500, { error: safeMessage(error) })
           }
-          // Re-read before writing. The status is read first so a stale card
-          // cannot cause a pointless call, and so this route states the same
-          // rule the card renders: claimable means inside the window and not yet
-          // taken. The upstream rejects a second claim, but asking it anyway
-          // makes an already-claimed row look like an upstream fault.
-          const current = await deps.client.fetchBenefits(credential)
-          const target = current.find(benefit => benefit.kind === kind)
-          if (target === undefined) return json(res, 404, { error: 'benefit not available on this account' })
-          if (target.claimed) return json(res, 409, { error: 'benefit already claimed', benefit: target })
-          if (!target.active) return json(res, 409, { error: 'benefit activity is not active', benefit: target })
-          await deps.client.claimBenefit(credential, kind)
-          // Drop the cached reading BEFORE answering, so the status read the card
-          // fires next is live rather than a 30-minute-old snapshot. Ordering is
-          // the point: the client awaits its refresh, so by the time the pill is
-          // re-rendered this account's cache entry is already gone. Skipping this
-          // is what left 领取 on screen after a SUCCESSFUL claim (issue #79).
-          deps.pool?.invalidateBenefit?.(region, accountId)
-          // Answer with what the gateway says NOW, not with an assumption. The
-          // card repaints from this reading, so a claim that did nothing still
-          // cannot leave a 待领取 line behind.
-          const after = await deps.client.fetchBenefits(credential)
-          json(res, 200, { claimed: true, benefit: after.find(benefit => benefit.kind === kind) ?? target })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+        },
+      })
+    }
+
+    /** 不带区域参数的路由（区域参数会让 `requestRegion` 把一个合法读答成 400）。 */
+    function endpoint(
+      spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
+      handle: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void,
+    ): void {
+      raw(spec, handle)
+    }
+
+    /** 带区域参数的路由：区域解析在 try 之外，与原来的顺序一致。 */
+    function endpointRegion(
+      spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
+      handle: (req: IncomingMessage, res: ServerResponse, region: WorkBuddyRegion) => Promise<void> | void,
+    ): void {
+      raw(spec, (req, res) => {
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        return handle(req, res, region)
+      })
+    }
+    endpointRegion({ path: WORKBUDDY_USAGE_PATH, method: 'GET' }, async (req, res, region) => {
+      // `detail=fast` is the card's first paint: local state only, so the account
+      // list appears in one round trip no matter how slowly billing answers.
+      const detail = fastDetailOf(req.url ?? '') ? 'fast' : 'full'
+      json(res, 200, await workBuddyWebStatus(deps, region, { detail }))
     })
-    route({
-      kind: 'exact',
+    endpointRegion({ path: WORKBUDDY_ACCOUNT_CREDITS_PATH, method: 'GET' }, async (_req, res, region) => {
+      json(res, 200, { accounts: await workBuddyAccountCredits(deps, region) })
+    })
+    endpointRegion({ path: WORKBUDDY_ACCOUNTS_REFRESH_PATH, method: 'POST' }, async (_req, res, region) => {
+      const store = deps.store(region)
+      // A MANUAL scan is the user asking what this machine currently has, so it
+      // also clears the accounts they removed earlier (those removals exist to
+      // survive the AUTOMATIC poll). The answer is VERIFIED, not assumed: on
+      // Windows a locked file can defeat both unlink and rewrite, and reporting
+      // success while a still-hidden account stays invisible is the failure
+      // this flag exists to prevent.
+      const dismissalsCleared = await store.clearDismissals()
+      const accounts = await store.accounts()
+      deps.regionUsable?.(region, accounts.length > 0)
+      json(res, 200, { accounts: accounts.map(toWebAccount), dismissalsCleared })
+    })
+    endpointRegion({ path: WORKBUDDY_CHECKIN_PATH, method: 'POST' }, async (_req, res, region) => {
+      const credential = await deps.store(region).resolve()
+      const current = await deps.client.fetchCheckinStatus(credential)
+      if (!current.active) return json(res, 409, { error: 'check-in activity is not active' })
+      if (current.todayCheckedIn) return json(res, 200, { alreadyCheckedIn: true, checkin: current })
+      const claim = await deps.client.claimDailyCheckin(credential)
+      const checkin = await deps.client.fetchCheckinStatus(credential)
+      json(res, 200, { alreadyCheckedIn: false, claim, checkin })
+    })
+    endpointRegion({ path: WORKBUDDY_BENEFIT_CLAIM_PATH, method: 'POST' }, async (req, res, region) => {
+      // A credit grant on a real account. It requires an explicit account because
+      // the click is always ROW BY ROW in the card: no batch action exists, so no
+      // request can spend six accounts' entitlements in one call.
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const accountId = url.searchParams.get(WORKBUDDY_POOL_ACCOUNT_PARAM)
+      const kind = url.searchParams.get('kind')
+      if (accountId === null || accountId === '') {
+        return json(res, 400, { error: 'accountId is required' })
+      }
+      if (kind !== 'compensation' && kind !== 'gift') {
+        return json(res, 400, { error: 'kind must be compensation or gift' })
+      }
+      // Resolve the credential for THIS account, not the signed-in default: a
+      // claim must never be redirected onto whichever account the pool prefers.
+      const credential = await deps.store(region).credentialFor(accountId)
+      if (credential === undefined) return json(res, 404, { error: 'no credential for this account' })
+      // Upstream READ endpoints advertise campaigns to enterprise members even
+      // though every WRITE answers `10001 企业账号不支持该操作`. Refuse here so a
+      // known-unsupportable click cannot become an opaque upstream 500.
+      if (credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
+        return json(res, 409, { error: 'enterprise-account-unsupported' })
+      }
+      // Re-read before writing: claimable means inside the window and not yet
+      // taken. Asking upstream anyway would make an already-claimed row look
+      // like an upstream fault.
+      const current = await deps.client.fetchBenefits(credential)
+      const target = current.find(benefit => benefit.kind === kind)
+      if (target === undefined) return json(res, 404, { error: 'benefit not available on this account' })
+      if (target.claimed) return json(res, 409, { error: 'benefit already claimed', benefit: target })
+      if (!target.active) return json(res, 409, { error: 'benefit activity is not active', benefit: target })
+      await deps.client.claimBenefit(credential, kind)
+      // Drop the cached reading BEFORE answering so the status read the card
+      // fires next is live; skipping this left 领取 on screen after a SUCCESSFUL
+      // claim.
+      deps.pool?.invalidateBenefit?.(region, accountId)
+      // Answer with what the gateway says NOW, not with an assumption.
+      const after = await deps.client.fetchBenefits(credential)
+      json(res, 200, { claimed: true, benefit: after.find(benefit => benefit.kind === kind) ?? target })
+    })
+    endpointRegion({
       path: WORKBUDDY_MODELS_REFRESH_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        if (deps.discoverModels === undefined) return json(res, 503, { error: 'model refresh unavailable' })
-        // A refresh that cannot be RECORDED is not a refresh (issue #214). The
-        // route used to answer with the fresh rows and drop them, so one press
-        // produced two answers on one host — this route said `glm-5.3` x0.69
-        // while `/usage` and the settings file kept saying x0.79. Refuse up
-        // front instead of returning a number nothing will remember: the card
-        // paints its draft from this answer, and a 200 would make the list look
-        // refreshed while the priced document stayed stale.
-        if (deps.persistModels === undefined) return json(res, 503, { error: 'model refresh cannot be persisted' })
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          const models = await deps.discoverModels(region)
-          // Persist BEFORE answering. The write is what the caller's next read
-          // depends on, and a failure must surface as a failure: an answer that
-          // arrives ahead of a write that then breaks is the exact
-          // "button does nothing" report this fixes, only harder to see.
-          //
-          // Only the DIRECTORY is written (`persistModels` owns the merge). The
-          // user's selection is the card's draft until they press Save; see the
-          // dependency's own note.
-          await deps.persistModels(region, models)
-          // The refreshed catalog belongs to the requested region, so its
-          // context budgets come from that same region's slot.
-          json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets(region))) })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+      method: 'POST',
+      // A refresh that cannot be RECORDED is not a refresh: the route used to
+      // answer with fresh rows and drop them, so one press produced two answers
+      // on one host. Refuse up front rather than return a number nothing will
+      // remember — a 200 would make the list look refreshed while the priced
+      // document stayed stale.
+      ready: res => deps.discoverModels === undefined
+        ? (json(res, 503, { error: 'model refresh unavailable' }), false)
+        : deps.persistModels === undefined
+          ? (json(res, 503, { error: 'model refresh cannot be persisted' }), false)
+          : true,
+    }, async (_req, res, region) => {
+      const models = await deps.discoverModels!(region)
+      // Persist BEFORE answering: the write is what the caller's next read
+      // depends on, and a failure must surface as a failure. Only the DIRECTORY
+      // is written (`persistModels` owns the merge); the user's selection is the
+      // card's draft until they press Save.
+      await deps.persistModels!(region, models)
+      json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets(region))) })
     })
-    route({
-      kind: 'exact',
+    endpointRegion({
       path: WORKBUDDY_MEDIA_MODELS_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        if (deps.mediaModels === undefined) return json(res, 503, { error: 'media model list unavailable' })
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          // Read-only and free, but still behind POST + loopback like every
-          // other route: it takes a region and answers with what that account's
-          // product configuration publishes, which is account-scoped data.
-          // An empty list is a legitimate answer (a gateway that publishes no
-          // media model), not an error — the card renders it as such.
-          // `refresh=1` bypasses the Host's 5-minute cache. The card's list is
-          // read-only, but a user who just enabled an image model upstream must
-          // not have to wait out a TTL to see it.
-          const refresh = new URL(req.url ?? '/', 'http://localhost').searchParams.get('refresh') === '1'
-          const models = await deps.mediaModels(region, { refresh })
-          json(res, 200, {
-            models: models.map(model => ({ id: model.id, name: model.name, tags: [...model.tags] })),
-          })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+      method: 'POST',
+      ready: res => deps.mediaModels !== undefined
+        ? true
+        : (json(res, 503, { error: 'media model list unavailable' }), false),
+    }, async (req, res, region) => {
+      // Read-only and free, but still behind POST + loopback: it answers with
+      // what that account's product configuration publishes (account-scoped
+      // data). An empty list is a legitimate answer, not an error.
+      // `refresh=1` bypasses the Host's 5-minute cache.
+      const refresh = new URL(req.url ?? '/', 'http://localhost').searchParams.get('refresh') === '1'
+      const models = await deps.mediaModels!(region, { refresh })
+      json(res, 200, {
+        models: models.map(model => ({ id: model.id, name: model.name, tags: [...model.tags] })),
+      })
     })
-    route({
-      kind: 'exact',
+    endpointRegion({
       path: WORKBUDDY_PROBE_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        if (deps.probeModels === undefined) return json(res, 503, { error: 'model probe unavailable' })
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          const body = await readJsonBody(req) as { modelIds?: unknown }
-          const modelIds = Array.isArray(body.modelIds)
-            ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
-            : []
-          // An empty list is a client bug, not "nothing to report": answering an
-          // empty success would let the card render a finished batch that never
-          // ran. Refuse it so the failure is visible.
-          if (modelIds.length === 0) return json(res, 400, { error: 'modelIds must be a non-empty array of strings' })
-          // Every probe now sends a real-volume request, which costs real credits
-          // (measured `credit: 0.72` each). The card drives one model per click,
-          // so a request naming more than one is NOT the card — and refusing it
-          // is what keeps a stale bundle or a hand-rolled client from turning a
-          // button into a spend loop over a whole roster.
-          if (modelIds.length > 1) {
-            return json(res, 400, { error: 'a probe accepts exactly one model' })
-          }
-          // Still sequential: a probe exists to discover rate limits, and firing
-          // requests at once is the surest way to create one.
-          const results: WorkBuddyWebProbeResult[] = []
-          for (const modelId of modelIds) {
-            results.push(...await deps.probeModels(region, [modelId]))
-          }
-          json(res, 200, { results })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+      method: 'POST',
+      ready: res => deps.probeModels !== undefined
+        ? true
+        : (json(res, 503, { error: 'model probe unavailable' }), false),
+    }, async (req, res, region) => {
+      const body = await readJsonBody(req) as { modelIds?: unknown }
+      const modelIds = Array.isArray(body.modelIds)
+        ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
+        : []
+      // An empty list is a client bug, not "nothing to report": an empty success
+      // would let the card render a finished batch that never ran.
+      if (modelIds.length === 0) return json(res, 400, { error: 'modelIds must be a non-empty array of strings' })
+      // Every probe sends a real-volume request and costs real credits. The card
+      // drives one model per click, so a multi-model request is NOT the card;
+      // refusing it keeps a stale bundle from turning a button into a spend loop.
+      if (modelIds.length > 1) {
+        return json(res, 400, { error: 'a probe accepts exactly one model' })
+      }
+      // Still sequential: a probe exists to discover rate limits, and firing
+      // requests at once is the surest way to create one.
+      const results: WorkBuddyWebProbeResult[] = []
+      for (const modelId of modelIds) {
+        results.push(...await deps.probeModels!(region, [modelId]))
+      }
+      json(res, 200, { results })
     })
-    route({
-      kind: 'exact',
+    endpointRegion({
       path: WORKBUDDY_TPS_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        if (deps.measureTps === undefined) return json(res, 503, { error: 'tps measurement unavailable' })
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        try {
-          const body = await readJsonBody(req) as { modelIds?: unknown }
-          const modelIds = Array.isArray(body.modelIds)
-            ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
-            : []
-          if (modelIds.length === 0) return json(res, 400, { error: 'modelIds must be a non-empty array of strings' })
-          // One model per request, for the same reason the probe route enforces
-          // it: a speed run is THREE real requests, and a batch routed through
-          // one call would turn a stale bundle into an unaccounted spend over a
-          // whole roster. The card's sweep loop lives on the client side.
-          if (modelIds.length > 1) {
-            return json(res, 400, { error: 'a tps measurement accepts exactly one model' })
-          }
-          const results: WorkBuddyWebTpsResult[] = []
-          for (const modelId of modelIds) {
-            results.push(...await deps.measureTps(region, [modelId]))
-          }
-          const answer: WorkBuddyWebTpsAnswer = { results }
-          json(res, 200, answer)
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+      method: 'POST',
+      ready: res => deps.measureTps !== undefined
+        ? true
+        : (json(res, 503, { error: 'tps measurement unavailable' }), false),
+    }, async (req, res, region) => {
+      const body = await readJsonBody(req) as { modelIds?: unknown }
+      const modelIds = Array.isArray(body.modelIds)
+        ? body.modelIds.filter((id): id is string => typeof id === 'string' && id !== '')
+        : []
+      if (modelIds.length === 0) return json(res, 400, { error: 'modelIds must be a non-empty array of strings' })
+      // One model per request, for the same reason the probe route enforces it:
+      // a speed run is THREE real requests, and a batch through one call would
+      // turn a stale bundle into an unaccounted spend over a whole roster.
+      if (modelIds.length > 1) {
+        return json(res, 400, { error: 'a tps measurement accepts exactly one model' })
+      }
+      const results: WorkBuddyWebTpsResult[] = []
+      for (const modelId of modelIds) {
+        results.push(...await deps.measureTps!(region, [modelId]))
+      }
+      const answer: WorkBuddyWebTpsAnswer = { results }
+      json(res, 200, answer)
     })
     route({
       kind: 'exact',
@@ -2387,38 +2316,26 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_OAUTH_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        // Both steps mutate session state (start) or the vault (poll), so the
-        // same write guards as the pool route apply.
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        const region = requestRegion(req, res)
-        if (region === undefined) return
-        const action = oauthActionOf(req.url ?? '/')
-        if (action === undefined) {
-          return json(res, 400, { error: 'action must be start or poll' })
-        }
-        const oauth = deps.oauth
-        if (oauth === undefined) {
-          return json(res, 503, { reason: 'oauth-unavailable', error: 'OAuth sign-in is not available in this build' })
-        }
-        try {
-          if (action === 'start') {
-            json(res, 200, await oauth.start(region))
-            return
-          }
-          const body = await readJsonBody(req) as { loginId?: unknown }
-          if (typeof body.loginId !== 'string' || body.loginId === '') {
-            return json(res, 400, { error: 'loginId must be a non-empty string' })
-          }
-          json(res, 200, await oauth.poll(region, body.loginId))
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+    endpointRegion({ path: WORKBUDDY_OAUTH_PATH, method: 'POST' }, async (req, res, region) => {
+      // Both steps mutate session state (start) or the vault (poll), so they
+      // carry the same write guards as every other mutation.
+      const action = oauthActionOf(req.url ?? '/')
+      if (action === undefined) {
+        return json(res, 400, { error: 'action must be start or poll' })
+      }
+      const oauth = deps.oauth
+      if (oauth === undefined) {
+        return json(res, 503, { reason: 'oauth-unavailable', error: 'OAuth sign-in is not available in this build' })
+      }
+      if (action === 'start') {
+        json(res, 200, await oauth.start(region))
+        return
+      }
+      const body = await readJsonBody(req) as { loginId?: unknown }
+      if (typeof body.loginId !== 'string' || body.loginId === '') {
+        return json(res, 400, { error: 'loginId must be a non-empty string' })
+      }
+      json(res, 200, await oauth.poll(region, body.loginId))
     })
     route({
       kind: 'exact',
@@ -2506,18 +2423,8 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * leave a ghost pill describing a turn that already ended. Answering an
      * empty document keeps "off" inside the same code path as "no turns".
      */
-    route({
-      kind: 'exact',
-      path: WORKBUDDY_CLI_LIVE_PATH,
-      handler: (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
-        try {
-          json(res, 200, deps.cliLive?.() ?? { turns: [], serverTime: Date.now() })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+    endpoint({ path: WORKBUDDY_CLI_LIVE_PATH, method: 'GET' }, (_req, res) => {
+      json(res, 200, deps.cliLive?.() ?? { turns: [], serverTime: Date.now() })
     })
     /**
      * 设备头设置：档位切换 + 每账号的虚拟参数。
