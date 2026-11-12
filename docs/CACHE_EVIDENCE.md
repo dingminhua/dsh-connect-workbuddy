@@ -107,8 +107,8 @@ hit + miss : 7936+72=8008, 7936+72=8008   vs prompt 8008   → MATCHES
      `if (compat.supportsUsageInStreaming !== false) { params.stream_options = { include_usage: true } }`；
   2. 该 compat 的默认值为 `true`：同文件 `1281` 行 `supportsUsageInStreaming: true`，
      并经 `1331` 行 `model.compat.supportsUsageInStreaming ?? detected.supportsUsageInStreaming` 回退；
-  3. 插件**没有关掉它**：`src/adapter.ts:170` 只设 `compat: { supportsReasoningEffort: … }`，
-     未触及 `supportsUsageInStreaming`，故默认值生效；
+  3. 插件**没有关掉它**：`src/adapter.ts` 的 `compat` 只设 `supportsReasoningEffort` 与
+     `supportsMidConvoSystemMessages`，未触及 `supportsUsageInStreaming`，故默认值生效；
   4. `prepareChatBody` **不碰** `stream_options`：它只改 `stream`（强制 true）、
      `messages[].role`（`developer`→`system`）与 `tool_choice`（见 `src/upstream.ts:308-331`），
      既不增删也不重写该字段，字段原样到达上游。

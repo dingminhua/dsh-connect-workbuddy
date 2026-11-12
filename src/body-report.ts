@@ -37,7 +37,8 @@
  * vendor, uniformly — 790 replay records in one real session held that value
  * and no other). Non-survivors are text by the time `:964–971` collects
  * `assistantText`, so they land in `assistantMsg.content` instead. This plugin
- * sets only `compat.supportsReasoningEffort` (`src/adapter.ts:200`), which
+ * sets `compat.supportsReasoningEffort` and `compat.supportsMidConvoSystemMessages`
+ * (`src/adapter.ts`), neither of which touches `requiresThinkingAsText`, which
  * leaves `requiresThinkingAsText` at its `false` default (`:1270`), so the raw
  * field route is the live one rather than the fold-into-content route at `:983`.
  *

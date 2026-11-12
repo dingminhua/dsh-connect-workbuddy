@@ -407,7 +407,18 @@ function toPiModel(
     maxTokens: info.maxTokens,
     reasoning: thinkingLevelMap !== undefined,
     ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
-    compat: { supportsReasoningEffort: thinkingLevelMap !== undefined },
+    // Mid-conversation system messages are read as the effective prompt by this
+    // gateway (measured on the CN region: a `system` message placed after the
+    // history replaces what the model obeys), so pi-ai may append a changed
+    // system prompt AFTER the cached history instead of rewriting the leading
+    // one. Without this flag every tool-schema change — a plugin installed, an
+    // MCP server added, a skill edited — rewrote system node 0, and the upstream
+    // prefix cache then missed from the first changed token: the whole context
+    // was re-billed at full price (observed as tens of credits on one turn of a
+    // long session, where a cache-hit turn costs a fraction of that).
+    // `dsh-llm-pi-ai` derives the request's `systemPromptUpdate: 'in-history'`
+    // from exactly this flag.
+    compat: { supportsReasoningEffort: thinkingLevelMap !== undefined, supportsMidConvoSystemMessages: true },
   } as unknown as Model<Api>
 }
 

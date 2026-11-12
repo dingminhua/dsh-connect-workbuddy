@@ -497,3 +497,39 @@ describe('the provider stream actually receives an adapted context', () => {
     }
   })
 })
+
+/**
+ * The prompt-cache guard.
+ *
+ * A context whose leading system node changes loses the provider's prefix
+ * cache from the first changed token onwards, and every such turn re-bills the
+ * WHOLE context at full price. `dsh-llm-pi-ai` avoids that only by appending a
+ * changed prompt after the cached history, and it decides to do so from
+ * `compat.supportsMidConvoSystemMessages` on the model descriptor this adapter
+ * builds. Without the flag the descriptor falls back to a rewrite of node 0,
+ * which is what the cache-cost investigation traced the re-bills to; with it,
+ * a tool-schema change costs only the appended prompt.
+ */
+describe('the model descriptor keeps the prefix cache reusable', () => {
+  it('declares mid-conversation system messages on every catalog model', async () => {
+    const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } = await import('../src/adapter.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+
+    const { adapter } = createWorkBuddyAdapter({
+      shim: { baseUrl: () => 'http://127.0.0.1:1', token: async () => 'shared-secret' } as never,
+      store: {} as never,
+      catalog: new WorkBuddyCatalog(),
+    })
+    const profile = (adapter as unknown as {
+      config: { profiles: () => ReadonlyMap<string, { piProvider: { getModels: () => { id: string, compat?: Record<string, unknown> }[] } }> }
+    }).config.profiles().get(WORKBUDDY_PROVIDER)
+    expect(profile).toBeDefined()
+
+    const models = profile!.piProvider.getModels()
+    expect(models.length).toBeGreaterThan(0)
+    for (const model of models) {
+      expect(model.compat?.supportsMidConvoSystemMessages, model.id).toBe(true)
+    }
+  })
+})
+
