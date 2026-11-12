@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### 新增：prompt cache 重算的审计与实测脚本
+
+- `scripts/audit-prompt-cache.mjs`：离线扫描 `<DSH_HOME>/sessions` 的全部会话日志，列出「整包上下文按未缓存价重算」的请求，并按 `prompt-changed` / `cache-expired` 归因（前者可由 `in-history` 消除，后者是上游缓存过期）。只读、不花积分；未给 `--credits-per-k` 时只报 token，不编造单价。
+- `scripts/probe-mid-convo-system.mjs`：实测网关是否把历史之后的 `system` 消息当作生效提示词，并对比同一形状两次请求的缓存读数。只打印计数器与该轮回复，不打印提示词正文或凭证。
+- `docs/PROMPT-CACHE.md`：两种成因、可避免的是哪一种、以及如何复测。
+- `tests/audit-prompt-cache.spec.ts`：钉住「什么算重算」「归因给谁」「首轮请求不算」与多帧 zstd 解码（node 自带的解码器只返回第一帧且不报错，这一条是静默错误）。
+
 ## 5.21.5 (2026-11-12)
 
 > 版本号是 **patch**：修「积分到账后账号仍被排除」的判定，不动配置键与路由语义。
