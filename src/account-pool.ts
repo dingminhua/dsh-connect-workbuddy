@@ -395,6 +395,44 @@ function retryDue(
 }
 
 /**
+ * When an EXCLUDED account becomes a candidate again, in epoch ms.
+ *
+ * Same arithmetic as {@link retryDue} — deliberately, so the two can never
+ * disagree about when an account is back: this answers "at what instant", that
+ * one answers "is that instant past". Two separate clocks would let the card
+ * say "recovers at 14:05" while the ranking still refuses it at 14:06.
+ *
+ * `Infinity` when time cannot fix the account: a rejected token and a
+ * restricted or banned account are states a cooldown cannot repair, so they
+ * sort after everything that merely has to wait (`exclusionOf` gives them no
+ * cooldown at all — this mirrors that, rather than inventing one).
+ */
+function recoversAtOf(
+  probe: WorkBuddyPoolProbe | undefined,
+  excludedBy: WorkBuddyPoolExclusion,
+  fallbackMs: number = POOL_UNKNOWN_COOLDOWN_MS,
+): number {
+  if (probe === undefined) return Number.POSITIVE_INFINITY
+  switch (excludedBy) {
+    case 'rate-limited':
+    case 'unavailable':
+    case 'failed':
+      return probe.retryAtMs ?? probe.atMs + fallbackMs
+    case 'model-busy':
+      return probe.retryAtMs ?? probe.atMs + MODEL_BUSY_COOLDOWN_MS
+    // `out-of-credit` gets a date here even though the exclusion does not clear
+    // on the clock: `retryAtMs` for it is package metadata (when the allowance
+    // resets), which is exactly the "when might this be usable" fact the card
+    // wants to show. It does NOT become a candidate at that instant — a later
+    // positive balance read does that (`exclusionOf` says so).
+    case 'out-of-credit':
+      return probe.retryAtMs ?? Number.POSITIVE_INFINITY
+    default:
+      return Number.POSITIVE_INFINITY
+  }
+}
+
+/**
  * Rank a pool's members best-first.
  *
  * The rule, in priority order — this is the whole feature:
@@ -487,10 +525,45 @@ export function rankPool(
       _expiringAmount: member.credits?.expiringSoon ?? 0,
       _expiring: member.credits?.nearestExpiryMs ?? Number.POSITIVE_INFINITY,
       _tokenExpiresAtMs: member.tokenExpiresAtMs ?? 0,
+      // When this account becomes a candidate again (issue #240).
+      //
+      // Only meaningful for EXCLUDED rows, and only as a DISPLAY order among
+      // them: it is computed here so the card can list "the one that comes back
+      // soonest" first, which is the half of the reporter's rule 2 that the
+      // ranking can honestly answer. It deliberately does not change who
+      // SERVES: an excluded row is not a candidate at any position, and when
+      // its cooldown elapses `exclusionOf` drops the exclusion and the ordinary
+      // credit keys decide — so "prefer the account that recovers first" is
+      // expressed as "it is at the top of the table and explains why", not as a
+      // sticky preference.
+      //
+      // Infinity for a candidate and for an account with no stated recovery
+      // time: `undefined` here means "nobody can say", and inventing a number
+      // would put an account in a position the plugin cannot justify.
+      _recoversAt: excludedBy === undefined ? Number.POSITIVE_INFINITY : recoversAtOf(member.probe, excludedBy),
     }
   })
   rows.sort((left, right) => {
     if (left._usable !== right._usable) return left._usable ? -1 : 1
+    // Among two EXCLUDED accounts: whichever recovers soonest goes first, then
+    // the richer one (issue #240).
+    //
+    // This only ever orders rows that cannot serve — `pickAccount` and the
+    // failover loop skip every `excludedBy !== undefined` row before reading
+    // its position — so it changes the TABLE, not who is billed. That is the
+    // honest scope: the reporter's "prefer the account with the shortest
+    // remaining cooldown" cannot mean "bill it", because a cooling account
+    // refuses by definition. What it can mean is that the account about to come
+    // back is the one at the top of the list, saying so, instead of being
+    // buried wherever the credit keys left it.
+    //
+    // Above `_order` deliberately: a manual rank on a row that cannot serve
+    // conveys nothing, and the user's complaint is precisely that they had to
+    // hand-sort to get a sensible order. Usable rows are unaffected — both
+    // sides carry `Infinity` there and the branch never runs.
+    if (!left._usable && !right._usable && left._recoversAt !== right._recoversAt) {
+      return left._recoversAt - right._recoversAt
+    }
     // Expiring credits before anything else among usable accounts (issue #70).
     if (left._atRisk !== right._atRisk) return left._atRisk ? -1 : 1
     // The user's manual order, only among accounts equal on usability & the

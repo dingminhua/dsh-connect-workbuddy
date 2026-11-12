@@ -1317,7 +1317,16 @@ describe('manual priority: rows, rank badges and the up/down arrows', () => {
     expect(poolSwitch, 'the pool switch must render').not.toBeNull()
     await m.click(poolSwitch!)
     await m.settle()
-    // …and the member rows must already offer their arrows.
+    // …and the member rows offer their arrows ONCE the mode is manual. The
+    // arrows are gated on the mode (issue #240): automatic order shows the
+    // dashed badge only, so "orderable" now means "switch to manual, then
+    // arrows appear" — still entirely within the unsaved draft.
+    expect(
+      m.container.querySelectorAll('.dsm-workbuddy-pool-move-btn').length,
+      'automatic order must not offer arrows',
+    ).toBe(0)
+    const sortButtons = m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-sortseg-btn')
+    await m.click(sortButtons[1]!)
     expect(
       m.container.querySelectorAll('.dsm-workbuddy-pool-move-btn').length,
       'a ticked member must be orderable before Save',
@@ -1348,6 +1357,8 @@ describe('manual priority: rows, rank badges and the up/down arrows', () => {
     stubFetch(() => ({ body: {} }))
     const m = await mount(AccountPool, threeMembers([]))
     expect(m.button('row.poolSaved').disabled, 'nothing edited yet').toBe(true)
+    // Arrows only exist in manual mode, so the flow starts by choosing it.
+    await m.click(m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-sortseg-btn')[1]!)
     const downOnTopRow = Array.from(
       m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-row .dsm-workbuddy-pool-move-btn'),
     ).filter(button => button.textContent === '↓')[0]!
@@ -1364,6 +1375,8 @@ describe('manual priority: rows, rank badges and the up/down arrows', () => {
     // "materialise the current order on first edit" behaviour.
     stubFetch(() => ({ body: {} }))
     const m = await mount(AccountPool, threeMembers([]))
+    // Choosing manual materialises the visible order; the move then edits it.
+    await m.click(m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-sortseg-btn')[1]!)
     const upOnMiddle = Array.from(
       m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-row .dsm-workbuddy-pool-move-btn'),
     ).filter(button => button.textContent === '↑')[1]!
@@ -2109,6 +2122,119 @@ describe('an elapsed cooldown re-tests that one account by itself', () => {
     expect(testCalls(calls)).toHaveLength(1)
     await m.update({ ...props, pool: poolWith([expiredAccount('limited-3')], ['limited-3']) })
     expect(testCalls(calls), 'the second render must not fire another test').toHaveLength(1)
+    await m.unmount()
+  })
+})
+
+/**
+ * Handing the order back to the credit policy (issue #240).
+ *
+ * The reporter's complaint was "I can only fix the serving order by hand-sorting
+ * the rows". The half of that the plugin can fix is this control: once ANY
+ * member sat in `orderAccountIds`, the ranking put that order ahead of every
+ * credit key and NOTHING in the card could clear it — so one stray ↑ pinned the
+ * pool to that order for good. These tests execute the component, because the
+ * defect was a MISSING control and a source-text guard cannot prove absence.
+ */
+describe('the pool states which of its two ordering modes it is in (issue #240)', () => {
+  const MANUAL = { memberAccountIds: [GENUINE_ID], effectiveMemberAccountIds: [GENUINE_ID], accounts: [GENUINE_ACCOUNT], orderAccountIds: [GENUINE_ID] }
+  const AUTO = { memberAccountIds: [GENUINE_ID], effectiveMemberAccountIds: [GENUINE_ID], accounts: [GENUINE_ACCOUNT], orderAccountIds: [] }
+
+  /** The switch's buttons, in render order: [automatic, manual]. */
+  const sortButtons = (m: Awaited<ReturnType<typeof mount>>): HTMLButtonElement[] =>
+    Array.from(m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-sortseg-btn'))
+
+  it('renders NO move arrows in automatic order, and puts them back in manual', async () => {
+    // The user-visible report: a screenshot of four rows, every one reading
+    // 「自动排序」, each still carrying ↑/↓. In automatic order those buttons
+    // express nothing — the rows are sorted by the credit keys — so the only
+    // honest rendering is to not draw them. Switching to manual is what makes
+    // ordering a thing the user can do, so the arrows appear precisely there.
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: ['a', 'b'],
+        effectiveMemberAccountIds: ['a', 'b'],
+        orderAccountIds: [],
+        accounts: [
+          accountOf({ accountId: 'a', accountName: 'Name A' }),
+          accountOf({ accountId: 'b', accountName: 'Name B' }),
+        ],
+      }),
+    }))
+    expect(
+      m.container.querySelectorAll('.dsm-workbuddy-pool-move-btn').length,
+      'automatic order must draw no arrows at all',
+    ).toBe(0)
+    // The badges are still there, saying WHICH mode is running — that is the
+    // distinction the arrows used to blur.
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-rank').length).toBe(2)
+    await m.click(m.container.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-pool-sortseg-btn')[1]!)
+    expect(
+      m.container.querySelectorAll('.dsm-workbuddy-pool-move-btn').length,
+      'manual order restores two arrows per member row',
+    ).toBe(4)
+    await m.unmount()
+  })
+
+  it('shows BOTH modes at all times, and marks exactly one as pressed', async () => {
+    // The point of a two-state switch over a "reset" button: the automatic state
+    // must still SAY it is automatic. A reset button simply disappeared there,
+    // so the card never stated which policy was running.
+    for (const [pool, expected] of [[AUTO, 'row.poolSortAuto'], [MANUAL, 'row.poolSortManual']] as const) {
+      const m = await mount(AccountPool, baseProps({ pool: poolOf(pool) }))
+      const buttons = sortButtons(m)
+      expect(buttons.map(button => button.textContent)).toEqual(['row.poolSortAuto', 'row.poolSortManual'])
+      const pressed = buttons.filter(button => button.getAttribute('aria-pressed') === 'true')
+      expect(pressed, `exactly one pressed in the ${expected} state`).toHaveLength(1)
+      expect(pressed[0]!.textContent).toBe(expected)
+      await m.unmount()
+    }
+  })
+
+  it('switching to 手动排序 keeps the order on screen and marks the draft dirty', async () => {
+    // Manual is a MODE, not a list to invent: the rows the user is looking at
+    // are the order they are choosing, so the switch must materialise them.
+    const posts = stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({ pool: poolOf(AUTO) }))
+    expect(m.button('row.poolSaved').disabled, 'nothing edited yet').toBe(true)
+    await m.click(sortButtons(m)[1]!)
+    expect(m.button('row.poolSaved').disabled, 'the mode change is an unsaved edit').toBe(false)
+    await m.click(m.button('row.poolSaved'))
+    const written = posts
+      .map(call => { try { return JSON.parse(String(call.init.body)) } catch { return undefined } })
+      .filter(entry => entry !== undefined).map(entry => JSON.stringify(entry)).join('\n')
+    expect(written, 'the visible order becomes the saved order').toContain(GENUINE_ID)
+    expect(written).not.toMatch(/"orderAccountIds":\[\]/)
+    await m.unmount()
+  })
+
+  it('switching to 自动排序 clears the order without touching membership', async () => {
+    // The write is what proves both halves: order given back, member kept. This
+    // is a reset of the ORDER, never a way to drop accounts from the pool.
+    const posts = stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({ pool: poolOf(MANUAL) }))
+    await m.click(sortButtons(m)[0]!)
+    expect(m.button('row.poolSaved').disabled, 'the mode change is an unsaved edit').toBe(false)
+    await m.click(m.button('row.poolSaved'))
+    const written = posts
+      .map(call => { try { return JSON.parse(String(call.init.body)) } catch { return undefined } })
+      .filter(entry => entry !== undefined).map(entry => JSON.stringify(entry)).join('\n')
+    expect(written).toContain('memberAccountIds')
+    expect(written).toContain(GENUINE_ID)
+    expect(written).not.toMatch(/"orderAccountIds":\["/)
+    await m.unmount()
+  })
+
+  it('leaves 手动排序 unusable when the pool has no members to order', async () => {
+    // Manual with nothing checked would be a mode whose arrows cannot exist, so
+    // the control refuses it rather than switching to a state the user cannot
+    // act on.
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({ memberAccountIds: [], effectiveMemberAccountIds: [], accounts: [GENUINE_ACCOUNT], orderAccountIds: [] }),
+    }))
+    const [, manual] = sortButtons(m)
+    expect(manual!.disabled, 'no members means no order to set').toBe(true)
     await m.unmount()
   })
 })

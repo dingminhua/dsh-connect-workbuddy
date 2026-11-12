@@ -690,6 +690,48 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     }))
   }, [editDraft, pool])
 
+  /**
+   * Hand the order back to the credit policy (issue #240).
+   *
+   * WHY THIS MUST EXIST. Once any member is listed in `orderAccountIds`, the
+   * ranking puts the manual order ahead of every credit key, and nothing else
+   * ever clears that list — there was no control that did, so a single stray
+   * click on ↑ pinned the pool to that order forever. The reporter's complaint
+   * ("I can only fix it by hand-sorting") is that state: they wanted the
+   * automatic policy back and the card offered no way to ask for it.
+   *
+   * `[]` rather than deleting the field: the Host treats an empty list and an
+   * absent one identically (`rankPool` reads it as "not listed = sorted last",
+   * and the credit keys then decide everything), and an explicit empty array
+   * round-trips through the settings schema without relying on how a missing
+   * key is merged. Membership is untouched — this clears the ORDER only, which
+   * is the same separation the two fields exist to keep.
+   */
+  const setSortManual = useCallback((manual: boolean): void => {
+    editDraft(current => {
+      const here = current.memberAccountIds.filter(id => (pool?.accounts ?? [])
+        .some(account => account.accountId === id))
+      if (!manual) {
+        // 自动排序: drop the order and let every credit key decide again. Only
+        // the ORDER is touched — membership is a separate decision and clearing
+        // it here would silently empty the pool.
+        return current.orderAccountIds.some(id => here.includes(id))
+          ? { ...current, orderAccountIds: [] }
+          : current
+      }
+      // 手动排序: keep the order the user is looking at. When none is saved yet,
+      // the visible sequence IS the intent, so materialise it explicitly rather
+      // than leaving the list empty — an empty list would render as "automatic"
+      // and the switch would bounce straight back.
+      const visible = [...current.orderAccountIds.filter(id => here.includes(id)),
+        ...here.filter(id => !current.orderAccountIds.includes(id))]
+      return {
+        ...current,
+        orderAccountIds: sameOrder(visible, current.orderAccountIds) ? current.orderAccountIds : visible,
+      }
+    })
+  }, [editDraft, pool])
+
   /** Run one batch action against the Host. */
   const runAction = useCallback(async (action: 'checkin' | 'test'): Promise<void> => {
     setBusy(action)
@@ -1550,6 +1592,39 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
             disabled: effectiveMembers.length === 0 || !canEditPool,
             onClick: () => selectAll(false),
           }, t('row.poolSelectNone')),
+          /**
+           * HOW THIS POOL ORDERS ITS ACCOUNTS — a two-state switch (issue #240).
+           *
+           * Both states are always rendered, with the active one pressed, because
+           * the pair IS the explanation: "自动排序 / 手动排序" told the user which
+           * mode they were in only after they had already guessed. A single
+           * "reset" button (the first attempt at this) said nothing at all in the
+           * automatic state — it simply vanished, so the card never stated which
+           * of the two policies was in force.
+           *
+           * Choosing 自动排序 clears the manual order; choosing 手动排序 keeps the
+           * order currently on screen and marks the draft manually ordered. That
+           * is why "manual" needs no separate list to seed: the rows the user is
+           * looking at ARE the order they are choosing, and `orderIds` already
+           * derives it from the visible sequence.
+           */
+          h('span', {
+            className: 'dsm-workbuddy-pool-sortseg',
+            role: 'group',
+            'aria-label': t('row.poolSortModeTitle'),
+          },
+            ...([false, true] as const).map(manual => h('button', {
+              key: manual ? 'manual' : 'auto',
+              type: 'button',
+              className: `dsm-workbuddy-pool-sortseg-btn${orderIsManual === manual ? ' dsm-workbuddy-pool-sortseg-on' : ''}`,
+              'aria-pressed': orderIsManual === manual,
+              // Manual ordering is only meaningful with something to order: an
+              // empty pool would switch to a mode whose arrows do not exist.
+              disabled: !canEditPool || (manual && effectiveMembers.length === 0),
+              title: manual ? t('row.poolSortManualTitle') : t('row.poolSortAutoTitle'),
+              onClick: () => { void setSortManual(manual) },
+            }, manual ? t('row.poolSortManual') : t('row.poolSortAuto'))),
+          ),
         ),
       ),
       // The batch bar sits HERE — under the member heading, above the rows —
@@ -1770,7 +1845,11 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               // impossible to set, and the next Save then had nothing to write.
               // Still the draft, never a claim about the running pool:
               // `poolRunning` (saved) remains the single source for what is live.
-              moveEnabled: active.enabled && isMember && canEditPool,
+              // Arrows exist only where they can act: manual mode. Gating on
+              // `orderIsManual` rather than merely on membership is what makes
+              // the two modes visually distinct — automatic shows the dashed
+              // badge and nothing else.
+              moveEnabled: active.enabled && isMember && canEditPool && orderIsManual,
               onMoveUp: () => { void moveMember(account.accountId, -1) },
               onMoveDown: () => { void moveMember(account.accountId, 1) },
               moveUpDisabled: left <= 0,
@@ -2084,8 +2163,15 @@ function renderAccountRow(input: {
                     className: 'dsm-workbuddy-pool-rank dsm-workbuddy-pool-rank-auto',
                     title: t('row.poolRankAutoTitle'),
                   }, t('row.poolRankAuto')),
-              // Move arrows render only while the pool is ON and this row is
-              // editable; first/last stay visible (disabled) so rows never shift.
+              // Move arrows render ONLY in manual mode (issue #240). In
+              // automatic order there is nothing for them to express: the rows
+              // are sorted by the credit keys, so an arrow would either do
+              // nothing visible or silently switch the pool to manual — the
+              // user-visible complaint that prompted this was a screenshot of
+              // four rows all reading 「自动排序」 with arrows beside them.
+              //
+              // First/last still RENDER in manual mode (disabled), so rows never
+              // shift when the edge is reached.
               moveEnabled
                 ? h('span', { className: 'dsm-workbuddy-pool-move' },
                     h('button', {

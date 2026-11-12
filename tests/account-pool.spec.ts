@@ -390,6 +390,56 @@ describe('rankPool', () => {
     expect(ranked[0]?.excludedBy).toBe('credential-rejected')
   })
 
+  it('orders two excluded accounts by whichever recovers soonest (issue #240)', () => {
+    // The reporter's rule 2 asks the pool to prefer "the account whose cooldown
+    // ends soonest". Among CANDIDATES that is meaningless (a candidate has no
+    // cooldown), so the honest reading is the display order of the excluded
+    // ones: the account about to come back is listed first instead of being
+    // buried by its balance.
+    //
+    // This changes the TABLE only. `pickAccount` skips every excluded row, so
+    // proving the billing behaviour is unchanged matters as much as the order —
+    // both are asserted here.
+    const ranked = rankPool([
+      member('rich-but-slow', {
+        credits: 9_000,
+        probe: { outcome: 'rate-limited', atMs: NOW, retryAtMs: NOW + 3_600_000 },
+      }),
+      member('poor-but-soon', {
+        credits: 1,
+        probe: { outcome: 'rate-limited', atMs: NOW, retryAtMs: NOW + 60_000 },
+      }),
+      member('usable', { credits: 0, probe: { outcome: 'ok', atMs: NOW } }),
+    ], NOW)
+    expect(ranked.map(row => row.account.id)).toEqual(['usable', 'poor-but-soon', 'rich-but-slow'])
+    // Billing untouched: `pickAccount` skips every excluded row whatever its
+    // position, so the only candidate wins rather than the newly-first excluded
+    // one. Asserted on the SAME array the ranking just produced, so this proves
+    // the reorder cannot leak into who serves.
+    expect(pickAccount([
+      member('rich-but-slow', {
+        credits: 9_000,
+        probe: { outcome: 'rate-limited', atMs: NOW, retryAtMs: NOW + 3_600_000 },
+      }),
+      member('poor-but-soon', {
+        credits: 1,
+        probe: { outcome: 'rate-limited', atMs: NOW, retryAtMs: NOW + 60_000 },
+      }),
+      member('usable', { credits: 0, probe: { outcome: 'ok', atMs: NOW } }),
+    ], NOW)?.id).toBe('usable')
+  })
+
+  it('sorts an unrepairable exclusion after every account that just has to wait', () => {
+    // A rejected token cannot be fixed by waiting, so it must never outrank a
+    // rate-limited account that comes back in a minute. This is the clause that
+    // would flip if `recoversAtOf` invented a finite time for it.
+    const ranked = rankPool([
+      member('rejected', { credits: 9_000, probe: { outcome: 'credential-rejected', atMs: NOW } }),
+      member('waiting', { credits: 1, probe: { outcome: 'rate-limited', atMs: NOW, retryAtMs: NOW + 60_000 } }),
+    ], NOW)
+    expect(ranked.map(row => row.account.id)).toEqual(['waiting', 'rejected'])
+  })
+
   it('is order-independent, breaking a full tie by account id', () => {
     // Every ranking key equal: without a final id key the winner would depend
     // on the caller's array order, so the pool could rotate differently

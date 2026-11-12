@@ -305,13 +305,16 @@ keepPromptLast=true   cumulative cacheable= 98.26%  broken-prefix requests=19
 | 上报侧吞掉缓存字段 | `dsh-token-meter/lib/types/usage-projection.js` 的 `bucketsFrom` 用 `?? 0` 兜底 |
 | 上游只报读不报写 | 实测 `cache_write` 恒 0 属实，但那是上游行为，不影响命中率分子 |
 | 口径算错 | 见第 1 节，`cacheRead / (uncached + read + write)` 是标准 OpenAI 口径 |
+| 账号池换号必然打冷前缀 | §3.4 复测：`glm-5.2` 上新号首次请求 5/5 命中，与旧号同量（4096）。deepseek 上的旧结论未被推翻但也未被复测（账号被 6004 / 11140 挡住），所以这条只能按模型分开说 |
 
 ## 7. 复现脚本
 
-全部在 `C:\Users\<you>\AppData\Local\Temp\`，零上游调用（除标注）：
+`wb-*.mjs` / `dsh-*.mjs` 全部在 `C:\Users\<you>\AppData\Local\Temp\`，零上游调用（除标注）。
+A/B 换号那条已入库，可与其他平台共用：
 
 | 脚本 | 作用 |
 | --- | --- |
+| `scripts/probe-account-cache-isolation.mjs` | **消耗积分**：A/B 账号隔离（每轮全新随机正文、预热到命中才问 B）。`--model` / `--rounds` 可调；两个账号都必须真能出字，被 6004 / 11140 挡住的会被跳过并打印原因 |
 | `wb-blend.mjs` | 按模型分组统计全机命中率 |
 | `wb-mixed.mjs` | 多模型会话的命中率分布 + 反推混合比例 |
 | `wb-turns.mjs` | 按 turn 分组，分类 stable / degrading / no-cache |

@@ -1157,6 +1157,19 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-members-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .dsm-workbuddy-pool-members-title{margin:0 0 3px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-pool-members-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* 选号顺序的两态切换（issue #240）。两个按钮常驻、共享一条边框，当前态用
+   aria-pressed 加底色表达——和一个「重置」按钮的差别在于：自动态下那个按钮会
+   直接消失，于是卡片从不说自己正处于哪种规则；常驻的两格把这句话永远说出来。 */
+.dsm-workbuddy-pool-sortseg{display:inline-flex;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:999px;overflow:hidden}
+.dsm-workbuddy-pool-sortseg-btn{appearance:none;border:0;background:transparent;cursor:pointer;padding:3px 10px;font:inherit;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary,#b8bcc4)}
+/* 悬停排除选中项：否则鼠标划过时选中格会被换成半透明底，看着像「选中被取消」。 */
+.dsm-workbuddy-pool-sortseg-btn:hover:not(:disabled):not(.dsm-workbuddy-pool-sortseg-on){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
+.dsm-workbuddy-pool-sortseg-btn:disabled{opacity:.55;cursor:default}
+.dsm-workbuddy-pool-sortseg-btn:focus-visible{outline:2px solid rgba(86,134,254,.55);outline-offset:-2px}
+/* 选中态用「前景色做底、底色做字」这一对反相变量，理由同 device-seg-on：
+   brand-primary 在暗色主题下本身是浅色，白字落上去整格会消失。 */
+.dsm-workbuddy-pool-sortseg-on{background:var(--dsw-alias-label-primary,#ededed);color:var(--dsw-alias-bg-base,#181818);font-weight:600}
+
 /* The 测试/删除 and 全选/全不选 buttons. Shared with the benefit pill, which
  * OVERRIDES both properties at higher specificity (see its rule above): a pill is
  * a capsule whose height is fixed at 19px, so inheriting this 3px/10px rhythm
