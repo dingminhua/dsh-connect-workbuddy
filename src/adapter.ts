@@ -393,8 +393,32 @@ function toPiModel(
   info: WorkBuddyModelInfo,
   baseUrl: string,
   identity: string = WORKBUDDY_MODEL_IDENTITY,
+  midConvoSystemMessages = false,
 ): Model<Api> {
   const thinkingLevelMap = workBuddyThinkingLevelMap(info)
+  // Declaring this CHANGES THE BYTES we send, so it is not a free statement.
+  //
+  // `dsh-llm-pi-ai` derives the request's `systemPromptUpdate: 'in-history'`
+  // from exactly this flag (`conversationUpdates()`), and the agent loop then
+  // APPENDS a changed system prompt after the cached history instead of
+  // rewriting node 0 — a mid-conversation `system` message goes out AS `system`
+  // instead of being folded into a `<system-reminder>` user turn. That is what
+  // preserves the upstream prefix cache across a tool-schema change (a plugin
+  // installed, an MCP server added, a skill edited), which otherwise re-billed
+  // the whole context at full price — tens of credits on one turn of a long
+  // session.
+  //
+  // The catch: the appended prompt is only obeyed if the gateway reads the
+  // LATEST `system` message regardless of position. Measured on THIS gateway
+  // (CN region): `system(S1) + history + system(S2) + ask` answered from S2, and
+  // the head stayed reusable (49% → 93% on the repeat). NOT measured on the
+  // international gateway, which is a different upstream — so this stays CN-only
+  // until someone measures it there. The failure mode is not a wasted credit: a
+  // gateway that reads only the head would keep obeying the OLD prompt, silently.
+  // Hence a parameter rather than an unconditional stamp.
+  const compat = midConvoSystemMessages
+    ? { supportsReasoningEffort: thinkingLevelMap !== undefined, supportsMidConvoSystemMessages: true }
+    : { supportsReasoningEffort: thinkingLevelMap !== undefined }
   return {
     id: info.id,
     name: workBuddyDisplayName(info),
@@ -407,7 +431,7 @@ function toPiModel(
     maxTokens: info.maxTokens,
     reasoning: thinkingLevelMap !== undefined,
     ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
-    compat: { supportsReasoningEffort: thinkingLevelMap !== undefined },
+    compat,
   } as unknown as Model<Api>
 }
 
@@ -1531,7 +1555,14 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // The OpenAI SDK pi-ai drives appends `/chat/completions` to baseURL,
     // so the shim's routes line up with the `/v1` prefix in place.
     const baseUrl = `${shim.baseUrl()}/v1`
-    return catalog.current().map(info => toPiModel(info, baseUrl, modelIdentity))
+    // The `in-history` capability travels with the ROUTE, not the model: which
+    // upstream answers is a property of the route, and the two gateways are
+    // separate services with separate behaviour. Only the CN one has been
+    // measured to obey a `system` message placed after the history, so the
+    // international route keeps the pre-existing shape. An unrecognised route id
+    // (a test passing a literal, a future region) gets the conservative default.
+    const midConvoSystemMessages = regionOfProvider(providerId) === 'cn'
+    return catalog.current().map(info => toPiModel(info, baseUrl, modelIdentity, midConvoSystemMessages))
   }
 
   const base = createProvider({
