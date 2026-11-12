@@ -3049,11 +3049,11 @@ export function apply(ctx: Context, config: Config): void {
      * token: the route passes only model ids and receives only outcomes.
      *
      * `quotaRefreshAtMs` is the region's nearest monthly refresh point, read from
-     * the SAME credit answer the card displays. It is the only cooldown this
-     * service ever states — an exhausted monthly resource that resets at a known
-     * time — so it is what makes "when can I use this again" answerable for an
-     * out-of-credit result. Every other limited outcome has no time anywhere, and
-     * the probe reports exactly that instead of inventing one.
+     * the SAME credit answer the card displays. It is recorded beside an
+     * out-of-credit result as upstream EVIDENCE, not as a recovery deadline:
+     * check-in and top-ups can replenish credits long before it, so the views
+     * name the replenishment action instead of rendering a countdown, and the
+     * pool does not release the account when the moment passes.
      */
     async probeModels(region, modelIds, options) {
       let credential
@@ -3633,10 +3633,11 @@ export function apply(ctx: Context, config: Config): void {
    * The region's nearest monthly quota refresh, or undefined when unknown.
    *
    * The monthly resource (`CapacityType 4`) is the one package that never
-   * expires and resets on a cycle, so its `refreshAtMs` is a real answer to
-   * "when can I use this again" after the quota runs out. The probe passes it
-   * through; a failure to read it is not an error, because a probe without a
-   * cooldown is still a useful probe.
+   * expires and resets on a cycle, so its `refreshAtMs` is the package's own
+   * schedule. It is handed to a probe as EVIDENCE to store beside an
+   * out-of-credit outcome — never as the moment the account becomes usable
+   * again, because check-in and top-ups can land first. A failure to read it is
+   * not an error: a probe that records no refresh point is still a useful probe.
    */
   const quotaRefreshOf = async (
     region: WorkBuddyRegion,

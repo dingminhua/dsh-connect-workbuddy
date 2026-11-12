@@ -25,9 +25,15 @@ import type { WorkBuddyWebProbeOutcome } from '../status-paths.ts'
 /**
  * Outcomes whose label + stated recovery time ARE the whole story.
  *
- * `rate-limited` and `out-of-credit` both carry a reset instant, which the row
- * prints right beside them; their bodies restate that instant and add a
- * `code`/`requestId` pair nobody reads.
+ * `rate-limited` carries a reset instant, which the row prints right beside it;
+ * its body restates that instant and adds a `code`/`requestId` pair nobody
+ * reads.
+ *
+ * `out-of-credit` is here for a DIFFERENT reason than it once was. It no longer
+ * prints an instant at all — the row states what replenishes the balance
+ * (check-in / top-up) instead — and the recorded body's `msg` for the `14018`
+ * family is the same quota envelope, which adds no evidence the label did not
+ * already use. Printing it would bury the one actionable sentence under JSON.
  *
  * `model-busy` belongs here for the opposite reason: its label states the whole
  * finding INCLUDING the remedy ("this model is loaded right now · not your

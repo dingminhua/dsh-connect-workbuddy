@@ -200,8 +200,6 @@ export const en = {
   'row.probeRateLimitedAt': '✗ Rate limited · usable again after {at}',
   'row.probeModelBusyUnknown': '✗ This model is loaded right now · not your account — another account will not help; wait about a minute or switch models',
   'row.probeModelBusyAt': '✗ This model is loaded right now · not your account; retry after {at}, or switch models',
-  'row.probeOutOfCreditUnknown': '✗ Not enough credits · the upstream gave no time for when it frees up',
-  'row.probeOutOfCreditAt': '✗ Not enough credits · quota refreshes {at}',
   'row.probeCredentialRejected': '✗ WorkBuddy refused this account\'s token — sign in again or pick another account',
   'row.probePolicyRejected': '✗ WorkBuddy\'s server refused this request under its content policy — re-signing in won\'t help; try the desktop app or another region/account',
   'row.probeChannelRejected': '✗ The gateway refused the PROMPT itself, not this account — the opening of a system message matched its third-party-agent filter, so another account or region answers the same way',
@@ -271,7 +269,13 @@ export const en = {
   // ---- Account pool ----
   'row.poolTitle': 'Account pool',
   'row.poolNoCandidate': 'No account in this pool can be used right now.',
-  'row.poolNoCandidateHint': 'Members are rate-limited, out of credits, rejected, or unreachable. Rate limits, drained quotas and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. Only a rejected credential needs a new sign-in.',
+  // Careful: "drained quotas" must NOT be listed with the time-based recoveries.
+  // Since credit exhaustion stopped clearing on a timer (a balance read is the
+  // only evidence), an account out of credits does NOT come back on its own —
+  // it comes back once a check-in or a top-up actually lands. Saying otherwise
+  // here promises a recovery the pool will never perform, on the one screen the
+  // user reads precisely because nothing is serving.
+  'row.poolNoCandidateHint': 'Members are rate-limited, out of credits, rejected, or unreachable. Rate limits and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. An account out of credits returns once a balance read confirms replenishment (check-in or top-up). Only a rejected credential needs a new sign-in.',
   // The POOL-level verdict for "every member is blocked by the SAME model"
   // (issue #64). Distinct from `poolNoCandidate` above, which blames the
   // ACCOUNTS; here the accounts are fine and the model is the wall. Without this
@@ -421,7 +425,10 @@ export const en = {
   // below must stay in the same order as that comparator.
   'row.poolOrderRulesTitle': 'How this pool chooses an account',
   'row.poolOrderRulesIntro': 'The pool always picks the first account that can actually be billed right now. The rules below are checked in order — the first one that separates two accounts decides; later rules only break ties.',
-  'row.poolOrderRuleUsable': '1. Can it be billed right now? Accounts that are rate-limited, out of credit, credential-rejected, or failing are moved to the back until their cooldown ends. This outranks everything, including your own order below.',
+  // "until their cooldown ends" is accurate for the cooldown outcomes only.
+  // Credit exhaustion has no cooldown any more, so it is named separately rather
+  // than being folded into a clause that would promise it clears on a clock.
+  'row.poolOrderRuleUsable': '1. Can it be billed right now? Accounts that are rate-limited, credential-rejected, or failing are moved to the back until their cooldown ends; an account out of credit stays out until a balance read confirms replenishment. This outranks everything, including your own order below.',
   'row.poolOrderRuleExpiring': '2. Does it have credits expiring within 3 days? Yes goes first. This also outranks your manual order — see the note below.',
   'row.poolOrderRuleManual': '3. Your manual order. The position you set with the ↑ / ↓ arrows. Accounts you never ordered are placed after every ordered one.',
   'row.poolOrderRuleNearestExpiry': '4. Which expiry comes first? Between accounts that both have credits expiring, the one losing them sooner goes first.',
@@ -912,8 +919,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.probeRateLimitedAt': '✗ 被限流 · {at} 之后可再用',
   'row.probeModelBusyUnknown': '✗ 该模型当前负载较高 · 不是账号被限流——换账号没用，建议等待约 1 分钟或切换模型',
   'row.probeModelBusyAt': '✗ 该模型当前负载较高 · 不是账号被限流；{at} 之后可重试，或切换模型',
-  'row.probeOutOfCreditUnknown': '✗ 积分不足 · 上游未给出何时恢复',
-  'row.probeOutOfCreditAt': '✗ 积分不足 · 积分包 {at} 刷新',
   'row.probeCredentialRejected': '✗ WorkBuddy 拒绝了这个账号的 token——请重新登录或换一个账号',
   'row.probePolicyRejected': '✗ WorkBuddy 服务端按内容策略拒绝了这次请求——重新登录无效；可在桌面端验证或切换区域/账号',
   // PLAIN TEXT, no `**bold**` markup: this label is rendered as a JSX text
@@ -987,7 +992,11 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // ---- 账号池 ----
   'row.poolTitle': '账号池',
   'row.poolNoCandidate': '账号池里目前没有可用的账号。',
-  'row.poolNoCandidateHint': '成员要么在限流冷却中、要么积分耗尽、要么凭据被拒、要么上游无响应。限流、积分耗尽与瞬时故障都会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底，不需要你操作；只有「凭据被拒」需要重新登录。',
+  // 注意：「积分耗尽」不能和按时间恢复的那几类写在一起。自从积分耗尽改用
+  // 「余额读数」作为唯一证据，它**不会**自己按时间回池——要等签到或充值真的到账、
+  // 且有一次余额查询读到正数。写在一起就是承诺一件池子永远不会做的事，而这正是
+  // 用户"什么都用不了"时盯着的那个屏幕。
+  'row.poolNoCandidateHint': '成员要么在限流冷却中、要么积分耗尽、要么凭据被拒、要么上游无响应。限流与瞬时故障会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底；积分耗尽则要等一次余额查询确认到账（签到或充值）后才回池。只有「凭据被拒」需要重新登录。',
   // 「所有成员都撞在同一个模型上」的池级结论（issue #64）。与上面那条刻意分开：
   // 那条说的是**账号**不行，这条说的是**账号没问题、模型才是那堵墙**。没有它，
   // 卡片上每行「模型繁忙」加起来就成了一个整体上错误的结论，用户会去找一个不存
@@ -1126,7 +1135,9 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 排序规则说明。顺序必须与 rankPool 的比较器完全一致（见 src/account-pool.ts）。
   'row.poolOrderRulesTitle': '本池如何挑选账号',
   'row.poolOrderRulesIntro': '池子总是先挑「现在确实能扣费的」账号。下面这些规则按顺序逐条比较，第一条分出胜负就停止，后面的只在平局时才看。',
-  'row.poolOrderRuleUsable': '1. 现在能扣费吗？被限流、积分耗尽、凭证被拒或调用失败的账号会被挪到后面，直到冷却结束。这一条优先级最高，压过下面的手动顺序。',
+  // 「直到冷却结束」只对真有冷却的那几类成立。积分耗尽已经没有冷却了，所以
+  // 单独说它，不塞进那个会让人以为"到点自动回池"的分句里。
+  'row.poolOrderRuleUsable': '1. 现在能扣费吗？被限流、凭证被拒或调用失败的账号会被挪到后面，直到冷却结束；积分耗尽的账号则要等一次余额查询确认到账后才回池。这一条优先级最高，压过下面的手动顺序。',
   'row.poolOrderRuleExpiring': '2. 有 3 天内会过期的积分吗？有就排前面。这一条同样压过手动顺序，原因见下方说明。',
   'row.poolOrderRuleManual': '3. 你排的手动顺序。就是用 ↑ / ↓ 设定的位置。没有手动排过的账号，会排在所有已排序账号之后。',
   'row.poolOrderRuleNearestExpiry': '4. 谁先过期？两个都有临期积分时，先到期的排前面。',

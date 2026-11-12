@@ -384,6 +384,23 @@ function rel(p) {
   return relative(ROOT, p).split(sep).join('/')
 }
 
+/**
+ * Git's own bookkeeping files, which are NOT repository content.
+ *
+ * `SKIP_DIRS` already drops the `.git` DIRECTORY of a normal checkout. But in a
+ * `git worktree` (and in a submodule) `.git` is a plain FILE whose only line is
+ * `gitdir: /Users/<real-name>/…/worktrees/<name>` — an absolute path on this
+ * machine, written by git itself, in a file that is not source, is never
+ * committed, and ships nowhere.
+ *
+ * Without this the scanner fails on EVERY worktree checkout with
+ * `real-home-path` — a gate that is red for a reason the maintainer cannot act
+ * on, which is precisely how a privacy gate gets switched off. It is the same
+ * shape as the `lib/` mistake documented above: the rule has to be about what
+ * the file IS, not about where it sits.
+ */
+const SKIP_FILES = new Set(['.git'])
+
 /** Walk the tree. Hidden FILES are included; only build/vendor dirs are skipped. */
 function walk(dir, out = []) {
   let entries
@@ -398,6 +415,8 @@ function walk(dir, out = []) {
       if (SKIP_DIRS.has(entry.name)) continue
       walk(full, out)
     } else if (entry.isFile()) {
+      // See {@link SKIP_FILES}: git's own pointer files are not our content.
+      if (SKIP_FILES.has(entry.name)) continue
       out.push(full)
     }
   }

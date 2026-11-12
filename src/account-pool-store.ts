@@ -208,18 +208,24 @@ function knownProbeSource(value: unknown): WorkBuddyPoolProbeSource | undefined 
  * The two writers describe the same account at different moments and carry
  * different fields:
  *
- *   - `test-batch` measures the TARGET MODEL deliberately, so it is the only
- *     writer that can produce a refresh point (`retryAtMs` with
- *     `retrySource: 'quota-refresh'`) — a time the billing side states outright.
+ *   - `test-batch` measures the TARGET MODEL deliberately, and it is the writer
+ *     that can attach the monthly refresh point (`retryAtMs` with
+ *     `retrySource: 'quota-refresh'`) — recorded as upstream evidence about the
+ *     PACKAGE's cycle, not as the moment the account becomes usable again.
  *   - `live-request` reports what a real chat request just hit. It often carries
  *     no `retryAtMs` at all (a transport blip names no time), and a spread would
- *     therefore DELETE the refresh point the probe had already resolved.
+ *     therefore DELETE that recorded point.
  *
  * Measured consequence of the spread, on a real `14018` account: the probe
  * recorded "quota refreshes 2026-11-01", the next live failure rewrote the
- * record without that field, and the pool then reported "retry in about 30
- * minutes" — putting an exhausted account back into rotation to be refused
- * again. The correct value was in the file one write earlier.
+ * record without that field, and the card then said the upstream gave no time at
+ * all — while the correct value was in the file one write earlier.
+ *
+ * NOTE that recovery no longer follows from this field: credit exhaustion is
+ * cleared by a later positive balance read, not by the timestamp passing (see
+ * `reconcilePoolCredits` and `exclusionOf`). The point is inherited because it is
+ * upstream evidence worth keeping, and losing it would silently downgrade a
+ * recorded fact to "the upstream said nothing".
  *
  * So `retryAtMs` is INHERITED when the update does not state one, and every
  * other field is the update's (the newer measurement owns `outcome`, `atMs`,
