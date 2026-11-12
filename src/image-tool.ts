@@ -23,17 +23,22 @@ import type { WorkBuddyCredential } from './auth.ts'
 import { pruneTempDir, TEMP_MEDIA_KEEP } from './temp-files.ts'
 import { regionOf } from './upstream.ts'
 import {
+  IMAGE_SIZE_LIMITS_WIDE,
   IMAGE_TAG_IMAGE_TO_IMAGE,
   IMAGE_TAG_TEXT_TO_IMAGE,
   MAX_INPUT_IMAGE_BYTES,
   WorkBuddyImageError,
   imageDataUrl,
   imageMimeForPath,
+  imageModelChoices,
+  imageSizeLimitsOf,
   isBareBase64Image,
+  isWatermarkFreeImageModel,
   parseImageDataUrl,
   pickMediaModel,
   sniffImageMime,
   type WorkBuddyImageOutcome,
+  type WorkBuddyImageSizeLimits,
   type WorkBuddyMediaModel,
 } from './image-gen.ts'
 
@@ -78,6 +83,44 @@ export interface ImageToolExec {
   readonly signal?: AbortSignal
 }
 
+/**
+ * 选这次真正要用的模型。
+ *
+ * 优先级只有三级，且第二级「谁写的」决定写错了谁负责：
+ *
+ *   1. 调用方显式传的 `model`——写错就报错（`pickMediaModel` 会列出可用项）。
+ *   2. 用户在卡片上选的偏好（`preferredImageModel`）——**只在没显式传时**生效，
+ *      而且失效时静默回落，因为目录可能已经变过，一个过期偏好不该卡住一次生成。
+ *   3. 组内第一个，也就是上游目录今天给的那条（默认 `hunyuan-image-alpha`）。
+ *
+ * 偏好只落在软约束这一侧，是因为它和 `model` 参数的区别是**谁写的**：参数是这次
+ * 的调用者写的，偏好是用户上一次在卡片上点的。这与视频工具 `preferredVideoModel`
+ * 的判据完全一致，两个工具不该有两套说法。
+ */
+function resolveImageModel(
+  models: readonly WorkBuddyMediaModel[],
+  requested: string | undefined,
+  tag: string,
+  deps: ImageToolDeps,
+  credential: WorkBuddyCredential,
+  region: 'cn' | 'global',
+): WorkBuddyMediaModel {
+  // 可选集合 = 目录给的 + 本插件补的那条无水印模型（见 `imageModelChoices`）。
+  // 国际区拿不到它：实测 `hunyuan-image-v3.0` 在国际区直接 14401 route config
+  // not found，把它列进国际区的选项就是给一个点了必然失败的按钮。
+  const choices = region === 'cn'
+    ? imageModelChoices(models, tag)
+    : models.filter(model => model.tags.includes(tag))
+  const pinned = requested === undefined ? deps.preferredImageModel?.(credential, tag) : undefined
+  try {
+    return pickMediaModel(choices, requested ?? pinned, tag)
+  } catch (error: unknown) {
+    // 显式参数写错要原样抛；偏好过期则当作「没选」，回落组内第一个。
+    if (requested !== undefined || pinned === undefined) throw error
+    return pickMediaModel(choices, undefined, tag)
+  }
+}
+
 /** 工具运行所需的外部能力，全部由 `src/index.ts` 注入，便于单测替换。 */
 export interface ImageToolDeps {
   /** 解析生图所用区的凭据；该区未登录/未授权则返回 undefined（不要抛异常）。 */
@@ -87,6 +130,17 @@ export interface ImageToolDeps {
     credential: WorkBuddyCredential,
     signal?: AbortSignal,
   ) => Promise<readonly WorkBuddyMediaModel[]>
+  /**
+   * 该区在卡片上选定的文生图模型 id，没选就返回 undefined。
+   *
+   * 只在调用方没显式传 `model` 时生效。用它而不是在工具里硬编码「无水印模型」，
+   * 是因为这条例径有实打实的代价（单价 6 → 11.1 积分、尺寸上限从 419 万像素掉到
+   * 104 万），必须由用户自己选，工具不替他决定花更多钱。
+   */
+  readonly preferredImageModel?: (
+    credential: WorkBuddyCredential,
+    tag: string,
+  ) => string | undefined
   /** 真正发一次文生图请求。 */
   readonly generateImage: (
     credential: WorkBuddyCredential,
@@ -190,11 +244,18 @@ function strictString(value: unknown, name: string): string | undefined {
 
 /** 「宽x高」——允许 `x` / `X` / 全角 `×`；不接受 `*`、空格、带单位。 */
 const SIZE_PATTERN = /^[0-9]+[xX×][0-9]+$/
-/** 上游实测上限：总像素约 419 万（见 docs/IMAGE_GEN.md「尺寸与比例」）。 */
-const MAX_IMAGE_PIXELS = 4_194_304
+/**
+ * 上游实测上限：总像素约 419 万（见 docs/IMAGE_GEN.md「尺寸与比例」）。
+ *
+ * 这是**默认档**（`hunyuan-image-alpha` 那一族）的数字。真正生效的范围由
+ * {@link ImageSizePlan} 一路传下来的 `WorkBuddyImageSizeLimits` 决定——v3.0 的
+ * 边更短、像素更少（见 `imageSizeLimitsOf`）。这里的常量只是那个函数的缺省值，
+ * 不是「所有模型的边界」。
+ */
+const MAX_IMAGE_PIXELS = IMAGE_SIZE_LIMITS_WIDE.maxPixels
 /** 边长支持范围。上限 2560 来自实测通过的最大长边（2560x1440 / 2560x1600）。 */
-const MIN_IMAGE_EDGE = 512
-const MAX_IMAGE_EDGE = 2560
+const MIN_IMAGE_EDGE = IMAGE_SIZE_LIMITS_WIDE.minEdge
+const MAX_IMAGE_EDGE = IMAGE_SIZE_LIMITS_WIDE.maxEdge
 /** 实测被上游拒绝的尺寸，报错时直接点出来，省得模型反复试。 */
 const KNOWN_BAD_SIZES: ReadonlySet<string> = new Set(['2560x2560', '3072x3072', '4096x4096'])
 
@@ -267,54 +328,99 @@ function parseSizeSpec(value: unknown): SizeSpec {
  * 把解析好的尺寸规格落成一个真正要发给上游的值。
  *
  * 与 {@link parseSizeSpec} 分开，是因为这两件事的**时机**不同：格式错误要在收到
- * 参数的第一时间就报（本地免费），而 `auto` 与越界缩放都要等输入图量过宽高。
+ * 参数的第一时间就报（本地免费），而 `auto` 与越界缩放都要等输入图量过宽高、
+ * 也要等**模型定下来**——两个模型的合法范围不一样（见 `imageSizeLimitsOf`）。
  *
  * 越界为什么由工具收、而不是让模型自己算：两条边（512–2560）与总像素
  * （≤4,194,304）是两个约束，手算要取「2560/长边」与「√(4194304/面积)」里更小的
  * 那个**再复查一遍**。要求模型在参数里做这种算术，实测会算出仍然越界的值
  * （2480x3508 → 1810x2560，边长合规但乘积 4,633,600 仍超）。收完之后把「动过什么」
  * 写进 hint，模型得据实转告用户，不能假装按用户给的尺寸出图。
+ *
+ * `limits` 来自**这一次选中的模型**，不是全局常量：v3.0 的边更短、像素更少，
+ * 用 alpha 的范围替它算会得到上游 400（实测 `1024x1025` 就被拒）。
  */
-function planImageSize(spec: SizeSpec, input: ImageDimensions | undefined): SizePlan {
+/**
+ * `size: auto` 但量不出输入图 —— 这一步**不需要模型**，所以单独提出来。
+ *
+ * 报错时机是这里唯一的理由：模型的失败（目录里没这条模型）要花一次目录请求
+ * 才能知道，而「你写了 auto 却没给图」在本地就能判。把它压到模型解析之后，
+ * 一个纯参数错误就会被「目录里没有模型」盖掉，用户改完一处还得再撞第二处。
+ */
+function missingAutoSizeInput(): never {
+  throw inputImageError(
+    'workbuddy image: size 写了 auto，但这一次量不出输入图的宽高'
+    + '（没有给 image，或给的图格式认不出来），没法替你挑画布。'
+    + '请直接写具体尺寸：方图 1024x1024、竖图 1024x1536、横图 1536x1024。',
+  )
+}
+
+/** `auto` 必须配一张量得出宽高的图；没有就报那条错误，否则原样返回。 */
+function requireAutoInput(input: ImageDimensions | undefined): ImageDimensions {
+  return input ?? missingAutoSizeInput()
+}
+
+function planImageSize(
+  spec: SizeSpec,
+  input: ImageDimensions | undefined,
+  limits: WorkBuddyImageSizeLimits,
+): SizePlan {
   if (spec.kind === 'auto') {
-    if (input === undefined) {
-      throw inputImageError(
-        'workbuddy image: size 写了 auto，但这一次量不出输入图的宽高'
-        + '（没有给 image，或给的图格式认不出来），没法替你挑画布。'
-        + '请直接写具体尺寸：方图 1024x1024、竖图 1024x1536、横图 1536x1024。',
-      )
-    }
-    const canvas = canvasForInput(input)
+    // 调用方（execute）已经在解析模型之前拦过「auto 却没有图」；
+    // 这里再判一次是为了让函数自己不依赖调用顺序，绝不静默挑一个画布。
+    const source = requireAutoInput(input)
+    const canvas = canvasForInput(source, limits)
     const size = `${canvas.width}x${canvas.height}`
     return {
       size,
       requested: 'auto',
       note: canvas.exact
-        ? `size 写的是 auto，已按输入图 ${input.width}x${input.height} 的比例取画布 `
-          + `${size}（${ORIENTATION_LABEL[orientationOf(input)]}）`
-        : `输入图 ${input.width}x${input.height} 太细长，等比缩不出合法的画布，`
-          + `已改用${ORIENTATION_LABEL[orientationOf(input)]}常用档 ${size}，比例有变化`,
+        ? `size 写的是 auto，已按输入图 ${source.width}x${source.height} 的比例取画布 `
+          + `${size}（${ORIENTATION_LABEL[orientationOf(source)]}）`
+        : `输入图 ${source.width}x${source.height} 太细长，等比缩不出合法的画布，`
+          + `已改用${ORIENTATION_LABEL[orientationOf(source)]}常用档 ${size}，比例有变化`,
     }
   }
   const { width, height, normalized } = spec
-  if (isSizeInRange(width, height, normalized)) return { size: `${width}x${height}` }
+  if (isSizeInRange(width, height, normalized, limits)) return { size: `${width}x${height}` }
 
-  const fitted = fitIntoRange(width, height)
+  const fitted = fitIntoRange(width, height, limits)
   if (fitted === undefined) {
     throw inputImageError(
       `workbuddy image: 参数 size ${normalized} 的比例太极端，等比缩放放不进 `
-      + `${MIN_IMAGE_EDGE}–${MAX_IMAGE_EDGE} 且总像素不超过 419 万的范围内。`
-      + '请改成接近的常用档位：方图 1024x1024、竖图 1024x1536、横图 1536x1024、'
-      + '16:9 桌面 2560x1440、9:16 手机壁纸 1440x2560。',
+      + `${describeLimits(limits)} 的范围内。`
+      + '请改成接近的常用档位：'
+      + sampleSizesFor(limits)
+      + '。',
     )
   }
   const direction = fitted.direction === 'up' ? '放大' : '缩小'
   return {
     size: `${fitted.width}x${fitted.height}`,
     requested: normalized,
-    note: `你给的尺寸 ${normalized} 超出 ${MIN_IMAGE_EDGE}–${MAX_IMAGE_EDGE} 边长或 419 万像素上限，`
+    note: `你给的尺寸 ${normalized} 超出${describeLimits(limits)}，`
       + `已等比${direction}到 ${fitted.width}x${fitted.height}`,
   }
+}
+
+/**
+ * 一句话说清这次的上限，用在两条错误/提示里。
+ *
+ * 说「419 万」而不是「4,194,304」：hint 是要模型原样转述给用户的，像素数写全
+ * 数字没人读得进去，而「约 419 万像素」既准确又够用。v3.0 的 104 万同理
+ * （1048576/1e4 = 104.9 → 105，不是 1）。
+ */
+function describeLimits(limits: WorkBuddyImageSizeLimits): string {
+  const wan = (limits.maxPixels / 10_000).toFixed(0)
+  return ` ${limits.minEdge}–${limits.maxEdge} 边长或约 ${wan} 万像素上限`
+}
+
+/** 这个范围内拿得出手的档位例子——按半径给出，别举一个会被拒的。 */
+function sampleSizesFor(limits: WorkBuddyImageSizeLimits): string {
+  if (limits.maxPixels <= 1_048_576) {
+    return '方图 1024x1024、竖图 768x1024、横图 1280x720'
+  }
+  return '方图 1024x1024、竖图 1024x1536、横图 1536x1024、16:9 桌面 2560x1440、9:16 手机壁纸 1440x2560'
 }
 
 /**
@@ -531,6 +637,7 @@ function firstDimensions(
  */
 function canvasForInput(
   input: ImageDimensions,
+  limits: WorkBuddyImageSizeLimits,
 ): { readonly width: number; readonly height: number; readonly exact: boolean } {
   const orientation = orientationOf(input)
   if (orientation === 'square') return { ...DEFAULT_SIZE_BY_ORIENTATION.square, exact: true }
@@ -539,22 +646,26 @@ function canvasForInput(
   const short = Math.max(1, Math.round((shortest * AUTO_LONG_EDGE) / longest))
   const width = orientation === 'landscape' ? AUTO_LONG_EDGE : short
   const height = orientation === 'landscape' ? short : AUTO_LONG_EDGE
-  if (isSizeInRange(width, height, `${width}x${height}`)) {
+  if (isSizeInRange(width, height, `${width}x${height}`, limits)) {
     return { width, height, exact: true }
   }
-  const fitted = fitIntoRange(width, height)
+  const fitted = fitIntoRange(width, height, limits)
   if (fitted !== undefined) return { width: fitted.width, height: fitted.height, exact: true }
   return { ...DEFAULT_SIZE_BY_ORIENTATION[orientation], exact: false }
 }
 
 /** 两个上限（长边 2560、总像素 419 万）同时满足时，把宽高按比例收进范围。 */
-function shrinkProduct(width: number, height: number): ImageDimensions {
+function shrinkProduct(
+  width: number,
+  height: number,
+  limits: WorkBuddyImageSizeLimits,
+): ImageDimensions {
   let w = width
   let h = height
   // 各自 floor 之后乘积仍可能略超上限（2509x1673 = 4,197,557），再收一两轮即可，
   // 循环上限只是防御——正常情况下第二轮就到位。
-  for (let round = 0; round < 4 && w * h > MAX_IMAGE_PIXELS; round += 1) {
-    const scale = Math.sqrt(MAX_IMAGE_PIXELS / (w * h))
+  for (let round = 0; round < 4 && w * h > limits.maxPixels; round += 1) {
+    const scale = Math.sqrt(limits.maxPixels / (w * h))
     w = Math.floor(w * scale)
     h = Math.floor(h * scale)
   }
@@ -574,33 +685,35 @@ function shrinkProduct(width: number, height: number): ImageDimensions {
 function fitIntoRange(
   width: number,
   height: number,
+  limits: WorkBuddyImageSizeLimits,
 ): { readonly width: number; readonly height: number; readonly direction: 'down' | 'up' } | undefined {
+  const { minEdge, maxEdge, maxPixels } = limits
   const longest = Math.max(width, height)
   const shortest = Math.min(width, height)
-  const tooBig = longest > MAX_IMAGE_EDGE || width * height > MAX_IMAGE_PIXELS
-  const tooSmall = shortest < MIN_IMAGE_EDGE
+  const tooBig = longest > maxEdge || width * height > maxPixels
+  const tooSmall = shortest < minEdge
 
   if (!tooBig && tooSmall) {
-    // 只小不大：短边抬到 512，另一边同比放大。长边放大后若超上限就交给下面的兜底。
-    const scale = MIN_IMAGE_EDGE / shortest
-    if (longest * scale <= MAX_IMAGE_EDGE) {
-      const scaled = shrinkProduct(Math.round(width * scale), Math.round(height * scale))
+    // 只小不大：短边抬到 minEdge，另一边同比放大。长边放大后若超上限就交给下面的兜底。
+    const scale = minEdge / shortest
+    if (longest * scale <= maxEdge) {
+      const scaled = shrinkProduct(Math.round(width * scale), Math.round(height * scale), limits)
       return { ...scaled, direction: 'up' }
     }
     return undefined
   }
 
-  const scale = Math.min(MAX_IMAGE_EDGE / longest, Math.sqrt(MAX_IMAGE_PIXELS / (width * height)))
-  const scaled = shrinkProduct(Math.floor(width * scale), Math.floor(height * scale))
-  if (scaled.width >= MIN_IMAGE_EDGE && scaled.height >= MIN_IMAGE_EDGE) {
+  const scale = Math.min(maxEdge / longest, Math.sqrt(maxPixels / (width * height)))
+  const scaled = shrinkProduct(Math.floor(width * scale), Math.floor(height * scale), limits)
+  if (scaled.width >= minEdge && scaled.height >= minEdge) {
     return { ...scaled, direction: 'down' }
   }
 
-  // 极端比例：短边缩到 512 之后长边仍然超上限，等比缩放无解。
-  const extreme = MIN_IMAGE_EDGE / shortest
-  if (longest * extreme <= MAX_IMAGE_EDGE) {
-    const lifted = shrinkProduct(Math.round(width * extreme), Math.round(height * extreme))
-    if (lifted.width * lifted.height <= MAX_IMAGE_PIXELS) return { ...lifted, direction: 'up' }
+  // 极端比例：短边缩到 minEdge 之后长边仍然超上限，等比缩放无解。
+  const extreme = minEdge / shortest
+  if (longest * extreme <= maxEdge) {
+    const lifted = shrinkProduct(Math.round(width * extreme), Math.round(height * extreme), limits)
+    if (lifted.width * lifted.height <= maxPixels) return { ...lifted, direction: 'up' }
   }
   return undefined
 }
@@ -626,12 +739,23 @@ interface SizePlan {
   readonly note?: string
 }
 
-/** 一个尺寸是否直接可用：两条边在 512–2560，且宽乘高不超过 419 万。 */
-function isSizeInRange(width: number, height: number, normalized: string): boolean {
+/**
+ * 一个尺寸能否**原样**发给这次选中的模型。
+ *
+ * 三个判据都跟着 `limits` 走，不是全局常量：v3.0 的边 2048 / 像素 1,048,576，
+ * alpha 才是 2560 / 4,194,304。`KNOWN_BAD_SIZES` 是那个宽档下实测被拒的档位，
+ * 窄档的边界由 `limits` 本身就够判，不必再叠一份。
+ */
+function isSizeInRange(
+  width: number,
+  height: number,
+  normalized: string,
+  limits: WorkBuddyImageSizeLimits,
+): boolean {
   if (KNOWN_BAD_SIZES.has(normalized)) return false
-  if (width < MIN_IMAGE_EDGE || height < MIN_IMAGE_EDGE) return false
-  if (width > MAX_IMAGE_EDGE || height > MAX_IMAGE_EDGE) return false
-  return width * height <= MAX_IMAGE_PIXELS
+  if (width < limits.minEdge || height < limits.minEdge) return false
+  if (width > limits.maxEdge || height > limits.maxEdge) return false
+  return width * height <= limits.maxPixels
 }
 
 /**
@@ -803,7 +927,9 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
       + '实扣和你报的「约」对不上（差一个量级通常说明这次走了另一个区）就照实说实际扣了多少，别替它圆。'
       + '积分不等于人民币、也没有汇率，问折合多少照实说给不出。'
       + '单张也要先把这两档价说一句，然后在同一轮里接着调——先说后调，不等回应；这是告知，不是请示（改图会改版式、要出多张这些仍在七条里，得等同意）。'
-      + '但用户这一句只是在问价（「多少钱」「先别画」）就只报、不调。用户要锁定金额只有一条路：按 (c) 关掉一个区的开关，让下一次只可能走另一个区。\n'
+      + '但用户这一句只是在问价（「多少钱」「先别画」）就只报、不调。用户要锁定金额只有一条路：按 (c) 关掉一个区的开关，让下一次只可能走另一个区。'
+      + '国内区还有第二条路：卡片上把生图模型选成 hunyuan-image-v3.0，出图不带水印，但约 11.1 积分/张（贵约一倍）、尺寸上限也小得多；'
+      + '用户抱怨水印时就把这条如实告诉他，并说明上游没有「关水印」的开关——只能换模型；不要承诺能去掉水印，也不要自己替他换。\n'
       + '(c) 走哪个区：只看账号的配置，不看这次调用——插件里两个区可以分别登录、分别打开「允许模型自主生图」，'
       + '本次走的是「开着且打开了那个开关」的区；两个区都满足时走国内版（贵的那一档），'
       + '只开国际版时才走国际版。'
@@ -885,7 +1011,10 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
       + 'model 一般留空（或空字符串）：留空就用该区目录里第一个带对应 tag 的模型（文生图 text-to-image、改图 image-to-image）。'
       + '用户点名要某个模型就照他给的 id 填（区域和目录查不到不影响填），填了不存在或没有对应 tag 的 id 会直接报错并列出可用 id——'
       + '别自己编 id。用户说「用上次那个模型」这类指代、没给 id 时，留空按目录第一个，并告诉他这次实际用的是哪个。'
-      + '用户说「用便宜的那个」是在说区、不是模型，按 (c) 回答。\n'
+      + '用户说「用便宜的那个」是在说区、不是模型，按 (c) 回答。'
+      + '用户明确说「不要水印」「去掉水印」时才填 hunyuan-image-v3.0（只有国内区有），并当场说明代价：'
+      + '约 11.1 积分/张、最大约 104 万像素（1024x1024 顶格；1024x1536 这类竖版会等比缩成 836x1254，比例不变但更小）；'
+      + '用户没提水印就别主动换，默认那条更便宜、尺寸档位也全。\n'
       + '计费边界分三种说法：返回带 url 又带 credit → 按 credit 说实扣了多少；'
       + '带 url 但没 credit → 按 (b) 的两档估，并说明以账单为准；'
       + '没拿到图、但请求已经发到上游（超时、审核拒绝、上游报错）→ 只能说「这一次没拿到图、可能已扣费」，'
@@ -1044,12 +1173,20 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
         // 改图的输出画布按第一张输入图的真实宽高定（size 写 auto 时用它按比例算；
         // 写了具体尺寸时它只是 hint 里的一句实话）。宽高是从字节里解出来的，
         // 不需要模型知道原图多大——它本来也读不到本地文件。
+        // 区要先算：它决定可选模型集合（无水印那条只有国内区有路由），而模型又要
+        // 先于尺寸定下来（范围跟着模型走）。凭据自带 domain，所以这一步不花代价。
+        const region = regionOf(credential.domain) === 'global' ? 'global' : 'cn'
         const inputSize = resolved === undefined ? undefined : firstDimensions(resolved)
-        const plan = planImageSize(sizeSpec, inputSize)
-        const size = plan.size
+        // 纯本地、不花代价的参数错误先报：见 `missingAutoSizeInput` 的注释。
+        if (sizeSpec.kind === 'auto' && inputSize === undefined) missingAutoSizeInput()
         const inputs = resolved?.map(input => input.dataUrl)
         const tag = inputs === undefined ? IMAGE_TAG_TEXT_TO_IMAGE : IMAGE_TAG_IMAGE_TO_IMAGE
-        const model = pickMediaModel(models, requestedModel, tag)
+        // 模型必须先定：它的尺寸范围跟着模型走（见 `imageSizeLimitsOf`），
+        // 先算尺寸再选模型会拿 alpha 的 419 万去放行一个 v3.0 发不出去的尺寸。
+        const model = resolveImageModel(models, requestedModel, tag, deps, credential, region)
+        const limits = imageSizeLimitsOf(model.id)
+        const plan = planImageSize(sizeSpec, inputSize, limits)
+        const size = plan.size
         sent = true
         const outcome = inputs === undefined
           ? await deps.generateImage(credential, { model: model.id, prompt, size }, signal)
@@ -1059,15 +1196,19 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
             signal,
           )
         const mode = inputs === undefined ? 'generate' : 'edit'
-        // 用户最关心的三件事：走的哪个区、用的哪个模型、这张扣了多少积分。
-        // 区得从凭据的 domain 现算——工具是跨区注册的，同一份描述要服务两个区。
-        const region = regionOf(credential.domain) === 'global' ? 'global' : 'cn'
         const regionLabel = region === 'global' ? '国际版' : '国内版'
         const dimensionNote = plan.note === undefined ? '' : `${plan.note}。`
         const inputNote = inputSize === undefined
           ? ''
           : `输入图第一张是 ${inputSize.width}x${inputSize.height}（`
             + `${ORIENTATION_LABEL[orientationOf(inputSize)]}）。`
+        // 水印这一句必须每次都说，因为它是**用户能感知到**的那件事，而他看不到
+        // 我们凭什么选了这个模型。两种说法都是事实：v3.0 实测无水印；alpha 一族
+        // 的产物右下角固定有「AI生成 WORKBUDD>」，上游没有关掉它的参数。
+        const watermarkNote = isWatermarkFreeImageModel(model.id)
+          ? '这个模型出图不带 WorkBuddy 水印（代价是单价更高、尺寸上限更小）。'
+          : '这个模型出的图右下角带「AI生成 WORKBUDD>」水印——上游没有关闭它的参数；'
+            + '要无水印可在插件卡片里把生图模型选成 hunyuan-image-v3.0（更贵、尺寸上限更小）。'
         const value: Record<string, unknown> = {
           mode,
           region,
@@ -1079,6 +1220,7 @@ export function createImageTool(deps: ImageToolDeps): ImageToolDefinition {
             + `${mode === 'edit' ? '改图' : '文生图'}，尺寸 ${size}）。`
             + inputNote
             + dimensionNote
+            + watermarkNote
             + (outcome.credit === undefined
               ? '本次响应没带扣费字段，具体扣了多少以额度面板为准。'
               : `本次实际扣费 ${outcome.credit} 积分。`)

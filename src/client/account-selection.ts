@@ -966,6 +966,30 @@ export async function writeRegionPreferredVideoModels(
   })
 }
 
+/**
+ * Set (or clear) this region's text-to-image model choice, verifying it landed.
+ *
+ * `modelId` of `undefined` / `''` clears it back to "follow the catalog". The
+ * landed check matters here for the same reason as the video pin: a picker that
+ * silently reverted would leave the user believing their images come out
+ * watermark-free when the tool is still using the watermarked model.
+ */
+export async function writeRegionPreferredImageModel(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  modelId: string | undefined,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    if (stored === null || stored === undefined) return false
+    const current = stored['preferredImageModel']
+    return modelId === undefined || modelId === ''
+      ? current === undefined || current === ''
+      : current === modelId
+  })
+}
+
 export async function writeRegionCreditsShown(
   scope: WorkBuddyAccountScope,
   region: WorkBuddyWebRegion,

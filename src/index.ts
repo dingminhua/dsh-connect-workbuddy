@@ -81,6 +81,7 @@ import type { WorkBuddyAdapter, ForeignThinkingBlock } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { MEDIA_MODEL_TTL_MS, registerWorkBuddyImageTool, type ToolsServiceLike } from './image-tool.ts'
 import { registerWorkBuddyVideoTool } from './video-tool.ts'
+import { IMAGE_TAG_TEXT_TO_IMAGE } from './image-gen.ts'
 import type { WorkBuddyMediaModel } from './image-gen.ts'
 import {
   createCliBridgeRuntime,
@@ -414,6 +415,20 @@ export interface WorkBuddyRegionState {
    * decides to spend, so an upgrade must never hand out a spending capability.
    */
   videoToolEnabled?: boolean
+  /**
+   * Which text-to-image model this region generates with (issue #241).
+   *
+   * Absent or `''` means "no choice" — the tool takes the catalog's first model
+   * for that tag, so a config predating this field keeps its exact behaviour.
+   * Set to `hunyuan-image-v3.0` to get output WITHOUT the "AI生成 WORKBUDD>"
+   * watermark, at ~11.1 credits/image instead of ~6 and with a smaller maximum
+   * size (2048 px edge, 1,048,576 px total).
+   *
+   * A free id rather than an enum, deliberately: the watermark-free model is not
+   * in the upstream catalog (it is the official CLI's hard-coded fallback), and
+   * a stale pick must degrade to "no choice" rather than fail a generation.
+   */
+  preferredImageModel?: string
   /**
    * The video model the user pinned in the card, keyed by video tag
    * (`text-to-video` / `image-to-video`), value is a model id from this
@@ -959,6 +974,26 @@ const regionStateConfig = z.object({
   lastCatalog: z.array(modelConfig).default([]),
   enabledModelIds: z.array(z.string()).default([]),
   imageModelIds: z.array(z.string()).default([]),
+  /**
+   * Which text-to-image model this region uses, as picked in the card (issue #241).
+   *
+   * An EMPTY string means "no choice": the tool takes the group's first model,
+   * which is whatever the upstream catalog lists first (`hunyuan-image-alpha` in
+   * the CN region as of 2026-11-12). Set it to `hunyuan-image-v3.0` for output
+   * with no watermark.
+   *
+   * Why a free string and not an enum: the watermark-free model is NOT in the
+   * `/v3/config` catalog — it is the official CLI's own hard-coded fallback — so
+   * an enum would have to hard-code a vendor id list that can change without
+   * this plugin being released. The tool validates it against the choices it can
+   * actually offer (`imageModelChoices`) and falls back silently when the id is
+   * stale, exactly like `preferredVideoModels`.
+   */
+  preferredImageModel: z.string().default('').description(
+    'Text-to-image model for this region, picked in the card. Empty = the catalog\'s first model. '
+    + 'Set "hunyuan-image-v3.0" for watermark-free output (CN region only; ~11.1 credits/image '
+    + 'instead of ~6, and a smaller size limit).',
+  ),
   /**
    * Alternative CN gateway host (issue #220); see the interface field of the
    * same name. Empty = the built-in gateway.
@@ -2604,6 +2639,13 @@ export function apply(ctx: Context, config: Config): void {
       listMediaModels: (credential, signal) => client.fetchMediaModels(credential, signal),
       generateImage: (credential, request, signal) => client.generateImage(credential, request, signal),
       editImage: (credential, request, signal) => client.editImage(credential, request, signal),
+      // 卡片上选的文生图模型（issue #241）。空串就是「没选」，工具按组内第一个走——
+      // 与视频的钉住同一个读法，只是生图只有一个 tag 组，不必按 tag 存一张表。
+      preferredImageModel: (credential, tag) => {
+        if (tag !== IMAGE_TAG_TEXT_TO_IMAGE) return undefined
+        const picked = regionStateOf(current(), regionOf(credential.domain)).preferredImageModel
+        return picked === undefined || picked === '' ? undefined : picked
+      },
       logger: ctx.logger,
     }),
   })
@@ -2987,6 +3029,13 @@ export function apply(ctx: Context, config: Config): void {
      * happens to hold.
      */
     preferredVideoModels: region => regionStateOf(current(), region).preferredVideoModels ?? {},
+    /**
+     * The text-to-image model chosen per region, for the card's picker (issue
+     * #241). Read from the committed value like the switches above, so the
+     * picker shows what the TOOL will actually use rather than the browser's
+     * stale mirror of this namespace.
+     */
+    preferredImageModel: region => regionStateOf(current(), region).preferredImageModel ?? '',
     /**
      * Whether the optional CodeBuddy CLI route is mounted (`codebuddy_ask` tool
      * + `/codebuddy` command).

@@ -516,7 +516,7 @@ const REGION_MAP_FOREIGN_KEYS: ReadonlySet<string> = new Set([
   'authFile', 'accountId', 'accounts', 'regions', 'cliBridge',
   // One region slot's fields.
   'enabled', 'showCreditsInMainUi', 'creditPosition', 'lastCatalog',
-  'enabledModelIds', 'imageModelIds', 'imageToolEnabled', 'offModelIds',
+  'enabledModelIds', 'imageModelIds', 'imageToolEnabled', 'preferredImageModel', 'offModelIds',
   'contextBudgets', 'defaultThinkingEfforts', 'pool',
 ])
 
@@ -564,6 +564,7 @@ function slotConfigWeight(slot: Record<string, unknown>): number {
   if (slot['enabled'] === false) weight += 1
   if (slot['showCreditsInMainUi'] === false) weight += 1
   if (slot['imageToolEnabled'] === true) weight += 1
+  if (typeof slot['preferredImageModel'] === 'string' && slot['preferredImageModel'] !== '') weight += 1
   return weight
 }
 
@@ -914,6 +915,44 @@ export function regionPreferredVideoModelsOf(
 }
 
 /**
+ * The text-to-image model this region generates with (issue #241), or `''`.
+ *
+ * Empty means "no choice" — the tool then takes the catalog's first model for the
+ * tag, which is the exact behaviour a config written before this field existed
+ * had. Deliberately NOT defaulted to the watermark-free model here: that model
+ * costs roughly twice as much per image and caps the size at ~1 MP, so choosing
+ * it is a spending decision the user makes in the card, not one a schema
+ * default can make on their behalf.
+ *
+ * A stale id is tolerated the same way `regionPreferredVideoModelsOf` tolerates
+ * one: the catalog can change, and the tool falls back to the group's first
+ * model rather than failing a generation over a remembered choice.
+ */
+export function regionPreferredImageModelOf(value: unknown, region: WorkBuddyWebRegion): string {
+  const raw = regionSlotOf(value, region)['preferredImageModel']
+  return typeof raw === 'string' ? raw : ''
+}
+
+/**
+ * Build the next `regions` settings value for this region's image model choice.
+ *
+ * `modelId` of `undefined` or `''` CLEARS the choice, which is why this is a
+ * three-state write rather than a boolean: the card's picker has a "follow the
+ * catalog" row, and an empty string is what makes that row mean "no opinion"
+ * again.
+ */
+export function nextRegionPreferredImageModel(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  modelId: string | undefined,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    preferredImageModel: modelId === undefined ? '' : modelId,
+  })
+}
+
+/**
  * Build the next `regions` settings value for one pinned video model.
  *
  * `modelId` of `undefined` or `''` CLEARS that tag's pin, which is why this is
@@ -1113,9 +1152,15 @@ export interface WorkBuddyWebRecovery {
  *
  * Deliberately its own shape, not a subset of {@link WorkBuddyWebModel}: a
  * media entry carries `id`/`name`/`tags` and NOTHING else upstream (no price,
- * no context window), and it is never editable — the card has no media
- * checkbox, because each tag group holds exactly one model today and a
- * one-option picker is a fake choice.
+ * no context window, no capability flag). The card never carries a media
+ * CHECKBOX — there is nothing per-model to switch on.
+ *
+ * The image rows are still a read-only ROSTER, but the text-to-image choice is
+ * now a real picker (issue #241): the catalog lists one model while a second,
+ * watermark-free one exists outside it, so that group genuinely has two choices.
+ * The video rows have been pinnable per mode for longer. Neither is "editing the
+ * model list" — the roster answers "what can this region draw", the pickers
+ * answer "which one this region uses".
  */
 export interface WorkBuddyWebMediaModel {
   id: string
@@ -1370,6 +1415,17 @@ export type WorkBuddyWebUsage =
      */
     preferredVideoModels?: Readonly<Record<string, string>>
     /**
+     * The text-to-image model this region generates with (issue #241), or `''`
+     * for "follow the catalog".
+     *
+     * Travels on the Host's answer for the same measured reason as the switches
+     * above: the picker must render the choice the TOOL will read, and the
+     * browser settings mirror is stale for this namespace. Absent reads as "no
+     * choice", never as the watermark-free model — that one costs twice as much
+     * per image, so it cannot be inferred from a missing value.
+     */
+    preferredImageModel?: string
+    /**
      * Whether the OPTIONAL CodeBuddy CLI route is mounted (tool `codebuddy_ask`
      * + command `/codebuddy`).
      *
@@ -1527,6 +1583,12 @@ export type WorkBuddyWebUsage =
      * this travels on the Host's answer instead of the browser mirror.
      */
     preferredVideoModels?: Readonly<Record<string, string>>
+    /**
+     * The text-to-image model this region generates with; see the signed-out
+     * variant for why this travels on the Host's answer and why an absent value
+     * must read as "no choice" rather than the watermark-free model.
+     */
+    preferredImageModel?: string
     /**
      * Whether the OPTIONAL CodeBuddy CLI route is mounted (tool `codebuddy_ask`
      * + command `/codebuddy`).
