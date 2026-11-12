@@ -7,8 +7,8 @@ import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
  * THE DEFECT, as three facts that only combine into a bug:
  *   1. issue #59's fix stamps ONE model identity (`workbuddy`) on the models of
  *      BOTH regions, so a cross-region thinking block is not downgraded to text
- *      (`api/transform-messages.js:68` compares `assistantMsg.provider` against
- *      `model.provider`).
+ *      (`api/transform-messages.js`'s `isSameModel` compares
+ *      `assistantMsg.provider` against `model.provider`).
  *   2. `Models.setProvider(provider)` registers a provider under `provider.id`
  *      (`models.js:35–38`) — and the host calls it once per published profile
  *      (`dsh-llm-pi-ai/lib/index.js:1762–1763`). The registry key is the

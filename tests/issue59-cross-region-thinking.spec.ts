@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
+import { foreignThinkingAsProse } from './foreign-thinking-helpers.ts'
 
 /**
  * Issue #59, the plugin-side half of the fix: one model identity across two
@@ -7,8 +8,10 @@ import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
  *
  * THE DEFECT. pi-ai replays a historical thinking block as `thinking` only when
  * the message that produced it names the same provider, api and model id as the
- * request in flight (`api/transform-messages.js:68–70`). Everything else is
- * downgraded to plain `text` (`:88–96`). The two gateways are two provider
+ * request in flight (`api/transform-messages.js`, `isSameModel`). Everything
+ * else stops being reasoning: rewritten to plain `text` up to pi-ai 1.2, and
+ * discarded from 1.3 — which of the two is in effect is measured, not assumed
+ * (see `tests/foreign-thinking-helpers.ts`). The two gateways are two provider
  * STRINGS for ONE model, so a transcript recorded in one region was replayed as
  * text in the other: the reporter measured byte-identical history at 708K tokens
  * on one side and 1.374M on the other, and the compression request computed for
@@ -83,7 +86,11 @@ describe('issue #59: cross-region thinking replay', () => {
       [assistantWithThinking(WORKBUDDY_PROVIDER, 'hy3', 'why I did that')] as never,
       requestModel(WORKBUDDY_GLOBAL_PROVIDER) as never,
     )
-    expect(blockTypes(transformed)).toEqual(['text', 'text'])
+    // The DOWNGRADE itself is the premise, not the disposition: pi-ai must stop
+    // treating this as the same model, and both the block type and the trailing
+    // answer text are what it publishes afterwards. Up to 1.2 the reasoning was
+    // rewritten into prose; 1.3+ discards it (tests/foreign-thinking-helpers.ts).
+    expect(blockTypes(transformed)).toEqual([...foreignThinkingAsProse(), 'text'])
   })
 
   it('KEEPS the thinking block when both regions stamp the shared model identity', async () => {
@@ -146,7 +153,7 @@ describe('issue #59: cross-region thinking replay', () => {
       [assistantWithThinking(WORKBUDDY_MODEL_IDENTITY, 'hy3', 'x')] as never,
       requestModel(WORKBUDDY_MODEL_IDENTITY, 'other-model') as never,
     )
-    expect(blockTypes(transformed)).toEqual(['text', 'text'])
+    expect(blockTypes(transformed)).toEqual([...foreignThinkingAsProse(), 'text'])
   })
 })
 
@@ -382,7 +389,7 @@ describe('issue #102: alignAssistantIdentities boundaries', () => {
       aligned.messages as never,
       requestModel(WORKBUDDY_MODEL_IDENTITY, 'other-model') as never,
     )
-    expect(blockTypes(transformed)).toEqual(['text', 'text'])
+    expect(blockTypes(transformed)).toEqual([...foreignThinkingAsProse(), 'text'])
   })
 
   it('tolerates a malformed entry instead of throwing mid-request', async () => {

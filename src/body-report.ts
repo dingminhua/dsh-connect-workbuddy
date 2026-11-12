@@ -18,16 +18,19 @@
  * history was labelled differently on the two sides.
  *
  * The labelling is pi-ai's replay — which assistant messages it lets survive as
- * thinking at all. `transform-messages.js:68` (1.1.0, the version the host
- * bundles) computes
+ * thinking at all. `transform-messages.js` (1.1.0, the version the host bundled
+ * when this report was written) computes
  *
  *     isSameModel = assistantMsg.provider === model.provider
  *                && assistantMsg.api      === model.api
  *                && assistantMsg.model    === model.id;
  *
- * and for a message that fails it, `:88–96` returns the surviving thinking as
- * `{ type: "text", text: block.thinking }` — downgraded, not dropped — while
- * `:76` drops redacted thinking and `:103` strips tool-call `thoughtSignature`.
+ * and for a message that fails it, it returned the surviving thinking as
+ * `{ type: "text", text: block.thinking }` — downgraded, not dropped — while it
+ * dropped redacted thinking and stripped tool-call `thoughtSignature`. The
+ * comparison is what this report explains and it is unchanged in every pi-ai
+ * generation this plugin declares; only the ELSE branch moved, and pi-ai 1.3
+ * now discards the block instead of rewriting it.
  * `buildParams` runs that transform at `openai-completions.js:896`, before
  * anything is assembled, so a thinking block only stays a thinking block when
  * its message was recorded under the same provider AND the same model id as the

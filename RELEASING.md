@@ -81,6 +81,12 @@ grep -n "## Platform support" README.en.md
 # 所有 dsh-* peer 必须是同一条范围，且上界带 -0（DSH 至今只发预发布）
 grep -c '">=0.1.7-rc.1 <0.3.0-0"' package.json
 
+# devDeps 的 dsh-* 范围同样必须一致（tests/dsh-line.spec.ts 的 equality 断言）
+grep -c '"@deepseek-ai/dsh[a-z-]*": ">=0.1.7-rc.1 <0.3.0-0"' package.json
+
+# overrides 必须整块指向本次复核过的那条宿主线，且不含任何别的版本串
+grep -E "'@deepseek-ai/dsh-[a-z-]+': 0\.2\." pnpm-workspace.yaml | sort -u | awk '{print $3}' | sort -u
+
 # 宿主线是否已经前进？有 0.3.x 的 tag 就说明该复核上界了
 git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
 ```
@@ -88,10 +94,14 @@ git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
 核对清单：
 
 - [ ] `package.json` 里全部 `dsh-*` peer 范围完全一致（`tests/dsh-line.spec.ts` 会强制这一点）
+- [ ] `devDependencies` 的 `dsh-*` 与 `peerDependencies` **逐条相等**（同一个用例会强制这一点）
+- [ ] `pnpm-workspace.yaml` 的 `overrides` 整块指向同一条宿主线，**没有逐包挑版本**残留
 - [ ] 上界仍是 `<0.3.0-0`；若 DSH 已进入 0.3.x 线，先在真机或 tag 上复核再决定是否放宽，**不要只改数字**
 - [ ] 上界带 `-0` 后缀（写成 `<0.3.0` 等于不挡：DSH 至今全部 tag 都是预发布，围栏会静默失效）
 - [ ] 两条 README 的「受支持的宿主范围」表与 `package.json` 三者一致
 - [ ] 若本次放宽了上界，已在 `CHANGELOG.md` 说明**依据**（哪些包、如何复核），而不是只写「支持新版本」
+- [ ] **pi-ai 与宿主同批升级**：`dsh-llm-pi-ai` 的 `@earendil-works/pi-ai` 依赖是精确下限（0.2.2-rc.2 为 `^1.3.0`），把 pi-ai 单独留在旧代会因 `providers/all` 缺导出而**启动失败**，不是类型问题
+- [ ] CI 的 pi-ai 矩阵至少覆盖**两种「异模型思考」处置方式**（≤1.2 摊平成正文、≥1.3 直接丢弃），否则其中一半行为的回归无人看守
 
 ### 2.7 隐私核对（**不得跳过**，规则见 [`docs/PRIVACY.md`](docs/PRIVACY.md)）
 

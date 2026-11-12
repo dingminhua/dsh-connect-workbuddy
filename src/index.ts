@@ -91,6 +91,7 @@ import {
   type CliBridgeSettings,
 } from './cli-bridge/mount.ts'
 import type { DirectoryOf } from './cli-bridge/tool.ts'
+import { readProjectedState } from './cli-bridge/services.ts'
 import type {
   BridgeCommandsService,
   BridgeProjectionReader,
@@ -799,10 +800,13 @@ export interface Config {
    *
    * When a session moves between providers, `dsh-llm-pi-ai` rebuilds the other
    * provider's assistant turns with `api: 'dsh-foreign'`, and pi-ai's
-   * `isSameModel` then fails — so it does not DROP their `thinking` blocks, it
-   * rewrites each one to plain `text` (`transform-messages.js:87–90`). The
-   * other model's working notes therefore arrive as this turn's answer, and the
-   * model copies that shape on every later turn.
+   * `isSameModel` then fails — so up to pi-ai 1.2 it did not DROP their
+   * `thinking` blocks, it rewrote each one to plain `text`. The other model's
+   * working notes therefore arrived as this turn's answer, and the model copied
+   * that shape on every later turn. (pi-ai 1.3 discards such a block instead,
+   * which is the same outcome this switch produces — see the note on
+   * `dropForeignThinking` in `adapter.ts` for why the repair still runs
+   * unconditionally.)
    *
    * On, those blocks are removed from the request instead: they carry no
    * `thinkingSignature` (the host builds them without one), so they could never
@@ -2783,7 +2787,11 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     const reader = (projectionCtx as unknown as { sessionProjections?: BridgeProjectionReader })
       .sessionProjections
-    if (reader === undefined || typeof reader.stateOf !== 'function') return
+    // Either read face will do: `snapshot` is the current one, `stateOf` the
+    // deprecated one a host older than DSH 0.2.2 may still be the only one
+    // offering. `cliDirectoryOf` below decides per call, so a host that gains
+    // `snapshot` in an upgrade starts using it without any code here changing.
+    if (reader === undefined || (typeof reader.snapshot !== 'function' && typeof reader.stateOf !== 'function')) return
 
     /**
      * The one place the projection key is spelled out.
@@ -2806,7 +2814,12 @@ export function apply(ctx: Context, config: Config): void {
     cliDirectoryOf = (session: unknown): string | null => {
       let state: unknown
       try {
-        state = reader.stateOf(session, WORKING_DIRECTORY_PROJECTION_KEY)
+        // `readProjectedState` prefers the documented read face (DSH 0.2.2+
+        // `snapshot`) and falls back to the deprecated `stateOf` only on a Host
+        // that has no `snapshot`. Both are synchronous and I/O-free; the only
+        // difference is that `stateOf` prints a deprecation warning once per
+        // key per process, which is why it is no longer the first choice.
+        state = readProjectedState(reader, session, WORKING_DIRECTORY_PROJECTION_KEY)
       } catch {
         // A projection reader that throws is treated as one that does not exist: the
         // header fallback below still produces a usable directory.

@@ -3,9 +3,12 @@
  *
  * THE DEFECT. pi-ai keeps a historical `thinking` block only while
  * `isSameModel` holds — provider AND api AND model id all equal to the request
- * (`api/transform-messages.js:68`). For everything else it does NOT drop the
- * block; `:87–90` rewrites it to `{type:'text', text: thinking}`, i.e. the
- * answer channel. A session that moved between providers therefore arrives with
+ * (`api/transform-messages.js`, and the line numbers move between releases, so
+ * this file names the symbol). For everything else, up to pi-ai 1.2, it did NOT
+ * drop the block: it rewrote it to `{type:'text', text: thinking}`, i.e. the
+ * answer channel. (From 1.3 the library discards the block instead, which makes
+ * the repair a no-op — `tests/foreign-thinking-helpers.ts` measures which of the
+ * two is in effect, and the premise assertion below follows it.) A session that moved between providers therefore arrives with
  * the OTHER model's working notes already spelled as prose, and the model reads
  * that shape and copies it.
  *
@@ -39,6 +42,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
+import { foreignThinkingAsProse, foreignThinkingDisposition } from './foreign-thinking-helpers.ts'
 import type { Context, Model, Api } from '@earendil-works/pi-ai'
 import {
   alignAssistantIdentities,
@@ -120,10 +124,19 @@ function proseAfterTransform(context: Context): string {
 describe('the defect itself (issue #147)', () => {
   it('pi-ai publishes a foreign thinking block as prose — this is what the fix removes', () => {
     const context = contextOf([foreignTurn('Now add normalizeGistName and update…')])
-    // The premise, pinned through the real transform: without the repair the
-    // reasoning IS the answer.
-    expect(typesAfterTransform(context)).toEqual([['text']])
-    expect(proseAfterTransform(context)).toContain('Now add normalizeGistName')
+    // The premise, pinned through the real transform. WHICH premise holds
+    // depends on the installed library (see tests/foreign-thinking-helpers.ts):
+    // up to 1.2 pi-ai published the reasoning AS the answer, and 1.3+ discards
+    // it instead. Both are measured here rather than assumed from a version.
+    expect(typesAfterTransform(context)).toEqual([foreignThinkingAsProse()])
+    if (foreignThinkingDisposition() === 'flattened') {
+      expect(proseAfterTransform(context)).toContain('Now add normalizeGistName')
+    } else {
+      // 1.3+: the block is gone BEFORE the repair runs, so the repair removes
+      // nothing here. It still runs, because a nested pi-ai copy can shadow the
+      // host's (issue #24) and this bundle cannot rely on which one a user has.
+      expect(proseAfterTransform(context)).toBe('')
+    }
   })
 })
 

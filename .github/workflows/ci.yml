@@ -58,27 +58,44 @@ jobs:
       - name: Verify package contents
         run: npm pack --dry-run
 
-  # The pi-ai 1.x leg.
+  # The pi-ai generation matrix.
   #
-  # WHY THIS EXISTS. The test matrix in `tests/adapter-outgoing-body.spec.ts`
-  # is deliberately 2x2 — {legacy, modern} x {raw envelope, normalized} — but
-  # one generation cannot run against the other's library:
+  # WHY THE MAIN JOB IS NOT ENOUGH. `pnpm-workspace.yaml` pins the pi-ai that
+  # the workspace installs, and since 5.23.0 that pin is 1.3.0 — the version the
+  # current host bundles. A single pin can only ever exercise ONE generation,
+  # and this plugin's behaviour around thinking blocks depends on which
+  # generation is loaded:
+  #
+  #   - up to 1.2 a foreign thinking block is REWRITTEN into assistant prose
+  #     (the #147/#163 defect), so the plugin's repair is what prevents it;
+  #   - from 1.3 the block is DISCARDED by the library, so the repair is a
+  #     redundant no-op and the premise tests must say so instead of asserting
+  #     a defect that no longer exists.
+  #
+  # `tests/foreign-thinking-helpers.ts` measures which of the two is in effect
+  # rather than comparing versions, so both legs run the SAME test bodies and
+  # each asserts the truth for its own library.
+  #
+  # WHY THE 2x2 BODY MATRIX NEEDS BOTH GENERATIONS TOO. `tests/adapter-outgoing-
+  # body.spec.ts` is {legacy, modern} x {raw envelope, normalized}, and one
+  # generation cannot run against the other's library:
   #
   #   - on a 0.85 checkout only the LEGACY cells can run (1.x's api cannot read
   #     the flat 0.85 shape);
   #   - on a 1.x checkout only the MODERN cells can run (0.85's token estimator
   #     crashes on a system message — issue #24).
   #
-  # The main `test` job above pins pi-ai 0.85.1, so it exercises only the
-  # legacy half. The modern half is the one that broke in 0.2.1-rc.1: pi-ai 1.x
-  # stopped reading the top-level `systemPrompt`/`tools`, the modern branch
-  # passed the raw envelope through untouched, and every request went upstream
-  # with no prompt and no tool declarations — silently, with no error anywhere.
+  # The modern half is the one that broke in 0.2.1-rc.1: pi-ai 1.x stopped
+  # reading the top-level `systemPrompt`/`tools`, the modern branch passed the
+  # raw envelope through untouched, and every request went upstream with no
+  # prompt and no tool declarations — silently, with no error anywhere.
   # `adapter.spec.ts` could not see it because it mocks the api; only a body-
   # level assertion against a REAL 1.x api catches it.
   #
-  # Verified to bite: with the modern-branch fix reverted, this leg fails 4
-  # tests while the 0.85.1 leg stays green.
+  # Verified to bite: with the modern-branch fix reverted, the 1.x legs fail 4
+  # body tests while the main job (which the workspace pin puts on 1.3.0 today)
+  # stays green; with the disposition probe inverted, the 1.3.0 leg fails the 5
+  # premise tests.
   #
   # The version is switched through the `overrides` entry in
   # `pnpm-workspace.yaml` (pi-ai is a peer + a direct devDependency, so an
@@ -86,6 +103,14 @@ jobs:
   # lets pnpm resolve that one override. Ubuntu only: this is a library-level
   # assertion, not a platform one, and the `test` job already covers the OS
   # matrix.
+  #
+  # `1.1.0` is kept beside `1.3.0` on purpose: it is the OTHER disposition
+  # (`flattened`), i.e. the generation the plugin's repair was written for.
+  # Dropping it would leave the repair's own regression protection unexercised.
+  # Both are inside the declared peer range and both can coexist with the
+  # 0.2.2 `dsh-llm-pi-ai` (its `^1.3.0` dependency is overridden here on
+  # purpose — `providers/all` exports `getAllBuiltinModels` in both, which is
+  # the only symbol that package imports from it at load time).
   test-pi-ai-next:
     name: test (pi-ai ${{ matrix.pi-ai }})
     timeout-minutes: 20
@@ -93,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pi-ai: ['1.1.0']
+        pi-ai: ['1.1.0', '1.3.0']
     steps:
       - name: Check out repository
         uses: actions/checkout@v7

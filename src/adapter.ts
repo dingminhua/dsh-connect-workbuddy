@@ -67,13 +67,18 @@ export const WORKBUDDY_PROVIDERS: Readonly<Record<WorkBuddyRegion, string>> = {
  *
  * pi-ai keeps a historical thinking block as `thinking` only when the message
  * that carried it names the SAME provider, api and model id as the request in
- * flight (`transform-messages.js:68`); every other block is downgraded to plain
- * `text` (`:88–96`) — downgraded, not dropped, which is why no byte count ever
- * explained the 1.94× regional jump. The two gateways are two provider STRINGS
- * for ONE model, so a transcript recorded in one region was replayed as text in
- * the other, and issue #59's reporter measured exactly that: 708K → 1.374M on
- * byte-identical history, and a compression request that could then never fit
- * the window it was computed for.
+ * flight (`transform-messages.js`, `isSameModel`); every other block is
+ * downgraded to plain `text` — downgraded, not dropped, which is why no byte
+ * count ever explained the 1.94× regional jump. The two gateways are two
+ * provider STRINGS for ONE model, so a transcript recorded in one region was
+ * replayed as text in the other, and issue #59's reporter measured exactly
+ * that: 708K → 1.374M on byte-identical history, and a compression request
+ * that could then never fit the window it was computed for.
+ *
+ * (pi-ai 1.3 changed the second half: a foreign block is now DISCARDED rather
+ * than rewritten as text. The identity stamp is unaffected — it is what makes
+ * the block count as same-model in the first place, and that comparison is
+ * unchanged in every generation this plugin declares.)
  *
  * The stamp is NOT inert, and reading it as inert is what broke issue #75.
  * `provider` is the KEY pi-ai dispatches on: `requireProvider` resolves
@@ -163,10 +168,42 @@ export const WORKBUDDY_PROVIDER_DISPLAY_NAMES: Readonly<Record<WorkBuddyRegion, 
 export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
 
 /**
- * Image-request budgets at the dsh-llm-pi-ai defaults; the profile type made
- * them required in 0.1.1-rc.2.
+ * Image-request budgets for the route's `ResolvedPiAiProviderProfile`.
+ *
+ * The three byte/pixel budgets are the dsh-llm-pi-ai defaults (`0.1.1-rc.2`
+ * made them required on the resolved profile).
+ *
+ * The two COUNT fields arrived with DSH 0.2.2 (`0.2.2-rc.1`), where
+ * `dsh-llm-pi-ai` began enforcing a per-request image OCCURRENCE limit
+ * (`maxRequestImages`, its own default 50) and the offload step that trims it
+ * (`imageOffloadCountQuantum`, default `min(10, maxRequestImages)`). Both are
+ * REQUIRED on the resolved profile, so this route must state a value; the
+ * value is the plugin's decision, not a copy of the host's.
+ *
+ * WHY NOT 50. Until 0.2.2 this route had NO occurrence limit at all: the
+ * adapter only ever passed the byte budget down (`toPiContextWithImages`
+ * spreads `maxImages` only when it is defined), so a long session could carry
+ * any number of images as long as the base64 payload fit. Adopting the host's
+ * default would therefore NARROW this plugin's behaviour as a silent side
+ * effect of a dependency bump — the kind of change that shows up as a user's
+ * image-heavy session suddenly failing with `IMAGE_OFFLOAD_REQUIRED`.
+ *
+ * So both values are deliberately pinned far above any real request: they are
+ * a TYPE requirement satisfied with "no practical limit", which keeps today's
+ * behaviour byte-identical. `maxRequestImages` is a count of image
+ * occurrences and the upstream gateway caps a request far below this on its
+ * own; `imageOffloadCountQuantum` must not exceed `maxRequestImages`
+ * (`dsh-llm-pi-ai` validates exactly that), so it is pinned to the same
+ * giant value rather than to 10.
+ *
+ * If the gateway's real per-request image cap ever gets measured, THAT is the
+ * number to put in `maxRequestImages` — with a comment saying where it came
+ * from. Do not "borrow" the host's 50: it belongs to the host's own pi-ai
+ * routes, not to WorkBuddy.
  */
 const REQUEST_IMAGE_BUDGETS = {
+  maxRequestImages: 1_000_000,
+  imageOffloadCountQuantum: 1_000_000,
   maxRequestImageBytes: 20_971_520,
   requestImagePixelBudget: 4_194_304,
   requestImageMaxBytes: 1_048_576,
@@ -301,9 +338,21 @@ export interface WorkBuddyAdapter {
  *
  * `text` is a table when the badge has per-language wording. `en` is REQUIRED
  * by the host's resolver — a table without it resolves to `undefined`.
+ *
+ * WHY THE TABLE BRANCH NAMES `en` EXPLICITLY. The host's own type is
+ * `LocalizedText = string | { readonly en: string; readonly [locale: string]:
+ * string }` (`@deepseek-ai/dsh-package-manifest`): a bare
+ * `Record<string, string>` is NOT assignable to it, because the required `en`
+ * exists only in the literal type. Declaring this locally as a loose record
+ * compiled against the 0.1.7 declarations (where the plugin's field never met
+ * the host's) and stopped compiling once devDeps moved to the 0.2.2 line —
+ * the plugin was still producing the right runtime values, but the type could
+ * no longer express the invariant it depends on. Spelling `en` out is not a
+ * workaround for that error: it is the invariant (an `en`-less table makes the
+ * chip vanish) stated where the compiler can check it.
  */
 export interface LlmModelBadge {
-  text: string | Record<string, string>
+  text: string | ({ en: string } & Record<string, string>)
   tone: 'neutral' | 'info' | 'success' | 'warning'
 }
 
@@ -700,7 +749,8 @@ function transcript<T>(context: Context): T {
  * ISSUE #102. pi-ai replays a thinking block as `thinking` only when the message
  * that produced it names the same `provider` / `api` / `model` as the request in
  * flight (`utils/transform-messages.js`, the `isSameModel` branch); everything
- * else is flattened to `{type:'text', text: thinking}`.
+ * else is flattened to `{type:'text', text: thinking}` — or, since pi-ai 1.3,
+ * discarded outright. Either way the block stops being reasoning.
  *
  * The durable transcript the HOST hands back does not carry the identity. The
  * agent loop writes `source.provider = request.provider`, and `request.provider`
@@ -824,12 +874,21 @@ export function alignAssistantIdentities(
  *
  * - `flattened`: `stopReason` is a normal completion, so `transform-messages`
  *   turns the block into `{type:'text', text: thinking}` — the whole reasoning
- *   body lands in the visible answer.
+ *   body lands in the visible answer. This is the disposition up to pi-ai 1.2;
+ *   see the note on the field below for what 1.3+ does with it.
  * - `dropped`: `stopReason` is `error`/`aborted`, so the entire message is
  *   skipped; nothing reaches the wire and nothing reaches the user. It is
  *   reported anyway, because it still costs context: the model's answer to
  *   "why did my last turn say nothing" is this line, and a caller cannot see it
  *   from the transcript.
+ *
+ * ⚠️ On pi-ai 1.3+ the `flattened` label is historical, not predictive: the
+ * library discards a foreign block instead of rewriting it, so the "prose
+ * leak" this name describes can no longer happen there. The label is kept
+ * because it is what the CALLER asks about ("was this reasoning about to
+ * become my answer?") and because the repair — which is this plugin's own
+ * guarantee, independent of whichever pi-ai a user resolves — is still the
+ * thing that decides.
  */
 export interface ForeignThinkingBlock {
   /** Index of the message in the context's `messages`. */
@@ -854,8 +913,8 @@ function blocksOf(message: unknown): unknown[] {
  *
  * `requestModelId` closes the THIRD leg of pi-ai's own predicate. `isSameModel`
  * is `provider === … && api === … && model === model.id`
- * (`transform-messages.js:68–70`); this function used to compare only the first
- * two. The consequence was a blind spot the size of one whole route: a session
+ * (`transform-messages.js`, and its line numbers move between releases, so this
+ * file names the symbol); this function used to compare only the first two. The consequence was a blind spot the size of one whole route: a session
  * that switches MODELS inside one region — `hy3` → `deepseek-v4.1-flash`, both
  * served by this bundle, both stamped `provider: workbuddy` — keeps the provider
  * and api legs equal, so nothing here noticed, while pi-ai flattened every
@@ -935,12 +994,12 @@ function isCrossProviderAssistant(
  * Every foreign thinking block pi-ai would turn into visible prose (issue #147).
  *
  * THE DEFECT. pi-ai keeps a historical `thinking` block only while
- * `isSameModel` holds — provider AND api AND model id all equal to the request
- * (`transform-messages.js:68`). For everything else it does NOT drop the block:
- * `:87–90` rewrites it to `{type:'text', text: thinking}`, which is the answer
- * channel. A session that moved between providers therefore arrives with its
- * other provider's working notes already spelled as prose, and the model reads
- * that shape and copies it.
+ * `isSameModel` holds — provider AND api AND model id all equal to the request.
+ * For everything else, up to pi-ai 1.2, it did NOT drop the block: it rewrote
+ * it to `{type:'text', text: thinking}`, which is the answer channel. A session
+ * that moved between providers therefore arrives with the other provider's
+ * working notes already spelled as prose, and the model reads that shape and
+ * copies it.
  *
  * Issue #147 measured the consequence on a real 80-step turn: 56 assistant
  * messages carried an answer while their own `reasoning` was ≤ 1 character,
@@ -953,6 +1012,14 @@ function isCrossProviderAssistant(
  * WHY THIS IS READ-ONLY. Nothing here rewrites the transcript:
  * {@link dropForeignThinking} does, and the split keeps the DIAGNOSIS available
  * to surfaces that must not change bytes (the card, the reply notice).
+ *
+ * WHY IT STILL RUNS ON pi-ai 1.3+. That library now discards a foreign block
+ * itself, so on paper this repair has nothing left to do. It stays because the
+ * resolved pi-ai is a PER-PROCESS fact, not a package-level one: a nested copy
+ * shadows the host's (issue #24 proved it), so the plugin cannot assume any
+ * particular generation for the user in front of it. The repair is this
+ * bundle's own guarantee — "another model's reasoning never reaches this
+ * request" — and it is cheaper than reasoning about which copy is loaded.
  *
  * @param context - a pi-ai context, before or after `alignAssistantIdentities`.
  * @param identity - the identity this adapter stamps on its own models.
@@ -1022,7 +1089,9 @@ export function foreignThinkingOf(
  *   - a block with NO signature is never emitted at all - it is dropped from the
  *     request, not turned into prose;
  *   - a block whose message fails `isSameModel` IS flattened into assistant prose
- *     (`transform-messages.js:88-96`), and that is the only real 'flattened' case.
+ *     (`transform-messages.js`, the `isSameModel` else-branch), and that is the
+ *     only real 'flattened' case — up to pi-ai 1.2. From 1.3 such a block is
+ *     discarded instead, which moves it into the second bullet's outcome.
  *
  * So the field is deliberately not surfaced to the user: `variant` reaches
  * nothing but the diagnostic callback, and a label that is wrong for two of the

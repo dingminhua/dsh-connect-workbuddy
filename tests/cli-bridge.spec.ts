@@ -44,6 +44,7 @@ import {
 } from '../src/cli-bridge/command.ts'
 import { composeContinuation, formatInjection, injectOutcome, INJECT_TEXT_LIMIT } from '../src/cli-bridge/inject.ts'
 import type { BridgeAgent } from '../src/cli-bridge/inject.ts'
+import { readProjectedState } from '../src/cli-bridge/services.ts'
 import type { BridgeCommandDefinition, BridgeToolDefinition, BridgeToolExecution } from '../src/cli-bridge/services.ts'
 import type { DirectoryOf } from '../src/cli-bridge/tool.ts'
 import {
@@ -1376,5 +1377,67 @@ describe('session continuity settings and memory', () => {
     expect(recallCliSession('cap-1')).toBe('uuid-1')
     expect(recallCliSession('cap-256')).toBe('uuid-256')
     for (let index = 0; index <= 256; index += 1) forgetCliSession(`cap-${String(index)}`)
+  })
+})
+
+/**
+ * WHICH PROJECTION READ FACE THE BRIDGE USES — and why it is not cosmetic.
+ *
+ * DSH 0.2.2 deprecated `sessionProjections.stateOf(session, key)`. It still
+ * answers, so a bridge that kept calling it would look perfectly healthy — it
+ * would just print a deprecation warning once per key per process and stay
+ * pinned to a read face the Host says is on its way out. The migration is only
+ * real if the CURRENT face is the one actually called, and only SAFE if the old
+ * face still answers on a Host that has nothing else.
+ *
+ * Both halves are asserted here rather than left to the deprecation notice,
+ * because neither can fail loudly at runtime: preferring the wrong face costs a
+ * warning nobody reads, and dropping the fallback costs a user on an older Host
+ * a silent "no directory recorded" — which the ladder turns into the session
+ * HEADER, i.e. the stale pre-`/cd` location this whole feature exists to avoid.
+ */
+describe('readProjectedState (the projection read face, issue: 0.2.2 stateOf deprecation)', () => {
+  it('answers from snapshot and never touches the deprecated stateOf', () => {
+    // The point of the migration. `stateOf` is wired to a sentinel rather than a
+    // spy: if it runs at all the test fails, which is the assertion — calling it
+    // is what produces the deprecation warning the Host asks us to stop causing.
+    const calls: string[] = []
+    const state = readProjectedState(
+      {
+        snapshot: (session, keys) => {
+          calls.push(`snapshot:${String((session as { id?: string }).id)}:${keys?.join(',') ?? ''}`)
+          return { values: { workingDirectory: '/tmp/projected' } }
+        },
+        stateOf: () => {
+          calls.push('stateOf')
+          return '/tmp/deprecated'
+        },
+      },
+      { id: 's1' },
+      'workingDirectory',
+    )
+    expect(state).toBe('/tmp/projected')
+    expect(calls).toEqual(['snapshot:s1:workingDirectory'])
+  })
+
+  it('falls back to stateOf when the Host has no snapshot', () => {
+    // An older Host. The directory must still come back, otherwise the ladder
+    // silently answers with the session header — the exact drift /cd causes.
+    const state = readProjectedState(
+      { stateOf: () => '/tmp/legacy-projected' },
+      { id: 's1' },
+      'workingDirectory',
+    )
+    expect(state).toBe('/tmp/legacy-projected')
+  })
+
+  it('reports "nothing recorded" as undefined from either face', () => {
+    // `undefined` and "the reader threw" are different facts: the caller keeps
+    // the header fallback for the first and abandons the projection for the
+    // second. Both faces must agree on the first.
+    expect(readProjectedState({ snapshot: () => ({ values: {} }) }, {}, 'workingDirectory')).toBeUndefined()
+    expect(readProjectedState({ snapshot: () => undefined }, {}, 'workingDirectory')).toBeUndefined()
+    expect(readProjectedState({ stateOf: () => null }, {}, 'workingDirectory')).toBeNull()
+    expect(readProjectedState({}, {}, 'workingDirectory')).toBeUndefined()
   })
 })

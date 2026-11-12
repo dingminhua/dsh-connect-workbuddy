@@ -199,9 +199,9 @@ describe('the plugin claims a closed, documented set of host slots', () => {
 })
 
 describe('the rc.5 review stays reachable from the code that depends on it', () => {
-  it('keeps the 0.2.2 review, and it names the deprecation and the type gap', () => {
-    // Same POLICY idea as the rc.5 case below: the 0.2.2 review concludes "no
-    // change needed" and records the two things a future upgrade must not
+  it('keeps the 0.2.2-rc.1 review, and it names the deprecation and the type gap', () => {
+    // Same POLICY idea as the rc.5 case below: the rc.1 review concluded "no
+    // change needed" and recorded the two things a future upgrade must not
     // forget — the deprecated `stateOf` read and the two profile fields the
     // 0.2.2 type surface made required. If the document disappears, the only
     // place that says so goes with it.
@@ -210,6 +210,26 @@ describe('the rc.5 review stays reachable from the code that depends on it', () 
     expect(doc).toContain('stateOf')
     expect(doc).toContain('maxRequestImages')
     expect(doc).toContain('snapshot(session, [\'workingDirectory\'])')
+  })
+
+  it('keeps the 0.2.2-rc.2 review, and it records what the rc.1 one could not see', () => {
+    // The rc.2 review is the one that ACTED on the rc.1 items, and it is the
+    // only place that explains three facts a future reader cannot recover from
+    // the code:
+    //
+    //   1. why `maxRequestImages` is pinned absurdly high instead of at the
+    //      host's 50 (adopting 50 would silently narrow this route);
+    //   2. that pi-ai 1.3 DISCARDS a foreign thinking block, so the repair is a
+    //      no-op there and the premise tests must measure rather than assume;
+    //   3. that pi-ai has to move in lockstep with the dsh line, because
+    //      `providers/all` is missing an export in 0.85.1 — a startup failure.
+    const doc = readFileSync(fileURLToPath(new URL('docs/DSH-0.2.2-RC2-FOLLOWUP.md', repoRoot)), 'utf8')
+    expect(doc).toContain('maxRequestImages')
+    expect(doc).toContain('1.3.0')
+    expect(doc).toContain('snapshot')
+    // The lockstep claim, stated as the failure it causes rather than as a
+    // version rule: "启动失败，不是类型错误" is the sentence a reader needs.
+    expect(doc).toContain('启动失败')
   })
 
   it('keeps the rc.5 follow-up document, and it names the reasoning-body change', () => {

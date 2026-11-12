@@ -72,16 +72,60 @@ export interface BridgeAgentRef {
  * Reading the projection instead makes this bridge agree with what the Host
  * itself puts in the model's system prompt ("Current working directory: ...").
  *
- * `stateOf` is SYNCHRONOUS and does no filesystem I/O, which is what lets the
+ * `snapshot` is SYNCHRONOUS and does no filesystem I/O, which is what lets the
  * directory ladder stay the synchronous first step of `execute`.
+ *
+ * WHY `snapshot` AND NOT `stateOf`. `stateOf(session, key)` was the read face
+ * this bridge started on, and DSH 0.2.2 deprecated it (the rc.2 declarations
+ * mark it `@deprecated`, pointing at `snapshot` or a retained unit handle). It
+ * still answers correctly, so this is not a break — it is a warning printed
+ * once per key per process, i.e. exactly the kind of noise a working install
+ * should not produce. `snapshot(session, keys).values[key]` is the same read:
+ * synchronous, no I/O, and `undefined` for a key that was never committed,
+ * which is the same "nothing recorded" signal `stateOf` gave.
+ *
+ * `stateOf` is KEPT as the second choice below rather than deleted, because a
+ * Host is free to be older than the deprecation, and the cost of asking once
+ * about one key is a single synchronous property read per turn.
  */
 export interface BridgeProjectionReader {
   /**
-   * The committed state for one session, or `null`/`undefined` when the key has
-   * never been committed for it. Read structurally: the caller validates the
-   * value's type instead of trusting a declared one.
+   * Whole current client values for the requested keys, or `undefined` when the
+   * service cannot answer. Read structurally: the caller validates the value's
+   * type instead of trusting a declared one.
    */
-  stateOf(session: unknown, key: string): unknown
+  snapshot?(session: unknown, keys?: readonly string[]): { values?: Record<string, unknown> } | undefined
+  /**
+   * The committed state for one session, or `null`/`undefined` when the key has
+   * never been committed for it. Deprecated by the Host since DSH 0.2.2 and
+   * only consulted when `snapshot` is absent.
+   */
+  stateOf?(session: unknown, key: string): unknown
+}
+
+/**
+ * Read one projection key through whichever face the Host offers.
+ *
+ * Extracted from the `ctx.inject(['sessionProjections'])` closure so the
+ * PREFERENCE is testable: on a current Host `snapshot` must answer and
+ * `stateOf` must never be called (it prints a deprecation warning the first
+ * time it is), while an older Host that has only `stateOf` must still answer
+ * instead of silently reporting "no directory".
+ *
+ * `undefined` means "the Host recorded nothing", which is the same signal both
+ * faces give, and the ladder above treats it as such — it must NOT be confused
+ * with a failure, or the header fallback would disappear. A throw is the
+ * caller's to catch (the inject closure does).
+ */
+export function readProjectedState(
+  reader: BridgeProjectionReader,
+  session: unknown,
+  key: string,
+): unknown {
+  if (typeof reader.snapshot === 'function') {
+    return reader.snapshot(session, [key])?.values?.[key]
+  }
+  return reader.stateOf?.(session, key)
 }
 
 /** One tool registration, as the Host's `tools.register` accepts it. */

@@ -27,8 +27,8 @@ import {
  * buckets: CN text 741,687 vs GL 184,821, CN reasoning 72,270 vs GL 627,994,
  * complementary residual 0.3%. The buckets follow pi-ai's replay: a thinking
  * block survives as thinking only when its own `provider`/`api`/`model` all
- * match the request in flight (`transform-messages.js:68`); every other one is
- * downgraded to text (`:88–96`) — downgraded, not dropped. Two provider ids for
+ * match the request in flight (`transform-messages.js`, `isSameModel`); every
+ * other one is downgraded to text — downgraded, not dropped. Two provider ids for
  * one model is therefore why a transcript built on one side is billed as text on
  * the other. This report is what lets a reporter see that split
  * on their own machine, WITHOUT either region needing credit, because the body

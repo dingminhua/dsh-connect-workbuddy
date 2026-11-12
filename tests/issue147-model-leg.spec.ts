@@ -1,8 +1,9 @@
 /**
  * Issue #147, the leg that 5.12.0 missed: `isSameModel` has THREE comparisons.
  *
- * `transform-messages.js:68–70` compares `provider`, `api` AND `model` against
- * the request. The 5.12.0 repair's own predicate (`isForeignAssistant`) compared
+ * `transform-messages.js`'s `isSameModel` compares `provider`, `api` AND `model`
+ * against the request (line numbers move between pi-ai releases, so this file
+ * names the symbol instead). The 5.12.0 repair's own predicate (`isForeignAssistant`) compared
  * only the first two, so a session that switched MODELS inside a single region
  * — `hy3` → `deepseek-v4.1-flash`, both served by this bundle and both stamped
  * `provider: workbuddy` — reproduced the whole defect while the repair reported
@@ -10,7 +11,10 @@
  *
  * These tests pin all three legs of that gap, through the REAL pi-ai transform
  * so the mechanism is under test rather than a mock of it:
- *   1. the miss is real (pi-ai flattens, the old predicate saw nothing);
+ *   1. the miss is real (pi-ai stops treating it as the same model, the old
+ *      predicate saw nothing) — what it then does with the block, flatten or
+ *      discard, is the installed generation's business, measured by
+ *      `foreign-thinking-helpers.ts` rather than assumed;
  *   2. with `requestModelId`, the same case is detected and repaired;
  *   3. omitting it keeps the previous behaviour exactly (no regression for the
  *      callers that cannot know the request's model);
@@ -22,6 +26,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
+import { foreignThinkingAsProse, foreignThinkingDisposition } from './foreign-thinking-helpers.ts'
 import type { Context, Model, Api } from '@earendil-works/pi-ai'
 import {
   dropForeignThinking,
@@ -85,10 +90,16 @@ function proseAfterTransform(context: Context): string {
 describe('the defect pi-ai still has when only the provider and api match', () => {
   it('flattens the reasoning of a turn recorded under a DIFFERENT model on the same route', () => {
     // The premise, through the real transform: provider and api are equal, so
-    // the only failing leg is `model`. pi-ai still publishes the reasoning.
+    // the only failing leg is `model`. What pi-ai then DOES with the block is
+    // the installed library's business — up to 1.2 it published the reasoning
+    // as prose, 1.3+ discards it (tests/foreign-thinking-helpers.ts measures
+    // which). The leg under test is that `model` is what decides, not the
+    // eventual disposition.
     const context = contextOf([ownTurn('hy3')])
-    expect(typesAfterTransform(context)).toEqual([['text', 'text']])
-    expect(proseAfterTransform(context)).toContain('my own working notes')
+    expect(typesAfterTransform(context)).toEqual([[...foreignThinkingAsProse(), 'text']])
+    if (foreignThinkingDisposition() === 'flattened') {
+      expect(proseAfterTransform(context)).toContain('my own working notes')
+    }
   })
 })
 

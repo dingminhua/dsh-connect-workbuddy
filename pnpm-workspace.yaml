@@ -10,51 +10,53 @@ allowBuilds:
   '@google/genai': false
   protobufjs: false
 
-# 基线：桌面 2.0.9 捆绑的内核已由 0.1.2-rc.1 跃迁到 0.1.5-rc.1（npm latest）。
-# 本机开发与 CI 对齐该线；0.1.7-rc.1 已在 next 通道，故此处按线而非补丁锁定，
-# 升级时只需改这一处 `DSH_LINE` 对应的版本串，不必逐包改号。
+# 基线：跟随桌面宿主随包的那条线，整块按线锁定（而不是逐包挑版本），升级时只
+# 需把下面这组串整体换到新线。当前基线 = `0.2.2-rc.2`（桌面 2.x 捆绑的
+# `@deepseek-ai/dsh` 全部 0.2.2-rc.2、cordis 4.1.0、schemastery 3.19.0、
+# pi-ai 1.3.0）。pi-ai 必须跟着一起动：`dsh-llm-pi-ai@0.2.2-rc.2` 声明的是
+# `@earendil-works/pi-ai ^1.3.0`，把它单独留在 0.85.1 会让 `providers/all`
+# 缺 `getAllBuiltinModels` 而在加载期抛错——这不是类型问题，是启动失败。
 overrides:
   # Direct upstream peers
-  '@deepseek-ai/cordis': 4.0.2
-  '@deepseek-ai/dsh-atomic-write': 0.1.7-rc.1
-  '@deepseek-ai/dsh-attachment': 0.1.7-rc.1
-  '@deepseek-ai/dsh-client-locale': 0.1.7-rc.1
-  '@deepseek-ai/dsh-client-ui-primitives': 0.1.7-rc.1
-  '@deepseek-ai/dsh-client-ui-renderer': 0.1.7-rc.1
-  '@deepseek-ai/dsh-client-ui-settings': 0.1.7-rc.1
-  '@deepseek-ai/dsh-client-ui-settings-plugins': 0.1.7-rc.1
-  '@deepseek-ai/dsh-client-ui-slots': 0.1.7-rc.1
-  '@deepseek-ai/dsh-home-paths': 0.1.7-rc.1
-  '@deepseek-ai/dsh-host-webserver': 0.1.7-rc.1
-  '@deepseek-ai/dsh-llm': 0.1.7-rc.1
-  '@deepseek-ai/dsh-llm-pi-ai': 0.1.7-rc.1
-  '@deepseek-ai/dsh-settings': 0.1.7-rc.1
-  # 3.18.4 而非 3.18.2：这一处刻意与「0.1.5 主机自带的那份」不同，因为**用户实际
-  # 拿到的是 3.18.4**——`package.json` 的 dependencies 把它钉住，npm 会为插件装一份
-  # 嵌套副本（已用 npm pack 实测）。那份才带 `volatile()`，也才是把 config 喂给
-  # `installSection` 时会踩到活引用的组合。开发环境若停在 3.18.2，`asVolatile()`
-  # 恒等退化，这条路径**一次都不会执行**——0.1.5 线设置区整个消失的缺陷就是这样
-  # 溜过 PR 与 CI 的。
-  # 代价：no-op 那条分支不再由「装到的版本恰好很旧」来覆盖。因此 `asVolatile()` 已
-  # 导出，并有一条不依赖安装版本的确定性用例（用不带 volatile() 的 schema 断言恒等）。
-  '@deepseek-ai/schemastery': 3.18.4
-  '@earendil-works/pi-ai': 0.85.1
+  '@deepseek-ai/cordis': 4.1.0
+  '@deepseek-ai/dsh-atomic-write': 0.2.2-rc.2
+  '@deepseek-ai/dsh-attachment': 0.2.2-rc.2
+  '@deepseek-ai/dsh-client-locale': 0.2.2-rc.2
+  '@deepseek-ai/dsh-client-ui-primitives': 0.2.2-rc.2
+  '@deepseek-ai/dsh-client-ui-renderer': 0.2.2-rc.2
+  '@deepseek-ai/dsh-client-ui-settings': 0.2.2-rc.2
+  '@deepseek-ai/dsh-client-ui-settings-plugins': 0.2.2-rc.2
+  '@deepseek-ai/dsh-client-ui-slots': 0.2.2-rc.2
+  '@deepseek-ai/dsh-home-paths': 0.2.2-rc.2
+  '@deepseek-ai/dsh-host-webserver': 0.2.2-rc.2
+  '@deepseek-ai/dsh-llm': 0.2.2-rc.2
+  '@deepseek-ai/dsh-llm-pi-ai': 0.2.2-rc.2
+  '@deepseek-ai/dsh-settings': 0.2.2-rc.2
+  # schemastery 必须与 `package.json` 的 dependencies 同一版号，且**不能低于带
+  # `volatile()` 的那一档**。历史教训（v4.7 时代）：dependencies 把版本钉住，
+  # npm 会为插件装一份**嵌套副本**，用户拿到的就是那一份；开发环境若停在更旧的
+  # 版本，`asVolatile()` 恒等退化，把 config 喂给 `installSection` 的那条路径
+  # **一次都不会执行**——0.1.5 线设置区整个消失的缺陷就是这样溜过 PR 与 CI 的。
+  # 3.19.0 与 3.18.4 的 `lib/` 逐字节相同（已用 npm pack 比对），所以这次跟宿主
+  # 升到 3.19.0 只是让「开发装的」与「宿主自带的」不再差一个版本号。
+  '@deepseek-ai/schemastery': 3.19.0
+  '@earendil-works/pi-ai': 1.3.0
   # `dsh-client-runtime` 已于 0.1.1-rc.2 后停止发布，且不在任何受支持主机的捆绑集内
   # （槽位/会话服务迁至 `dsh-client-ui-renderer/client`）。它此前仅作为旧主机行的类型
   # 来源保留，但没有任何源文件引用它，故 2.1.2 起连同其 override、devDependency 与
   # tsdown external 一并移除——保留一个零引用的 override 只会让 lockfile 与清单
   # 继续声称一份并不存在的依赖。
   # Transitive peers of the 0.1.7 line (published on the next tag)
-  '@deepseek-ai/dsh-brand': 0.1.7-rc.1
-  '@deepseek-ai/dsh-timeout': 0.1.7-rc.1
-  '@deepseek-ai/dsh-fs': 0.1.7-rc.1
-  '@deepseek-ai/dsh-sandbox': 0.1.7-rc.1
-  '@deepseek-ai/dsh-scope': 0.1.7-rc.1
-  '@deepseek-ai/dsh-session': 0.1.7-rc.1
-  '@deepseek-ai/dsh-invariants': 0.1.7-rc.1
-  '@deepseek-ai/dsh-util-values': 0.1.7-rc.1
-  '@deepseek-ai/dsh-util-crypto': 0.1.7-rc.1
-  '@deepseek-ai/dsh-typert-protocol': 0.1.7-rc.1
-  '@deepseek-ai/dsh-credentials': 0.1.7-rc.1
-  '@deepseek-ai/dsh-authorization': 0.1.7-rc.1
-  '@deepseek-ai/dsh-launch-environment': 0.1.7-rc.1
+  '@deepseek-ai/dsh-brand': 0.2.2-rc.2
+  '@deepseek-ai/dsh-timeout': 0.2.2-rc.2
+  '@deepseek-ai/dsh-fs': 0.2.2-rc.2
+  '@deepseek-ai/dsh-sandbox': 0.2.2-rc.2
+  '@deepseek-ai/dsh-scope': 0.2.2-rc.2
+  '@deepseek-ai/dsh-session': 0.2.2-rc.2
+  '@deepseek-ai/dsh-invariants': 0.2.2-rc.2
+  '@deepseek-ai/dsh-util-values': 0.2.2-rc.2
+  '@deepseek-ai/dsh-util-crypto': 0.2.2-rc.2
+  '@deepseek-ai/dsh-typert-protocol': 0.2.2-rc.2
+  '@deepseek-ai/dsh-credentials': 0.2.2-rc.2
+  '@deepseek-ai/dsh-authorization': 0.2.2-rc.2
+  '@deepseek-ai/dsh-launch-environment': 0.2.2-rc.2
