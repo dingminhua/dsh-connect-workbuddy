@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import zlib from 'node:zlib'
-import { creditsOf, decodeLog, readEvents, stamp, summarizeSession } from '../scripts/audit-prompt-cache.mjs'
+import { creditsFieldOf, creditsOf, decodeLog, readEvents, stamp, summarizeSession } from '../scripts/audit-prompt-cache.mjs'
 
 /** One assistant request at `seq`, with an explicit surface and cache read. */
 function request(seq: number, { surface, cached, turn = 1, time = 0 }: { surface: number, cached: number, turn?: number, time?: number }) {
@@ -110,6 +110,20 @@ describe('creditsOf', () => {
   it('applies the off-peak factor only outside a peak window', () => {
     expect(creditsOf(1_000_000, true, 0.06, 0.5)).toBeCloseTo(60, 6)
     expect(creditsOf(1_000_000, false, 0.06, 0.5)).toBeCloseTo(30, 6)
+  })
+})
+
+describe('creditsFieldOf', () => {
+  it('omits the field entirely rather than reporting a free re-bill', () => {
+    // A `credits: 0` row reads as "this cost nothing" to anything consuming
+    // --json. The honest answer without a rate is that no price was supplied,
+    // and the only way a row can say that is by having no field at all.
+    expect(creditsFieldOf(690_601, true, 0, 0.5)).toEqual({})
+    expect('credits' in creditsFieldOf(690_601, true, 0, 0.5)).toBe(false)
+  })
+
+  it('reports the priced number once a rate is supplied', () => {
+    expect(creditsFieldOf(1_000_000, true, 0.06, 0.5)).toEqual({ credits: 60 })
   })
 })
 

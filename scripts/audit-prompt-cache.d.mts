@@ -37,3 +37,5 @@ export function summarizeSession(events: SessionEvent[], options?: { minSurface?
 export function sessionFiles(home: string): { label: string, path: string }[]
 export function stamp(ms: number): { text: string, peak: boolean }
 export function creditsOf(uncached: number, peak: boolean, creditsPerK: number, offpeakFactor: number): number
+/** `{}` when no rate was supplied, so the row has no `credits` key at all. */
+export function creditsFieldOf(uncached: number, peak: boolean, creditsPerK: number, offpeakFactor: number): { credits?: number }

@@ -21,7 +21,7 @@ the flag for every catalog model.
 
 | Cause | What happened | Can a route avoid it |
 | --- | --- | --- |
-| `prompt-changed` | a `system/message` landed just before the request | **yes**, by declaring `in-history` |
+| `prompt-changed` | a `system/message` landed just before the request | **yes**, by declaring `in-history` — *provided the gateway obeys a `system` message that arrives AFTER the history*. Measured on the CN gateway; unverified elsewhere, which is why only that route declares it. A gateway that reads only the head would keep obeying the OLD prompt, so this is a capability to verify per upstream, not a switch to flip globally. |
 | `cache-expired` | nothing changed; the provider aged the prefix out | no — the upstream clears unused prefixes within hours to days |
 
 ## Measuring it
@@ -36,6 +36,21 @@ The script is offline and read-only; it decodes the session logs under
 worst first. Pass `--credits-per-k` only with a rate you trust — the price
 differs by model and by day, so the script refuses to invent one and reports
 tokens until you supply it.
+
+## What the split actually looks like
+
+The two causes are not equally common, and the ratio is a property of how you
+work, not of the plugin. Two real machines, same script:
+
+| | re-bills | `prompt-changed` | `cache-expired` |
+| --- | --- | --- | --- |
+| the PR that added this script | 23 | 6.1M tokens | 3.8M tokens |
+| another install, 20,685 requests | 1,248 | 2.4M tokens (**1.1%**) | 219.9M tokens |
+
+The second install changes plugins and skills rarely, so almost every re-bill it
+suffers is `cache-expired` — the kind no configuration avoids. Run the script on
+your own logs before assuming the first row. A single machine's ratio should
+never be quoted as "the cost of this bug".
 
 ## Verifying the gateway reads a mid-history system message
 

@@ -204,6 +204,18 @@ export function creditsOf(uncached, peak, creditsPerK, offpeakFactor) {
   return (uncached / 1000) * creditsPerK * (peak ? 1 : offpeakFactor)
 }
 
+/**
+ * The `credits` FIELD for one row: present only when a rate was supplied.
+ *
+ * Not `creditsOf`, which keeps returning 0 for callers that want a number. A row
+ * carrying `credits: 0` tells anything consuming `--json` that this re-bill was
+ * free, when the truth is "no rate was given, so we refuse to price it". Absence
+ * says that; zero contradicts it.
+ */
+export function creditsFieldOf(uncached, peak, creditsPerK, offpeakFactor) {
+  return creditsPerK > 0 ? { credits: creditsOf(uncached, peak, creditsPerK, offpeakFactor) } : {}
+}
+
 function main() {
   const files = sessionFiles(DSH_HOME)
   if (files.length === 0) {
@@ -231,7 +243,7 @@ function main() {
         session: file.label,
         when: when.text,
         peak: when.peak,
-        credits: creditsOf(row.uncached, when.peak, CREDITS_PER_K, OFFPEAK_FACTOR),
+        ...creditsFieldOf(row.uncached, when.peak, CREDITS_PER_K, OFFPEAK_FACTOR),
       })
     }
   }
