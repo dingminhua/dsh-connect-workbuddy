@@ -3439,10 +3439,18 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
           off, where it would configure nothing. */}
       {cliBridgeSwitchedOn() ? cliBridgePickers : null}
       {imageToolPreference}
-      {videoToolPreference}
-      {/* Same rule as the CLI pickers above: the pin row is a property of the
-          video switch, so it is hidden while that switch is off. */}
+      {/* The image-model picker is a property of the image switch ABOVE it, so
+          it renders immediately after that switch — not down with the video
+          pin row. Rendering it beside the VIDEO pin made the image picker read
+          as part of the video group (reported after 5.22.0: "怎么跑到视频的选项
+          了"), because the two neighbours were the video switch and the video
+          pins. The pairing is the explanation: each switch owns the picker that
+          configures it, image first, video second. */}
       {imageModelPreference}
+      {videoToolPreference}
+      {/* Same rule as the image picker above: the pin row is a property of ITS
+          switch, so it is hidden while that switch is off and sits directly
+          under it. */}
       {videoModelPreference}
       {mediaModelsPreference}
       <label

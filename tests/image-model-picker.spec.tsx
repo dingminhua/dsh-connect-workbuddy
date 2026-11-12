@@ -163,4 +163,35 @@ describe('生图模型选择器（issue #241）', () => {
     const m = await render({ imageToolEnabled: false })
     expect(m.container.querySelector('.dsm-workbuddy-image-model-select')).toBeNull()
   })
+
+  it('长在「生图工具」开关下面，跟视频那一组分开排（5.22.0 的回归）', async () => {
+    // WHAT WENT WRONG. 5.22.0 shipped the picker next to the VIDEO pin row, so
+    // the image picker sat between the video switch and the video pins and read
+    // as part of the video group — the owner reported it as 「怎么跑到视频的选项
+    // 了」. Nothing in this suite could catch it: every existing case asks "does
+    // the picker exist", and it existed in the wrong place.
+    //
+    // The rule this pins is the pairing, not a pixel position: each tool switch
+    // owns the picker that configures it. So for each switch, its own picker must
+    // come AFTER it and BEFORE the other switch.
+    // A catalog carrying BOTH media kinds: the CN fixture has no video rows, so
+    // the video picker would be absent for a data reason and this assertion
+    // would fail to distinguish "missing" from "misplaced".
+    const m = await render({ videoToolEnabled: true }, [
+      ...CN_MEDIA,
+      { id: 'kling-video-v3', name: 'Kling Video V3', tags: ['text-to-video'] },
+    ])
+    const order = Array.from(m.container.querySelectorAll(
+      '.dsm-workbuddy-image-tool-check, .dsm-workbuddy-image-model-select, .dsm-workbuddy-video-tool-check, .dsm-workbuddy-video-model-select',
+    )).map(el => el.className.includes('image-tool-check') ? 'imageSwitch'
+      : el.className.includes('image-model-select') ? 'imagePicker'
+        : el.className.includes('video-tool-check') ? 'videoSwitch'
+          : 'videoPicker')
+
+    // Both pickers must be present for this to be a real ordering assertion; a
+    // missing one would otherwise make the index comparisons vacuously true.
+    expect(order).toContain('imagePicker')
+    expect(order).toContain('videoPicker')
+    expect(order).toEqual(['imageSwitch', 'imagePicker', 'videoSwitch', 'videoPicker'])
+  })
 })
