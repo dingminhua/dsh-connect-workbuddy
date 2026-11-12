@@ -2,13 +2,19 @@
 
 ## Unreleased
 
+### 新增：prompt cache 重算的审计与实测脚本
+
+- `scripts/audit-prompt-cache.mjs`：离线扫描 `<DSH_HOME>/sessions` 的全部会话日志，列出「整包上下文按未缓存价重算」的请求，并按 `prompt-changed` / `cache-expired` 归因（前者可由 `in-history` 消除，后者是上游缓存过期）。只读、不花积分；未给 `--credits-per-k` 时只报 token，不编造单价。
+- `scripts/probe-mid-convo-system.mjs`：实测网关是否把历史之后的 `system` 消息当作生效提示词，并对比同一形状两次请求的缓存读数。只打印计数器与该轮回复，不打印提示词正文或凭证。
+- `docs/PROMPT-CACHE.md`：两种成因、可避免的是哪一种、以及如何复测。
+- `tests/audit-prompt-cache.spec.ts`：钉住「什么算重算」「归因给谁」「首轮请求不算」与多帧 zstd 解码（node 自带的解码器只返回第一帧且不报错，这一条是静默错误）。
+
 ### 修复：工具声明变化会让整个上下文按原价重算（缓存前缀失效）
 
 - **国内区**的模型描述符现在声明 `compat.supportsMidConvoSystemMessages`。`dsh-llm-pi-ai` 由这个标志推导请求的 `systemPromptUpdate: 'in-history'`，从而在系统提示词变化时把新提示词**追加到已缓存历史之后**，而不是重写第 0 号系统节点。此前每次工具声明变化（装/卸插件、增删 MCP server、改技能）都会让上游的前缀缓存从第一个变化的 token 起全部失效，整包上下文按原价重算——长会话上表现为单轮几十积分。
 - 上游确实把历史之后的 `system` 消息当作生效提示词：实测在 CN 区把 `system(B)` 放在历史之后，模型按 B 回答；随后同一形状的请求缓存命中从 49% 升到 93%。
 - **国际区没有跟着声明，这是有意的。** 这个标志不是「一句声明、字节不变」：不声明时中间位置的 `system` 会被折进 `<system-reminder>` 的 user 消息，声明后直接以 `system` 角色发出——请求形状真的变了。而只有网关读「位置无关的最新 system」时追加才生效；只读头节点的网关会让模型**继续按旧提示词跑**，比它要省的那笔钱糟得多。国际区是另一套上游，没有测过，所以保持原样，等有人在那里实测。
 - 新增回归测试：CN 每个模型的描述符都带该标志、国际区一律不带、两个区域的 `supportsReasoningEffort` 必须完全一致（变异验证：把判断改成恒真或恒假，对应用例分别变红）。
-
 
 ## 5.21.5 (2026-11-12)
 
