@@ -499,37 +499,63 @@ describe('the provider stream actually receives an adapted context', () => {
 })
 
 /**
- * The prompt-cache guard.
+ * The prompt-cache guard, and the reason it is per-REGION.
  *
- * A context whose leading system node changes loses the provider's prefix
- * cache from the first changed token onwards, and every such turn re-bills the
- * WHOLE context at full price. `dsh-llm-pi-ai` avoids that only by appending a
- * changed prompt after the cached history, and it decides to do so from
+ * A context whose leading system node changes loses the provider's prefix cache
+ * from the first changed token onwards, and every such turn re-bills the WHOLE
+ * context at full price. `dsh-llm-pi-ai` avoids that only by appending a changed
+ * prompt after the cached history, and it decides to do so from
  * `compat.supportsMidConvoSystemMessages` on the model descriptor this adapter
- * builds. Without the flag the descriptor falls back to a rewrite of node 0,
- * which is what the cache-cost investigation traced the re-bills to; with it,
- * a tool-schema change costs only the appended prompt.
+ * builds.
+ *
+ * Declaring it is NOT free: the appended prompt is only obeyed if the gateway
+ * reads the latest `system` message regardless of position. That was measured on
+ * the CN gateway and NOT on the international one, and a gateway that reads only
+ * the head would keep obeying the OLD prompt — silently, which is worse than the
+ * re-bill this flag saves. Hence the flag rides on the route: CN declares it,
+ * everything else keeps the pre-existing behaviour until someone measures it.
  */
 describe('the model descriptor keeps the prefix cache reusable', () => {
-  it('declares mid-conversation system messages on every catalog model', async () => {
-    const { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } = await import('../src/adapter.ts')
+  const modelsOf = async (provider?: string) => {
+    const { createWorkBuddyAdapter } = await import('../src/adapter.ts')
     const { WorkBuddyCatalog } = await import('../src/catalog.ts')
-
+    const routeId = provider ?? (await import('../src/adapter.ts')).WORKBUDDY_PROVIDER
     const { adapter } = createWorkBuddyAdapter({
       shim: { baseUrl: () => 'http://127.0.0.1:1', token: async () => 'shared-secret' } as never,
       store: {} as never,
       catalog: new WorkBuddyCatalog(),
+      ...provider === undefined ? {} : { provider },
     })
     const profile = (adapter as unknown as {
       config: { profiles: () => ReadonlyMap<string, { piProvider: { getModels: () => { id: string, compat?: Record<string, unknown> }[] } }> }
-    }).config.profiles().get(WORKBUDDY_PROVIDER)
+    }).config.profiles().get(routeId)
     expect(profile).toBeDefined()
-
     const models = profile!.piProvider.getModels()
     expect(models.length).toBeGreaterThan(0)
-    for (const model of models) {
+    return models
+  }
+
+  it('declares mid-conversation system messages on every CN catalog model', async () => {
+    for (const model of await modelsOf()) {
       expect(model.compat?.supportsMidConvoSystemMessages, model.id).toBe(true)
     }
+  })
+
+  it('does NOT declare it on the international route, which was never measured', async () => {
+    const { WORKBUDDY_GLOBAL_PROVIDER } = await import('../src/adapter.ts')
+    for (const model of await modelsOf(WORKBUDDY_GLOBAL_PROVIDER)) {
+      expect(model.compat?.supportsMidConvoSystemMessages, model.id).toBeUndefined()
+    }
+  })
+
+  it('keeps the reasoning-effort flag identical on both routes', async () => {
+    // The cache flag must not become a second, accidental difference between the
+    // regions: the only thing that should differ is the measured capability.
+    const { WORKBUDDY_GLOBAL_PROVIDER } = await import('../src/adapter.ts')
+    const cn = await modelsOf()
+    const global = await modelsOf(WORKBUDDY_GLOBAL_PROVIDER)
+    expect(global.map(m => [m.id, m.compat?.supportsReasoningEffort]))
+      .toEqual(cn.map(m => [m.id, m.compat?.supportsReasoningEffort]))
   })
 })
 
