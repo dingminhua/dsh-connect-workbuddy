@@ -74,6 +74,22 @@ function accountOf(accountId: string, overrides: Partial<WorkBuddyWebPoolAccount
 
 const NOW = 1_760_000_000_000
 
+describe('credit replenishment messages', () => {
+  const probe = { outcome: 'out-of-credit' as const, retryAtMs: NOW + 21 * 86_400_000 }
+  for (const render of [availabilityLine, availabilityMark]) {
+    it(`${render.name} separates check-in actions from a monthly countdown`, () => {
+      const base = { probe, checkinSupported: true }
+      expect(render(t, { ...base, checkedInToday: false }, NOW)).toBe('row.poolExcludedOutOfCredit · row.creditCheckinRetry')
+      expect(render(t, { ...base, checkedInToday: true }, NOW)).toBe('row.poolExcludedOutOfCredit · row.creditCheckinTomorrow')
+      for (const account of [{ probe }, base, { ...base, enterprise: true }, { ...base, checkinSupported: false }]) {
+        expect(render(t, account, NOW)).toBe('row.poolExcludedOutOfCredit · row.creditAwaitReplenishment')
+      }
+      expect(render(t, { excludedBy: 'out-of-credit', checkinSupported: true, checkedInToday: true }, NOW))
+        .toBe('row.poolExcludedOutOfCredit · row.creditCheckinTomorrow')
+    })
+  }
+})
+
 function testRow(accountId: string, result: WorkBuddyWebPoolTestRow['result']): WorkBuddyWebPoolTestRow {
   return { accountId, accountName: `Name ${accountId}`, result }
 }

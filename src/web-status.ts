@@ -382,10 +382,11 @@ export interface WorkBuddyStatusRouteOptions {
   /**
    * The region's next monthly quota refresh, when the upstream declares one.
    *
-   * Used ONLY to answer "when can I use this again" for an out-of-credit
-   * outcome, which is the one cooldown the service actually states: a monthly
-   * resource that resets at a known time. Every other limited outcome has no
-   * time from any source and must be reported as such.
+   * Recorded as upstream EVIDENCE beside an out-of-credit outcome, and nothing
+   * more. It is deliberately NOT a "when can I use this again" answer: check-in
+   * and top-ups replenish credits whenever they land, so this timestamp is a
+   * package fact rather than the earliest recovery, and the pool must not release
+   * the account when it passes (see `exclusionOf`).
    */
   quotaRefreshAtMs?(region: WorkBuddyRegion): number | undefined
   /**

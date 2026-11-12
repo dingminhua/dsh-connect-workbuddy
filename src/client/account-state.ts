@@ -36,11 +36,24 @@ import { recoversInText, remainingText } from './remaining.ts'
  * would spread that detail across call sites.
  */
 export interface AccountStateInput {
+  readonly checkinSupported?: boolean | undefined
+  readonly checkedInToday?: boolean | undefined
+  readonly enterprise?: boolean | undefined
   readonly excludedBy?: WorkBuddyWebPoolExclusion | undefined
   readonly probe?: {
     readonly outcome: WorkBuddyWebProbeOutcome
     readonly retryAtMs?: number | undefined
   } | undefined
+}
+
+/** 积分补充需要实际到账；月度刷新时间不能代表账号必须等待的期限。 */
+function creditRecoveryLine(t: Translate, account: AccountStateInput): string | undefined {
+  if (account.probe?.outcome !== 'out-of-credit' && account.excludedBy !== 'out-of-credit') return undefined
+  const action = account.checkinSupported === true && account.enterprise !== true
+    ? account.checkedInToday === true ? 'row.creditCheckinTomorrow'
+      : account.checkedInToday === false ? 'row.creditCheckinRetry' : 'row.creditAwaitReplenishment'
+    : 'row.creditAwaitReplenishment'
+  return `${t('row.poolExcludedOutOfCredit')} · ${t(action)}`
 }
 
 /** Whether a probe outcome means the model answered. */
@@ -141,6 +154,8 @@ export function availabilityLine(
   account: AccountStateInput,
   nowMs: number = Date.now(),
 ): string | undefined {
+  const creditLine = creditRecoveryLine(t, account)
+  if (creditLine !== undefined) return creditLine
   const probe = account.probe
   if (probe !== undefined) {
     // A SUCCESS is never waiting, whatever time came with it.
@@ -243,6 +258,8 @@ export function availabilityMark(
   account: AccountStateInput,
   nowMs: number = Date.now(),
 ): string | undefined {
+  const creditLine = creditRecoveryLine(t, account)
+  if (creditLine !== undefined) return creditLine
   const probe = account.probe
   if (probe !== undefined) {
     // Same rule as {@link availabilityLine}: a success has no wait to state, so

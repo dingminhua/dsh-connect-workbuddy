@@ -93,6 +93,7 @@ import { busyIcon } from './busy-icon.tsx'
 import { promoBadgeColor, promoBadgeLabel, promoBadgeTooltip, uiLanguage } from './promo-badge.ts'
 import { inlineProbeReason } from './probe-reason.ts'
 import { remainingText } from './remaining.ts'
+import { availabilityLine } from './account-state.ts'
 import { IconStylePreference, PluginIcon } from './plugin-icon.tsx'
 import { updateStickyTabs } from './series-layout.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
@@ -430,22 +431,30 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
  * The sentence a probe result gets, and how it should be coloured.
  *
  * The cooldown wording is the part that had to be got right. The upstream names
- * a "use again" time in three situations: a `Retry-After` header, the reset
- * sentence it writes into its own failure BODY (where this service actually
- * puts it — its 429s carry no rate-limit header at all), or an exhausted
- * monthly quota whose refresh point it declares. So a limited result WITHOUT
- * any stated time must say that plainly. Substituting a locally invented
- * countdown would be the single most misleading thing this feature could do: it
- * would look like an upstream answer while being a guess, and the user would
- * wait for a moment that means nothing.
+ * a "use again" time in two situations that describe a WAIT: a `Retry-After`
+ * header, and the reset sentence it writes into its own failure BODY (where this
+ * service actually puts it — its 429s carry no rate-limit header at all). So a
+ * limited result WITHOUT either must say that plainly. Substituting a locally
+ * invented countdown would be the single most misleading thing this feature
+ * could do: it would look like an upstream answer while being a guess, and the
+ * user would wait for a moment that means nothing.
+ *
+ * `out-of-credit` is deliberately NOT in that list any more. The monthly package
+ * refresh point is a fact about the PACKAGE's cycle, not the earliest moment the
+ * account can serve: check-in and top-ups replenish credits whenever they land.
+ * Rendering it as a countdown told users to wait three weeks for credits that
+ * could arrive today, so this row now borrows the pool's replenishment wording
+ * from `availabilityLine` — one rule for the account row and the model row, so
+ * the two cannot print different stories about the same measurement.
  */
 /**
  * ` · 约 1 小时后` for a future instant, or `''` when there is none.
  *
- * Kept beside {@link probeResultView} rather than inlined three times so the
- * "append only when non-empty" rule cannot drift between the two limited
- * outcomes. The absolute instant stays the primary text: it is the upstream's
- * own answer, and the relative form is a convenience derived from it.
+ * Kept beside {@link probeResultView} rather than inlined so the "append only
+ * when non-empty" rule cannot drift between the two outcomes that still carry a
+ * stated WAIT (rate-limited, model-busy). The absolute instant stays the primary
+ * text: it is the upstream's own answer, and the relative form is a convenience
+ * derived from it.
  */
 function retrySuffix(t: Translate, untilMs: number | undefined, nowMs: number): string {
   if (untilMs === undefined) return ''
@@ -531,13 +540,10 @@ function probeResultView(
         tone: 'warn',
       }
     case 'out-of-credit':
-      // Only a quota-reset answer is a real time; without one, the honest text
-      // is the same "no time given" the rate-limit branch uses.
+      // The stored monthly refresh is not an earliest recovery date. Reuse the
+      // pool wording; a model result has no account-specific check-in evidence.
       return {
-        text: result.retryAtMs === undefined
-          ? t('row.probeOutOfCreditUnknown')
-          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) })
-            + retrySuffix(t, result.retryAtMs, nowMs),
+        text: `✗ ${availabilityLine(t, { probe: result }, nowMs)}`,
         tone: 'bad',
       }
     case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }

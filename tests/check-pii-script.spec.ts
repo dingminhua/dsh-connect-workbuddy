@@ -253,6 +253,25 @@ describe('check-pii catches the bypasses an audit found', () => {
     expect(result.stderr).toContain('real-home-path')
   })
 
+  it('skips git\'s own worktree pointer file, which is not repository content', () => {
+    // In a `git worktree` (or a submodule) `.git` is a FILE, not a directory:
+    //     gitdir: /Users/<real-name>/DshProject/repo/.git/worktrees/<name>
+    // Git writes the maintainer's absolute path into it; it is never committed
+    // and ships nowhere. The scanner skipped the `.git` DIRECTORY but scanned
+    // this file, so `pnpm run check` failed on every worktree checkout — a
+    // privacy gate that is red for a reason nobody can act on.
+    //
+    // The companion assertion below is what keeps the exemption narrow: a leak
+    // in a file that merely STARTS with `.git` must still be caught, or the fix
+    // turns ".git is exempt" into ".git* is exempt" the next time someone edits
+    // the skip list.
+    const dir = makeRepo({ '.git': `gitdir: ${build('/Users/', 'zhangsan')}/repo/.git/worktrees/wt\n` })
+    expect(runScanner(dir).code).toBe(0)
+
+    const leaky = makeRepo({ '.gitignore-leak.md': `日志在 ${build('/Users/', 'zhangsan')}/log.txt\n` })
+    expect(runScanner(leaky).code).toBe(1)
+  })
+
   it('flags a leak carried by a FILE NAME', () => {
     const dir = makeRepo({ [`${build('138', '1234', '5678')}-shot.md`]: 'nothing here\n' })
     const result = runScanner(dir)

@@ -138,6 +138,61 @@ function rowOf(name: string): Element | undefined {
 }
 
 describe('the panel keeps its account rows current while it is open', () => {
+  it('uses one usage polling timer while open and restores readout polling on close', async () => {
+    fakeIntervals()
+    const calls = stubFetch(url => ({ body: url.includes('account-credits')
+      ? { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 100 }] }
+      : { ...usageOf(100), pollIntervalMs: 300_000 },
+    }))
+    const m = await mount(ComposerCredits as any, { t, provider: 'workbuddy', settingsScope: scopeOf({ accounts: {} }) })
+    await m.settle()
+    vi.advanceTimersByTime(1000)
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+    const usageCalls = () => calls.filter(call => call.url.includes('/usage')).length
+    const opened = usageCalls()
+    // Offset the two possible timers and settle between their ticks so an
+    // in-flight guard cannot hide a duplicate timer behind the same request.
+    vi.advanceTimersByTime(299_000)
+    await m.settle()
+    expect(usageCalls()).toBe(opened)
+    vi.advanceTimersByTime(1000)
+    await m.settle()
+    expect(usageCalls() - opened).toBe(1)
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+    const closed = usageCalls()
+    vi.advanceTimersByTime(300_000)
+    await m.settle()
+    expect(usageCalls() - closed).toBe(1)
+  })
+
+  it('updates pool state alongside credits after automatic check-in without a model test', async () => {
+    fakeIntervals()
+    let replenished = false
+    stubFetch(url => ({ body: url.includes('account-credits')
+      ? { accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: replenished ? 100 : 0 }] }
+      : { ...usageOf(replenished ? 100 : 0), pollIntervalMs: 60_000, pool: {
+          enabled: true, checkinSupported: true, targetModelSource: 'none', accounts: [{
+            accountId: 'a-1', accountName: 'A One', member: true, current: replenished,
+            credits: replenished ? 100 : 0, checkedInToday: replenished,
+            ...replenished ? {} : { excludedBy: 'out-of-credit', probe: {
+              outcome: 'out-of-credit', atMs: Date.now() - 1000, retryAtMs: Date.now() + 21 * 86_400_000,
+            } },
+          }],
+        } },
+    }))
+    const m = await openPanel()
+    expect(rowMarkOf('A One')).toContain('row.creditCheckinRetry')
+    expect(rowMarkOf('A One')).not.toContain('row.recoversDays')
+    replenished = true
+    vi.advanceTimersByTime(60_000)
+    await m.settle()
+    expect(rowOf('A One')?.textContent).toContain('100')
+    expect(rowMarkOf('A One')).not.toContain('row.poolExcludedOutOfCredit')
+    expect(rowDotOf('A One')).not.toContain('error')
+  })
+
   it('re-reads the account table on the CARD cadence, not the readout one', () => {
     // The property that matters is AGREEMENT, not a particular number. The panel
     // used to hold its own 60 s constant that merely happened to equal the
@@ -154,7 +209,7 @@ describe('the panel keeps its account rows current while it is open', () => {
     )
     expect(source, 'the panel must read the cadence off the document').toContain('refreshIntervalMs')
     expect(source, 'the panel must arm its timer from that value').toContain(
-      '() => { void fetchAccountCredits(controller.signal) },\n        refreshIntervalMs,',
+      '() => { void refreshPanel() },\n        refreshIntervalMs,',
     )
     // The fallback is the shared constant, not a fresh literal.
     expect(COMPOSER_ACCOUNT_REFRESH_INTERVAL_MS).toBe(WORKBUDDY_DEFAULT_POLL_INTERVAL_MS)
@@ -431,4 +486,201 @@ describe("the refresh stamp follows the reader's locale", () => {
       `the stamp ${JSON.stringify(foot)} is not the reader's locale rendering of ${format(before)}`,
     ).toBe(true)
   })
+})
+
+describe('panel refresh regression boundaries', () => {
+  it('does not fetch usage ahead of an unfinished balance cycle', async () => {
+    fakeIntervals()
+    let tableCalls = 0
+    let usageCalls = 0
+    let release: (() => void) | undefined
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      if (String(url).includes('account-credits')) {
+        tableCalls++
+        if (tableCalls === 2) await new Promise<void>(resolve => { release = resolve })
+        return jsonAnswer({ accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 100 }] })
+      }
+      usageCalls++
+      return jsonAnswer({ ...usageOf(100), pollIntervalMs: 60_000 })
+    })
+    const m = await openPanel()
+    try {
+      const before = usageCalls
+      vi.advanceTimersByTime(60_000)
+      await m.settle()
+      expect(tableCalls).toBe(2)
+      expect(usageCalls).toBe(before)
+      vi.advanceTimersByTime(60_000)
+      await m.settle()
+      expect(tableCalls).toBe(2)
+      expect(usageCalls, 'the second tick bypasses the balance wait and reads state separately').toBe(before)
+    } finally {
+      release?.()
+      await m.settle()
+      await m.unmount()
+    }
+  })
+
+  it('resumes the readout immediately after cancelling panel usage', async () => {
+    fakeIntervals()
+    let usageCalls = 0
+    let aborted = false
+    let release: (() => void) | undefined
+    vi.stubGlobal('fetch', async (url: unknown, init: RequestInit) => {
+      if (String(url).includes('account-credits')) {
+        return jsonAnswer({ accounts: [{ id: 'a-1', accountName: 'A One', selected: true, credits: 100 }] })
+      }
+      usageCalls++
+      if (usageCalls === 2) {
+        await new Promise<void>((resolve, reject) => {
+          release = resolve
+          init.signal?.addEventListener('abort', () => {
+            aborted = true
+            reject(new DOMException('aborted', 'AbortError'))
+          }, { once: true })
+        })
+      }
+      return jsonAnswer({ ...usageOf(usageCalls === 1 ? 100 : 200), pollIntervalMs: 60_000 })
+    })
+    const m = await openPanel()
+    try {
+      if (usageCalls < 2) {
+        vi.advanceTimersByTime(300_000)
+        await m.settle()
+      }
+      expect(usageCalls).toBe(2)
+      await m.click(m.buttons()[0] as Element)
+      release?.()
+      await m.settle()
+      expect(m.text(), `readout should show the fresh balance after close; aborted=${aborted}, usage calls=${usageCalls}`).toContain('200')
+    } finally {
+      release?.()
+      await m.unmount()
+    }
+  })
+
+
+  it('replaces an aborted usage read after a rapid close and reopen', async () => {
+    fakeIntervals()
+    let usageCalls = 0
+    let releaseAbort: (() => void) | undefined
+    vi.stubGlobal('fetch', async (url: unknown, init: RequestInit) => {
+      if (String(url).includes('account-credits')) return jsonAnswer({ accounts: [] })
+      usageCalls++
+      if (usageCalls === 2) {
+        await new Promise<void>((_resolve, reject) => {
+          releaseAbort = () => reject(new DOMException('aborted', 'AbortError'))
+          init.signal?.addEventListener('abort', () => {}, { once: true })
+        })
+      }
+      return jsonAnswer({ ...usageOf(usageCalls === 1 ? 100 : 200), pollIntervalMs: 60_000 })
+    })
+    const m = await openPanel()
+    try {
+      expect(usageCalls).toBe(2)
+      await m.click(m.buttons()[0] as Element)
+      await m.click(m.buttons()[0] as Element)
+      releaseAbort?.()
+      await m.settle()
+      expect(usageCalls).toBe(3)
+      expect(m.text()).toContain('200')
+    } finally {
+      releaseAbort?.()
+      await m.unmount()
+    }
+  })
+
+  it('does not publish an old region manual refresh after changing region', async () => {
+    fakeIntervals()
+    let domesticReads = 0
+    let releaseDomestic: (() => void) | undefined
+    let releaseGlobal: (() => void) | undefined
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const target = String(url)
+      if (target.includes('__save')) return jsonAnswer({ ok: true, value: { accounts: { cn: 'a-2' } } })
+      if (target.includes('account-credits')) return jsonAnswer({ accounts: [
+        { id: 'a-1', accountName: 'A One', selected: true, credits: 100 },
+        { id: 'a-2', accountName: 'A Two', selected: false, credits: 100 },
+      ] })
+      if (target.includes('region=global')) {
+        await new Promise<void>(resolve => { releaseGlobal = resolve })
+        return jsonAnswer({ ...usageOf(200), region: 'global' })
+      }
+      domesticReads++
+      if (domesticReads >= 3) await new Promise<void>(resolve => { releaseDomestic = resolve })
+      return jsonAnswer(usageOf(domesticReads >= 3 ? 999 : 100))
+    })
+    const scope = scopeOf({ accounts: {} })
+    const m = await openPanel({ settingsScope: scope })
+    try {
+      const button = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-composer-panel-switch'))
+        .find(value => value.textContent?.includes('A Two'))
+      expect(button).toBeDefined()
+      await m.click(button!)
+      await m.settle()
+      expect(releaseDomestic).toBeTypeOf('function')
+      await m.update({ t, provider: 'workbuddy', region: 'global', settingsScope: scope })
+      releaseDomestic?.()
+      await m.settle()
+      expect(releaseGlobal).toBeTypeOf('function')
+      expect(m.text()).not.toContain('999')
+      releaseGlobal?.()
+      await m.settle()
+      expect(m.text()).toContain('200')
+    } finally {
+      releaseDomestic?.()
+      releaseGlobal?.()
+      await m.unmount()
+    }
+  })
+
+
+
+  it('reads fresh usage after a manual switch instead of reusing a pre-switch poll', async () => {
+    fakeIntervals()
+    let serving = 'a-1'
+    let usageCalls = 0
+    let release: (() => void) | undefined
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      const target = String(url)
+      if (target.includes('__save')) {
+        serving = 'a-2'
+        return jsonAnswer({ ok: true, value: { accounts: { cn: serving } } })
+      }
+      if (target.includes('account-credits')) return jsonAnswer({ accounts: [
+        { id: 'a-1', accountName: 'A One', selected: serving === 'a-1', credits: 100 },
+        { id: 'a-2', accountName: 'A Two', selected: serving === 'a-2', credits: 100 },
+      ] })
+      usageCalls++
+      const captured = serving
+      if (usageCalls === 3) await new Promise<void>(resolve => { release = resolve })
+      return jsonAnswer({ ...usageOf(100), accountId: captured, pollIntervalMs: 60_000, pool: {
+        enabled: true, checkinSupported: true, targetModelSource: 'none', accounts: [
+          { accountId: 'a-1', accountName: 'A One', member: true, current: captured === 'a-1' },
+          { accountId: 'a-2', accountName: 'A Two', member: true, current: captured === 'a-2' },
+        ],
+      } })
+    })
+    const m = await openPanel()
+    try {
+      vi.advanceTimersByTime(60_000)
+      await m.settle()
+      expect(usageCalls).toBe(3)
+      expect(release).toBeTypeOf('function')
+      const button = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.dsm-workbuddy-composer-panel-switch'))
+        .find(value => value.textContent?.includes('A Two'))
+      await m.click(button!)
+      await m.settle()
+      expect(serving).toBe('a-2')
+      release?.()
+      await m.settle()
+      expect(usageCalls, 'a pre-switch poll cannot acknowledge a later account change').toBe(4)
+      expect(rowMarkOf('A Two')).toContain('composer.current')
+      expect(rowMarkOf('A One')).not.toContain('composer.current')
+    } finally {
+      release?.()
+      await m.unmount()
+    }
+  })
+
 })

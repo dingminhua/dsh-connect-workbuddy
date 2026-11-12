@@ -137,9 +137,8 @@ describe('the two paths now agree on when an exhausted account comes back', () =
     expect(live).toEqual(probe)
   })
 
-  it('the fallback stays for the case that genuinely has no answer', () => {
-    // The reporter explicitly did NOT ask for this to change: with no refresh
-    // point available, a short window and an occasional retry is reasonable.
+  it('keeps an unknown replenishment time excluded until credits are confirmed', () => {
+    // A local timer cannot establish that check-in or a package refresh paid out.
     const unknown = cooldownOf({
       outcome: 'out-of-credit',
       retryAfter: null,
@@ -149,17 +148,15 @@ describe('the two paths now agree on when an exhausted account comes back', () =
     expect(unknown).toEqual({})
     const probe = { outcome: 'out-of-credit' as const, atMs: NOW }
     expect(exclusionOf(probe, NOW + POOL_UNKNOWN_COOLDOWN_MS - 1)).toBe('out-of-credit')
-    expect(exclusionOf(probe, NOW + POOL_UNKNOWN_COOLDOWN_MS)).toBeUndefined()
+    expect(exclusionOf(probe, NOW + POOL_UNKNOWN_COOLDOWN_MS)).toBe('out-of-credit')
   })
 
-  it('keeps the account out for the whole quota cycle, not 30 minutes', () => {
-    // The user-visible difference: with the refresh point stored, the account
-    // stays out until the cycle rolls over instead of being put back to be
-    // refused again half an hour later.
+  it('does not treat the quota refresh instant as proof of replenishment', () => {
+    // A later balance query may release the account earlier; the instant alone cannot.
     const probe = { outcome: 'out-of-credit' as const, atMs: NOW, retryAtMs: QUOTA_REFRESH_AT }
     expect(exclusionOf(probe, NOW + POOL_UNKNOWN_COOLDOWN_MS)).toBe('out-of-credit')
     expect(exclusionOf(probe, QUOTA_REFRESH_AT - 1)).toBe('out-of-credit')
-    expect(exclusionOf(probe, QUOTA_REFRESH_AT)).toBeUndefined()
+    expect(exclusionOf(probe, QUOTA_REFRESH_AT)).toBe('out-of-credit')
   })
 })
 

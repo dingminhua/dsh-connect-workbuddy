@@ -92,6 +92,28 @@ function sweepButtons(container: HTMLElement): { enabled: HTMLButtonElement | un
 }
 
 describe('the sweep buttons', () => {
+  it('renders depleted model results without a monthly refresh date or recovery countdown', async () => {
+    // The measurement carries a `retryAtMs` 21 days out — the monthly package's
+    // refresh point, which is exactly what used to be rendered here as a
+    // countdown (“积分包 11/xx 刷新 · 约 21 天后”). It must now be IGNORED: the
+    // monthly cycle is not the earliest moment the account can serve, because
+    // check-in and top-ups replenish credits whenever they land.
+    //
+    // Asserted as EXACT equality rather than a list of "must not contain" strings.
+    // The subtraction version was vacuous: it named a message key that the fix
+    // deleted, so it would have passed even if the row printed a date (the key
+    // simply no longer existed to be found). Equality has no such blind spot —
+    // any date, countdown or extra clause breaks it.
+    const { m } = await render({ verdictFor: () => ({
+      outcome: 'out-of-credit', retryAtMs: Date.now() + 21 * 86_400_000,
+    }) })
+    const { enabled } = sweepButtons(m.container)
+    await m.click(enabled as Element)
+    await m.settle()
+    const result = m.container.querySelector('.dsm-workbuddy-model-probe-result')?.textContent ?? ''
+    expect(result).toBe('✗ row.poolExcludedOutOfCredit · row.creditAwaitReplenishment')
+  })
+
   it('renders exactly ONE sweep button, and no "all models" variant', async () => {
     const { m } = await render()
     const { enabled } = sweepButtons(m.container)
