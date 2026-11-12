@@ -30,8 +30,12 @@ import {
   buildImageBody,
   describeImageFailure,
   imageDataUrl,
+  IMAGE_MODEL_NO_WATERMARK,
   imageMimeForPath,
+  imageModelChoices,
+  imageSizeLimitsOf,
   isBareBase64Image,
+  isWatermarkFreeImageModel,
   parseImageDataUrl,
   parseImageResponse,
   pickImageModel,
@@ -203,6 +207,52 @@ describe('selectMediaModels 的多标签形态（给卡片读全量清单用）'
     expect(models.map(model => model.id)).toEqual(['hy-image-3.5', 'kling-video-v3'])
     expect(MEDIA_TAGS).toContain(VIDEO_TAG_TEXT_TO_VIDEO)
     expect(MEDIA_TAGS).toContain(VIDEO_TAG_IMAGE_TO_VIDEO)
+  })
+})
+
+describe('无水印模型与尺寸范围（issue #241）', () => {
+  it('目录之外补一条 v3.0，只补到文生图组，且不覆盖目录自己的条目', () => {
+    // v3.0 不在 `/v3/config` 里（它是官方 CLI 写死的兜底模型），所以要补；
+    // 但补的范围必须严格是 `text-to-image`：它在 `/v2/images/edits` 上会静默
+    // 忽略输入图（实测），列进改图组就是一个「花了钱却没用上参考图」的按钮。
+    const textChoices = imageModelChoices(cnModels, IMAGE_TAG_TEXT_TO_IMAGE)
+    expect(textChoices.map(model => model.id)).toEqual([
+      'hunyuan-image-alpha',
+      IMAGE_MODEL_NO_WATERMARK,
+    ])
+    expect(isWatermarkFreeImageModel(textChoices[1]?.id ?? '')).toBe(true)
+    expect(imageModelChoices(cnModels, IMAGE_TAG_IMAGE_TO_IMAGE).map(model => model.id))
+      .toEqual(['hunyuan-image-alpha-edit'])
+  })
+
+  it('目录里已经有 v3.0 时用目录那条，不重复也不改名', () => {
+    const withV3 = [
+      ...cnModels,
+      { id: IMAGE_MODEL_NO_WATERMARK, name: '目录自己的名字', tags: ['text-to-image'] },
+    ]
+    const choices = imageModelChoices(withV3, IMAGE_TAG_TEXT_TO_IMAGE)
+    expect(choices.filter(model => model.id === IMAGE_MODEL_NO_WATERMARK)).toHaveLength(1)
+    expect(choices.find(model => model.id === IMAGE_MODEL_NO_WATERMARK)?.name).toBe('目录自己的名字')
+  })
+
+  it('目录里一条文生图模型都没有时不凭空补一个', () => {
+    // 空组意味着这个账号的产品配置没开通生图，不是「目录列漏了」。
+    // 补一条上去会让一次注定失败的调用真的发出去（还扣积分）。
+    expect(imageModelChoices([], IMAGE_TAG_TEXT_TO_IMAGE)).toEqual([])
+    expect(imageModelChoices([{ id: 'x', name: 'X', tags: ['craft'] }], IMAGE_TAG_TEXT_TO_IMAGE))
+      .toEqual([])
+  })
+
+  it('v3.0 的尺寸范围比 alpha 小，且两个边界都是实测值', () => {
+    const v3 = imageSizeLimitsOf(IMAGE_MODEL_NO_WATERMARK)
+    const wide = imageSizeLimitsOf('hunyuan-image-alpha')
+    // 实测：1024x1024 通过、1024x1025 被拒（14402），所以上限就是 1024²。
+    expect(v3.maxPixels).toBe(1_048_576)
+    expect(v3.maxEdge).toBe(2048)
+    expect(v3.minEdge).toBe(512)
+    // 未知 id 回落到宽的实测档，而不是凭空收紧一个没测过的模型。
+    expect(imageSizeLimitsOf('some-future-model')).toEqual(wide)
+    expect(wide.maxPixels).toBe(4_194_304)
   })
 })
 
@@ -1155,6 +1205,141 @@ it('第十九轮：报价口径统一、主体门禁补方向词、改写责任�
     expect((error as Error).message).not.toContain('国内区未登录')
     // 两种可能都要说到：没登录，或者登录了但没给那个区开「自主生图」。
     expect((error as Error).message).toContain('两个区都没登录')
+  })
+
+  describe('无水印模型（issue #241）', () => {
+    /** 记录每次真正发给上游的模型 id 与尺寸。 */
+    function spyDeps(overrides: Partial<ImageToolDeps> = {}): {
+      readonly deps: ImageToolDeps
+      readonly calls: { model: string, size: string }[]
+    } {
+      const calls: { model: string, size: string }[] = []
+      return {
+        calls,
+        deps: deps({
+          generateImage: async (_credential, request) => {
+            calls.push({ model: request.model, size: request.size })
+            return { url: 'https://cos.example/a.png', credit: 11.31 }
+          },
+          ...overrides,
+        }),
+      }
+    }
+
+    it('没选偏好时仍然用目录第一个，不替用户换贵一倍的模型', async () => {
+      // 这是整个 issue 的核心承诺：升级不能让人默默多花钱。
+      const { deps: fake, calls } = spyDeps()
+      const tool = createImageTool(fake)
+      await tool.execute({ prompt: '猫', size: SIZE }, {})
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.model).toBe('hunyuan-image-alpha')
+    })
+
+    it('选了 v3.0 就走 v3.0', async () => {
+      const { deps: fake, calls } = spyDeps({ preferredImageModel: () => IMAGE_MODEL_NO_WATERMARK })
+      const tool = createImageTool(fake)
+      await tool.execute({ prompt: '猫', size: SIZE }, {})
+      expect(calls[0]?.model).toBe(IMAGE_MODEL_NO_WATERMARK)
+    })
+
+    it('显式 model 压过偏好——偏好是上一次点的，参数是这一次写的', async () => {
+      const { deps: fake, calls } = spyDeps({ preferredImageModel: () => IMAGE_MODEL_NO_WATERMARK })
+      const tool = createImageTool(fake)
+      await tool.execute({ prompt: '猫', size: SIZE, model: 'hunyuan-image-alpha' }, {})
+      expect(calls[0]?.model).toBe('hunyuan-image-alpha')
+    })
+
+    it('偏好指向一个已经不存在的模型时回落到组内第一个，而不是让生成失败', async () => {
+      const { deps: fake, calls } = spyDeps({ preferredImageModel: () => 'hunyuan-image-gone' })
+      const tool = createImageTool(fake)
+      await tool.execute({ prompt: '猫', size: SIZE }, {})
+      expect(calls[0]?.model).toBe('hunyuan-image-alpha')
+    })
+
+    it('偏好不会被用到改图上：改图的模型仍由 image-to-image 目录决定', async () => {
+      // 偏好只对 text-to-image 生效（index.ts 的注入按 tag 判）。把它漏到改图上，
+      // 就会挑一个在 /v2/images/edits 上静默忽略输入图的模型——付钱、丢参考图。
+      const editCalls: string[] = []
+      const tool = createImageTool(deps({
+        listMediaModels: async () => cnModels,
+        editImage: async (_credential, request) => {
+          editCalls.push(request.model)
+          return { url: 'https://cos.example/e.png', credit: 6.11 }
+        },
+        preferredImageModel: (_credential, tag) =>
+          tag === IMAGE_TAG_TEXT_TO_IMAGE ? IMAGE_MODEL_NO_WATERMARK : undefined,
+      }))
+      const INPUT = imageDataUrl('image/png', Buffer.from('hello').toString('base64'))
+      await tool.execute({ prompt: '改成绿的', size: SIZE, image: [INPUT] }, {})
+      expect(editCalls).toEqual(['hunyuan-image-alpha-edit'])
+    })
+
+    it('v3.0 的尺寸按它自己的窄范围收，不按 alpha 的 419 万像素放行', async () => {
+      // 实测 1024x1536 在 v3.0 上是 14402。按 alpha 的范围算会原样发出去，
+      // 于是用户看到的是一次「上游拒绝」而不是「已等比缩到 836x1254」。
+      // 836x1254 = 1,048,344，正好顶住 104 万像素上限，且保持 2:3 比例——
+      // 收窄时保比例比改比例好：用户要的是竖版构图，不是「一个竖版尺寸」。
+      const { deps: fake, calls } = spyDeps({ preferredImageModel: () => IMAGE_MODEL_NO_WATERMARK })
+      const tool = createImageTool(fake)
+      const value = await tool.execute({ prompt: '猫', size: '1024x1536' }, {})
+      expect(calls[0]?.size).toBe('836x1254')
+      expect(value['size']).toBe('836x1254')
+      expect(value['requestedSize']).toBe('1024x1536')
+      // describeLimits 按「万」四舍五入：1,048,576 / 10,000 = 104.86 → 105。
+      expect(String(value['hint'])).toContain('约 105 万像素上限')
+      expect(String(value['hint'])).toContain('缩小')
+    })
+
+    it('同一个 1024x1536 在 alpha 上原样发出——换模型不该改变旧行为', async () => {
+      const { deps: fake, calls } = spyDeps()
+      const tool = createImageTool(fake)
+      const value = await tool.execute({ prompt: '猫', size: '1024x1536' }, {})
+      expect(calls[0]?.size).toBe('1024x1536')
+      expect(value['requestedSize']).toBeUndefined()
+    })
+
+    it('hint 每次都讲清水印：v3.0 无水印，默认那条有且关不掉', async () => {
+      const { deps: watermarked } = spyDeps()
+      const alpha = await createImageTool(watermarked).execute({ prompt: '猫', size: SIZE }, {})
+      expect(String(alpha['hint'])).toContain('水印')
+      expect(String(alpha['hint'])).toContain('上游没有关闭它的参数')
+      expect(String(alpha['hint'])).toContain(IMAGE_MODEL_NO_WATERMARK)
+
+      const { deps: clean } = spyDeps({ preferredImageModel: () => IMAGE_MODEL_NO_WATERMARK })
+      const v3 = await createImageTool(clean).execute({ prompt: '猫', size: SIZE }, {})
+      expect(String(v3['hint'])).toContain('不带 WorkBuddy 水印')
+    })
+
+    it('国际区拿不到 v3.0 这个选项：选了也不生效（那边没有它的路由）', async () => {
+      // 实测国际区 `hunyuan-image-v3.0` → 400 / 14401 route config not found。
+      // 列进国际区的选项就是一个点了必然失败的按钮，所以这条偏好国际区直接不算数。
+      const { deps: fake, calls } = spyDeps({
+        resolveCredential: async () => credential({ domain: 'https://www.workbuddy.ai' }),
+        listMediaModels: async () => globalModels,
+        preferredImageModel: () => IMAGE_MODEL_NO_WATERMARK,
+      })
+      const tool = createImageTool(fake)
+      await tool.execute({ prompt: '猫', size: SIZE }, {})
+      expect(calls[0]?.model).toBe('hy-image-3.5')
+    })
+
+    it('国内区显式要 v3.0 可以，国际区显式要它则报错并列出可用项', async () => {
+      const { deps: fake, calls } = spyDeps({ listMediaModels: async () => cnModels })
+      await createImageTool(fake).execute(
+        { prompt: '猫', size: SIZE, model: IMAGE_MODEL_NO_WATERMARK },
+        {},
+      )
+      expect(calls[0]?.model).toBe(IMAGE_MODEL_NO_WATERMARK)
+
+      const { deps: global } = spyDeps({
+        resolveCredential: async () => credential({ domain: 'https://www.workbuddy.ai' }),
+        listMediaModels: async () => globalModels,
+      })
+      await expect(createImageTool(global).execute(
+        { prompt: '猫', size: SIZE, model: IMAGE_MODEL_NO_WATERMARK },
+        {},
+      )).rejects.toThrow(/没有.*模型/)
+    })
   })
 
   it('目录里没有生图模型 → NO_IMAGE_MODEL', async () => {

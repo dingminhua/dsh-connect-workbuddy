@@ -39,6 +39,120 @@ export const IMAGE_TAG_TEXT_TO_IMAGE = 'text-to-image'
 export const IMAGE_TAG_IMAGE_TO_IMAGE = 'image-to-image'
 /** 官方 CLI 的默认尺寸。 */
 export const DEFAULT_IMAGE_SIZE = '1024x1024'
+
+/**
+ * 一个文生图模型**自己**登记的尺寸能力。
+ *
+ * 为什么要按模型分开：两个可用模型的尺寸范围**不是同一个**，而且差得不少。
+ * 2026-11-12 逐档实测（国内区，接受/拒绝都记下来）：
+ *
+ *   | 模型 | 边长 | 总像素上限 | 实测边界 |
+ *   | --- | --- | --- | --- |
+ *   | `hunyuan-image-alpha` | 512–2560 | 4,194,304 | 2560x1440 / 2560x1600 通过，2560x2560 拒 |
+ *   | `hunyuan-image-v3.0`   | 512–2048 | 1,048,576 | 1024x1024 / 1365x768 通过，1024x1025、1280x832 拒 |
+ *
+ * 把 v3.0 塞进 alpha 的范围会得到一串 `14402 The requested output image size is
+ * not supported` —— 上游 400、本地却以为合法，正是「工具算得出、上游不认」的
+ * 那类最难解释的失败。所以范围必须跟着**这一次真正选中的模型**走。
+ *
+ * 表里没有的模型（目录明天增了新 id）沿用 alpha 的宽范围：宁可让它发上去被
+ * 上游拒，也不要在本地凭空收紧一个没测过的模型。
+ */
+export interface WorkBuddyImageSizeLimits {
+  /** 两条边各自的下限。 */
+  readonly minEdge: number
+  /** 两条边各自的上限。 */
+  readonly maxEdge: number
+  /** 宽乘高的上限。 */
+  readonly maxPixels: number
+}
+
+/** 实测通过的宽档（目录里的 `hunyuan-image-alpha` 等默认档）。 */
+export const IMAGE_SIZE_LIMITS_WIDE: WorkBuddyImageSizeLimits = {
+  minEdge: 512,
+  maxEdge: 2560,
+  maxPixels: 4_194_304,
+}
+
+/**
+ * `hunyuan-image-v3.0` 的窄档：边长 2048、总像素 1024² 顶格。
+ *
+ * 实测边界见 {@link WorkBuddyImageSizeLimits} 的表：`1024x1024`（1,048,576）
+ * 通过、`1024x1025` 被拒，所以上限就是这个数，不多一位。
+ */
+export const IMAGE_SIZE_LIMITS_V3: WorkBuddyImageSizeLimits = {
+  minEdge: 512,
+  maxEdge: 2048,
+  maxPixels: 1_048_576,
+}
+
+/**
+ * 按模型 id 给出它的尺寸范围。
+ *
+ * 判据只看 id 前缀：`hunyuan-image-v3.0` 与它的改图位（若有）同族同限。这不是
+ * 「猜模型能力」——两条是实测过的边界，其余一律回落到实测过的宽档。
+ */
+export function imageSizeLimitsOf(modelId: string): WorkBuddyImageSizeLimits {
+  return modelId.startsWith('hunyuan-image-v3') ? IMAGE_SIZE_LIMITS_V3 : IMAGE_SIZE_LIMITS_WIDE
+}
+
+/**
+ * 无水印模型：`hunyuan-image-v3.0`（issue #241）。
+ *
+ * 2026-11-12 实测：同一个提示词、同一个账号，`hunyuan-image-alpha` 的产物右下角
+ * 固定带「AI生成 WORKBUDD>」水印，而 `hunyuan-image-v3.0` **完全没有**——它不是
+ * 参数开关，是产物落盘路径的差别：带水印的产物落在 COS 的 `aigc-processed/`
+ * 前缀下，v3.0 的不落。所以「关水印」这件事在上游只有一个等价做法：换模型。
+ *
+ * 代价如实体现在两处：单价 6 → 11.1 积分/张，尺寸上限降到
+ * {@link IMAGE_SIZE_LIMITS_V3}。因此它是**用户选的**，不是默认——
+ * 见 `preferredImageModels`。
+ */
+export const IMAGE_MODEL_NO_WATERMARK = 'hunyuan-image-v3.0'
+
+/** 这个模型 id 是不是那条「不带水印」的模型。 */
+export function isWatermarkFreeImageModel(modelId: string): boolean {
+  return modelId === IMAGE_MODEL_NO_WATERMARK
+}
+
+/**
+ * 「不带水印」这条可选项的目录条目。
+ *
+ * 它**不在** `/v3/config` 的媒体目录里——目录只发 `hunyuan-image-alpha` /
+ * `hunyuan-image-alpha-edit` 两条。但它是官方 CLI 自己写死的文生图兜底模型
+ * （`resolveModel` 里 `s ? "hunyuan-image-v3.0" : "hunyuan-image-v2.0-general-edit"`），
+ * 实测也真的能出图，所以把它补成一条与目录条目同形的候选，让「选模型」这一层
+ * 不必为它开第二条分支。
+ *
+ * `tags` 只给 `text-to-image`：它在 `/v2/images/edits` 上是**静默忽略输入图**的
+ * （2026-11-12 实测：蓝底黑十字的输入图 + 「只加一颗星」，出来是灰底一颗星、
+ * 输入图完全没进画布，照样扣 11.31 积分）。所以它绝不能出现在改图那一组里。
+ */
+export const IMAGE_MODEL_NO_WATERMARK_ENTRY: WorkBuddyMediaModel = {
+  id: IMAGE_MODEL_NO_WATERMARK,
+  name: 'Hunyuan Image v3.0（无水印）',
+  tags: [IMAGE_TAG_TEXT_TO_IMAGE],
+}
+
+/**
+ * 某个 tag 组里**可选的全部**模型：目录给的，加上本插件自己补的。
+ *
+ * 只往 `text-to-image` 组里补 `hunyuan-image-v3.0`，其他组原样返回。目录要是哪天
+ * 自己下发了这个 id，就以目录的那条为准（不重复、不覆盖上游的名字）。
+ */
+export function imageModelChoices(
+  models: readonly WorkBuddyMediaModel[],
+  tag: string,
+): WorkBuddyMediaModel[] {
+  const group = models.filter(model => model.tags.includes(tag))
+  // 空组不补。目录里一条 `text-to-image` 都没有，说明这个账号的产品配置就没开通
+  // 生图——那不是「目录列漏了」，补一条上去只会让一次注定不该发生的调用发出去。
+  // 「要不要补」只在「能画、但有第二条更贵的路」时才成立。
+  if (group.length === 0) return group
+  if (tag !== IMAGE_TAG_TEXT_TO_IMAGE) return group
+  if (group.some(model => model.id === IMAGE_MODEL_NO_WATERMARK)) return group
+  return [...group, IMAGE_MODEL_NO_WATERMARK_ENTRY]
+}
 /** 生图路由。 */
 export const IMAGE_GENERATIONS_PATH = '/v2/images/generations'
 /** 改图路由：官方 CLI 的 `ImageService.editImage` 打的就是这条（2026-10-25 国际区实测 200）。 */

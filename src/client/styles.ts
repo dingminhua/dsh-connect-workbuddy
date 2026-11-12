@@ -349,6 +349,8 @@ export const WORKBUDDY_CARD_CSS = `
    tag chip and the select sit on one baseline, like a roster row does. */
 .dsm-workbuddy-video-model-select{font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary,#b8bcc4);background:var(--dsw-alias-bg-l1,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:1px 6px;max-width:100%;min-width:0}
 .dsm-workbuddy-video-model-select:disabled{opacity:.6}
+.dsm-workbuddy-image-model-select{font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary,#b8bcc4);background:var(--dsw-alias-bg-l1,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:1px 6px;max-width:100%;min-width:0}
+.dsm-workbuddy-image-model-select:disabled{opacity:.6}
 .dsm-workbuddy-media-empty,.dsm-workbuddy-media-error{font-size:12px;line-height:17px}
 .dsm-workbuddy-media-empty{color:var(--dsw-alias-label-tertiary,#8b8f98)}
 .dsm-workbuddy-media-error{color:var(--dsw-alias-label-error,#e5675f)}

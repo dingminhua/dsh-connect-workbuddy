@@ -252,6 +252,15 @@ export interface WorkBuddyStatusRouteOptions {
    */
   preferredVideoModels?(region: WorkBuddyRegion): Readonly<Record<string, string>>
   /**
+   * The text-to-image model this region generates with (issue #241), or `''`.
+   *
+   * Optional and absent-tolerant like the pickers above: a Host that cannot
+   * answer means "no choice", which is the pre-#241 behaviour. It must never
+   * read as the watermark-free model — that costs roughly twice as much per
+   * image, so a missing answer is not permission to spend more.
+   */
+  preferredImageModel?(region: WorkBuddyRegion): string
+  /**
    * Whether the OPTIONAL CodeBuddy CLI route is mounted (`codebuddy_ask` tool +
    * `/codebuddy` command).
    *
@@ -1264,6 +1273,7 @@ export async function workBuddyWebStatus(
   // Absent reads as "nothing pinned", never as a made-up id: the picker then
   // shows its default row, which is exactly what the tool would do anyway.
   const preferredVideoModels = deps.preferredVideoModels?.(region) ?? {}
+  const preferredImageModel = deps.preferredImageModel?.(region) ?? ''
   // GLOBAL, read once per answer and repeated on each region: the card polls one
   // region at a time, so the switch has to be present on whichever tab is open.
   // `=== true` for the same reason as `imageToolEnabled`: absent is not consent.
@@ -1313,7 +1323,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, cliBridgeEnabled, sidebarPanelEnabled, pollIntervalMs, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, preferredImageModel, cliBridgeEnabled, sidebarPanelEnabled, pollIntervalMs, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
   }
   let credential
   try {
@@ -1349,6 +1359,7 @@ export async function workBuddyWebStatus(
       imageToolEnabled,
       videoToolEnabled,
       preferredVideoModels,
+      preferredImageModel,
       cliBridgeEnabled,
       sidebarPanelEnabled,
       pollIntervalMs,
@@ -1389,6 +1400,7 @@ export async function workBuddyWebStatus(
     imageToolEnabled,
     videoToolEnabled,
     preferredVideoModels,
+    preferredImageModel,
     cliBridgeEnabled,
     sidebarPanelEnabled,
     pollIntervalMs,

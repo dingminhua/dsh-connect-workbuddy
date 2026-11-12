@@ -41,6 +41,8 @@ import {
   regionNewModelsShownOf,
   regionEnabledOf,
   regionImageToolEnabledOf,
+  nextRegionPreferredImageModel,
+  regionPreferredImageModelOf,
   regionPreferredVideoModelsOf,
   regionVideoToolEnabledOf,
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
@@ -69,8 +71,12 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredImageModel, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
 import { resolveCnGateway } from '../cn-gateway.ts'
+// The watermark-free model id is shared with the tool on purpose: if the picker
+// and the tool disagreed about which id means "no watermark", the card would
+// offer a choice the tool then silently ignores (issue #241).
+import { IMAGE_MODEL_NO_WATERMARK } from '../image-gen.ts'
 import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { DeviceSdkPanel } from './DeviceSdkPanel.tsx'
@@ -762,6 +768,14 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [pinningVideoModel, setPinningVideoModel] = useState<string | undefined>(undefined)
   /**
+   * The image-model picker's in-flight marker (issue #241).
+   *
+   * Separate from {@link pinningVideoModel} for the same reason that one is
+   * separate from {@link togglingCredits}: the two write different fields of the
+   * same region slot, so one pending write must not disable the other control.
+   */
+  const [pinningImageModel, setPinningImageModel] = useState<boolean>(false)
+  /**
    * The OPTIONAL CodeBuddy CLI route switch (global: one switch, one budget).
    *
    * `undefined` until the first Host answer arrives, so the box renders the
@@ -1349,6 +1363,21 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   }
 
   /**
+   * The text-to-image model this region generates with, or `''` for "follow the
+   * catalog" (issue #241).
+   *
+   * Same read order as {@link preferredVideoModelOf} and for the same measured
+   * reason: the Host's answer first, because this namespace's browser mirror is
+   * stale on the affected deployments, and a picker rendering the mirror alone
+   * would show a watermark-free choice the tool does not honour.
+   */
+  const preferredImageModelOf = (item: WorkBuddyWebRegion): string => {
+    const usage = statusByRegion[item] as { preferredImageModel?: unknown } | undefined
+    if (typeof usage?.preferredImageModel === 'string') return usage.preferredImageModel
+    return regionPreferredImageModelOf(settingsScope?.getSnapshot().value, item)
+  }
+
+  /**
    * Switch one region's provider off or on. The write carries the region's
    * whole slot through untouched — only `enabled` changes — so the user's
    * directory, model picks, image opt-ins and budgets survive a round trip.
@@ -1889,6 +1918,38 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setPinningVideoModel(undefined)
+    }
+  }
+
+  /**
+   * Pick (or clear) this region's text-to-image model (issue #241).
+   *
+   * `undefined` means "follow the catalog": the tool then takes the group's
+   * first model, which is the watermarked-but-cheaper one. Both directions go
+   * through the same landed-checked write as the video pin and then re-read the
+   * Host — a choice that reverted silently would leave the user believing their
+   * images come out watermark-free when the tool still uses the other model.
+   */
+  const pinImageModel = async (
+    item: WorkBuddyWebRegion,
+    modelId: string | undefined,
+  ): Promise<void> => {
+    if (settingsScope === undefined) return
+    setPinningImageModel(true)
+    try {
+      const regions = nextRegionPreferredImageModel(settingsScope.getSnapshot().value, item, modelId) as Record<string, unknown>
+      const slot = regions[item]
+      await writeRegionPreferredImageModel(
+        settingsScope,
+        item,
+        modelId,
+        typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
+      )
+      await refreshUsage(item)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setPinningImageModel(false)
     }
   }
 
@@ -2768,6 +2829,66 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
         </span>
       </div>
     )
+  /**
+   * The image-model picker (issue #241).
+   *
+   * Only on the CN tab, and only once the image tool is authorized there: the
+   * watermark-free model has no route on the international gateway (measured
+   * 2026-11-12: `hunyuan-image-v3.0` → 400 / 14401 route config not found), so
+   * offering it there would be a button that can only fail. Showing the picker
+   * where the tool cannot be called at all would invite a decision that changes
+   * nothing, same rule as `videoModelPreference`.
+   *
+   * The watermark-free entry is NOT in this region's catalog — it is the
+   * official CLI's own hard-coded fallback — so it is appended here rather than
+   * read from `activeMedia`. Everything about the cost lives in the hint: a user
+   * who only wants "no watermark" must not have to discover the price tag after
+   * spending 11.1 credits.
+   */
+  const imageModelPreference = activeRegion !== 'cn'
+    // `activeRegion` is provably 'cn' past the first line, so reading the switch
+    // and the stored choice through it cannot disagree with the tab being drawn.
+    || !(activeRegionOn && imageToolOn(activeRegion))
+    || activeMedia === undefined
+    ? null
+    : (() => {
+        const picked = preferredImageModelOf(activeRegion)
+        const options: { readonly id: string, readonly name: string }[] = [
+          // The catalog's own text-to-image entries first, in catalog order.
+          ...activeMedia
+            .filter(model => model.tags.includes('text-to-image'))
+            .map(model => ({ id: model.id, name: model.name })),
+          // Then the watermark-free one, unless the catalog already lists it.
+          ...activeMedia.some(model => model.id === IMAGE_MODEL_NO_WATERMARK)
+            ? []
+            : [{ id: IMAGE_MODEL_NO_WATERMARK, name: t('row.imageModelWatermarkFree') }],
+        ]
+        if (options.length < 2) return null
+        return (
+          <div className="dsm-workbuddy-pref dsm-workbuddy-media">
+            <span className="dsm-workbuddy-pref-copy">
+              <span className="dsm-workbuddy-pref-label">{t('row.imageModelLabel')}</span>
+              <span className="dsm-workbuddy-pref-hint">{t('row.imageModelHint')}</span>
+              <label className="dsm-workbuddy-media-row">
+                <select
+                  className="dsm-workbuddy-image-model-select"
+                  value={options.some(option => option.id === picked) ? picked : ''}
+                  disabled={!canWrite || saving || poolBusy || pinningImageModel}
+                  onChange={(event: { target: { value: string } }) => {
+                    const next = event.target.value
+                    void pinImageModel(activeRegion, next === '' ? undefined : next)
+                  }}
+                >
+                  <option value="">{t('row.imageModelDefault')}</option>
+                  {options.map(option => (
+                    <option key={option.id} value={option.id}>{option.name}</option>
+                  ))}
+                </select>
+              </label>
+            </span>
+          </div>
+        )
+      })()
   const mediaModelsPreference = (
     <div className="dsm-workbuddy-pref dsm-workbuddy-media">
       <span className="dsm-workbuddy-pref-copy">
@@ -3321,6 +3442,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       {videoToolPreference}
       {/* Same rule as the CLI pickers above: the pin row is a property of the
           video switch, so it is hidden while that switch is off. */}
+      {imageModelPreference}
       {videoModelPreference}
       {mediaModelsPreference}
       <label

@@ -636,6 +636,10 @@ export const en = {
   'row.videoModelLabel': 'Video model per mode',
   'row.videoModelHint': 'Pinned separately for text-to-video and image-to-video, from THIS region\'s own catalog — a model id does not carry across regions. A call that names no model uses the pin; with nothing pinned the tool takes the first model of that group. A pin the catalog no longer carries quietly falls back to the first model instead of failing.',
   'row.videoModelDefault': 'Default (first in the group)',
+  'row.imageModelLabel': 'Image model (watermark)',
+  'row.imageModelHint': 'WorkBuddy always stamps "AI生成 WORKBUDD>" on hunyuan-image-alpha output — the upstream has no switch to turn it off (issue #241). The only equivalent is a different model: hunyuan-image-v3.0 produces the same request WITHOUT a watermark, but costs about 11.1 credits per image instead of about 6, and caps output at 2048 px per edge / about 1 MP total (so 1024x1536 scales down to 836x1254, same ratio). Leave it on "default" to keep the cheaper, watermarked model with the full size range. CN gateway only.',
+  'row.imageModelDefault': 'Default (first in the group, watermarked)',
+  'row.imageModelWatermarkFree': 'Hunyuan Image v3.0 (no watermark — ~11.1 credits/image, smaller size limit)',
   // The media roster. It answers "what can this region actually draw" from the
   // region's own product configuration, which is the ONLY source of truth for
   // it: the catalog carries no price and no capability flag. Its IMAGE rows stay
@@ -1329,10 +1333,15 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.videoModelLabel': '按模式指定视频模型',
   'row.videoModelHint': '文生视频与图生视频各钉一个，选项只来自当前这一区自己的目录——模型 id 不跨区。调用时不填 model 就用这里钉的；什么都没钉就用该组第一个模型。钉住的模型如果目录里已经没有了，会安静地回落到第一个，而不是让这次生成失败。',
   'row.videoModelDefault': '默认（组内第一个）',
+  'row.imageModelLabel': '生图模型（水印）',
+  'row.imageModelHint': 'WorkBuddy 出图固定带「AI生成 WORKBUDD>」水印，上游没有关掉它的开关（issue #241）——唯一的等价做法是换模型：hunyuan-image-v3.0 出同样的图但不带水印。代价是单价约 11.1 积分/张（默认那条约 6），尺寸上限也小得多：边长 2048、总像素约 104 万，所以 1024x1536 会等比缩成 836x1254（比例不变，只是更小）。留在「默认」就是用便宜、带水印、尺寸档位全的那条。仅国内区有效。',
+  'row.imageModelDefault': '默认（组内第一个，带水印）',
+  'row.imageModelWatermarkFree': 'Hunyuan Image v3.0（无水印——约 11.1 积分/张，尺寸上限更小）',
   // 媒体模型清单。它回答的是「这一区到底能画什么」，唯一可信来源是该区账号
   // 自己的产品配置：目录里既没有价格也没有能力标志。其中「图像」那一半仍是
-  // 列表（每个图像 tag 组今天只有一个模型）；「视频」那一半可以在上面的选择器
-  // 里钉住，因为国内区现在每个视频 tag 组有两个模型。
+  // 列表（目录里每个图像 tag 组今天只有一个模型）；「视频」那一半可以在上面的选择器
+  // 里钉住，因为国内区现在每个视频 tag 组有两个模型。「选模型」是两处的共同做法：
+  // 国内区文生图还多一条目录之外的 v3.0（无水印但更贵，issue #241），视频则每组两条。
   'row.mediaModelsLabel': '本区可用的图像模型',
   'row.mediaModelsHint': '读自当前账号的产品配置。生图工具就按这里挑模型：不填图片走「文生图」那一组，填了图片走「图生图」那一组。「图像」那几行是只读的（想换就在调用工具时指定模型）；「视频」模型可以在上面的选择器里钉住。',
   'row.mediaModelsEmpty': '这一区的产品配置里没有图像或视频模型。',
