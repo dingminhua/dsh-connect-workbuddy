@@ -4,10 +4,17 @@
  * Every number this script prints is quoted as "the cost of a cache-miss turn",
  * so the two things that decide a row — what counts as a re-bill, and which
  * cause it is attributed to — have to be testable without a real DSH home.
- * The decoding test exists because getting it wrong is SILENT: node's
- * `zstdDecompressSync` returns only the first frame of a multi-frame log and
- * raises nothing, so a broken decoder looks exactly like "a session with one
- * event" — an audit that reports nothing and never complains.
+ * The decoding test exists because getting it wrong is SILENT: a decoder that
+ * stops after the first frame raises nothing, so it looks exactly like "a
+ * session with one event" — an audit that reports nothing and never complains.
+ *
+ * It pins OUR decoder, not the stdlib's behaviour. An earlier version asserted
+ * that `zlib.zstdDecompressSync` returns only the first frame, as proof that
+ * per-frame decoding was necessary. That was true of node 24.21 and false of
+ * 24.22, which decodes every frame — so the suite went red because the runtime
+ * got BETTER. A test whose subject is someone else's bug reports their fixes as
+ * our failures; the property worth pinning is that `decodeLog` returns all the
+ * events either way.
  */
 import { describe, expect, it } from 'vitest'
 import zlib from 'node:zlib'
@@ -78,17 +85,32 @@ describe('summarizeSession', () => {
 
 describe('decodeLog', () => {
   it('decodes EVERY zstd frame, not just the first', () => {
-    const frames = ['{"type":"session"}\n', '{"type":"turn/start"}\n', '{"type":"assistant/message"}\n']
-      .map(text => zlib.zstdCompressSync(Buffer.from(text, 'utf8')))
-    const text = decodeLog(Buffer.concat(frames))
+    const texts = ['{"type":"session"}\n', '{"type":"turn/start"}\n', '{"type":"assistant/message"}\n']
+    const frames = texts.map(text => zlib.zstdCompressSync(Buffer.from(text, 'utf8')))
+    const joined = Buffer.concat(frames)
+    const text = decodeLog(joined)
     expect(text.split('\n').filter((line: string) => line !== '')).toEqual([
       '{"type":"session"}',
       '{"type":"turn/start"}',
       '{"type":"assistant/message"}',
     ])
-    // The mutant this pins: node's own decoder returns only the first frame,
-    // with no error, which would make the whole audit see one event per log.
-    expect(zlib.zstdDecompressSync(Buffer.concat(frames)).toString('utf8')).toBe('{"type":"session"}\n')
+    // The mutant this pins: a decoder that stops after the first frame returns
+    // one event and says nothing. Asserting the output EQUALS the whole input,
+    // rather than asserting anything about `zstdDecompressSync`, is what keeps
+    // this honest — whatever the stdlib does with a multi-frame buffer, our
+    // decoder must return every event.
+    expect(text).toBe(texts.join(''))
+  })
+
+  it('does not depend on the stdlib decoding more than one frame', () => {
+    // Guard for the reverse direction: if a future node starts raising on a
+    // multi-frame buffer instead of silently truncating it, decodeLog must cope
+    // by slicing frames itself. Feeding it frames one at a time proves the
+    // slicing path works without borrowing the stdlib's behaviour as evidence.
+    const frames = ['{"type":"session"}\n', '{"type":"loop/end"}\n']
+      .map(text => zlib.zstdCompressSync(Buffer.from(text, 'utf8')))
+    expect(decodeLog(frames[0]!)).toBe('{"type":"session"}\n')
+    expect(decodeLog(Buffer.concat(frames))).toBe('{"type":"session"}\n{"type":"loop/end"}\n')
   })
 
   it('reads the events of a decoded log and skips a torn tail line', () => {
