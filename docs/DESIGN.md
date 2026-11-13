@@ -254,7 +254,8 @@ Config:
 > | `minimax-m3` | `multimodal` | A | <https://platform.minimax.io/docs/guides/text-generation.md> |
 > | `kimi-k2.6` / `kimi-k2.7` | `multimodal` | A | <https://platform.moonshot.cn/docs/overview> |
 > | `kimi-k3-1` | `multimodal` | A | <https://github.com/MoonshotAI/Kimi-K3> |
-> | `hy3` / `hy4-preview` | `text` | A | <https://huggingface.co/tencent/Hy3>、`.../Hy4-preview`（模型卡 `pipeline_tag: text-generation`） |
+> | `hy3` | `text` | A | <https://huggingface.co/tencent/Hy3>（模型卡 `pipeline_tag: text-generation`） |
+> | `hy4free` / `hy4std` | `multimodal` | A | Hy4 正式版 2026-11-04 发布，首次为 Hy4 系列引入视觉理解；本机实测（2026-11-13，CN 网关）两个 id 都能正确读出 512×512 纯色图的颜色。目录亦写明 `Agentic and Multimodal Expertise` |
 > | `space-bunny` | `multimodal` | **B** | 目录 `descriptionZh`：「推理速度极快，编码能力强劲，并支持**原生多模态输入**的匿名大模型」 |
 > | `minimax-m3.1-flash` | `multimodal` | **B** | 目录 `descriptionZh`：「**原生多模态**，擅长 office、agentic、编程任务…」 |
 >
@@ -268,7 +269,7 @@ Config:
 >
 > **本机实测影响面**（2026-10-30 用本机 CN 的 `cli` 名册 21 个重算，此前那节的 16 个是 2026-09-29 的名册）：
 >
-> - CN 21 个里 **7 个**会预勾选（A 档 5 个：`glm-5.3-flash`、`glm-5v-turbo`、`deepseek-v4.1-flash`、`kimi-k3-1`、`minimax-m3`；B 档 2 个：`space-bunny`、`minimax-m3.1-flash`）。被排除的纯文本有 `glm-5.3`、`glm-5.2`、`glm-5.1`、`hy3`、`hy4-preview`、`deepseek-v4-pro`（上游对它们全报 true）。
+> - CN 21 个里 **9 个**会预勾选（A 档 7 个：`glm-5.3-flash`、`glm-5v-turbo`、`deepseek-v4.1-flash`、`kimi-k3-1`、`minimax-m3`、`hy4free`、`hy4std`；B 档 2 个：`space-bunny`、`minimax-m3.1-flash`）。被排除的纯文本有 `glm-5.3`、`glm-5.2`、`glm-5.1`、`hy3`、`deepseek-v4-pro`（上游对它们全报 true）。
 > - 其余 8 个（`hy3-x`、`step-5-preview`、`kimi-k3.1-pro`、`kimi-k2.8-preview`、`mimo-v2.6-pro`、别名 `fast-model`/`balanced-model`/`deep-model`）无来源，一律 `unknown`、默认不勾。这是「不猜」的代价，也是它的意义。
 > - 国际区的结论仍是 2026-09-29 那次（23 个里只有 3 个有厂商来源），本轮**未重测**国际名册；`default-model` 已不在名册里：它是国际区的 `auto` 路由，见下条。
 >

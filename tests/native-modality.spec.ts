@@ -15,7 +15,7 @@ import {
  */
 describe('nativeModalityOf', () => {
   it('reports the vendored text-only classifications', () => {
-    for (const id of ['glm-5.3', 'glm-5.2', 'hy3', 'hy4-preview', 'deepseek-v4-pro']) {
+    for (const id of ['glm-5.3', 'glm-5.2', 'hy3', 'deepseek-v4-pro']) {
       expect(nativeModalityOf(id), id).toBe('text')
     }
   })
@@ -73,7 +73,7 @@ describe('imageDefaultFor', () => {
     // The defect this table exists to prevent: both WorkBuddy gateways report
     // `supportsImages: true` for these, and pre-checking them sends images to
     // models that cannot read them.
-    for (const id of ['glm-5.3', 'glm-5.2', 'hy3', 'hy4-preview', 'deepseek-v4-pro']) {
+    for (const id of ['glm-5.3', 'glm-5.2', 'hy3', 'deepseek-v4-pro']) {
       expect(imageDefaultFor({ id, supportsImages: true }), id).toBe(false)
     }
   })
@@ -110,7 +110,7 @@ describe('NATIVE_MODALITY_BY_MODEL_ID', () => {
     // next test. Keep this number and `docs/DESIGN.md` 「核验表」 in step: the
     // design doc is this table's provenance record, and a size here without a
     // row there is exactly the drift this assertion exists to catch.
-    expect(Object.keys(NATIVE_MODALITY_BY_MODEL_ID)).toHaveLength(15)
+    expect(Object.keys(NATIVE_MODALITY_BY_MODEL_ID)).toHaveLength(16)
     for (const [id, kind] of Object.entries(NATIVE_MODALITY_BY_MODEL_ID)) {
       expect(kind === 'text' || kind === 'multimodal', id).toBe(true)
     }
@@ -130,5 +130,32 @@ describe('NATIVE_MODALITY_BY_MODEL_ID', () => {
     // entry (the table matches on the exact id).
     expect(nativeModalityOf('minimax-m3.1')).toBe('unknown')
     expect(nativeModalityOf('space-bunny-2')).toBe('unknown')
+  })
+
+  it('classifies BOTH Hy4 GA ids as multimodal, and does not inherit the preview verdict', () => {
+    // Issue #255: a user reported Hy4 could not read images. The cause was not
+    // the model — the GA ids were absent from this table, so `nativeModalityOf`
+    // answered `unknown` and `imageDefaultFor` left the box unchecked.
+    //
+    // The trap this pins: the table used to carry `hy4-preview: 'text'`, and the
+    // preview build really was text-only (its model card says
+    // `pipeline_tag: text-generation`). The GA release introduced vision. So a
+    // family/prefix rule — or simply keeping the preview key and assuming the
+    // ids are interchangeable — would carry the OLD verdict onto the NEW model
+    // and reproduce the bug. Both GA ids are listed explicitly for the same
+    // reason: `imageDefaultFor` matches the exact id the roster carries, so
+    // pre-checking only one tier would leave the other refusing images.
+    for (const id of ['hy4free', 'hy4std']) {
+      expect(nativeModalityOf(id), id).toBe('multimodal')
+      expect(imageDefaultFor({ id, supportsImages: true }), id).toBe(true)
+      // A platform `false` still vetoes, like every other entry.
+      expect(imageDefaultFor({ id, supportsImages: false }), id).toBe(false)
+    }
+    // The preview id is gone from the roster and must not be revived as a
+    // text-only key: that would re-assert the family is text-only.
+    expect(nativeModalityOf('hy4-preview')).toBe('unknown')
+    // And the modality does not leak to an unlisted sibling.
+    expect(nativeModalityOf('hy4')).toBe('unknown')
+    expect(nativeModalityOf('hy4std-x')).toBe('unknown')
   })
 })

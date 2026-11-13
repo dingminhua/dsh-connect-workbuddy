@@ -40,7 +40,6 @@ export const NATIVE_MODALITY_BY_MODEL_ID: Readonly<Record<string, 'text' | 'mult
   'glm-5.2': 'text',
   'glm-5.3': 'text',
   'hy3': 'text',
-  'hy4-preview': 'text',
   // ── Documented native multimodal ──
   'deepseek-v4.1-flash': 'multimodal',
   'glm-5.3-flash': 'multimodal',
@@ -49,6 +48,35 @@ export const NATIVE_MODALITY_BY_MODEL_ID: Readonly<Record<string, 'text' | 'mult
   'kimi-k2.7': 'multimodal',
   'kimi-k3-1': 'multimodal',
   'minimax-m3': 'multimodal',
+  // ── Hy4 (GA, released 2026-11-04) ──
+  // The Hy4 GA release introduced vision into the family — it is the first Hy4
+  // that reads images, and it is NOT the same model the table used to carry as
+  // `hy4-preview: text`. That entry is GONE from the live roster and its
+  // classification must not be inherited by the GA ids: `hy4-preview` was the
+  // PREVIEW build, documented `pipeline_tag: text-generation` on its model card,
+  // and the whole reason this table keys on EXACT ids is that a family
+  // relationship would have carried that `text` verdict onto the GA model that
+  // does read images.
+  //
+  // EVIDENCE (measured 2026-11-13, CN gateway, this build's own credentials):
+  // both ids below answer an image question correctly — a 512x512 red PNG asked
+  // for its dominant color returns "Red" (`content`, not just reasoning), where
+  // the prompt carries the image as `image_url` with a base64 data URL. The
+  // catalog agrees and says it in words: both are `name: "Hy4"` with
+  // `descriptionZh` 「最新旗舰模型，Agent与多模专长」 / `descriptionEn` "Latest
+  // Flagship Model: Agentic and Multimodal Expertise".
+  //
+  // TWO ids, ONE model: `hy4free` is the free-trial tier (`creditMultiplier: 0`)
+  // and `hy4std` the paid one (`0.29`); both must be listed because `imageDefaultFor`
+  // matches the exact id the roster carries, and a refresh that pre-checks only
+  // one of them would leave the other refusing images for no visible reason.
+  //
+  // WHY THE OLD `hy4-preview` KEY IS REMOVED RATHER THAN KEPT: it is not in the
+  // roster any more, so keeping it would preserve a `text` verdict for an id
+  // nobody can select while implying the family is still text-only. The
+  // measurement above is what replaced it.
+  'hy4free': 'multimodal',
+  'hy4std': 'multimodal',
   // ── Upstream-catalog self-description (a WEAKER evidence class, see below) ──
   // These two are the only entries whose evidence is the upstream catalog's own
   // `descriptionZh` rather than vendor documentation. Both say it verbatim on
