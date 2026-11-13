@@ -42,6 +42,11 @@ const isolatedEnv = {
   LOCALAPPDATA: join(isolatedHome, 'AppData', 'Local'),
   APPDATA: join(isolatedHome, 'AppData', 'Roaming'),
   XDG_CONFIG_HOME: join(isolatedHome, '.config'),
+  // Key discovery also searches machine-wide installations and an explicit
+  // executable override. Keep those probes inside the same synthetic home.
+  ProgramFiles: join(isolatedHome, 'Program Files'),
+  'ProgramFiles(x86)': join(isolatedHome, 'Program Files (x86)'),
+  WORKBUDDY_APP_EXECUTABLE: join(isolatedHome, 'missing-app', 'WorkBuddy.exe'),
   /**
    * 内置 SDK 就在仓库里（`native/turing-sdk/win32-x64`），而插件启动时会
    * **自动预热**一次真实设备 token。不隔离的话，每加载一次插件就是一次子进程
