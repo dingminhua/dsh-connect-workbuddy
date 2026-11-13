@@ -1,5 +1,62 @@
 # Changelog
 
+## 5.24.0 (2026-11-14)
+
+> 版本号是 **minor**：开发依赖栈跟随宿主换到 DSH `0.2.2-rc.3` 线，并按惯例留下一份复核档案。
+> **不改任何用户可见行为** —— 本轮一行源码都没动。
+
+### 变更：依赖栈跟随到 0.2.2-rc.3
+
+桌面宿主已升到 `0.2.2-rc.3`。逐包比对（37 个包的 npm tarball 逐个文件 sha1）的结论是
+**本插件不需要任何适配**：
+
+- **31 个包的 `lib/` 与 rc.2 逐字节相同**，只有 `package.json` 的版本号不同 —— 其中包含本插件
+  import 的 13 个包里的 12 个，以及 `dsh-app-boot`（兼容闸门没动）；
+- 有代码变化的 6 个包中，**只有 1 个是本插件依赖的**：`dsh-client-ui-primitives` 新增了两个
+  `upload-outline` 图标导出，**纯加法**（本插件本来就刻意不依赖这个包）；
+- 另外 5 个是 `dsh-client-ui-sidebar`（新增 `hoc` 槽 `sidebar.session.action`）、
+  `dsh-client-ui-workspace`（新增 `workspace.picker` Factory）、`dsh-client-ui-plugin-manager`
+  （名单里加了一个实验包）、`dsh-client-modules`（只改了内嵌 commit 哈希）、`dsh-web-frontend`
+  （前端重建）。**本插件一个都不碰。**
+
+随包升级指南的最新一节仍是 `## v0.2.2-rc.1`，rc.3 没有自己的破坏性清单。闸门实算：
+`0.2.2-rc.3` ADMITTED，`0.3.0-rc.1` 仍被 `<0.3.0-0` 挡住（10 条 `dsh-*` peer 全部不满足）。
+
+`package.json` 的 devDeps 写的是范围而非精确版本，所以这一跳**只动 `pnpm-workspace.yaml`**
+（overrides 整块换线），装完实测 `dsh-*` 全部 `0.2.2-rc.3`、`cordis` 4.1.0、`schemastery`
+3.19.0、`pi-ai` 1.3.0，lockfile 中 `0.2.2-rc.2` 残留为 0 条。
+
+### 修复：删掉一条锁着「从未发布版本」的死 override
+
+整块换线时顺带发现 `@deepseek-ai/dsh-invariants` 这条 override 有两个问题叠在一起：
+
+1. 上游已在 **0.2.1-rc.3 把这个包从捆绑集里删除**；
+2. 本仓库这条一直跟着整块换线走，被推到了 `0.2.2-rc.2` —— 而 **npm 上从来没有发布过那个版本**
+   （该包 0.2.x 线只有 `0.2.0-rc.2`，`rc.1`/`rc.2`/`rc.3` 全部 404）。
+
+它一年多没被发现，是因为**已经没有包再依赖它**，pnpm 根本不去解析：既不在 lockfile 里，也不在
+`node_modules` 里。也就是说这条 override 一直在清单里**声称一份并不存在的依赖**。它与
+`dsh-client-runtime` 那条同类，处置一致：删除。**不改变任何行为**（本来就没装）。
+
+`RELEASING.md` §2.6 因此新增一条核对项：**overrides 每一条都要真的能解析**
+（`pnpm why <pkg>` 无输出且 lockfile 里也没有它 = 死条目）。
+
+### 文档
+
+- 新增 [`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md)：rc.3 的逐面复核，
+  含 37 包比对表、闸门实算、槽位账本、16 条路由探针，以及两个只有这一轮才看得见的结论
+  （`hoc` 槽种本插件刻意不识别；死 override 的识别方法）。配套新增一条 POLICY 守卫用例。
+- 两条 README 的实测表把 `0.2.2-rc.3` 加进去（`rc.1` / `rc.2` / `rc.3`），并把「本仓库套件在
+  `0.2.2-rc.2` + pi-ai `1.3.0` 上全绿」更新为 rc.3。
+
+### 说明：一条既有的偶发失败，本轮未修
+
+`tests/pool-e2e.spec.ts` 的「claims an account the status read reports as not checked in」在
+**全量并行**时偶发超时（`waitFor` 的 10 秒预算），本轮 8 次全量运行里失败 2 次。**它不是本轮
+引入的**：其中一次发生在源码完全未改动时（只换了依赖）。单跑该文件连跑 5 次全过。
+本轮**没有**改它——没有稳定可复现的失败，改宽预算再跑绿什么都证明不了。已记进
+[`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md) §5.1 留待下一轮处理。
+
 ## 5.23.1 (2026-11-13)
 
 > 版本号是 **patch**：修一个明确的 bug，无新增配置项、无接口变化。

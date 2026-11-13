@@ -11,27 +11,27 @@ allowBuilds:
   protobufjs: false
 
 # 基线：跟随桌面宿主随包的那条线，整块按线锁定（而不是逐包挑版本），升级时只
-# 需把下面这组串整体换到新线。当前基线 = `0.2.2-rc.2`（桌面 2.x 捆绑的
-# `@deepseek-ai/dsh` 全部 0.2.2-rc.2、cordis 4.1.0、schemastery 3.19.0、
-# pi-ai 1.3.0）。pi-ai 必须跟着一起动：`dsh-llm-pi-ai@0.2.2-rc.2` 声明的是
+# 需把下面这组串整体换到新线。当前基线 = `0.2.2-rc.3`（桌面 2.x 捆绑的
+# `@deepseek-ai/dsh` 全部 0.2.2-rc.3、cordis 4.1.0、schemastery 3.19.0、
+# pi-ai 1.3.0）。pi-ai 必须跟着一起动：`dsh-llm-pi-ai@0.2.2-rc.3` 声明的是
 # `@earendil-works/pi-ai ^1.3.0`，把它单独留在 0.85.1 会让 `providers/all`
 # 缺 `getAllBuiltinModels` 而在加载期抛错——这不是类型问题，是启动失败。
 overrides:
   # Direct upstream peers
   '@deepseek-ai/cordis': 4.1.0
-  '@deepseek-ai/dsh-atomic-write': 0.2.2-rc.2
-  '@deepseek-ai/dsh-attachment': 0.2.2-rc.2
-  '@deepseek-ai/dsh-client-locale': 0.2.2-rc.2
-  '@deepseek-ai/dsh-client-ui-primitives': 0.2.2-rc.2
-  '@deepseek-ai/dsh-client-ui-renderer': 0.2.2-rc.2
-  '@deepseek-ai/dsh-client-ui-settings': 0.2.2-rc.2
-  '@deepseek-ai/dsh-client-ui-settings-plugins': 0.2.2-rc.2
-  '@deepseek-ai/dsh-client-ui-slots': 0.2.2-rc.2
-  '@deepseek-ai/dsh-home-paths': 0.2.2-rc.2
-  '@deepseek-ai/dsh-host-webserver': 0.2.2-rc.2
-  '@deepseek-ai/dsh-llm': 0.2.2-rc.2
-  '@deepseek-ai/dsh-llm-pi-ai': 0.2.2-rc.2
-  '@deepseek-ai/dsh-settings': 0.2.2-rc.2
+  '@deepseek-ai/dsh-atomic-write': 0.2.2-rc.3
+  '@deepseek-ai/dsh-attachment': 0.2.2-rc.3
+  '@deepseek-ai/dsh-client-locale': 0.2.2-rc.3
+  '@deepseek-ai/dsh-client-ui-primitives': 0.2.2-rc.3
+  '@deepseek-ai/dsh-client-ui-renderer': 0.2.2-rc.3
+  '@deepseek-ai/dsh-client-ui-settings': 0.2.2-rc.3
+  '@deepseek-ai/dsh-client-ui-settings-plugins': 0.2.2-rc.3
+  '@deepseek-ai/dsh-client-ui-slots': 0.2.2-rc.3
+  '@deepseek-ai/dsh-home-paths': 0.2.2-rc.3
+  '@deepseek-ai/dsh-host-webserver': 0.2.2-rc.3
+  '@deepseek-ai/dsh-llm': 0.2.2-rc.3
+  '@deepseek-ai/dsh-llm-pi-ai': 0.2.2-rc.3
+  '@deepseek-ai/dsh-settings': 0.2.2-rc.3
   # schemastery 必须与 `package.json` 的 dependencies 同一版号，且**不能低于带
   # `volatile()` 的那一档**。历史教训（v4.7 时代）：dependencies 把版本钉住，
   # npm 会为插件装一份**嵌套副本**，用户拿到的就是那一份；开发环境若停在更旧的
@@ -47,16 +47,21 @@ overrides:
   # tsdown external 一并移除——保留一个零引用的 override 只会让 lockfile 与清单
   # 继续声称一份并不存在的依赖。
   # Transitive peers of the 0.1.7 line (published on the next tag)
-  '@deepseek-ai/dsh-brand': 0.2.2-rc.2
-  '@deepseek-ai/dsh-timeout': 0.2.2-rc.2
-  '@deepseek-ai/dsh-fs': 0.2.2-rc.2
-  '@deepseek-ai/dsh-sandbox': 0.2.2-rc.2
-  '@deepseek-ai/dsh-scope': 0.2.2-rc.2
-  '@deepseek-ai/dsh-session': 0.2.2-rc.2
-  '@deepseek-ai/dsh-invariants': 0.2.2-rc.2
-  '@deepseek-ai/dsh-util-values': 0.2.2-rc.2
-  '@deepseek-ai/dsh-util-crypto': 0.2.2-rc.2
-  '@deepseek-ai/dsh-typert-protocol': 0.2.2-rc.2
-  '@deepseek-ai/dsh-credentials': 0.2.2-rc.2
-  '@deepseek-ai/dsh-authorization': 0.2.2-rc.2
-  '@deepseek-ai/dsh-launch-environment': 0.2.2-rc.2
+  '@deepseek-ai/dsh-brand': 0.2.2-rc.3
+  '@deepseek-ai/dsh-timeout': 0.2.2-rc.3
+  '@deepseek-ai/dsh-fs': 0.2.2-rc.3
+  '@deepseek-ai/dsh-sandbox': 0.2.2-rc.3
+  '@deepseek-ai/dsh-scope': 0.2.2-rc.3
+  '@deepseek-ai/dsh-session': 0.2.2-rc.3
+  # `dsh-invariants` 已于 0.2.1-rc.3 被上游从捆绑集里**删除**（见
+  # docs/DSH-0.2.1-RC3-FOLLOWUP.md §四）。本仓库这条 override 当时跟着整块换线
+  # 一起被推到了 `0.2.2-rc.2` —— 而 npm 上从来没有发布过那个版本（0.2.x 线只有
+  # 0.2.0-rc.2）。它一直没被报错，是因为已经没有包再依赖它，pnpm 根本不解析这条
+  # override：既没进 lockfile，也没进 node_modules。这与上面 `dsh-client-runtime`
+  # 同一类——留着只会让清单继续声称一份不存在的依赖，故删掉。
+  '@deepseek-ai/dsh-util-values': 0.2.2-rc.3
+  '@deepseek-ai/dsh-util-crypto': 0.2.2-rc.3
+  '@deepseek-ai/dsh-typert-protocol': 0.2.2-rc.3
+  '@deepseek-ai/dsh-credentials': 0.2.2-rc.3
+  '@deepseek-ai/dsh-authorization': 0.2.2-rc.3
+  '@deepseek-ai/dsh-launch-environment': 0.2.2-rc.3

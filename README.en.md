@@ -226,9 +226,9 @@ DSH's shipped gate (`evaluatePluginCompatibility` in `packages/boot/app-boot/src
 | `0.3.0-0` and above | ❌ explicitly refused (that line is unverified) |
 | `0.1.6` and earlier | ❌ explicitly refused (0.1.5 users should stay on v2.0.15) |
 
-> **`0.2.2-rc.1` / `0.2.2-rc.2` are verified working** (5.23.0): both hosts' shipped gates evaluate the declared range as
-> ADMITTED, the plugin loads completely on a running host (16 routes, 6 of 8 slots, all client modules registered), and this
-> repository's suite is green on the real `0.2.2-rc.2` + pi-ai `1.3.0` combination. The "⚠️ outside the declared range" row
+> **`0.2.2-rc.1` / `0.2.2-rc.2` / `0.2.2-rc.3` are verified working** (5.24.0): all three hosts' shipped gates evaluate the declared
+> range as ADMITTED, the plugin loads completely on a running host (16 routes, 6 of 8 slots, all client modules registered), and this
+> repository's suite is green on the real `0.2.2-rc.3` + pi-ai `1.3.0` combination. The "⚠️ outside the declared range" row
 > above still describes **bare semver** evaluation, which is a different question from "does it run" — see the next note.
 
 > **On `0.2.x` prereleases (corrected in v4.7.0)**: this table previously listed `0.2.0-rc.1` as "✅ supported". That was **wrong**.

@@ -243,6 +243,31 @@ describe('the rc.5 review stays reachable from the code that depends on it', () 
     // The conclusion has to be legible without reading the whole document.
     expect(doc).toContain('无需改动')
   })
+
+  it('keeps the 0.2.2-rc.3 review, and it records the two facts only that round saw', () => {
+    // The rc.3 review concluded "no source change" — which is exactly the kind
+    // of conclusion that gets deleted as noise. Two things would be lost with
+    // it, and neither is recoverable from the code:
+    //
+    //   1. `hoc` is a slot kind this plugin deliberately does NOT recognise.
+    //      Without this note, the fallback in `declaredSlotKind()` reads like an
+    //      oversight rather than the conservative choice it is.
+    //   2. `dsh-invariants` was an override pinning a version that was never
+    //      published, and it survived a year because nothing resolved it. That
+    //      is the check a future upgrade round must repeat, so the document has
+    //      to keep the method, not just the outcome.
+    const doc = readFileSync(fileURLToPath(new URL('docs/DSH-0.2.2-RC3-FOLLOWUP.md', repoRoot)), 'utf8')
+    // The dead-override finding, stated as the package that caused it.
+    expect(doc).toContain('dsh-invariants')
+    // The `hoc` CONCLUSION, not merely the word: `hoc` also appears in the
+    // diff table as `kind: 'hoc'`, so a bare `toContain('hoc')` stays green
+    // after the reasoning is deleted. This exact sentence is the part that
+    // tells a future reader the fallback is deliberate.
+    expect(doc).toContain('遇到 `hoc` 归 `undefined`')
+    expect(doc).toContain('declaredSlotKind')
+    // The conclusion has to be legible without reading the whole document.
+    expect(doc).toContain('无需改')
+  })
 })
 
 /**
