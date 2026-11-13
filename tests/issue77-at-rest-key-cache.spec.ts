@@ -192,6 +192,16 @@ describe('issue #77: the at-rest key lookup is not repeated per file', () => {
     // generates points at a directory that cannot exist, and the mocked `reg`
     // below throws for every query. A REAL key here therefore means one of
     // those seams broke, and the test says so instead of quietly skipping.
+    //
+    // WHAT THIS DOES **NOT** PROVE, measured rather than assumed: CI cannot
+    // show that the isolation is what makes it pass. GitHub's `windows-latest`
+    // image has no WorkBuddy installed (`C:\Program Files` is real there, but
+    // none of the probed subdirectories exist), so the exact-path candidates
+    // miss with or without the pin — deleting those five lines leaves this
+    // suite green. The pin's value is that a DEVELOPER machine which does have
+    // the app now reports a failure instead of a false pass; on CI the two
+    // configurations are indistinguishable. Anyone re-checking this should
+    // verify it on a machine with WorkBuddy installed, not on a runner.
     expect(first, 'the at-rest key lookup must find nothing under the isolated env').toBeUndefined()
     const afterFirst = registryCalls.length
     // One discovery = one pass over the three uninstall hives, and no more.
