@@ -142,7 +142,7 @@ import type { WorkBuddyRegion } from './upstream.ts'
 import { attachBusyLevels } from './busy.ts'
 import type { WorkBuddyBusyLevel } from './busy.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
-import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
+import { clearHostHeartbeat, writeHostHeartbeat, type WorkBuddyHostHeartbeatOwner } from './host-heartbeat.ts'
 
 export {
   WORKBUDDY_GLOBAL_PROVIDER,
@@ -253,6 +253,7 @@ export {
   writeHostHeartbeat,
   workbuddyHostHeartbeatPath,
   type WorkBuddyHostHeartbeat,
+  type WorkBuddyHostHeartbeatOwner,
 } from './host-heartbeat.ts'
 export { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 export {
@@ -4543,11 +4544,15 @@ export function apply(ctx: Context, config: Config): void {
   })()
 
   let stopped = false
+  let heartbeatWrite: Promise<WorkBuddyHostHeartbeatOwner | undefined> | undefined
 
-  ctx.effect(() => () => {
+  ctx.effect(() => async () => {
     stopped = true
     for (const region of REGION_KEYS) void stacks[region].shim.close()
-    void clearHostHeartbeat()
+    // A write already in progress settles before its own receipt is removed.
+    // Startup failures that never wrote have no heartbeat to clear.
+    const owner = await heartbeatWrite
+    if (owner !== undefined) await clearHostHeartbeat(owner)
   })
 
   void Promise.all(REGION_KEYS.map(region => stacks[region].shim.ready))
@@ -4719,7 +4724,11 @@ export function apply(ctx: Context, config: Config): void {
         // The host bundle is live: write a heartbeat so the status CLI can
         // report host health without a browser. Cleared on disposal; a stale
         // heartbeat after a crash is detected by PID in the reader.
-        void writeHostHeartbeat()
+        const logger = ctx.logger
+        heartbeatWrite = writeHostHeartbeat().catch((error: unknown) => {
+          logger.error('dsh-connect-workbuddy: host heartbeat write failed', error)
+          return undefined
+        })
       } catch (error: unknown) {
         ctx.logger.error('dsh-connect-workbuddy: provider registration failed', error)
         return

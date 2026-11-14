@@ -4,6 +4,8 @@
 
 <h1 align="center">dsh-connect-workbuddy</h1>
 
+Host heartbeat cleanup belongs to the plugin instance that successfully wrote it. Manual callers retain the result of `await writeHostHeartbeat()` and pass it to `clearHostHeartbeat(owner)`. An unwritten startup or a superseded registration preserves the current Host receipt.
+
 <p align="center"><b>Connect locally signed-in WorkBuddy models — CN and international — to DeepSeek Harness: read each model's credit multiplier automatically, toggle image input per model, switch between multiple accounts, and keep daily check-in with a read-only credits overview in capsule readouts on the card and in the composer.</b></p>
 
 <p align="center">
