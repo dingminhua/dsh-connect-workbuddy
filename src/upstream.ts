@@ -3814,11 +3814,18 @@ function normalizeSchemaNode(node: unknown, depth = 0): void {
   if (depth > MAX_SCHEMA_DEPTH) return
   const schema = node as Record<string, unknown>
 
+  // ORDER MATTERS. The draft-4 conversions run FIRST, because several of them
+  // consume values that the type repair below would otherwise delete for having
+  // the "wrong" type: a boolean `exclusiveMinimum` and a tuple `items` are both
+  // legal draft-4 spellings that must be TRANSLATED, not dropped. Running the
+  // repair first turned `items: []` into "no items at all" and silently lost the
+  // tuple tail — caught by the round-trip tests.
   normalizeItems(schema)
   normalizeExclusiveBound(schema, 'exclusiveMinimum', 'minimum')
   normalizeExclusiveBound(schema, 'exclusiveMaximum', 'maximum')
   normalizeRequired(schema)
   dropExternalRef(schema)
+  normalizeMetaSchemaTypes(schema)
 
   for (const key of SCHEMA_CHILD_MAPS) {
     const child = schema[key]
@@ -3832,6 +3839,11 @@ function normalizeSchemaNode(node: unknown, depth = 0): void {
   }
   // `additionalProperties` / `items` (when an object) / `not` / `contains` take a
   // single schema, so they are walked directly rather than through a map.
+  for (const key of SCHEMA_CHILD_DEPENDENCIES) {
+    const child = schema[key]
+    if (typeof child !== 'object' || child === null || Array.isArray(child)) continue
+    for (const nested of Object.values(child as Record<string, unknown>)) normalizeSchemaNode(nested, depth + 1)
+  }
   for (const key of SCHEMA_CHILD_SINGLE) normalizeSchemaNode(schema[key], depth + 1)
 }
 
@@ -3851,7 +3863,168 @@ const SCHEMA_CHILD_MAPS: readonly string[] = ['properties', 'patternProperties',
 const SCHEMA_CHILD_LISTS: readonly string[] = ['allOf', 'anyOf', 'oneOf', 'prefixItems']
 
 /** Keywords whose value is a SINGLE schema (walked directly). */
-const SCHEMA_CHILD_SINGLE: readonly string[] = ['items', 'additionalProperties', 'not', 'contains', 'if', 'then', 'else', 'propertyNames']
+const SCHEMA_CHILD_SINGLE: readonly string[] = ['items', 'additionalItems', 'additionalProperties', 'not', 'contains', 'if', 'then', 'else', 'propertyNames']
+
+/**
+ * Keywords whose value is a MAP whose values may be schemas, where only SOME of
+ * those values are schemas at all (issue #253, second report).
+ *
+ * `dependencies` is draft-4's spelling of two different 2020-12 keywords: an
+ * ARRAY value is `dependentRequired`, an OBJECT value is `dependentSchemas`.
+ * Its object values are therefore descended into like `dependentSchemas`, so a
+ * draft-4 leftover nested inside one is still rewritten.
+ *
+ * Measured raw: `dependencies` itself is ACCEPTED by the upstream, so nothing
+ * here is a refusal fix — it is traversal, so that the rewrites this module owns
+ * reach inside the keyword instead of stopping at it.
+ */
+const SCHEMA_CHILD_DEPENDENCIES: readonly string[] = ['dependencies']
+
+/**
+ * Repair keyword values whose TYPE the upstream will not take (issue #253).
+ *
+ * THE SECOND REPORT ON #253 WAS A DIFFERENT BUG. The first round migrated
+ * draft-4 SPELLINGS (tuple `items`, boolean exclusive bounds, string `required`,
+ * external `$ref`). The reporter then supplied three more draft-4 spellings
+ * (`type` arrays, `dependencies`, `additionalItems`) and a patch — but all three
+ * were measured ACCEPTED, raw, on `deepseek-v4.1-flash`, so migrating them fixes
+ * nothing. What was actually rejected, measured one keyword at a time against a
+ * raw body, is a class of TYPE errors in the definition itself: 36 of them, in
+ * every position. `title: 1`, `minimum: "0"`, `examples: "x"`, `pattern: 123`,
+ * `allOf: {}`, `additionalProperties: "x"`, `uniqueItems: "true"` — each answers
+ * `11129`, and each answers 200 once the value has the type the keyword takes.
+ *
+ * WHY REPAIR RATHER THAN REPORT. The upstream's own sentence names no keyword
+ * and no tool, and the definition often comes from a third-party bundle or MCP
+ * server the user did not write. Dropping the offending value is what keeps the
+ * tool USABLE: every keyword here is an annotation or a constraint, never
+ * structure — no `properties` map, no `required` list, no schema-valued keyword
+ * is touched — so removing a malformed one cannot change which arguments the
+ * tool accepts. It only stops the definition from being refused outright.
+ *
+ * THE ALTERNATIVE WAS CONSIDERED AND REJECTED: dropping the whole TOOL. It is
+ * simpler, but it silently removes a capability the user installed, and the
+ * model then invents calls to a tool that no longer exists.
+ *
+ * Only values that are WRONG are touched. A schema already carrying correct
+ * types leaves this function byte-identical, which keeps the prompt prefix
+ * stable for caching.
+ */
+function normalizeMetaSchemaTypes(schema: Record<string, unknown>): void {
+  // A STRING keyword given a non-string is dropped. `id` is deliberately absent:
+  // measured accepted as a number, and it is not 2020-12's spelling anyway.
+  for (const key of SCHEMA_STRING_KEYWORDS) {
+    const value = schema[key]
+    if (value !== undefined && typeof value !== 'string') delete schema[key]
+  }
+  // A NUMBER keyword given a non-number is dropped. Booleans are excluded too:
+  // `minimum: true` is as wrong as `minimum: "0"`.
+  for (const key of SCHEMA_NUMBER_KEYWORDS) {
+    const value = schema[key]
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) delete schema[key]
+  }
+  // A BOOLEAN keyword given a non-boolean is dropped.
+  for (const key of SCHEMA_BOOLEAN_KEYWORDS) {
+    const value = schema[key]
+    if (value !== undefined && typeof value !== 'boolean') delete schema[key]
+  }
+  // A LIST keyword given a non-array, or an EMPTY array, is dropped.
+  //
+  // The empty case is measured, not defensive: `allOf: []`, `anyOf: []`,
+  // `oneOf: []` and `prefixItems: []` are each refused, while an absent keyword
+  // means exactly what an empty one was trying to say ("no constraint").
+  for (const key of SCHEMA_LIST_KEYWORDS) {
+    const value = schema[key]
+    if (value === undefined) continue
+    if (!Array.isArray(value) || value.length === 0) delete schema[key]
+  }
+  // A list of STRINGS given a non-array is dropped; an empty one is legal
+  // (`required: []` is accepted) so it is left alone.
+  for (const key of SCHEMA_STRING_LIST_KEYWORDS) {
+    const value = schema[key]
+    if (value !== undefined && !Array.isArray(value)) delete schema[key]
+  }
+  // A SCHEMA-valued keyword given something that is neither an object nor a
+  // boolean schema (`true` / `false` are legal 2020-12 and measured accepted)
+  // is dropped. Measured: `not: "x"`, `items: "x"`, `additionalProperties: "x"`
+  // and the other six all answer 11129 as sent.
+  for (const key of SCHEMA_CHILD_SINGLE) {
+    const value = schema[key]
+    if (value === undefined) continue
+    if (typeof value === 'boolean') continue
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) delete schema[key]
+  }
+  // `type` is the one keyword repaired rather than dropped. An unknown or
+  // malformed entry is removed from the union; a union left with a single member
+  // becomes that member, because `type: ["string"]` is accepted but needlessly
+  // odd; a union left with none goes, which leaves the unconstrained schema the
+  // same way an absent `type` would.
+  normalizeTypeKeyword(schema)
+}
+
+/**
+ * Repair `type`, keeping every member the upstream would have taken (issue #253).
+ *
+ * Measured: `type: ["string","null"]` is ACCEPTED as sent, and so is
+ * `dependencies`; only an unknown member (`type: "thing"`) or an empty array is
+ * refused. So this keeps valid members instead of rewriting the array into
+ * `oneOf`, which would be a much larger change to a schema the upstream already
+ * understands.
+ */
+function normalizeTypeKeyword(schema: Record<string, unknown>): void {
+  const type = schema['type']
+  if (type === undefined) return
+  const valid = (entry: unknown): entry is string => typeof entry === 'string' && JSON_SCHEMA_TYPES.has(entry)
+  if (typeof type === 'string') {
+    if (!valid(type)) delete schema['type']
+    return
+  }
+  if (!Array.isArray(type)) {
+    delete schema['type']
+    return
+  }
+  const kept = type.filter(valid)
+  if (kept.length === 0) {
+    // Measured: `type: []` is refused, and an absent `type` means the same
+    // unconstrained thing, so the keyword goes rather than becoming empty.
+    delete schema['type']
+    return
+  }
+  if (kept.length === type.length) return
+  schema['type'] = kept.length === 1 ? kept[0] : kept
+}
+
+/** The `type` values JSON Schema defines. */
+const JSON_SCHEMA_TYPES = new Set(['array', 'boolean', 'integer', 'null', 'number', 'object', 'string'])
+
+/** Keywords whose value must be a string. */
+const SCHEMA_STRING_KEYWORDS: readonly string[] = ['title', 'description', 'pattern', 'format', '$comment', 'contentMediaType', 'contentEncoding', '$id', '$schema', '$anchor', '$dynamicAnchor', '$dynamicRef']
+
+/** Keywords whose value must be a number. */
+const SCHEMA_NUMBER_KEYWORDS: readonly string[] = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'minProperties', 'maxProperties', 'minContains', 'maxContains']
+
+/** Keywords whose value must be a boolean. */
+const SCHEMA_BOOLEAN_KEYWORDS: readonly string[] = ['uniqueItems', 'readOnly', 'writeOnly', 'deprecated']
+
+/**
+ * Keywords whose value must be a NON-EMPTY array of schemas.
+ *
+ * Measured: an empty `allOf` / `anyOf` / `oneOf` / `prefixItems` is refused
+ * (`11129`), while an empty `required` / `enum` / `examples` is ACCEPTED. Only
+ * these four are repaired, so a legal empty `required: []` keeps its bytes —
+ * which also keeps 5.24.2's "empty required string becomes `[]`" behaviour
+ * intact instead of turning it into an absent keyword.
+ */
+const SCHEMA_LIST_KEYWORDS: readonly string[] = ['allOf', 'anyOf', 'oneOf', 'prefixItems']
+
+/**
+ * Keywords whose value must be an array, where an EMPTY array is legal.
+ *
+ * `enum` and `examples` are accepted empty and NOT accepted as a scalar;
+ * `required` is accepted empty. Split from {@link SCHEMA_LIST_KEYWORDS} because
+ * that one also drops empties, which is wrong for these.
+ */
+const SCHEMA_STRING_LIST_KEYWORDS: readonly string[] = ['required', 'enum', 'examples']
 
 /**
  * Convert draft-4's tuple `items` into the 2020-12 spelling.
@@ -3870,11 +4043,35 @@ const SCHEMA_CHILD_SINGLE: readonly string[] = ['items', 'additionalProperties',
  */
 function normalizeItems(schema: Record<string, unknown>): void {
   const items = schema['items']
+  // `additionalItems` only ever meant anything alongside a draft-4 TUPLE
+  // `items`; with an object `items` (or none) 2020-12 has no such keyword.
+  // Measured raw: it is ACCEPTED next to an object `items`, so this is not a
+  // refusal — it is dropped only where draft-4 gave it meaning, which is the
+  // tuple branch below, and left alone otherwise so a schema the upstream
+  // already takes keeps its bytes.
   if (!Array.isArray(items)) return
+  // An EMPTY tuple describes a list with no positional schema at all. Draft-4
+  // read `items: []` as "any array"; `prefixItems: []` is refused by the
+  // upstream (`11129`), so carrying the array across would turn one refusal
+  // into another. The whole keyword goes, leaving `items: {}` — the "anything"
+  // reading, which is what draft-4 actually said. This is the case our own
+  // 5.24.2 rewrite got wrong.
+  if (items.length === 0) {
+    delete schema['items']
+    delete schema['prefixItems']
+    delete schema['additionalItems']
+    schema['items'] = {}
+    return
+  }
   // A caller that already sent `prefixItems` wins: appending the tuple would
   // produce two sources for the same positions.
   if (schema['prefixItems'] === undefined) schema['prefixItems'] = items
-  schema['items'] = {}
+  // Draft-4's tail schema for positions past the tuple. It becomes the 2020-12
+  // `items` when present; `{}` (anything) when absent, which is draft-4's own
+  // default and NOT a made-up constraint.
+  const tail = schema['additionalItems']
+  schema['items'] = typeof tail === 'object' && tail !== null && !Array.isArray(tail) ? tail : {}
+  delete schema['additionalItems']
 }
 
 /**

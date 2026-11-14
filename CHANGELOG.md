@@ -1,5 +1,83 @@
 # Changelog
 
+## 5.24.4 (2026-11-14)
+
+> 版本号是 **patch**：修一处「schema 里某个关键字的值类型不对就整个工具被拒」，并修好 5.24.2
+> 自己引入的一处回归。无新增配置项、无接口变化。来自 issue #253 的第二份报告。
+
+### 修复：关键字值类型错误导致 11129（36 种实测）
+
+第二次报告给的是**方法**而不是结论，这一步很关键：报告者证明 `normalizeSchemaNode` 的遍历有盲区，
+我顺着「盲区里漏了什么」去测，测出的是**另一类问题**。
+
+按关键字逐个、**绕过 `prepareChatBody` 直接发原始 body** 测出来的，是 schema 自身的类型错误：
+
+| 写法 | 结果 |
+| --- | --- |
+| `title: 1`、`description: 5`、`pattern: 123`、`format: 7` | 11129 |
+| `minimum: "0"`、`maxLength: "5"`、`multipleOf: "2"` | 11129 |
+| `uniqueItems: "true"`、`readOnly: "yes"` | 11129 |
+| `allOf: {}`（非数组）、`allOf: []`（空数组） | 11129 |
+| `not: "x"`、`items: "x"`、`additionalProperties: "x"`（非 schema） | 11129 |
+| `type: "thing"`、`type: []` | 11129 |
+
+一共 **36 种**，遍布每一个位置。现在会在发出前修掉：**类型不对的注解/约束值直接删除**，`type` 的非法成员
+从联合里剔除（留一个就还原成字符串）。这不改变工具接受哪些参数——被删的都是注解或约束，不是
+`properties` / `required` / 任何 schema 结构——只是让它不再被整体拒收。
+
+**刻意没有选择「把整个工具删掉」**：那样更简单，但会静默移除用户装好的能力，模型随后还会去调一个
+已经不存在的工具。
+
+**只有真的写错的值才会被动**。完全合法的 schema 逐字节不变（真实 `stagehand_extract` 已钉住），
+这样 prompt 前缀对缓存是稳定的。
+
+### 修复：5.24.2 自己引入的回归——空 tuple 换了个 11129
+
+5.24.2 把 draft-4 的 `items: []` 改写成 `prefixItems: []`，而**空 `prefixItems` 正是上游拒收的**。
+也就是说那次「修复」对一个本来就是 11129 的输入，产出了另一个 11129，等于没修。
+
+draft-4 的 `items: []` 意思是「任意数组」，对应 `items: {}`。现在空 tuple 直接给 `items: {}`，
+并且 `additionalItems` 在 tuple 分支里成为 2020-12 的 `items`（尾元素 schema），才是它原本的语义。
+
+### 报告者建议的三种写法：实测**不需要**改
+
+报告者给了 3 种 draft-4 写法（`type` 数组、`dependencies`、`additionalItems`）和一份补丁。我逐个
+**绕过规范化**发原始 body 实测，**三种全部 200**：
+
+```
+type: ["string","null"]   200
+dependencies (array)      200
+dependencies (object)     200
+additionalItems           200   （配合对象 items，或不配合）
+```
+
+所以迁移它们不会修好任何东西，那份补丁是个 no-op。**没有采纳**，理由写进代码注释。
+
+但其中两件事值得留下：
+
+- `dependencies` 的对象值**确实**需要被递归遍历（里面可能嵌着别的 draft-4 写法），所以加了遍历项；
+- `additionalItems` 加进 `SCHEMA_CHILD_SINGLE`，只在 tuple 分支里消费。
+
+这两处都不改变上游已接受的字节（有测试钉住 `additionalItems` 配合对象 `items` 时原样保留）。
+
+### 一处顺序陷阱，写在这里免得下次再踩
+
+draft-4 转换必须**先于**类型修复。类型修复会把布尔 `exclusiveMinimum`、tuple `items` 当成「类型错误」
+删掉，转换逻辑就再也看不到它们了。第一版就是反的，`items: []` 被删成「没有 items」、tuple 尾元素
+被静默丢弃，是往返测试抓到的。
+
+### 验证
+
+真实上游端到端（`deepseek-v4.1-flash`，绕过与经过规范化各测一遍）：36 种类型错误**全部从 11129 变 ok**，
+空数组族全部 ok，报告者的 3 种写法仍然 ok，真实 `stagehand_extract` 等 9 个合法 schema 逐字节未变。
+
+变异验证五条，各自单独还原：去掉类型修复调用红 7 条；把 `required: []` 也当成非法红 2 条；
+`additionalItems` 不带进尾元素红 1 条；`dependencies` 不遍历红 1 条；空 tuple 分支失效红 1 条。
+
+**其中最后一条第一次做变异时是绿的**——因为后跑的类型修复会把 `prefixItems: []` 顺手删掉，掩盖了
+那个分支的缺陷。改成给空 tuple 配一个 `additionalItems` 同级项之后才能区分。这条记在这里，
+因为「测试通过了但证明的不是它自己声称的东西」比没有测试更危险。
+
 ## 5.24.3 (2026-11-14)
 
 > 版本号是 **patch**：修一处「长会话永久 422、只能开新会话」的问题，无新增配置项、无接口变化。
