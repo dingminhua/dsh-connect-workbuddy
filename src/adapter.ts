@@ -31,11 +31,11 @@ import { offRefused } from './off-thinking.ts'
 import { defaultEffortFor } from './default-effort.ts'
 import { promoBadgeTone, selectPromoBadge } from './promo.ts'
 import { WORKBUDDY_DEFAULT_EFFORT } from './default-effort.ts'
-import { WORKBUDDY_FALLBACK_SYSTEM_PROMPT } from './upstream.ts'
+import { isBodyOversizeRefusal, WORKBUDDY_FALLBACK_SYSTEM_PROMPT } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
 import type { PiAiGeneration } from './pi-ai-runtime.ts'
-import type { ContextRescue } from './context-rescue.ts'
+import type { ContextRescue, RescueCause } from './context-rescue.ts'
 
 /**
  * The tier a request gets when it names none — compaction summaries, above all
@@ -1333,6 +1333,34 @@ function withLegacyContext(
 }
 
 /**
+ * Which rescue, if any, an error event calls for (issue #258).
+ *
+ * ALL of an error message's text is searched, in the shapes pi-ai hands over:
+ * `errorMessage` on the assistant message is the one that matters, but a
+ * provider that fills only `content` or throws a bare string has been measured,
+ * so the reader is deliberately tolerant. The scan never throws: a message with
+ * no strings in it simply calls for no rescue.
+ *
+ * `'window'` wins when both readings somehow apply, because the token overflow
+ * is the one this rescue was originally written for and its target is the more
+ * conservative of the two.
+ */
+export function rescueCauseOf(error: AssistantMessage): RescueCause | undefined {
+  if (isContextOverflow(error)) return 'window'
+  const text = [
+    typeof error.errorMessage === 'string' ? error.errorMessage : '',
+    typeof error.content === 'string' ? error.content : '',
+    ...Array.isArray(error.content)
+      ? error.content.map(part => (typeof part === 'object' && part !== null
+        && typeof (part as { text?: unknown }).text === 'string'
+        ? (part as { text: string }).text
+        : ''))
+      : [],
+  ].join(' ')
+  return isBodyOversizeRefusal(text) ? 'body-bytes' : undefined
+}
+
+/**
  * Layer the host-side context-overflow rescue onto a provider's streams.
  *
  * pi-ai reports a provider failure as an `error` event rather than a throw, so
@@ -1377,8 +1405,17 @@ function withContextRescue(
             if (event.type === 'error') final = event.error
             // Fold before the consumer settles: the error still reaches it, but
             // the surface is already smaller when the host retries.
-            if (event.type === 'error' && isContextOverflow(event.error)) {
-              await rescue.rescue(sessionId, window)
+            //
+            // TWO causes, one rescue (issue #258). `isContextOverflow` only
+            // recognises TOKEN overflow, so a request refused because its body
+            // exceeded a byte ceiling reached this loop and matched nothing —
+            // the surface was never folded and every retry re-sent the same
+            // oversized body. The byte case is detected HERE as well, from the
+            // same message text, and folded with its own target because the two
+            // ceilings are measured in different units (tokens vs bytes).
+            if (event.type === 'error') {
+              const cause = rescueCauseOf(event.error)
+              if (cause !== undefined) await rescue.rescue(sessionId, window, cause)
             }
             out.push(event)
           }

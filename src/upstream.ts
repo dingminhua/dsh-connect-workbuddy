@@ -1118,6 +1118,69 @@ export function toolSchemaRejectAdvice(): string {
 export const CONTEXT_OVERFLOW_MARKER = 'prompt is too long (upstream code 11115)'
 
 /**
+ * The marker for a request refused because its BODY BYTES exceed a local limit
+ * (issue #258).
+ *
+ * Deliberately the SAME English head pi-ai's `OVERFLOW_PATTERNS` already
+ * matches (`prompt is too long`), with a parenthetical naming the real cause.
+ * The host's rescue ladder keys on that phrase and on nothing else, so a
+ * refusal it must recover from has to carry it — see the #101 comment in
+ * `src/shim.ts` for how the 11115 case arrived at the same shape.
+ *
+ * The parenthetical is NOT the bili code. Naming another plugin's identifier
+ * here would be plugin-specific code in this plugin's body — the line
+ * `docs/DESIGN.md` §零 draws — and the code would keep describing a dependency
+ * that may be gone tomorrow. What this string states is the fact that matters:
+ * the request was too large to send.
+ */
+export const BODY_OVERSIZE_MARKER = 'prompt is too long (request body exceeded the local byte limit)'
+
+/**
+ * Whether this text reports a body-size refusal rather than a token overflow
+ * (issue #258).
+ *
+ * A local proxy/gateway in front of the provider may refuse a request whose
+ * serialized body exceeds some byte ceiling it enforces. Measured shapes, from
+ * a real report:
+ *
+ *   bili_gate_oversize_refusal_unattributed_bytes
+ *   (8,401,132 B > 8,388,608 B)
+ *   "unattributed oversized model request refused locally with a 422"
+ *
+ * MATCHED BY MEANING, NOT BY NAME. That is the crux of the design decision
+ * here: matching a plugin's identifier would be the "special-case another
+ * plugin" this project forbids, while matching "a request body was too large"
+ * is the same kind of reader as every other measured-wording matcher in this
+ * module. A refusal that only says `oversize`/`too large` in BYTES is the class;
+ * which component produced it is not this plugin's business, and a future
+ * component with different wording that still says so is covered for free.
+ *
+ * What is deliberately NOT matched: `too_many_tokens`, `context length
+ * exceeded`, `11115` and friends. Those are TOKEN overflow, which the host
+ * already recovers from on its own; treating them here would make two
+ * authorities compete over the same failure.
+ */
+export function isBodyOversizeRefusal(text: string): boolean {
+  if (text === '') return false
+  const lower = text.toLowerCase()
+  // The byte-comparison shape ("8,401,132 B > 8,388,608 B") is the most
+  // specific evidence, and the one every measured refusal carried.
+  if (/[\d,]{4,}\s*b\s*>\s*[\d,]{4,}\s*b/u.test(lower)) return true
+  // "request-body limit" names a BYTE ceiling by construction — a token limit is
+  // never described that way — so it stands on its own.
+  if (lower.includes('request-body limit') || lower.includes('request body limit')) return true
+  const oversize = lower.includes('oversize')
+  const localByte = lower.includes('byte limit')
+  const localRefusal = lower.includes('refused locally')
+  // "byte limit" IS a byte ceiling, stated plainly — it needs no second word.
+  if (localByte) return true
+  // `oversize` alone is too weak: an upstream can say "oversized" about an
+  // IMAGE, and folding history would not fix that. It has to be paired with an
+  // explicit "refused locally" that names a body.
+  return oversize && localRefusal
+}
+
+/**
  * Wording that identifies the CHANNEL half of `11128` (the other halves being
  * `conversation id missing` and `first message is not system prompt`).
  *

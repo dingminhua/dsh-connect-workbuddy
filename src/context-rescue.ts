@@ -86,16 +86,61 @@ export interface ContextRescue {
    *
    * @param sessionId - session whose history should be folded.
    * @param window - context window of the route that just overflowed.
+   * @param cause - what refused the request (issue #258).
+   *
+   *   `'window'` (the default) is the token overflow this rescue was written
+   *   for: the target is a fraction of the model's declared window.
+   *
+   *   `'body-bytes'` is a request refused because its SERIALIZED BODY exceeded
+   *   a byte ceiling some component enforces. The target is then a fraction of
+   *   the CURRENT measurement, never of the window — see
+   *   {@link BODY_OVERSIZE_TARGET_FRACTION} for why the window target would
+   *   silently fold nothing.
+   *
    * @returns whether any history was folded.
    */
-  rescue(sessionId: string, window: number): Promise<boolean>
+  rescue(sessionId: string, window: number, cause?: RescueCause): Promise<boolean>
 }
+
+/**
+ * What refused the request.
+ *
+ * Only two values, and the distinction is not cosmetic: it decides which number
+ * the fold target is derived from, and getting it wrong makes the rescue a
+ * no-op rather than a wrong-but-visible action (see the fraction constant).
+ */
+export type RescueCause = 'window' | 'body-bytes'
 
 /** Share of the window one fold chunk may consume, leaving room for the prompt. */
 const CHUNK_FRACTION = 0.35
 
 /** Post-fold measurement target: comfortably below the window the route allows. */
 const TARGET_FRACTION = 0.6
+
+/**
+ * Post-fold target for a BYTE refusal, as a fraction of the CURRENT measurement
+ * (issue #258).
+ *
+ * WHY NOT THE WINDOW. The ceiling that refuses these requests is in BYTES; the
+ * measurement this rescue reads is in TOKENS. A reporter measured the crossing
+ * point at roughly 150k tokens for an 8 MiB ceiling — while the model declares a
+ * 1,000,000-token window, so `window * 0.6` is 600,000. The first measurement
+ * then already satisfies `totalTokens <= target`, the loop returns on its first
+ * pass, and the identical oversized body is re-sent: a rescue that reports
+ * success while doing nothing is worse than one that reports failure.
+ *
+ * Deriving the target from the measurement itself avoids needing to know the
+ * ceiling at all: one fold always removes at least 10% of what is there, so the
+ * loop cannot be trivially satisfied, and repeated rounds converge on whatever
+ * the ceiling happens to be.
+ *
+ * 0.9 rather than something smaller on purpose: the ceiling is unknown, so
+ * folding aggressively would throw away far more history than necessary on a
+ * request that only just crossed it. 10% per round, up to {@link MAX_ROUNDS},
+ * covers a 57% reduction — enough for a body that overshot by a few percent,
+ * which is the measured shape (8,401,132 B against a 8,388,608 B ceiling).
+ */
+const BODY_OVERSIZE_TARGET_FRACTION = 0.9
 
 /** A session is never folded more than this many times by one rescue. */
 const MAX_ROUNDS = 8
@@ -119,11 +164,11 @@ export function createContextRescue(resolve: () => ContextRescueDeps): ContextRe
   const inflight = new Set<string>()
 
   return {
-    async rescue(sessionId: string, window: number): Promise<boolean> {
+    async rescue(sessionId: string, window: number, cause: RescueCause = 'window'): Promise<boolean> {
       if (inflight.has(sessionId)) return false
       inflight.add(sessionId)
       try {
-        return await foldUntilFits(resolve(), sessionId, window)
+        return await foldUntilFits(resolve(), sessionId, window, cause)
       } catch (error: unknown) {
         resolve().log?.('dsh-connect-workbuddy: context rescue failed', error)
         return false
@@ -134,21 +179,52 @@ export function createContextRescue(resolve: () => ContextRescueDeps): ContextRe
   }
 }
 
+/**
+ * The fold target for one rescue, in the MEASUREMENT's own unit (tokens).
+ *
+ * Split out and pure so the unit mismatch that caused issue #258 is testable
+ * without a host: the two causes derive the same number from two different
+ * quantities, and only one of them can be trivially satisfied by the first
+ * measurement.
+ */
+export function rescueTargetOf(cause: RescueCause, window: number, measuredTokens: number): number {
+  if (cause === 'body-bytes') {
+    // Derived from what is ACTUALLY there: always strictly below it, so the
+    // first comparison cannot pass and the loop cannot return unfollded.
+    return Math.max(1, Math.floor(measuredTokens * BODY_OVERSIZE_TARGET_FRACTION))
+  }
+  return Math.max(1, Math.floor(window * TARGET_FRACTION))
+}
+
 async function foldUntilFits(
   deps: ContextRescueDeps,
   sessionId: string,
   window: number,
+  cause: RescueCause,
 ): Promise<boolean> {
   const { meter, compaction, agents } = deps
   if (meter === undefined || compaction === undefined || agents === undefined) return false
   const agent = agents.get(sessionId)
   if (agent === undefined) return false
 
-  const target = Math.max(1, Math.floor(window * TARGET_FRACTION))
+  let target = Number.NaN
   let foldedAny = false
   let previous = Number.POSITIVE_INFINITY
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     const measurement = meter.measure(agent.session)
+    // Derived once, from the FIRST measurement, for a body-size refusal too.
+    //
+    // Re-deriving it every round would be untestable AND unnecessary: the loop
+    // already stops at the target, and the host re-enters with a fresh rescue on
+    // the next attempt if the body is still over the ceiling. A target that
+    // chases the measurement inside one call was covered by no test that a
+    // single-round target could not also pass — the summary node left behind
+    // each round already keeps the loop shrinking — so it is not kept. What
+    // matters is only that the first target is BELOW the first measurement,
+    // which is what makes one fold happen at all.
+    if (round === 0) {
+      target = rescueTargetOf(cause, window, measurement.totalTokens)
+    }
     if (measurement.totalTokens <= target) return foldedAny
     // A fold whose summary costs as much as the span it replaced is accepted by
     // the host but shrinks nothing. Once that happens the remaining excess is

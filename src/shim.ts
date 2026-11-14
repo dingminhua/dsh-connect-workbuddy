@@ -38,6 +38,8 @@ import {
   channelGateMemberOf,
   isConversationIdGateBody,
   isContextTooLongBody,
+  isBodyOversizeRefusal,
+  BODY_OVERSIZE_MARKER,
   isToolSchemaRejectBody,
   toolSchemaRejectAdvice,
   CONTEXT_OVERFLOW_MARKER,
@@ -2271,9 +2273,22 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // ("请精简内容") the host could not act on. The English clause goes FIRST so
       // a detector reading the head of the message sees it, and the upstream's
       // own sentence stays right after it so the human still gets the real advice.
+      // ISSUE #258: a request refused because its BODY exceeded a local byte
+      // ceiling is, from the host's point of view, the same situation as a
+      // token overflow — the fix is to fold history and retry, and the host's
+      // ladder keys on the English phrase. Without this marker the refusal
+      // reached the host as a plain `client` 400, which it will not recover
+      // from, so the same oversized body was re-sent on every attempt.
+      //
+      // The upstream's own sentence is still the receipt right after it (see
+      // `receipt` above), so nothing is rewritten or disguised: the marker is an
+      // ADDITIONAL clause, and the real cause stays readable.
+      const bodyOversize = isBodyOversizeRefusal(result.message)
       const overflow = isContextTooLongBody(result.message)
         ? `${CONTEXT_OVERFLOW_MARKER}。`
-        : ''
+        : bodyOversize
+          ? `${BODY_OVERSIZE_MARKER}。`
+          : ''
       const body = `${overflow}${advice === '' ? receipt : `${receipt.replace(/[。.]$/u, '')}。${advice}`}`
       writeOpenAIError(
         res,

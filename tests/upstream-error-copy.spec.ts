@@ -431,3 +431,64 @@ describe('issue #253: a tool-definition refusal names the tools, not the account
     expect(message).toContain('工具定义')
   })
 })
+
+/**
+ * Issue #258: a request refused because its BODY exceeded a local byte ceiling.
+ *
+ * The refusal reached the host as a plain `client` 400 — a class it never
+ * recovers from — so the identical oversized body was re-sent on every attempt
+ * and the session was stuck. The host only starts its own overflow ladder when
+ * the error text carries one of pi-ai's ~25 English overflow patterns, so the
+ * reply has to say "prompt is too long" for a BYTE refusal too.
+ *
+ * The marker is an ADDITION, never a disguise: the component's own sentence
+ * stays right after it, so a human still reads the real cause.
+ */
+describe('issue #258: a body-size refusal is marked as recoverable overflow', () => {
+  /** The measured refusal, verbatim from the reporter's log (identifiers trimmed). */
+  const BODY_OVERSIZE = JSON.stringify({
+    error: {
+      type: 'server_error',
+      code: 'gate_oversize_refusal_unattributed_bytes',
+      message: 'refused this request locally: its body exceeds the local request-body limit (8,401,132 B > 8,388,608 B)',
+    },
+  })
+
+  it('adds the overflow phrase the host recognises, keeping the real cause readable', async () => {
+    shim = mount({ result: failure(400, 'client', BODY_OVERSIZE) })
+    await shim.ready
+
+    const { status, message } = await messageOf(shim)
+    expect(status).toBe(400)
+    // The phrase pi-ai's OVERFLOW_PATTERNS matches — absent before this fix.
+    expect(message).toContain('prompt is too long')
+    // The marker names the REAL cause rather than pretending to be 11115.
+    expect(message).toContain('request body exceeded the local byte limit')
+    expect(message).not.toContain('upstream code 11115')
+    // The component's own sentence survives: this is an addition, not a rewrite.
+    expect(message).toContain('request-body limit')
+  })
+
+  it('still marks a genuine 11115 as the token overflow it is', async () => {
+    // The two markers must not collapse into one: a token overflow is the
+    // host's own business and its marker names the upstream code.
+    shim = mount({
+      result: failure(400, 'client', JSON.stringify({ code: 11115, msg: 'prompt is too long' })),
+    })
+    await shim.ready
+
+    const { message } = await messageOf(shim)
+    expect(message).toContain('upstream code 11115')
+    expect(message).not.toContain('local byte limit')
+  })
+
+  it('leaves an unrelated client failure without any overflow phrase', async () => {
+    // An ordinary parameter rejection must not acquire a "too long" marker, or
+    // the host would fold history for a request that has nothing to do with size.
+    shim = mount({ result: failure(400, 'client', PARAMS_REJECTED_BODY) })
+    await shim.ready
+
+    const { message } = await messageOf(shim)
+    expect(message).not.toContain('prompt is too long')
+  })
+})
