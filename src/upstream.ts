@@ -1080,10 +1080,18 @@ export function isToolSchemaRejectBody(body: string): boolean {
  * Deliberately a FIXED LIST rather than a parse of the offending body: the
  * upstream never names the keyword, and the plugin has already rewritten every
  * one of these on the way out. If a request still gets `11129` after that
- * rewrite, the cause is a keyword this build does not know — so the advice has to
- * say "something else", not repeat the four shapes it already handled.
+ * rewrite, the cause is a keyword this build does not know — so the advice has
+ * to say "something else", not repeat the shapes it already handled.
+ *
+ * KEPT IN STEP WITH THE REWRITE, by hand. It listed only the four draft-4
+ * shapes for a while AFTER the type repair had landed, so a reader who hit a
+ * surviving `11129` was told the plugin had tried four things when it had tried
+ * the whole class — the exact "confident, wrong, and unhelpful" reply that this
+ * function exists to replace. When `normalizeMetaSchemaTypes` learns a new
+ * family, this string has to learn it too.
  */
 const TOOL_SCHEMA_REWRITTEN_KEYWORDS = '元组式 `items`、布尔 `exclusiveMinimum`/`exclusiveMaximum`、`required` 非数组或含重复项、外部 `$ref`'
+  + '，以及关键字的值类型写错（如 `title: 1`、`minimum: "0"`、`allOf: {}`、`type: []`、`enum`/`examples` 写成标量）'
 
 /**
  * One actionable sentence for a `11129` refusal, naming what was already fixed

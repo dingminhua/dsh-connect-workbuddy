@@ -29,7 +29,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { prepareChatBody } from '../src/upstream.ts'
+import { prepareChatBody, toolSchemaRejectAdvice } from '../src/upstream.ts'
 
 /** Run one tool schema through the rewrite and return what would be sent. */
 function normalized(parameters: unknown): Record<string, unknown> {
@@ -217,5 +217,46 @@ describe('issue #253 — repair must not damage what the upstream already accept
     expect(normalized({ type: 'object', properties: { b: { type: 'string' } }, required: 'b' }) as { required: unknown })
       .toMatchObject({ required: ['b'] })
     expect(property({ $ref: 'https://example.com/s.json' })).toEqual({})
+  })
+})
+
+/**
+ * The ADVICE has to name the rewrites that actually exist.
+ *
+ * Measured defect: for a while after `normalizeMetaSchemaTypes` landed, the
+ * `11129` advice still listed only the four draft-4 shapes. A reader who hit a
+ * surviving refusal was told the plugin had tried four things when it had tried
+ * the whole class — which is the same "confident and unhelpful" reply this
+ * function was written to replace. Nothing caught it, because no test asserted
+ * on the string at all.
+ *
+ * These pin the PROPERTY (every rewrite family the module performs is named)
+ * rather than the exact wording, so the sentence can be reworded without
+ * breaking them while a forgotten family still fails.
+ */
+describe('issue #253 — the refusal advice must describe what the rewrite really does', () => {
+  it('names the type repair, not only the draft-4 migrations', () => {
+    const advice = toolSchemaRejectAdvice()
+    // The draft-4 shapes (first round).
+    expect(advice).toContain('元组式')
+    expect(advice).toContain('exclusiveMinimum')
+    expect(advice).toContain('$ref')
+    // The type repair (second round) — absent before this test existed.
+    expect(advice).toContain('值类型')
+    expect(advice).toContain('allOf')
+    expect(advice).toContain('type: []')
+  })
+
+  it('does not claim an account, credit or network problem', () => {
+    // The whole reason this function exists: those are the three things the
+    // upstream's own tips send the reader to, and none of them can help.
+    const advice = toolSchemaRejectAdvice()
+    expect(advice).toContain('与账号')
+    expect(advice).toContain('都无关')
+  })
+
+  it('is honest that a surviving refusal means an UNKNOWN shape', () => {
+    // It must not promise the rewrite is exhaustive.
+    expect(toolSchemaRejectAdvice()).toContain('仍被拒说明还有别的写法')
   })
 })
