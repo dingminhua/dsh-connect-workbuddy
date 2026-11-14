@@ -1048,6 +1048,63 @@ export function isContextTooLongBody(body: string): boolean {
   return CONTEXT_TOO_LONG_CODE.test(body)
 }
 
+/** The tool-schema refusal (issue #253). */
+const TOOL_SCHEMA_REJECT_CODE = 11129
+
+/**
+ * Whether this body is the upstream refusing a TOOL DEFINITION (issue #253).
+ *
+ * `11129` arrives as `{"code":11129,"msg":"invalid function call parameters"}`
+ * with `extError.code: "invalid_function_parameters"`. Its `param` field is an
+ * EMPTY STRING — the upstream knows the definition is wrong but never says
+ * which tool or which keyword — so the plugin is the only party that can turn
+ * this into an actionable sentence.
+ *
+ * Read by CODE rather than by the wording, for the reason every other code
+ * reader in this module does it: the same `msg` is short and generic enough that
+ * a request id or a prompt could contain the phrase, while `11129` has so far
+ * only ever meant this. Recognising it changes ADVICE ONLY — the kind stays
+ * `client`, which already means "refused on parameters, no account can help" and
+ * already skips failover. Giving it a kind of its own would move it out of that
+ * bucket and silently change retry behaviour, which is a much larger claim than
+ * the evidence supports.
+ */
+export function isToolSchemaRejectBody(body: string): boolean {
+  return statesBusinessCode(body, TOOL_SCHEMA_REJECT_CODE)
+}
+
+/**
+ * Which schema keywords the rewrite in {@link normalizeToolSchemas} can fix,
+ * for the reply's advice (issue #253).
+ *
+ * Deliberately a FIXED LIST rather than a parse of the offending body: the
+ * upstream never names the keyword, and the plugin has already rewritten every
+ * one of these on the way out. If a request still gets `11129` after that
+ * rewrite, the cause is a keyword this build does not know — so the advice has to
+ * say "something else", not repeat the four shapes it already handled.
+ */
+const TOOL_SCHEMA_REWRITTEN_KEYWORDS = '元组式 `items`、布尔 `exclusiveMinimum`/`exclusiveMaximum`、`required` 非数组或含重复项、外部 `$ref`'
+
+/**
+ * One actionable sentence for a `11129` refusal, naming what was already fixed
+ * and what the user can still do.
+ *
+ * WHY THE PLUGIN MUST SPEAK HERE. The upstream's own advice is "请新建任务，或换
+ * 个模型" — and issue #253's reporter spent a day on account swaps, re-logins and
+ * a reinstall because nothing in that sentence points at a TOOL DEFINITION. The
+ * plugin rewrites the four known shapes automatically, so a surviving `11129`
+ * means either (a) the offending definition is one of a further shape this build
+ * does not know, or (b) a tool supplied by a third-party bundle/MCP server is
+ * sending something the gateway will not take. Both are actionable, and neither
+ * is "switch accounts".
+ */
+export function toolSchemaRejectAdvice(): string {
+  return '这次是工具定义被拒，与账号、积分、额度、网络都无关，换账号或重试都不会改变结果。'
+    + `插件已自动改写过这些上游不接受的写法：${TOOL_SCHEMA_REWRITTEN_KEYWORDS}；仍被拒说明还有别的写法。`
+    + '最快的验证是关掉提供该工具的能力（例如浏览器自动化、某个 MCP server 或第三方插件）后重发同一句话——'
+    + '能通过就说明是那个工具的定义有问题，把它的参数结构贴到 issue 里即可定位'
+}
+
 /**
  * An English clause the HOST's overflow detector recognises, for issue #101.
  *
@@ -3439,6 +3496,11 @@ export function prepareChatBody(source: string, options?: PrepareChatBodyOptions
   rewriteChannelFingerprintPhrasesInBody(obj)
   neutralizeChannelFingerprints(obj)
   normalizeToolChoice(obj)
+  // AFTER normalizeToolChoice: a `tool_choice: 'none'` body has already had its
+  // `tools` deleted, and normalizing a schema that is about to be dropped is
+  // wasted work. Issue #253: the host's zod-built schemas carry draft-4 relics
+  // the CN gateway answers with 11129 / 11133.
+  normalizeToolSchemas(obj)
   dropRefusedReasoning(obj)
   return JSON.stringify(obj)
 }
@@ -3606,6 +3668,238 @@ function normalizeToolChoice(obj: Record<string, unknown>): void {
     return
   }
   delete obj['tool_choice']
+}
+
+/**
+ * Rewrite JSON Schema spellings the CN gateway REFUSES inside `tools[].function.parameters`
+ * (issue #253, business code 11129 / 11133).
+ *
+ * WHY THIS EXISTS. The host builds tool schemas with zod and ships whatever the
+ * library emits; `prepareChatBody` forwarded `tools` untouched. Four shapes
+ * measured on 2026-11-14 as refused by the upstream, each with the same body
+ * answering 200 once rewritten:
+ *
+ * | shape | refused as | rewritten to |
+ * | --- | --- | --- |
+ * | `items` as a TUPLE ARRAY (draft-4 tuple form) | 11129 (DeepSeek) / 11133 (GLM, Kimi, MiMo) | `prefixItems: [...]` + `items: {}` |
+ * | `exclusiveMinimum` / `exclusiveMaximum` as a BOOLEAN (draft-4) | 11129 | the numeric form, derived from the sibling `minimum` / `maximum` |
+ * | `required` as a STRING instead of an array | 11129 | one-element array |
+ * | `required` containing DUPLICATES | 11129 | de-duplicated |
+ * | an EXTERNAL `$ref` (`https://…`, `//host/…`) | 11129 | the reference object removed |
+ *
+ * WHAT IS DELIBERATELY NOT TOUCHED.
+ *
+ * - **Internal `$ref` (`#/…`) stays.** Measured: the recursive
+ *   `$defs`/`additionalProperties` schema of `stagehand_extract` — the shape
+ *   issue #253 originally blamed — answers 200 on every model tested, as does
+ *   the host's whole 75-tool catalog sent at once. Only the EXTERNAL form is
+ *   refused. Rewriting internal references would be a large, riskier change
+ *   bought with no measured evidence.
+ * - **The boolean `exclusiveMinimum` rewrite is only made when it is safe.** A
+ *   draft-4 boolean means "minimum is exclusive"; with no sibling bound there is
+ *   nothing to derive, so the key is dropped rather than guessed. Silently
+ *   turning `exclusiveMinimum: true` into `exclusiveMinimum: 0` would INVENT a
+ *   constraint — a wrong schema that the upstream accepts is worse than a
+ *   request that fails loudly.
+ * - **Nothing outside `tools` / `functions` is examined.** `tool_choice`,
+ *   messages, and every other body byte keep their existing treatment; a
+ *   session-title body or a plain conversation cannot be changed by this.
+ *
+ * Order matters only in that this runs AFTER {@link normalizeToolChoice}: a
+ * suppressed `tools` (from `tool_choice: 'none'`) is already gone, and
+ * normalizing an array that is about to be deleted would be wasted work.
+ */
+function normalizeToolSchemas(obj: Record<string, unknown>): void {
+  normalizeToolArray(obj['tools'])
+  // `functions` is the deprecated spelling of the same field; `normalizeToolChoice`
+  // treats the two interchangeably when suppressing, so this must too.
+  normalizeToolArray(obj['functions'])
+}
+
+/** Walk the entries of a `tools` / `functions` array, rewriting each schema. */
+function normalizeToolArray(value: unknown): void {
+  if (!Array.isArray(value)) return
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+    const tool = entry as Record<string, unknown>
+    // OpenAI chat-completions spells the schema as `function.parameters`; the
+    // deprecated `functions` entry keeps it at the top level. Both were measured
+    // to take the same rewrites.
+    const fn = tool['function']
+    if (typeof fn === 'object' && fn !== null && !Array.isArray(fn)) {
+      normalizeSchemaNode((fn as Record<string, unknown>)['parameters'])
+    }
+    if (tool['function'] === undefined) normalizeSchemaNode(tool['parameters'])
+  }
+}
+
+/**
+ * Recursively rewrite ONE schema node in place.
+ *
+ * Recursion is required, not decorative: every one of the measured refusals can
+ * appear at any depth (a tuple `items` inside `properties.a.items`, a bad
+ * `required` inside a nested object). The walk is depth-limited because the
+ * input is arbitrary JSON from a third party — a malformed or pathological
+ * document must not be able to hang a request.
+ */
+function normalizeSchemaNode(node: unknown, depth = 0): void {
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+    // A boolean schema (`true` / `false`) is legal draft-2020-12 and was
+    // measured as ACCEPTED, so it is left exactly as it is.
+    return
+  }
+  if (depth > MAX_SCHEMA_DEPTH) return
+  const schema = node as Record<string, unknown>
+
+  normalizeItems(schema)
+  normalizeExclusiveBound(schema, 'exclusiveMinimum', 'minimum')
+  normalizeExclusiveBound(schema, 'exclusiveMaximum', 'maximum')
+  normalizeRequired(schema)
+  dropExternalRef(schema)
+
+  for (const key of SCHEMA_CHILD_MAPS) {
+    const child = schema[key]
+    if (typeof child !== 'object' || child === null || Array.isArray(child)) continue
+    for (const nested of Object.values(child as Record<string, unknown>)) normalizeSchemaNode(nested, depth + 1)
+  }
+  for (const key of SCHEMA_CHILD_LISTS) {
+    const list = schema[key]
+    if (!Array.isArray(list)) continue
+    for (const nested of list) normalizeSchemaNode(nested, depth + 1)
+  }
+  // `additionalProperties` / `items` (when an object) / `not` / `contains` take a
+  // single schema, so they are walked directly rather than through a map.
+  for (const key of SCHEMA_CHILD_SINGLE) normalizeSchemaNode(schema[key], depth + 1)
+}
+
+/**
+ * Bound the recursion.
+ *
+ * The host's own schemas nest a handful of levels. 64 is far past anything real
+ * and still terminates on a hostile document; the value is a guard against a
+ * hang, not a format rule.
+ */
+const MAX_SCHEMA_DEPTH = 64
+
+/** Keywords whose value is a MAP of schemas (each value walked). */
+const SCHEMA_CHILD_MAPS: readonly string[] = ['properties', 'patternProperties', 'dependentSchemas', '$defs', 'definitions']
+
+/** Keywords whose value is a LIST of schemas (each entry walked). */
+const SCHEMA_CHILD_LISTS: readonly string[] = ['allOf', 'anyOf', 'oneOf', 'prefixItems']
+
+/** Keywords whose value is a SINGLE schema (walked directly). */
+const SCHEMA_CHILD_SINGLE: readonly string[] = ['items', 'additionalProperties', 'not', 'contains', 'if', 'then', 'else', 'propertyNames']
+
+/**
+ * Convert draft-4's tuple `items` into the 2020-12 spelling.
+ *
+ * A tuple `items` is a LIST; the modern spec splits it into `prefixItems` (the
+ * per-position schemas, same order) plus `items` (the schema for everything
+ * past the end). Emitting `items: {}` for the tail is the faithful reading of a
+ * draft-4 tuple: draft-4 said nothing about additional items, so "anything" is
+ * correct — inventing `false` would FORBID extra elements, which the original
+ * never said.
+ *
+ * Measured: `prefixItems` + `items: {}` answers 200 on `deepseek-v4.1-flash`,
+ * `deepseek-v4-pro`, `glm-5.3`, `kimi-k3.1-pro` and `mimo-v2.6-pro` — the five
+ * strictest models in the catalog — and on every model that accepted the tuple
+ * form already.
+ */
+function normalizeItems(schema: Record<string, unknown>): void {
+  const items = schema['items']
+  if (!Array.isArray(items)) return
+  // A caller that already sent `prefixItems` wins: appending the tuple would
+  // produce two sources for the same positions.
+  if (schema['prefixItems'] === undefined) schema['prefixItems'] = items
+  schema['items'] = {}
+}
+
+/**
+ * Rewrite a draft-4 BOOLEAN exclusive bound into the numeric form.
+ *
+ * Draft-4: `{minimum: 0, exclusiveMinimum: true}` means "greater than 0".
+ * 2020-12: `{exclusiveMinimum: 0}` means the same. The value is therefore
+ * DERIVED from the sibling bound — and when that sibling is absent or not a
+ * finite number there is nothing to derive, so the key is dropped.
+ *
+ * Dropping is the safe direction: it WEAKENS a constraint the upstream already
+ * could not read, and every request that fails today fails on the shape, not on
+ * the constraint. Inventing `0` would attach a bound the caller never wrote.
+ */
+function normalizeExclusiveBound(
+  schema: Record<string, unknown>,
+  exclusiveKey: 'exclusiveMinimum' | 'exclusiveMaximum',
+  boundKey: 'minimum' | 'maximum',
+): void {
+  if (schema[exclusiveKey] !== true) {
+    // `false` is equally unreadable and equally empty of meaning (draft-4 used
+    // it to say "inclusive", which is already the default) — drop it too.
+    if (schema[exclusiveKey] === false) delete schema[exclusiveKey]
+    return
+  }
+  const bound = schema[boundKey]
+  if (typeof bound === 'number' && Number.isFinite(bound)) {
+    schema[exclusiveKey] = bound
+    delete schema[boundKey]
+    return
+  }
+  delete schema[exclusiveKey]
+}
+
+/**
+ * Force `required` into the de-duplicated string array the upstream accepts.
+ *
+ * A non-array `required` is not JSON Schema at all, so there is no "faithful"
+ * conversion for it: a string is read as one property name, and anything else
+ * (a number, `null`) carries no names and is dropped. Duplicates are removed
+ * because the upstream refuses them (measured) and they never meant anything:
+ * `required` is a set.
+ */
+function normalizeRequired(schema: Record<string, unknown>): void {
+  const required = schema['required']
+  if (required === undefined) return
+  if (typeof required === 'string') {
+    // An empty string names no property; keeping `['']` would ask the upstream
+    // to require a property with an empty name.
+    schema['required'] = required === '' ? [] : [required]
+    return
+  }
+  if (!Array.isArray(required)) {
+    delete schema['required']
+    return
+  }
+  const names: string[] = []
+  for (const entry of required) {
+    if (typeof entry !== 'string' || names.includes(entry)) continue
+    names.push(entry)
+  }
+  // Only replace when something actually changed, so a body that was already
+  // correct keeps its exact bytes (and therefore its prefix cache).
+  if (names.length === required.length) return
+  schema['required'] = names
+}
+
+/**
+ * Remove an EXTERNAL `$ref`, which the upstream refuses, while leaving internal
+ * ones alone.
+ *
+ * `#/…` is a reference into the same document and is accepted (measured on the
+ * recursive `$defs` shape of `stagehand_extract`, and on the host's whole
+ * catalog). Anything with a URI part is not resolvable by the upstream at all,
+ * so the pointer is deleted in place: the object degrades to "any value", which
+ * accepts more than the original said rather than rejecting a valid call.
+ *
+ * A sibling `description` / `title` / `default` is kept — deleting the whole
+ * object would throw away author documentation along with the reference.
+ */
+function dropExternalRef(schema: Record<string, unknown>): void {
+  const ref = schema['$ref']
+  if (typeof ref !== 'string' || ref === '') return
+  // A leading `#` is a same-document pointer. Everything else — absolute URLs,
+  // protocol-relative `//host/…`, and anything the upstream would have to
+  // resolve elsewhere — is an external reference.
+  if (ref.startsWith('#')) return
+  delete schema['$ref']
 }
 
 /**

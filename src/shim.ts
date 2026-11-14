@@ -38,6 +38,8 @@ import {
   channelGateMemberOf,
   isConversationIdGateBody,
   isContextTooLongBody,
+  isToolSchemaRejectBody,
+  toolSchemaRejectAdvice,
   CONTEXT_OVERFLOW_MARKER,
   isFirstMessageGateBody,
   openingEvidenceOfBody,
@@ -2224,7 +2226,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // itself (issue #83), and the reader cannot act on the generic sentence:
       // the remedy is unticking one checkbox, not "adjust the request".
       const refusedTier = reasoningTierRefusal(result)
+      // Issue #253: a tool-definition refusal (11129) is the OTHER parameter
+      // rejection whose real remedy lives nowhere in the upstream's reply —
+      // whose advice is "start a new task or switch models", pointing at
+      // neither the tools nor the plugin. Recognised by CODE here rather than
+      // given a kind of its own: `client` already means "no account can help"
+      // and already skips failover, so this stays an ADVICE change only.
+      const toolSchemaRefused = result.kind === 'client' && isToolSchemaRejectBody(result.message)
       const receipt = refusedTier
+        ?? (toolSchemaRefused ? toolSchemaRejectAdvice() : undefined)
         ?? detail?.tips
         ?? detail?.displayMsg
         ?? clippedUpstreamText(result.message, 400)
@@ -2234,11 +2244,16 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // The pool sentence is emitted only when a search really produced a verdict.
       const advice = refusedTier !== undefined
         ? '这不是账号或网络问题：该模型实测拒绝「off」推理档位，请到模型卡片里取消该行的「可关闭思考」勾选后重试'
-        : result.kind === 'client'
-          ? '该请求被上游按参数拒绝：与网络、账号、额度都无关，换账号也不会改变结果，请按上面的提示调整后重试'
-          : shortfall === undefined
-            ? ''
-            : '建议换一个模型继续，或稍后等待该账号的额度恢复'
+        : toolSchemaRefused
+          // The upstream's own tips ("请新建任务，或换个模型") are REPLACED for
+          // this family: they send the reader to two remedies that cannot work,
+          // and issue #253 is the record of what that costs.
+          ? '按上面列出的写法检查工具定义；换模型只是绕开，不会修好它'
+          : result.kind === 'client'
+            ? '该请求被上游按参数拒绝：与网络、账号、额度都无关，换账号也不会改变结果，请按上面的提示调整后重试'
+            : shortfall === undefined
+              ? ''
+              : '建议换一个模型继续，或稍后等待该账号的额度恢复'
       // `displayTips` and most `msg` bodies already end in a full stop, so gluing
       // an advice sentence on would read "。。" — the upstream's sentence is left
       // exactly as it arrived, minus that final stop, and the join supplies one.

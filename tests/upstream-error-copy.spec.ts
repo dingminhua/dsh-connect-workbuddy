@@ -363,3 +363,71 @@ describe('issue #83: an `off` refusal names the tier and reports it', () => {
     expect(seen).toHaveLength(0)
   })
 })
+
+/**
+ * Issue #253: the upstream refuses a TOOL DEFINITION with business code 11129,
+ * and its own advice ("请新建任务，或换个模型") points at neither the tools nor
+ * anything the reader can inspect. The reporter spent a day on account swaps,
+ * re-logins and a reinstall because of that sentence.
+ *
+ * The plugin now rewrites the four known schema shapes on the way out (see
+ * `tests/issue253-tool-schema-normalization.spec.ts`), so a 11129 that still
+ * arrives means a shape this build does not know. The reply must say THAT —
+ * and must stop repeating the upstream's two useless remedies.
+ */
+describe('issue #253: a tool-definition refusal names the tools, not the account', () => {
+  /** The real 11129 envelope, verbatim from the measured upstream response. */
+  const TOOL_SCHEMA_BODY = '{"code":11129,"msg":"invalid function call parameters","requestId":"f257ba60-491d-4b90-838a-ad6457059785","retry_policy":{"retry":false},"extError":{"code":"invalid_function_parameters","message":"invalid function call parameters","param":"","type":"invalid_request_error","StatusCode":400,"Request":null,"Response":null},"displayMsg":{"en":"Invalid tool definition. Please start a new task and retry","zh":"工具定义不合规，请新建任务重试"},"displayTips":{"en":"The tool\'s parameter structure does not meet the current model\'s requirements and was rejected. Please start a new task or switch to another model.","zh":"工具的参数结构不符合当前模型要求，被服务端拒绝。请新建任务，或换个模型。"},"actions":["RETRY","SUBMIT_FEEDBACK"]}'
+
+  it('says the TOOLS were refused, lists what was already rewritten, and stops pointing at accounts', async () => {
+    shim = mount({ result: failure(400, 'client', TOOL_SCHEMA_BODY) })
+    await shim.ready
+
+    const { status, message, type } = await messageOf(shim)
+    expect(status).toBe(400)
+    // Still `client`: this changes advice only, never the kind (which is what
+    // decides failover).
+    expect(type).toBe('client')
+    expect(message).toContain('工具定义')
+    expect(message).toContain('换账号或重试都不会改变结果')
+    // The four shapes the rewrite already handles, so the reader can rule them out.
+    expect(message).toContain('元组式 `items`')
+    expect(message).toContain('外部 `$ref`')
+    // The upstream's own two remedies must be REPLACED, not appended: "switch
+    // models" only sidesteps the definition and "new task" does nothing at all.
+    expect(message).not.toContain('请新建任务，或换个模型')
+    expect(message).not.toContain('请新建任务重试')
+    // And the raw envelope skeleton is still never rendered.
+    expect(message).not.toContain('extError')
+    expect(message).not.toContain('displayTips')
+  })
+
+  it('keeps the ordinary parameter-rejection wording for every OTHER client failure', async () => {
+    // The 11133 body from issue #78 must not acquire the tool sentence: the
+    // discrimination is by code, and getting it wrong would send a reasoning-tier
+    // problem to an MCP server hunt.
+    shim = mount({ result: failure(400, 'client', PARAMS_REJECTED_BODY) })
+    await shim.ready
+
+    const { message } = await messageOf(shim)
+    expect(message).not.toContain('工具定义')
+    expect(message).toContain('这次对话的内容这个模型不接受')
+  })
+
+  it('reports a 11129 without a raw `"code": 11129` spelling (the envelope shape)', async () => {
+    // `statesBusinessCode` reads the parsed document first, so the spaced and
+    // string spellings must classify too — the same hole issue #155 closed for
+    // 11140 must not reopen here.
+    shim = mount({
+      result: failure(400, 'client', JSON.stringify({
+        code: '11129',
+        msg: 'invalid function call parameters',
+        displayTips: { zh: '工具的参数结构不符合当前模型要求' },
+      })),
+    })
+    await shim.ready
+
+    const { message } = await messageOf(shim)
+    expect(message).toContain('工具定义')
+  })
+})
