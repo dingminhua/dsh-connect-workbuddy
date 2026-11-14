@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
+import { readFile, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   HOST_START_REFERENCE_TOLERANCE_MS,
   LEGACY_REFERENCE_TOLERANCE_MS,
@@ -8,6 +9,9 @@ import {
   isHeartbeatProcessAlive,
   processStartProbe,
   processStartTimeMs,
+  readHostHeartbeat,
+  workbuddyHostHeartbeatPath,
+  writeHostHeartbeat,
   type WorkBuddyHostHeartbeat,
 } from '../src/host-heartbeat.ts'
 
@@ -176,5 +180,48 @@ describe('isHeartbeatProcessAlive', () => {
     // machine, and the reporter measured one at ~11 minutes.
     expect(HOST_START_REFERENCE_TOLERANCE_MS).toBeGreaterThanOrEqual(60_000)
     expect(LEGACY_REFERENCE_TOLERANCE_MS).toBeGreaterThan(HOST_START_REFERENCE_TOLERANCE_MS)
+  })
+})
+
+/**
+ * The WRITE side had no test of its own before PR #256: everything above feeds
+ * `isHeartbeatProcessAlive` a hand-built object, so a `writeHostHeartbeat()`
+ * that emitted a document the reader refuses would have gone unnoticed all the
+ * way to a real `doctor` reporting "no heartbeat".
+ *
+ * The round trip is therefore the assertion: write, then read the file back
+ * THROUGH the reader. Anything the writer adds later (the `registrationId` this
+ * PR introduced) has to stay invisible to it.
+ */
+describe('writeHostHeartbeat → readHostHeartbeat', () => {
+  afterEach(async () => {
+    await rm(workbuddyHostHeartbeatPath(), { force: true })
+  })
+
+  it('writes a document its own reader accepts, with the fields it reports', async () => {
+    const owner = await writeHostHeartbeat()
+    expect(owner.path).toBe(workbuddyHostHeartbeatPath())
+
+    // The bytes the writer hands back ARE the bytes on disk. Cleanup compares
+    // exactly these two strings, so any divergence here would make every
+    // disposal a silent no-op that leaves the record behind.
+    expect(await readFile(owner.path, 'utf8')).toBe(owner.contents)
+
+    const read = await readHostHeartbeat()
+    expect(read).toBeDefined()
+    expect(read?.version).toBe(2)
+    expect(read?.package).toBe('dsh-connect-workbuddy')
+    expect(read?.pid).toBe(process.pid)
+    expect(typeof read?.registeredAt).toBe('number')
+    expect(isHeartbeatProcessAlive(read as WorkBuddyHostHeartbeat)).toBe(true)
+  })
+
+  it('keeps the v2 read shape free of the write-only registration id', async () => {
+    // `registrationId` exists for the writer's own lifetime discrimination. It
+    // must not leak into the object `doctor` and the staleness check consume,
+    // because that object's shape is what `readHostHeartbeat` promises.
+    const owner = await writeHostHeartbeat()
+    expect(JSON.parse(owner.contents)).toHaveProperty('registrationId')
+    expect(await readHostHeartbeat()).not.toHaveProperty('registrationId')
   })
 })
