@@ -96,22 +96,48 @@ describe('issue #253 — REGRESSION: an empty tuple must not become an empty pre
     expect(out['prefixItems']).toBeUndefined()
   })
 
-  it('does not depend on the type repair to clean up an empty tuple', () => {
-    // This is the mutation that matters. Turning the empty-tuple branch back
-    // into `prefixItems: []` left every other test GREEN, because the type
-    // repair that runs afterwards drops an empty `prefixItems` anyway — so the
-    // visible output was identical and the regression test proved nothing about
-    // its own subject. The tuple branch must be correct ON ITS OWN, which this
-    // asserts by giving the empty tuple a sibling that the repair cannot use to
-    // mask it.
+  it('carries an empty tuple\'s explicit tail onto items', () => {
+    // WHAT THIS DOES AND DOES NOT PROVE. It pins the OUTCOME — an empty tuple
+    // with a typed tail ends up as `items: <tail>` with no `prefixItems` and no
+    // `additionalItems`. It does NOT isolate the empty-tuple branch inside
+    // `normalizeItems`, and it cannot: the type repair that runs afterwards drops
+    // an empty `prefixItems` too, so disabling that branch completely still
+    // produces this exact output (measured). An earlier revision of this file
+    // claimed otherwise and carried a "this is the mutation that matters"
+    // comment; the mutation stayed GREEN, so the claim was false and was removed.
     //
-    // `additionalItems` alongside an empty tuple: the branch must consume it and
-    // emit `items: {}`; if the branch is disabled the tail survives into the
-    // output, which the repair leaves alone, so the defect becomes visible.
+    // The branch is kept anyway, as defence in depth for the ORDER of the two
+    // passes: if the type repair ever stops dropping an empty `prefixItems` — or
+    // runs first — this branch is the thing that still keeps the tuple correct.
     const out = property({ type: 'array', items: [], additionalItems: { type: 'number' } })
-    expect(out).toEqual({ type: 'array', items: {} })
+    expect(out).toEqual({ type: 'array', items: { type: 'number' } })
     expect(out['additionalItems']).toBeUndefined()
     expect(out['prefixItems']).toBeUndefined()
+  })
+
+  it('keeps a caller-supplied prefixItems when the tuple is empty', () => {
+    // `items: []` WITH a non-empty `prefixItems` is refused as sent by the
+    // upstream, while the same `prefixItems` with the empty tuple dropped
+    // answers 200. So the empty tuple goes and the caller's real positional
+    // declaration stays — deleting it would silently widen what the tool
+    // accepts, which is the very class of bug this PR is about.
+    const out = property({ type: 'array', items: [], prefixItems: [{ type: 'string' }], additionalItems: false })
+    expect(out).toEqual({ type: 'array', prefixItems: [{ type: 'string' }], items: false })
+  })
+
+  it('preserves a typed empty-tuple tail without emitting prefixItems', () => {
+    // Every position follows the empty tuple, so the tail schema applies to
+    // every item. Keeping it also makes this independent of the later repair.
+    const tail = { type: 'object', properties: { value: { type: 'string' } }, required: 'value' }
+    const out = property({ type: 'array', items: [], additionalItems: tail })
+    expect(out).toEqual({ type: 'array', items: { ...tail, required: ['value'] } })
+    expect(out['additionalItems']).toBeUndefined()
+    expect(out['prefixItems']).toBeUndefined()
+  })
+
+  it.each([false, true])('preserves the explicit empty-tuple boolean tail %s', tail => {
+    expect(property({ type: 'array', items: [], additionalItems: tail }))
+      .toEqual({ type: 'array', items: tail })
   })
 
   it('drops an empty `prefixItems` rather than sending it', () => {
