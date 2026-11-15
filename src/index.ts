@@ -223,6 +223,7 @@ export {
   parseReasoning,
   parseUpstreamModel,
   prepareChatBody,
+  deriveStableConversationId,
   modelIdOfBody,
   knownRegionOf,
   regionOf,
@@ -777,6 +778,11 @@ export interface Config {
    */
   usageIdentity?: boolean
   /**
+   * 会话 id 稳定化 A/B 开关，默认关；详见配置项 description 与 upstream.ts。
+   * 开启后只固定 X-Conversation-ID，其余三件套仍每请求现生成。
+   */
+  stableConversationId?: boolean
+  /**
    * Move the harness's injected context above the real prompt (issue #132).
    *
    * The WorkBuddy usage page records the last `user` message as the request
@@ -1265,6 +1271,11 @@ export const Config: z<Config> = z.object({
       .default(false)
       .description("Send the chat conversation ids in the official client's 32-hex UUIDv7 shape and add a mirroring X-Request-ID. Off by default — it is a display alignment measured by a reporter, not by this plugin, and the chat channel identity (User-Agent) and request body never change."),
   ) as unknown as z<boolean>,
+  stableConversationId: asVolatile(
+    z.boolean()
+      .default(false)
+      .description("A/B 开关（路线 A，默认关）：开启时把 X-Conversation-ID 固定为从请求体不变前缀派生的亲和键（其余三件套仍每请求现生成）。该值不是宿主会话标识，不宣称会话隔离，也不证明上游按会话分区；相同前缀的独立会话会共享键。关闭时不进入派生分支。用于离线单变量命中率对照，详见 docs/STABLE-KEY-SEMANTICS.md。改动后需重载插件（配置在挂载时采样一次）。"),
+  ) as unknown as z<boolean>,
   wireProfile: asVolatile(
     z.union([z.const('conservative'), z.const('balanced')])
       .default('balanced')
@@ -1677,6 +1688,7 @@ export function apply(ctx: Context, config: Config): void {
     },
     {
       usageIdentity: unwrapVolatile(config.usageIdentity) === true,
+      stableConversationId: unwrapVolatile(config.stableConversationId) === true,
       // 未配置时由 upstream 的 DEFAULT_WIRE_PROFILE 决定（`balanced`），这里
       // 不重复写一份默认值——两处默认值是它们开始分叉的方式。
       ...unwrapVolatile(config.wireProfile) === undefined
