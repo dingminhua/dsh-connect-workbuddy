@@ -4052,9 +4052,16 @@ function normalizeItems(schema: Record<string, unknown>): void {
   // Outside a tuple, additionalItems keeps its existing accepted spelling.
   if (!Array.isArray(items)) return
   if (items.length === 0) {
-    // An empty tuple has no positional schemas. Every element follows its
-    // explicit tail, and the upstream refuses an empty prefixItems array.
-    delete schema['prefixItems']
+    // An empty tuple has no positional schemas, and the upstream refuses an
+    // empty `prefixItems` array — so an empty ARRAY here must never be carried
+    // across. A caller-supplied NON-empty `prefixItems` is a different thing:
+    // that is a real positional declaration which this branch has no business
+    // deleting. Measured: `items: []` alongside a non-empty `prefixItems` is
+    // refused as sent, while the same `prefixItems` with the empty tuple dropped
+    // answers 200 — so the tuple goes and the caller's list stays.
+    const userPrefix = schema['prefixItems']
+    if (Array.isArray(userPrefix) && userPrefix.length > 0) schema['prefixItems'] = userPrefix
+    else delete schema['prefixItems']
   } else if (schema['prefixItems'] === undefined) {
     // A caller-supplied prefixItems remains the positional source.
     schema['prefixItems'] = items

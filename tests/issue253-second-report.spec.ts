@@ -96,6 +96,35 @@ describe('issue #253 — REGRESSION: an empty tuple must not become an empty pre
     expect(out['prefixItems']).toBeUndefined()
   })
 
+  it('carries an empty tuple\'s explicit tail onto items', () => {
+    // WHAT THIS DOES AND DOES NOT PROVE. It pins the OUTCOME — an empty tuple
+    // with a typed tail ends up as `items: <tail>` with no `prefixItems` and no
+    // `additionalItems`. It does NOT isolate the empty-tuple branch inside
+    // `normalizeItems`, and it cannot: the type repair that runs afterwards drops
+    // an empty `prefixItems` too, so disabling that branch completely still
+    // produces this exact output (measured). An earlier revision of this file
+    // claimed otherwise and carried a "this is the mutation that matters"
+    // comment; the mutation stayed GREEN, so the claim was false and was removed.
+    //
+    // The branch is kept anyway, as defence in depth for the ORDER of the two
+    // passes: if the type repair ever stops dropping an empty `prefixItems` — or
+    // runs first — this branch is the thing that still keeps the tuple correct.
+    const out = property({ type: 'array', items: [], additionalItems: { type: 'number' } })
+    expect(out).toEqual({ type: 'array', items: { type: 'number' } })
+    expect(out['additionalItems']).toBeUndefined()
+    expect(out['prefixItems']).toBeUndefined()
+  })
+
+  it('keeps a caller-supplied prefixItems when the tuple is empty', () => {
+    // `items: []` WITH a non-empty `prefixItems` is refused as sent by the
+    // upstream, while the same `prefixItems` with the empty tuple dropped
+    // answers 200. So the empty tuple goes and the caller's real positional
+    // declaration stays — deleting it would silently widen what the tool
+    // accepts, which is the very class of bug this PR is about.
+    const out = property({ type: 'array', items: [], prefixItems: [{ type: 'string' }], additionalItems: false })
+    expect(out).toEqual({ type: 'array', prefixItems: [{ type: 'string' }], items: false })
+  })
+
   it('preserves a typed empty-tuple tail without emitting prefixItems', () => {
     // Every position follows the empty tuple, so the tail schema applies to
     // every item. Keeping it also makes this independent of the later repair.
