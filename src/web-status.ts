@@ -478,6 +478,20 @@ export interface WorkBuddyStatusRouteOptions {
    * transfer section (an older bundle keeps rendering, minus the buttons).
    */
   transfer?: WorkBuddyTransferDeps
+  /**
+   * Authorities the deployer declared trusted for these routes (issue #261).
+   *
+   * A FUNCTION, not a value: the field lives in a volatile config slot, so the
+   * gate must read it at REQUEST time — sampling once at mount would leave a
+   * user who adds an authority behind a proxy with a card that stays 403 until a
+   * full plugin reload, the very reload every other volatile switch here avoids.
+   *
+   * OPTIONAL, and absent reads as "no grants", so a Host that predates the
+   * setting and the entire existing test suite keep the pre-#261 fence exactly.
+   * See `src/loopback.ts` for why the decision is made on the whole authority
+   * (port included) and why the same value drives BOTH the Host and Origin halves.
+   */
+  trustedHosts?(): readonly string[]
 }
 
 /**
@@ -951,13 +965,24 @@ function readJsonBody(
  * Absent Host is refused: HTTP/1.1 requires it, and its absence on a
  * credit-spending surface is not worth the benefit of the doubt. Absent Origin
  * passes, because that is the shape of the plugin's own fetch and of curl.
+ *
+ * `trustedHosts` (issue #261) is a THIRD, opt-in input, and it changes none of
+ * the above: it is still a forgeable header decision, not authentication. It only
+ * admits a Host/Origin authority the deployer declared, which is what a reverse
+ * proxy needs (the harness binds loopback, so `localAddress` is always 127.0.0.1
+ * and the browser's public authority could never match it). The same getter is
+ * passed to BOTH halves so a request cannot be half-trusted. See `loopback.ts`.
  */
-function requireLoopback(req: IncomingMessage, res: ServerResponse): boolean {
-  if (!hostMatchesListener(req.headers.host, req.socket?.localAddress)) {
+function requireLoopback(req: IncomingMessage, res: ServerResponse, deps: WorkBuddyStatusRouteOptions): boolean {
+  // Read the trust list ONCE per decision, from the volatile config getter, so
+  // Host and Origin can never be judged against different lists within one
+  // request. Omitting deps / the getter leaves the pre-#261 fence (empty list).
+  const trustedHosts = deps.trustedHosts
+  if (!hostMatchesListener(req.headers.host, req.socket?.localAddress, trustedHosts)) {
     json(res, 403, { error: 'host-not-trusted' })
     return false
   }
-  if (!originIsLoopback(req.headers.origin, req.socket?.localAddress)) {
+  if (!originIsLoopback(req.headers.origin, req.socket?.localAddress, trustedHosts)) {
     json(res, 403, { error: 'origin-not-trusted' })
     return false
   }
@@ -1774,7 +1799,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         path: spec.path,
         handler: async (req: IncomingMessage, res: ServerResponse) => {
           if (req.method !== spec.method) return json(res, 405, { error: 'method not allowed' })
-          if (!requireLoopback(req, res)) return
+          if (!requireLoopback(req, res, deps)) return
           if (spec.ready !== undefined && !spec.ready(res)) return
           try {
             await run(req, res)
@@ -1971,7 +1996,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         // account, and a test spends real credits. So POST + loopback, the same
         // guards the card's other mutations carry.
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
+        if (!requireLoopback(req, res, deps)) return
         const region = requestRegion(req, res)
         if (region === undefined) return
         const action = poolActionOf(req.url ?? '/')
@@ -2162,7 +2187,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       path: '/plugins/dsh-connect-workbuddy/__save',
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
+        if (!requireLoopback(req, res, deps)) return
         // Host-side save path: on DSH 0.1.7 the browser-side ConfigForm never
         // delivered a write on this deployment while the Host-side mutate is
         // proven healthy by direct probe, so the card saves through this
@@ -2354,7 +2379,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         // arbitrary file text: POST + loopback like every other mutation, so
         // another origin can neither pull credentials nor plant them.
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!requireLoopback(req, res)) return
+        if (!requireLoopback(req, res, deps)) return
         const region = requestRegion(req, res)
         if (region === undefined) return
         const action = transferActionOf(req.url ?? '/')
@@ -2448,7 +2473,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         // 闸门先于一切：包括"这条路由有没有接线"。503 会顺带告诉一个外部来源
         // "此路由存在但未接"——那不是它该知道的事；403 对任何来源都是同一句话。
-        if (!requireLoopback(req, res)) return
+        if (!requireLoopback(req, res, deps)) return
         const port = deps.deviceSettings
         if (port === undefined) {
           return json(res, 503, { reason: 'device-settings-unavailable', error: 'device settings unavailable' })
@@ -2550,7 +2575,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       path: WORKBUDDY_DEVICE_SDK_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         // 同上：闸门先于"是否接线"，否则 503 会把这条路由的存在性告诉外部来源。
-        if (!requireLoopback(req, res)) return
+        if (!requireLoopback(req, res, deps)) return
         const port = deps.deviceSdk
         if (port === undefined) {
           return json(res, 503, { reason: 'device-sdk-unavailable', error: 'device sdk unavailable' })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostIsLoopback, hostMatchesListener, hostnameOfHost, LOOPBACK_HOSTS, originIsLoopback } from '../src/loopback.ts'
+import { assertTrustedAuthority, hostIsLoopback, hostMatchesListener, hostnameOfHost, LOOPBACK_HOSTS, originIsLoopback } from '../src/loopback.ts'
 
 /**
  * The gate both HTTP surfaces share.
@@ -261,5 +261,103 @@ describe('hostMatchesListener', () => {
     // `0.0.0.0` in a Host header means "whatever this box is", not "this box",
     // and it never equals a real localAddress.
     expect(hostMatchesListener('0.0.0.0:3000', '0.0.0.0')).toBe(false)
+  })
+})
+
+/**
+ * Issue #261: a reverse proxy forwards `Host` unchanged while the harness's
+ * webserver is bound to loopback. `req.socket.localAddress` is ALWAYS 127.0.0.1,
+ * so `Host: <public authority>` can never equal it. The deployer-declared trust
+ * list is the only way in, and it must drive BOTH halves: a request that gets
+ * past the Host gate with `Origin: https://192.168.1.250:8443` must not then be
+ * refused by an Origin gate that still compares a bare hostname.
+ *
+ * The socket in every case below is 127.0.0.1 — that is the whole deployment.
+ */
+describe('trustedHosts (issue #261, reverse proxy)', () => {
+  const list = (...entries: string[]) => () => entries
+  const PROXY_HOST = '192.168.1.250:8443'
+  const PROXY_ORIGIN = 'https://192.168.1.250:8443'
+
+  it('accepts a declared authority on BOTH halves when the socket lands on loopback', () => {
+    const trusted = list(PROXY_HOST)
+    expect(hostMatchesListener(PROXY_HOST, '127.0.0.1', trusted)).toBe(true)
+    expect(originIsLoopback(PROXY_ORIGIN, '127.0.0.1', trusted)).toBe(true)
+  })
+
+  it('refuses the same request when the trust list is empty (pre-#261 fence)', () => {
+    // Positive control for "a declared authority is what opens the gate": with
+    // no list the answer must still be 403, or a test that always returns true
+    // would pass every case above.
+    expect(hostMatchesListener(PROXY_HOST, '127.0.0.1', list())).toBe(false)
+    expect(originIsLoopback(PROXY_ORIGIN, '127.0.0.1', list())).toBe(false)
+  })
+
+  it('refuses an authority that is not the one declared', () => {
+    const trusted = list('192.168.1.251:8443')
+    expect(hostMatchesListener(PROXY_HOST, '127.0.0.1', trusted)).toBe(false)
+    expect(originIsLoopback(PROXY_ORIGIN, '127.0.0.1', trusted)).toBe(false)
+  })
+
+  it('still refuses an attacker domain (rebinding) even with a trust list', () => {
+    const trusted = list(PROXY_HOST)
+    expect(hostMatchesListener('evil.example:8443', '127.0.0.1', trusted)).toBe(false)
+    expect(originIsLoopback('https://evil.example:8443', '127.0.0.1', trusted)).toBe(false)
+  })
+
+  it('a port-less entry matches the hostname on any port', () => {
+    const trusted = list('192.168.1.250')
+    expect(hostMatchesListener(PROXY_HOST, '127.0.0.1', trusted)).toBe(true)
+    expect(originIsLoopback(PROXY_ORIGIN, '127.0.0.1', trusted)).toBe(true)
+    expect(hostMatchesListener('192.168.1.250:9443', '127.0.0.1', trusted)).toBe(true)
+  })
+
+  it('an explicit-port entry matches ONLY that authority', () => {
+    const trusted = list(PROXY_HOST)
+    expect(hostMatchesListener('192.168.1.250:9443', '127.0.0.1', trusted)).toBe(false)
+  })
+
+  it('normalizes case, IPv6 brackets and a scheme-default port on both halves', () => {
+    // WHATWG strips :443 from an https Origin but keeps it when the same text is
+    // parsed as a Host under http:. Both halves must still agree, so an entry
+    // with an explicit default port must be parsed under the Origin's scheme.
+    expect(hostMatchesListener('dsh.example.com:443', '127.0.0.1', list('dsh.example.com:443'))).toBe(true)
+    expect(originIsLoopback('https://dsh.example.com:443', '127.0.0.1', list('dsh.example.com:443'))).toBe(true)
+    expect(originIsLoopback('https://dsh.example.com', '127.0.0.1', list('dsh.example.com:443'))).toBe(true)
+    expect(hostMatchesListener('DSH.EXAMPLE.COM:8443', '127.0.0.1', list('dsh.example.com:8443'))).toBe(true)
+    expect(hostMatchesListener('[fe80::1]:8443', '127.0.0.1', list('[fe80::1]:8443'))).toBe(true)
+  })
+
+  it('a non-http(s) Origin cannot be trusted by the list', () => {
+    expect(originIsLoopback('ftp://192.168.1.250:8443', '127.0.0.1', list(PROXY_HOST))).toBe(false)
+  })
+
+  it('keeps the existing loopback and wildcard rules in front of the trust list', () => {
+    const trusted = list('0.0.0.0:3000', '[::]:3000')
+    // A wildcard is never a legitimate Host, and a loopback Host passes without
+    // any list — the trust list must not change either answer.
+    expect(hostMatchesListener('0.0.0.0:3000', '127.0.0.1', trusted)).toBe(false)
+    expect(hostMatchesListener('127.0.0.1:62283', '127.0.0.1', list())).toBe(true)
+  })
+
+  it('an absent getter leaves the pre-#261 answer', () => {
+    expect(hostMatchesListener(PROXY_HOST, '127.0.0.1')).toBe(false)
+    expect(originIsLoopback(PROXY_ORIGIN, '127.0.0.1')).toBe(false)
+  })
+})
+
+describe('assertTrustedAuthority', () => {
+  it('accepts canonical bare host[:port] authorities', () => {
+    for (const entry of ['192.168.1.250', '192.168.1.250:8443', 'dsh.example.com', '[::1]:8443']) {
+      expect(() => assertTrustedAuthority(entry), entry).not.toThrow()
+    }
+  })
+
+  it('REFUSES a value that WHATWG would rewrite or that hides a hostname', () => {
+    // A typo must fail the LOAD, not sit in the list granting a hostname prefix
+    // (the harness's own assertTrustedAuthority has the same boundary).
+    for (const entry of ['harness.internal/path', 'user@host', 'host :80', '0x7f.0.0.1', '']) {
+      expect(() => assertTrustedAuthority(entry), entry).toThrow(/not a bare host\[:port\] authority/)
+    }
   })
 })

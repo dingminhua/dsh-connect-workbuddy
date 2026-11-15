@@ -657,6 +657,28 @@ node scripts/check-pii.mjs     # non-zero exit blocks the release
 
 **Automated scanning only recognises the shapes it knows.** The first time you screenshot developer tools or paste a real device log, the rules will not cover it — look at it yourself, and add the new pattern to the rule table.
 
+## Reverse proxy / LAN access (issue #261)
+
+When DSH runs in Docker / on a server behind Caddy, nginx or another reverse proxy, the plugin's settings card can be blank and every `/plugins/dsh-connect-workbuddy/*` route can answer `403 {"error":"host-not-trusted"}` — **while DSH's own pages and settings work**. This is not a sign-in problem; signing back into WorkBuddy cannot change it.
+
+The card routes gate on Host/Origin: `Host` must equal the address the connection actually landed on (`req.socket.localAddress`). Behind a proxy the harness binds a loopback address, so that value is always `127.0.0.1`, while the proxy forwards the browser's `Host: <public authority>` unchanged — the two can never match. DSH's own `/api` uses a different fence that accepts the same Host via `dsh web --trusted-host <authority>`, which is why "the page works, the plugin is broken".
+
+Fix: declare that public authority in the plugin's `trustedHosts` config (the same authority you pass to the host's `--trusted-host`):
+
+```yaml
+# profile cordis.patch.yml, or the plugin's settings field
+trustedHosts:
+  - 192.168.1.250:8443      # with port: matches exactly this authority
+  # - dsh.example.com        # without port: matches that host on any port
+```
+
+- **Empty by default** — loopback and direct LAN-bound deployments are unaffected.
+- Each entry must be a bare `host[:port]` with no path, scheme or userinfo; a malformed value fails plugin load rather than silently granting a hostname prefix.
+- It is a **volatile** field: changes take effect without a plugin reload / restart. Both the Host and Origin gates read the same list, so they cannot disagree.
+- This is **not authentication**: Host/Origin are forgeable. The list only extends "this machine" from "where the socket landed" to "authority the deployer declared", matching the host's own fence. DNS-rebinding defense is unchanged (an attacker's domain is not on the list) and `0.0.0.0` / `[::]` are still refused.
+
+If you would rather not configure it, simply **open DSH at its local address (`127.0.0.1`)** instead of the public / proxied address. Until it is fixed, the card now shows an explicit 403 hint instead of telling you to sign in again.
+
 ## Known limitations
 
 - The plugin depends on WorkBuddy client endpoints (not an official public API), so a WorkBuddy update may require adjustments.

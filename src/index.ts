@@ -142,6 +142,7 @@ import type { WorkBuddyRegion } from './upstream.ts'
 import { attachBusyLevels } from './busy.ts'
 import type { WorkBuddyBusyLevel } from './busy.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
+import { assertTrustedAuthority } from './loopback.ts'
 import { clearHostHeartbeat, writeHostHeartbeat, type WorkBuddyHostHeartbeatOwner } from './host-heartbeat.ts'
 
 export {
@@ -886,6 +887,13 @@ export interface Config {
      */
     text?: string
   }
+  /**
+   * 部署方为插件自身路由声明的可信 authority（issue #261）。默认空，见下方
+   * schema 的说明：反代后面 DSH 绑回环、Host 是公网地址，插件的 Host/Origin
+   * 闸门会全部 403；加一条白名单让宿主与插件对同一个 Host 的判定一致。
+   * 元素是裸 `host[:port]`，在挂载时逐条校验；请求时读取，改动无需重载。
+   */
+  trustedHosts?: string[]
 }
 
 const modelConfig = z.object({
@@ -1363,6 +1371,33 @@ export const Config: z<Config> = z.object({
         'OFF by default: that loss is real, so it is a deliberate answer to a 11128 you can match to ' +
         'reasoning text, not a default. Takes effect on the next turn, no reload.'),
   ) as unknown as z<boolean>,
+  /**
+   * Authorities the deployer declared trusted for the plugin's own routes
+   * (issue #261). OFF (empty) by default, so nothing changes for a loopback or
+   * LAN-bound deployment. Add the public authority when DSH sits behind a
+   * reverse proxy that forwards Host unchanged: the harness binds a loopback
+   * address, so `req.socket.localAddress` is always 127.0.0.1 and the card's
+   * Host/Origin gate can never match `Host: <public authority>` — every route
+   * would answer 403 `host-not-trusted` even though the harness's own `/api`
+   * accepts that same Host via `--trusted-host`.
+   *
+   * Each entry is a bare `host[:port]` authority; a port-less entry matches the
+   * hostname on any port, an explicit-port entry matches exactly that
+   * authority. Values are validated by `assertTrustedAuthority` at mount so a
+   * typo fails loudly instead of silently granting a hostname prefix. This is
+   * NOT authentication (Host/Origin are forgeable) and does not weaken DNS
+   * rebinding defense: an attacker's domain is not on the list, loopback and
+   * the listener's own address are still accepted first, and `0.0.0.0`/`[::]`
+   * are still refused.
+   *
+   * Volatile and read at REQUEST time: adding an authority must not require a
+   * full plugin reload (which would drop in-flight requests) to take effect.
+   */
+  trustedHosts: asVolatile(
+    z.array(z.string()).default([]).description(
+      'Extra Host authorities the plugin\'s settings-card routes accept when DSH sits behind a reverse proxy (e.g. ["192.168.1.250:8443"] or ["dsh.example.com"]). Each entry is a bare host[:port]; a port-less entry matches that host on any port. Loopback, the listener\'s own address and the 0.0.0.0/[::] refusal are unchanged. Off by default. Takes effect without a reload.',
+    ),
+  ) as unknown as z<string[]>,
   sessionTitle: asVolatile(
     z.object({
       enabled: z.boolean().default(false),
@@ -1604,6 +1639,19 @@ export async function legacyAttributionRegion(
  * upstream never leaves a provider empty.
  */
 export function apply(ctx: Context, config: Config): void {
+  /**
+   * 反代部署下插件自己路由的可信 Host（issue #261）。
+   *
+   * 在挂载期逐条校验「裸 authority」，拼错的值宁可让插件加载失败，也不要等请求
+   * 时才 403、或悄悄授权一个 hostname 前缀（宿主自己的 `assertTrustedAuthority`
+   * 是同一条边界）。但**读取**放在下面的 `trustedHosts()` 里、每次请求现读：
+   * 这是个 volatile 字段，用户加一条白名单不该触发整插件重载（会丢在途请求）。
+   */
+  const trustedHosts = (): readonly string[] => {
+    const value = unwrapVolatile(config.trustedHosts) ?? []
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+  }
+  for (const entry of trustedHosts()) assertTrustedAuthority(entry)
   // The CN catalog prefers `/v3/config` and falls back to the legacy document.
   // A fallback is worth a line in the log: it means the card's roster may no
   // longer match the app's prices, which is a user-visible difference rather
@@ -2905,6 +2953,11 @@ export function apply(ctx: Context, config: Config): void {
     return registerWorkBuddyStatusRoute(webCtx, {
     store: region => stacks[region].store,
     client,
+    // Issue #261: the deployer's trusted authorities, read at REQUEST time from
+    // the volatile config slot. Host and Origin halves both receive this same
+    // getter, so adding an authority takes effect without a plugin reload and the
+    // two gates can never disagree about the list within one request.
+    trustedHosts,
     // Verifies whether some OTHER local account is still accepted upstream, so
     // a refused credential can be answered with "switch accounts" instead of a
     // re-login instruction that would change nothing. Cached per account and

@@ -180,6 +180,28 @@ const STATUS_RETRY_BASE_MS = 3_000
 const STATUS_RETRY_MAX_MS = 30_000
 
 /**
+ * The two codes the Host's loopback gate writes into a 403 body (issue #261).
+ *
+ * These are the ONLY 403 causes the card's usage route can produce: the gate
+ * runs before any handler (see `requireLoopback` in `src/web-status.ts`), so a
+ * 403 with a different or missing body means something else — an older Host, a
+ * proxy, a truncated response — and must keep the generic advice. Naming the
+ * cause here is what lets the card say "signing in again will not help" instead
+ * of the generic (and, for this failure, false) "sign back in to WorkBuddy".
+ *
+ * `message` stays `HTTP 403` regardless: that string is the existing diagnostic
+ * contract for `row.usageErrorHint` / `row.requestFailedHint` and is asserted by
+ * tests. The gate code is carried in a SEPARATE state, not folded into it.
+ */
+type GateRefusal = 'host-not-trusted' | 'origin-not-trusted'
+
+function gateRefusalOf(value: unknown): GateRefusal | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const code = (value as { error?: unknown }).error
+  return code === 'host-not-trusted' || code === 'origin-not-trusted' ? code : undefined
+}
+
+/**
  * The reasoning tiers the local CodeBuddy CLI accepts for its `--effort` flag.
  *
  * Kept in sync with `EFFORT_LEVELS` in `src/cli-bridge/tool.ts` by hand: that
@@ -680,6 +702,17 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [statusByRegion, setStatusByRegion] = useState<Partial<Record<WorkBuddyWebRegion, WorkBuddyWebUsage>>>({})
   /**
+   * The Host's loopback gate refused THIS card's own request (403, issue #261).
+   *
+   * Card-level, not per-region: the gate refuses every plugin route before any
+   * handler runs, so one flag covers both tabs. It is the two codes from
+   * `gateRefusalOf`, not a boolean — the remedies differ (Host authority vs a
+   * foreign page), so the copy has to say which one it is. Kept out of
+   * `statusByRegion` because a refusal is a property of the REQUEST, not of a
+   * region's account state, and a later successful read clears it.
+   */
+  const [gateRefused, setGateRefused] = useState<GateRefusal | undefined>(undefined)
+  /**
    * Which of the card's three sections is on screen.
    *
    * The section tabs exist because the card grew into one 3,500 px column that
@@ -929,6 +962,10 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     // Claimed BEFORE the fetch: any request that starts later supersedes this
     // one, even if this one's response arrives after it.
     const stale = usageGuard.current.begin(region)
+    // The 403 gate cause, if this response carried one. Applied only when this
+    // request is still the freshest, below — a stale answer must not set (or
+    // clear) a card-level flag that a newer request owns.
+    let gateCause: GateRefusal | undefined
     try {
       const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region), {
         headers: { accept: 'application/json' },
@@ -936,11 +973,22 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
         ...signal === undefined ? {} : { signal },
       })
       const value: unknown = await response.json().catch(() => undefined)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) {
+        // The loopback gate answers 403 with a STRUCTURED cause in the body
+        // (`host-not-trusted` / `origin-not-trusted`). `message` stays `HTTP 403`
+        // for the existing error contract; the cause is carried separately so
+        // the render can replace the generic (and here false) "sign back in"
+        // advice with the one thing that actually helps. Any other 403 keeps
+        // the generic path — see `gateRefusalOf`.
+        gateCause = gateRefusalOf(value)
+        throw new Error(`HTTP ${response.status}`)
+      }
       const usage = value as WorkBuddyWebUsage
       // Superseded while in flight: applying now would clobber a newer snapshot.
       if (stale()) return undefined
       if (mounted.current && signal?.aborted !== true) {
+        // A read that landed proves the gate is no longer refusing this card.
+        setGateRefused(undefined)
         setStatusByRegion(prev => ({ ...prev, [region]: usage }))
       }
       return usage
@@ -949,6 +997,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       // a newer successful snapshot with an error banner.
       if (stale()) return undefined
       if (mounted.current && signal?.aborted !== true) {
+        setGateRefused(gateCause)
         const message = error instanceof Error ? error.message : t('row.requestFailed')
         // Do NOT collapse the region into the union's `{ status: 'error' }`
         // variant when we already have data. That variant carries NO fields —
@@ -3698,14 +3747,19 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                   What remains here is only text the user must ACT on: the
                   re-login hint for a failed region, and the orphaned-choice
                   notice. A region's health at a glance is still on its tab dot. */}
-              {status.status === 'error'
-                || (status.status === 'signed-in' && status.creditsError !== undefined)
-                // A refusal gets its own, specific advice in the panel below;
-                // the generic "sign in again" would contradict it.
-                ? status.status === 'signed-in' && status.credentialRejected === true
-                  ? null
-                  : <p className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</p>
-                : null}
+              {/* A gate refusal (issue #261) must NOT show "sign back in":
+                  re-authenticating WorkBuddy cannot change the Host header the
+                  Host refused. The dedicated gate block below says what to do. */}
+              {gateRefused !== undefined
+                ? null
+                : status.status === 'error'
+                  || (status.status === 'signed-in' && status.creditsError !== undefined)
+                  // A refusal gets its own, specific advice in the panel below;
+                  // the generic "sign in again" would contradict it.
+                  ? status.status === 'signed-in' && status.credentialRejected === true
+                    ? null
+                    : <p className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</p>
+                  : null}
               {/* The ACCOUNT-level failures: a rescan whose hides could not be
                   lifted, and an account switch that was refused. This state was
                   already written by both paths but never rendered, so a refused
@@ -4476,7 +4530,41 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                     {searched.length > 0 ? <SearchedPaths items={searched} t={t} /> : null}
                   </>
                 : null}
-              {status.status === 'error'
+              {/* Issue #261: the Host's loopback gate refused this card's own
+                  request. Rendered as a card-level block that is INDEPENDENT of
+                  `status.status === 'error'`, so it also shows when a refresh
+                  was refused while a healthy snapshot is still on screen (that
+                  path writes `refreshError`, not the error variant). The generic
+                  advice below — "sign back in", "the local service may have just
+                  restarted" — is false for this cause, so the error block is
+                  suppressed while this one is up. */}
+              {gateRefused === undefined
+                ? null
+                : <div className="dsm-workbuddy-usage-error-block">
+                    <p className="dsm-workbuddy-usage-error" role="alert">
+                      <strong>{t('row.usageGateRefusedTitle')}</strong>
+                    </p>
+                    <p className="dsm-workbuddy-usage-hint">
+                      {t(gateRefused === 'host-not-trusted'
+                        ? 'row.usageGateHostRefused'
+                        : 'row.usageGateOriginRefused')}
+                    </p>
+                    {/* The automatic retry (issue #170) will poll anyway, but a
+                        user who just fixed their proxy/reverse-proxy deployment
+                        wants an immediate answer, not a 3-second backoff. Same
+                        button the generic error block offers. */}
+                    <button
+                      type="button"
+                      className="dsm-btn dsm-btn-outline"
+                      onClick={() => {
+                        statusRetries.current = 0
+                        void refreshUsage(activeRegion)
+                      }}
+                    >
+                      {t('row.usageRetry')}
+                    </button>
+                  </div>}
+              {status.status === 'error' && gateRefused === undefined
                 ? <div className="dsm-workbuddy-usage-error-block">
                     <p className="dsm-workbuddy-usage-error" role="alert">
                       {t('row.usageErrorHint', {

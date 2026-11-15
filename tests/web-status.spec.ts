@@ -1261,6 +1261,91 @@ describe('registerWorkBuddyStatusRoute', () => {
     expect(status()).toBe(405)
   })
 
+  /**
+   * Issue #261: the harness binds loopback and a reverse proxy forwards Host
+   * unchanged, so `req.socket.localAddress` is 127.0.0.1 while the browser
+   * addresses the public authority. Without a declared trust list every route
+   * answers 403 `host-not-trusted`; with one, BOTH the Host and Origin halves
+   * must admit it. The Origin header is included on purpose: a fixture with
+   * only Host would prove the Host half and leave the Origin half untested.
+   */
+  describe('trustedHosts lets a reverse-proxied authority through (issue #261)', () => {
+    /** A request exactly as a proxied same-origin browser POST sends it. */
+    function proxyRequest(
+      host = '192.168.1.250:8443',
+      origin = 'https://192.168.1.250:8443',
+    ) {
+      return {
+        method: 'POST',
+        url: '/',
+        headers: { host, origin },
+        // The harness is bound to 127.0.0.1; the proxy reaches it there.
+        socket: { localAddress: '127.0.0.1' },
+      }
+    }
+
+    it('refuses the proxied request when no authority is declared (pre-#261)', async () => {
+      const handler = await mountCheckinHandler()
+      const { res, status, body } = response()
+      await handler(proxyRequest(), res)
+      expect(status()).toBe(403)
+      expect(body()).toMatchObject({ error: 'host-not-trusted' })
+    })
+
+    it('admits the proxied request when its authority is declared', async () => {
+      // Volatile config is read at REQUEST time, so the getter is what the route
+      // calls. A value captured once at mount would fail the mutation check.
+      let configured = false
+      const handler = await mountCheckinHandler({ trustedHosts: () => configured ? ['192.168.1.250:8443'] : [] })
+      const before = response()
+      await handler(proxyRequest(), before.res)
+      expect(before.status(), 'empty list must still refuse').toBe(403)
+
+      // Same mounted route, no reload: the deployer adds the authority and the
+      // very next request must pass. This is why trustedHosts is a function.
+      configured = true
+      const after = response()
+      await handler(proxyRequest(), after.res)
+      expect(after.status()).toBe(200)
+    })
+
+    it('still refuses a different authority and an attacker domain', async () => {
+      const handler = await mountCheckinHandler({ trustedHosts: () => ['192.168.1.251:8443'] })
+      const other = response()
+      await handler(proxyRequest(), other.res)
+      expect(other.status()).toBe(403)
+      expect(other.body()).toMatchObject({ error: 'host-not-trusted' })
+
+      const attacker = response()
+      await handler(proxyRequest('evil.example:8443', 'https://evil.example:8443'), attacker.res)
+      expect(attacker.status()).toBe(403)
+    })
+
+    it('applies the trust list to the Origin half too', async () => {
+      // Host matches the declared authority but Origin is foreign: the Host gate
+      // admits it and the Origin gate must refuse with its OWN error, proving the
+      // two halves are not sharing a single "trusted" decision for the whole
+      // request (which would let a foreign page drive a credit-spending route).
+      const handler = await mountCheckinHandler({ trustedHosts: () => ['192.168.1.250:8443'] })
+      const { res, status, body } = response()
+      await handler(proxyRequest('192.168.1.250:8443', 'https://evil.example:8443'), res)
+      expect(status()).toBe(403)
+      expect(body()).toMatchObject({ error: 'origin-not-trusted' })
+    })
+
+    it('a port-less entry matches on any port, an explicit-port entry only its own', async () => {
+      const portless = await mountCheckinHandler({ trustedHosts: () => ['192.168.1.250'] })
+      const anyPort = response()
+      await portless(proxyRequest(), anyPort.res)
+      expect(anyPort.status()).toBe(200)
+
+      const exact = await mountCheckinHandler({ trustedHosts: () => ['192.168.1.250:8443'] })
+      const wrongPort = response()
+      await exact(proxyRequest('192.168.1.250:9443', 'https://192.168.1.250:9443'), wrongPort.res)
+      expect(wrongPort.status()).toBe(403)
+    })
+  })
+
   describe('requireLoopback covers every registered route', () => {
     /** The 14 paths this build registers; a new route must be added here. */
     const ROUTES: ReadonlyArray<readonly [label: string, path: string, method: string]> = [

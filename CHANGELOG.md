@@ -1,5 +1,35 @@
 # Changelog
 
+## 未发布
+
+### 新增：`trustedHosts`——反代部署下卡片路由不再全量 403（issue #261）
+
+把 DSH 装在 Docker / 服务器、前面挂反向代理时，插件设置卡片会整块空白、所有
+`/plugins/dsh-connect-workbuddy/*` 返回 `403 {"error":"host-not-trusted"}`，而 DSH 自己的
+页面与 `/api` 正常。原因是卡片路由的 Host/Origin 闸门拿 `req.socket.localAddress` 与 `Host`
+比较，而反代后面宿主绑定回环、这个值恒为 `127.0.0.1`，浏览器发来的对外 authority 永远对不上；
+宿主自己的栅栏用 `dsh web --trusted-host` 声明的 authority 放行同一个 Host，于是两边分叉。
+
+- **新增默认空的 `trustedHosts` 配置**（volatile、请求时读取，改动无需重载）。元素是裸
+  `host[:port]`：不带端口匹配该主机名任意端口，带端口精确匹配该 authority；加载期逐条校验，
+  写错直接报错而不是悄悄授权一个前缀。Host 与 Origin 两道闸门共用同一份列表与同一套
+  WHATWG 归一化（大小写、IPv6 括号、scheme 默认端口）。
+- **默认行为零变化**：空列表时回环、LAN 绑定、`0.0.0.0`/`[::]` 显式拒绝、DNS rebinding 防护
+  全部与之前一致。白名单只把「本机地址」的定义从「socket 落在哪」扩展到「部署方声明的权威」，
+  与宿主 `--trusted-host` 对齐；Host/Origin 本就可伪造、不是鉴权，威胁模型不变。
+- **不读宿主的 `connection.trustedHosts`**：该字段在 `HostConnectionService` 上是 private，
+  且依赖另一个服务在场会让 `connection` 缺席时卡片整块消失。白名单放在本插件自己的 Config，
+  自包含、与宿主版本无关（详见 `docs/ISSUE-261-REPLY.md`）。
+- **卡片不再把 403 吞成空白**：`refreshUsage` 现在读响应体里的 `error`，对
+  `host-not-trusted` / `origin-not-trusted` 给一条专属、可操作的提示（改本机地址打开，或配
+  `trustedHosts`），并抑制「重新登录 WorkBuddy」「服务可能刚重启」这两条对此**事实错误**的建议；
+  其它 403 / 500 / 未登录仍走原路径。带一个「重试」按钮，修好后可立即重读。
+
+验证：`tests/loopback.spec.ts`（信任判定 + authority 校验）、`tests/web-status.spec.ts`（反代
+场景 403→200、未命中仍 403、Origin 半边、端口语义、空列表等价）、`tests/issue261-gate-hint.spec.tsx`
+（门禁码专属文案、其它错误零影响、恢复后清除）。三层各做一次变异验证：禁用信任匹配 / 放宽门禁码
+判定 / 移除 Origin 半边信任，对应测试均转红。
+
 ## 未发布（实验性开关，默认关闭）
 
 ### 新增：可选 `stableConversationId`（opt-in，默认 `false`）

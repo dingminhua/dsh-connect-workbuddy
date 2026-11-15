@@ -21,12 +21,39 @@
  * the minimum for these surfaces, not a substitute for a secret when a route
  * spends credit.
  *
+ * ## The deployment-declared authority (issue #261)
+ *
+ * Behind a reverse proxy both questions break for a reason the two callers
+ * cannot see: the harness's webserver is bound to a loopback address, so the
+ * socket ALWAYS lands on 127.0.0.1, while the browser (and the proxy forwarding
+ * its Host unchanged) addresses the public authority — e.g. `192.168.1.250`.
+ * `isLocalHostname` says no, and the Host-vs-`localAddress` comparison can never
+ * equal, so EVERY card route answers 403 `host-not-trusted` even though the
+ * harness's own `/api` fence accepts exactly that Host (it has a `trustedHosts`
+ * allow-list, `dsh web --trusted-host 192.168.1.250`).
+ *
+ * The fix is a third, opt-in source of "this machine": a list of authorities the
+ * DEPLOYER declared trusted, threaded into both predicates as one
+ * {@link TrustedHosts} value so Host and Origin cannot disagree. This does not
+ * weaken rebinding defense: an attacker page's Host is its own domain, which is
+ * not on the list; loopback and the listener's own address are still accepted
+ * before it, and `0.0.0.0` / `[::]` are still refused. It only aligns the
+ * plugin's notion of "ours" with the harness's for the same request.
+ *
+ * We deliberately do NOT read the harness's own `trustedHosts` off the
+ * `connection` service: in the DSH line this plugin runs against that field is
+ * private on `HostConnectionService`, and depending on another service being
+ * mounted would make the card disappear when it is absent. Keeping the allow-list
+ * in this plugin's own Config is self-contained and version-independent; see
+ * `docs/ISSUE-261-REPLY.md`.
+ *
  * ## Two callers, two strictnesses (deliberate)
  *
  * - `src/web-status.ts` serves the settings card over the HOST's webserver, which
  *   the harness may configure to bind a concrete non-loopback address. It uses
- *   `hostMatchesListener` / `originIsLoopback(origin, localAddress)`, i.e. "is
- *   this addressed to / coming from the interface the connection landed on".
+ *   `hostMatchesListener` / `originIsLoopback(origin, localAddress, trustedHosts)`,
+ *   i.e. "is this addressed to / coming from the interface the connection landed
+ *   on, OR from an authority the deployer explicitly declared trusted".
  * - `src/shim.ts` binds `listen(0, '127.0.0.1')` itself, so no LAN request can
  *   ever reach it. It uses the stricter `hostIsLoopback`, which is not a
  *   different notion of "local" but the same one narrowed to the only case that
@@ -116,6 +143,112 @@ export function hostnameOfHost(host: string): string {
 }
 
 /**
+ * Authorities the deployer declared trusted for this plugin's routes (issue #261).
+ *
+ * A function, not a value: the field lives in a volatile config slot, so the
+ * route must read it at REQUEST time. Sampling it once at mount would leave a
+ * user who adds an authority behind a proxy with a card that stays 403 until a
+ * full plugin reload — exactly the reload this plugin avoids for every other
+ * volatile switch. An absent function / an empty array keeps the pre-#261 fence.
+ */
+export type TrustedHosts = () => readonly string[]
+
+/**
+ * A normalized authority: the bare hostname plus `host` (hostname with its
+ * explicit, non-default port). Both the Host header and an Origin URL are
+ * reduced to this pair before the trust decision, so the two halves cannot
+ * disagree — which is the entire contract of this module.
+ */
+interface AuthorityParts {
+  hostname: string
+  host: string
+}
+
+/**
+ * Reduce a bare `host[:port]` authority to its WHATWG-normalized parts.
+ *
+ * `new URL` is the authority on spelling, for the same reason the harness's own
+ * `/api` fence uses it: it lowercases the host, brackets IPv6, strips a
+ * scheme-default port and rejects shapes a browser would never put in Host.
+ * The scheme matters because WHATWG strips DIFFERENT default ports for http:
+ * (80) and https: (443): the Origin path parses each entry under the Origin's
+ * OWN scheme, exactly as the harness's `isSameAuthorityOrigin` re-parses the
+ * Host under the Origin's scheme. Without that, an entry `host:443` would match
+ * the Host half (`http://host:443` keeps `:443`) but never an https Origin
+ * (`https://host:443` drops it) — a split in the wrong direction, and the very
+ * thing this module exists to prevent.
+ *
+ * Returns `undefined` for anything with a path, userinfo, whitespace or a
+ * dangling colon — a configured entry like `harness.internal/path` or one
+ * carrying embedded credentials before the hostname must never grant the
+ * hostname buried inside it.
+ */
+function authorityParts(authority: string, scheme: 'http:' | 'https:' = 'http:'): AuthorityParts | undefined {
+  try {
+    const url = new URL(`${scheme}//${authority}`)
+    if (url.pathname !== '/' || url.username !== '' || url.password !== ''
+      || url.search !== '' || url.hash !== '') return undefined
+    return { hostname: url.hostname, host: url.host }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Fail loudly on a `trustedHosts` entry that is not a canonical bare authority.
+ *
+ * A typo (`host/path`, embedded credentials, `host :80`, `0x7f.0.0.1`,
+ * percent-encoding)
+ * must fail the LOAD, not sit in the list silently authorizing a hostname prefix
+ * — the harness's own `assertTrustedAuthority` has the same boundary. Canonical
+ * means WHATWG parsing did not rewrite it (case / default-port aside), so an
+ * entry never grants a different authority than the operator wrote.
+ */
+export function assertTrustedAuthority(entry: string): void {
+  const parsed = authorityParts(entry)
+  if (parsed === undefined || parsed.host.toLowerCase() !== entry.toLowerCase()) {
+    throw new Error(`dsh-connect-workbuddy: trustedHosts entry ${JSON.stringify(entry)} is not a bare host[:port] authority`)
+  }
+}
+
+/**
+ * Whether a normalized authority is one of the deployer-declared ones.
+ *
+ * Comparison is on the WHOLE authority (host + explicit port), not on the bare
+ * hostname. That distinction is the whole reason this helper exists: a request
+ * behind a proxy carries BOTH `Host: 192.168.1.250:8443` and
+ * `Origin: https://192.168.1.250:8443`, while `hostnameOfHost` and `URL.hostname`
+ * have already stripped the port for the loopback / listener checks. Comparing a
+ * `host:port` entry against those bare hostnames would never match, so the
+ * Origin half would stay 403 after the Host half was fixed — the exact split
+ * this module exists to prevent.
+ *
+ * An entry with an explicit port matches that exact authority; a port-less entry
+ * (its `host` equals its `hostname`) matches the hostname on any port. Both
+ * sides went through `authorityParts` under the SAME scheme, so case, a
+ * redundant scheme-default port and IPv6 brackets never decide trust.
+ */
+function matchesTrustedAuthority(
+  parts: AuthorityParts,
+  trustedHosts: readonly string[],
+  scheme: 'http:' | 'https:' = 'http:',
+): boolean {
+  return trustedHosts.some((entry) => {
+    const configured = authorityParts(entry, scheme)
+    if (configured === undefined) return false
+    // Port-less entry: its hostname alone is the grant, on any port.
+    if (configured.host === configured.hostname) return configured.hostname === parts.hostname
+    // Explicit-port entry: the full authority must match.
+    return configured.host === parts.host
+  })
+}
+
+/** Read the trust list once per decision; an absent getter means "no grants". */
+function trustedList(getter: TrustedHosts | undefined): readonly string[] {
+  return getter === undefined ? [] : getter()
+}
+
+/**
  * Whether a Host header names the loopback interface.
  *
  * An absent Host is treated as NOT loopback. HTTP/1.1 requires the header, so
@@ -169,10 +302,20 @@ function isLocalHostname(hostname: string): boolean {
  * `Host: 127.0.0.1` anyway. It is stated first so the answer does not depend on
  * how the platform spells its own loopback, and so an undefined `localAddress`
  * (a proxy, a test double) still admits genuine local traffic.
+ *
+ * BEHIND A REVERSE PROXY the comparison cannot succeed: the harness binds a
+ * loopback address, so `localAddress` is always `127.0.0.1` while the browser
+ * addresses the public authority. That is what `trustedHosts` is for (issue
+ * #261) — a deployer-declared authority is checked BEFORE the `localAddress`
+ * comparison, so a proxied request is admitted without touching the rebinding
+ * defense (loopback and wildcard refusal are still first, and an attacker's
+ * domain is by construction not on the list). An absent trust set leaves the
+ * pre-#261 answer for every request.
  */
 export function hostMatchesListener(
   host: string | undefined,
   localAddress: string | undefined,
+  trustedHosts?: TrustedHosts,
 ): boolean {
   if (host === undefined || host.trim() === '') return false
   const hostname = hostnameOfHost(host)
@@ -182,6 +325,11 @@ export function hostMatchesListener(
   // literal. Excluding them explicitly keeps the comparison from depending on
   // the platform never reporting a wildcard.
   if (hostname === '0.0.0.0' || hostname === '[::]') return false
+  // A declared authority is checked on the WHOLE Host value (port included),
+  // not on `hostname`: the proxy forwards `Host: 192.168.1.250:8443`, and the
+  // harness's own fence matches that authority, not its bare hostname.
+  const parts = authorityParts(host.trim())
+  if (parts !== undefined && matchesTrustedAuthority(parts, trustedList(trustedHosts))) return true
   if (localAddress === undefined || localAddress.trim() === '') return false
   const local = localAddress.trim().toLowerCase()
   // The comparison is only meaningful between two ADDRESSES. `localAddress` comes
@@ -228,21 +376,38 @@ export function hostMatchesListener(
  * running on this machine), and treating it as one would break legitimate
  * setups behind a proxy that terminates on a different port than it forwards to.
  * That intentional limit is recorded rather than silently assumed.
+ *
+ * A DEPLOYER-DECLARED authority (issue #261) is different: a proxied browser
+ * sends `Origin: https://192.168.1.250:8443` while the socket lands on
+ * 127.0.0.1, so neither the loopback branch nor the `localAddress` comparison
+ * can ever admit it. It is checked on the Origin's WHOLE authority (`host`,
+ * port included) via the SAME `matchesTrustedAuthority` the Host path uses —
+ * that is what keeps the two halves from diverging again. Both halves parse the
+ * entries under the Origin's scheme (see `authorityParts`), so an entry with an
+ * explicit scheme-default port (`:443`) still matches an https Origin whose URL
+ * dropped that port, and a port-less entry matches on any port. Only http(s)
+ * Origins can name this listener; every other scheme fails the check below.
  */
 export function originIsLoopback(
   origin: string | undefined,
   localAddress?: string | undefined,
+  trustedHosts?: TrustedHosts,
 ): boolean {
   if (origin === undefined || origin.trim() === '') return true
   try {
     // `new URL` canonicalizes for us: `http://[0:0:0:0:0:0:0:1]/` arrives as
     // `[::1]`, and a trailing dot is preserved (so `http://127.0.0.1./` stays
-    // distinct and is judged by the same rule as the Host path).
-    const { hostname } = new URL(origin)
+    // distinct and is judged by the same rule as the Host path). `host` keeps an
+    // explicit non-default port, which is the authority the trust list names.
+    const { protocol, hostname, host } = new URL(origin)
+    const scheme = protocol === 'https:' ? 'https:' : protocol === 'http:' ? 'http:' : undefined
+    if (scheme === undefined) return false
     if (isLocalHostname(hostname)) return true
+    const parts = authorityParts(host, scheme)
+    if (parts !== undefined && matchesTrustedAuthority(parts, trustedList(trustedHosts), scheme)) return true
     // Same comparison the Host path makes: a present Origin naming the interface
     // this connection arrived on is a genuine same-origin request.
-    return hostMatchesListener(hostname, localAddress)
+    return hostMatchesListener(hostname, localAddress, trustedHosts)
   } catch {
     return false
   }

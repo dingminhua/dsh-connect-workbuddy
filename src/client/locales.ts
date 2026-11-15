@@ -72,6 +72,13 @@ export const en = {
   // hence the automatic retry and the button) from a refused request.
   'row.usageErrorHint': 'Could not read the account status: {message}. The local DSH service may have just restarted — retrying automatically.',
   'row.usageRetry': 'Retry',
+  // The Host's loopback gate refused the card's OWN request with 403 (issue
+  // #261). The body names the gate, and that is the only actionable fact:
+  // re-signing in to WorkBuddy cannot change a Host header. Generic error copy
+  // ("sign back in", "the service may have just restarted") is false here.
+  'row.usageGateRefusedTitle': 'The host refused this card\'s request (HTTP 403)',
+  'row.usageGateHostRefused': 'The host did not recognise the address this page was opened from, so it refused the request before the plugin could read anything. This is not a sign-in problem — signing in again will not help. Open DSH at its local address (127.0.0.1) instead of a LAN address or reverse proxy; if you must use that address, add it to this plugin\'s trustedHosts setting (same authority as the host\'s --trusted-host).',
+  'row.usageGateOriginRefused': 'The host refused the request because the page that sent it came from a different site. Open this card from inside the DSH window itself, not from a bookmark to a mirrored page.',
   'row.poolErrUnavailable': 'The account pool is not available in this build (or its batch route is missing). Restart the app; if it persists, the plugin needs reinstalling.',
   'row.poolErrFailed': 'The batch failed on the host side: {message}',
   'row.poolErrHttp': 'The batch was refused (HTTP {status}). Check the plugin is up to date and try again.',
@@ -821,6 +828,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.requestFailedHint': '刷新失败——下方为上次加载的数据：{message}',
   'row.usageErrorHint': '读取账号状态失败：{message}。本地 DSH 服务可能刚重启过，正在自动重试。',
   'row.usageRetry': '重试',
+  // 宿主的回环闸门用 403 拒绝了卡片自己的请求（issue #261）。body 点名了是哪道
+  // 门禁，这是唯一能据以行动的信息：重新登录 WorkBuddy 改不了 Host 头。这里若沿用
+  // 通用文案（「重新登录」「服务可能刚重启」）就是错的。
+  'row.usageGateRefusedTitle': '宿主拒绝了这张卡片的请求（HTTP 403）',
+  'row.usageGateHostRefused': '宿主没有认出你打开这个页面所用的地址，因此在插件读到任何数据之前就拒绝了请求。这不是登录问题——重新登录不会有用。请改用本机地址（127.0.0.1）打开 DSH，而不是局域网地址或反向代理；如果必须使用那个地址，请把它加进本插件的 trustedHosts 设置（与宿主的 --trusted-host 填同一个 authority）。',
+  'row.usageGateOriginRefused': '宿主因为发出这个请求的页面来自另一个站点而拒绝了它。请从 DSH 窗口内部打开这张卡片，而不是从镜像页面的书签进入。',
   'row.poolErrUnavailable': '本版本没有可用的账号池（或其批量接口缺失）。请重启应用；若仍不行，插件可能需要重新安装。',
   'row.poolErrFailed': '批量操作在宿主侧失败：{message}',
   'row.poolErrHttp': '批量操作被拒绝（HTTP {status}）。请确认插件是最新版本后重试。',
