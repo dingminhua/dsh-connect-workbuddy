@@ -96,22 +96,19 @@ describe('issue #253 — REGRESSION: an empty tuple must not become an empty pre
     expect(out['prefixItems']).toBeUndefined()
   })
 
-  it('does not depend on the type repair to clean up an empty tuple', () => {
-    // This is the mutation that matters. Turning the empty-tuple branch back
-    // into `prefixItems: []` left every other test GREEN, because the type
-    // repair that runs afterwards drops an empty `prefixItems` anyway — so the
-    // visible output was identical and the regression test proved nothing about
-    // its own subject. The tuple branch must be correct ON ITS OWN, which this
-    // asserts by giving the empty tuple a sibling that the repair cannot use to
-    // mask it.
-    //
-    // `additionalItems` alongside an empty tuple: the branch must consume it and
-    // emit `items: {}`; if the branch is disabled the tail survives into the
-    // output, which the repair leaves alone, so the defect becomes visible.
-    const out = property({ type: 'array', items: [], additionalItems: { type: 'number' } })
-    expect(out).toEqual({ type: 'array', items: {} })
+  it('preserves a typed empty-tuple tail without emitting prefixItems', () => {
+    // Every position follows the empty tuple, so the tail schema applies to
+    // every item. Keeping it also makes this independent of the later repair.
+    const tail = { type: 'object', properties: { value: { type: 'string' } }, required: 'value' }
+    const out = property({ type: 'array', items: [], additionalItems: tail })
+    expect(out).toEqual({ type: 'array', items: { ...tail, required: ['value'] } })
     expect(out['additionalItems']).toBeUndefined()
     expect(out['prefixItems']).toBeUndefined()
+  })
+
+  it.each([false, true])('preserves the explicit empty-tuple boolean tail %s', tail => {
+    expect(property({ type: 'array', items: [], additionalItems: tail }))
+      .toEqual({ type: 'array', items: tail })
   })
 
   it('drops an empty `prefixItems` rather than sending it', () => {

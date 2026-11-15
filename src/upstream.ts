@@ -4039,10 +4039,8 @@ const SCHEMA_STRING_LIST_KEYWORDS: readonly string[] = ['required', 'enum', 'exa
  *
  * A tuple `items` is a LIST; the modern spec splits it into `prefixItems` (the
  * per-position schemas, same order) plus `items` (the schema for everything
- * past the end). Emitting `items: {}` for the tail is the faithful reading of a
- * draft-4 tuple: draft-4 said nothing about additional items, so "anything" is
- * correct — inventing `false` would FORBID extra elements, which the original
- * never said.
+ * past the end). An explicit additionalItems boolean or schema remains the
+ * tail constraint, including an empty tuple. An unspecified tail remains open.
  *
  * Measured: `prefixItems` + `items: {}` answers 200 on `deepseek-v4.1-flash`,
  * `deepseek-v4-pro`, `glm-5.3`, `kimi-k3.1-pro` and `mimo-v2.6-pro` — the five
@@ -4051,34 +4049,19 @@ const SCHEMA_STRING_LIST_KEYWORDS: readonly string[] = ['required', 'enum', 'exa
  */
 function normalizeItems(schema: Record<string, unknown>): void {
   const items = schema['items']
-  // `additionalItems` only ever meant anything alongside a draft-4 TUPLE
-  // `items`; with an object `items` (or none) 2020-12 has no such keyword.
-  // Measured raw: it is ACCEPTED next to an object `items`, so this is not a
-  // refusal — it is dropped only where draft-4 gave it meaning, which is the
-  // tuple branch below, and left alone otherwise so a schema the upstream
-  // already takes keeps its bytes.
+  // Outside a tuple, additionalItems keeps its existing accepted spelling.
   if (!Array.isArray(items)) return
-  // An EMPTY tuple describes a list with no positional schema at all. Draft-4
-  // read `items: []` as "any array"; `prefixItems: []` is refused by the
-  // upstream (`11129`), so carrying the array across would turn one refusal
-  // into another. The whole keyword goes, leaving `items: {}` — the "anything"
-  // reading, which is what draft-4 actually said. This is the case our own
-  // 5.24.2 rewrite got wrong.
   if (items.length === 0) {
-    delete schema['items']
+    // An empty tuple has no positional schemas. Every element follows its
+    // explicit tail, and the upstream refuses an empty prefixItems array.
     delete schema['prefixItems']
-    delete schema['additionalItems']
-    schema['items'] = {}
-    return
+  } else if (schema['prefixItems'] === undefined) {
+    // A caller-supplied prefixItems remains the positional source.
+    schema['prefixItems'] = items
   }
-  // A caller that already sent `prefixItems` wins: appending the tuple would
-  // produce two sources for the same positions.
-  if (schema['prefixItems'] === undefined) schema['prefixItems'] = items
-  // Draft-4's tail schema for positions past the tuple. It becomes the 2020-12
-  // `items` when present; `{}` (anything) when absent, which is draft-4's own
-  // default and NOT a made-up constraint.
   const tail = schema['additionalItems']
-  schema['items'] = typeof tail === 'object' && tail !== null && !Array.isArray(tail) ? tail : {}
+  schema['items'] = typeof tail === 'boolean'
+    || (typeof tail === 'object' && tail !== null && !Array.isArray(tail)) ? tail : {}
   delete schema['additionalItems']
 }
 

@@ -65,6 +65,26 @@ describe('issue #253 — draft-4 relic rewrites in tool parameters', () => {
       expect(properties['a']!['prefixItems']).toBeUndefined()
     })
 
+    it('preserves a closed tuple tail while rewriting the legacy keyword', () => {
+      const parameters = withParameters({ type: 'array', items: [{ type: 'string' }], additionalItems: false })
+      expect(parameters['prefixItems']).toEqual([{ type: 'string' }])
+      expect(parameters['items']).toBe(false)
+      expect(parameters).not.toHaveProperty('additionalItems')
+    })
+
+    it('preserves and recursively normalizes a typed tuple tail', () => {
+      const parameters = withParameters({ type: 'array', items: [{ type: 'string' }],
+        additionalItems: { type: 'object', required: 'value', properties: { value: { type: 'number' } } } })
+      expect(parameters['items']).toEqual({ type: 'object', required: ['value'], properties: { value: { type: 'number' } } })
+      expect(parameters).not.toHaveProperty('additionalItems')
+    })
+
+    it('preserves an explicitly open tuple tail', () => {
+      const parameters = withParameters({ type: 'array', items: [{ type: 'string' }], additionalItems: true })
+      expect(parameters['items']).toBe(true)
+      expect(parameters).not.toHaveProperty('additionalItems')
+    })
+
     it('rewrites a tuple nested inside items of a nested array', () => {
       const properties = propertiesOf({
         type: 'object',
