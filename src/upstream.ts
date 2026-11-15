@@ -27,7 +27,7 @@
  * @module dsh-connect-workbuddy/upstream
  */
 
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1831,12 +1831,21 @@ function commonHeaders(
  * extras is satisfied by the triple without it. Hence exactly three.
  *
  * VALUES. The gateway does not verify where these ids come from — any well-formed
- * UUID passes — so nothing here is a secret and nothing is persisted. They are
- * still freshly generated per request, as the official client generates
- * its own per call: reusing one value across requests would forge a
- * conversation identity the plugin does not actually have, and the first thing
- * that would break is the upstream's own correlation of a session it is being
- * told about twice under one id.
+ * UUID passes — so nothing here is a secret and nothing is persisted.
+ *
+ * DEFAULT: `X-Conversation-ID` is freshly generated per request, like the other
+ * two ids. That is the shape the gate was bisected with and the shape the tests
+ * below pin; it is also the shape the plugin has always sent on this path. There
+ * is an OPT-IN A/B mode (`stableConversationId`, see
+ * {@link deriveStableConversationId}) that instead pins a v4-SHAPED value derived
+ * from the request's stable prefix — a prefix-derived AFFINITY KEY, not a host
+ * session id. Only `X-Conversation-ID` is pinned: the request, message and root
+ * ids stay per-request. This switch exists for an offline single-variable hit-rate
+ * comparison; it makes NO claim about how the upstream keys or partitions any
+ * cache, and it does not prove that stable ids improve anything. The mode is OFF
+ * by default — enabling it changes a byte the gateway sees, and a hypothesis is
+ * not a reason to change the default shape for every account before it has been
+ * measured. See docs/STABLE-KEY-SEMANTICS.md.
  *
  * APPLIED TO BOTH REGIONS on purpose. The CN gateway tolerates their absence
  * today, so this is harmless there — and a header that is only ever sent on one
@@ -1844,17 +1853,20 @@ function commonHeaders(
  * from the CN side. One code path, both regions.
  *
  * @returns the three headers (four when the usage identity is on, which adds
- * `X-Request-ID`), every value distinct.
+ * `X-Request-ID`). By default every value is distinct and fresh; in the opt-in
+ * stable mode only `X-Conversation-ID` is pinned to a prefix-derived affinity
+ * key for requests sharing that prefix (see {@link deriveStableConversationId}).
  */
 function conversationHeaders(
   shape: 'chat' | 'image',
   identity: WorkBuddyWireIdentity = {},
+  stableConversationId?: string,
 ): Record<string, string> {
   // CHAT sends UUIDv7 in the 32-hex form the official client uses (issue #132),
   // plus `X-Request-ID` mirroring the message id: the gateway echoes that value
   // as the SSE `id` and writes it into the usage page, so a hyphenated v4 id
-  // made one account's rows look like two different clients. Every value is
-  // still generated per request.
+  // made one account's rows look like two different clients. Per-request ids stay
+  // per-request; `X-Conversation-ID` alone can be pinned to `stableConversationId`.
   //
   // IMAGE keeps the hyphenated v4 it was measured with (2026-10-21: HTTP 200 at
   // both `copilot.tencent.com` and `www.workbuddy.cn`). #132's reporter measured
@@ -1868,7 +1880,8 @@ function conversationHeaders(
   const messageId = id()
   const conversationRequestId = id()
   return {
-    'X-Conversation-ID': id(),
+    // Stable only in the opt-in A/B mode; the default is a fresh id per request.
+    'X-Conversation-ID': stableConversationId ?? id(),
     'X-Conversation-Request-ID': conversationRequestId,
     // 根请求追踪：官方客户端把这一轮的根请求 id 单独再发一次（B 的 issue #35
     // 后台聚合就按这一族读）。值必须与 X-Conversation-Request-ID 相同——它是
@@ -1895,8 +1908,10 @@ function conversationHeaders(
  * Only the FORMAT is aligned, never the value's meaning: the timestamp prefix
  * is the moment this request was generated, which is exactly what a v7 id is
  * for. It is NOT a claim that these ids correlate with an official session —
- * the plugin still generates a fresh identity per request (see
- * {@link conversationHeaders}).
+ * by default the plugin still generates a fresh identity per request (see
+ * {@link conversationHeaders}); the opt-in stable mode pins only
+ * `X-Conversation-ID` to a prefix-derived affinity key built with
+ * {@link deriveStableConversationId}, never to a host session id.
  */
 export function uuidv7(nowMs = Date.now()): string {
   const bytes = randomBytes(16)
@@ -1908,6 +1923,114 @@ export function uuidv7(nowMs = Date.now()): string {
   bytes[6] = ((bytes[6] as number) & 0x0f) | 0x70
   bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80
   return bytes.toString('hex')
+}
+
+/**
+ * Format the first 32 hex chars of a digest as a hyphenated, v4-SHAPED value:
+ * the version nibble and variant bits are overwritten so the string matches the
+ * RFC-4122 v4 layout. This is a shape claim only — the bytes come from a SHA-256
+ * digest, so this is NOT a random UUIDv4 and NOT an official session id.
+ */
+function formatAsUuidV4(hex: string): string {
+  const chars = hex.slice(0, 32).split('')
+  chars[12] = '4'
+  chars[16] = ['8', '9', 'a', 'b'][Number.parseInt(chars[16] as string, 16) % 4] as string
+  return `${chars.slice(0, 8).join('')}-${chars.slice(8, 12).join('')}-${chars.slice(12, 16).join('')}-${chars.slice(16, 20).join('')}-${chars.slice(20, 32).join('')}`
+}
+
+/** Version tag for the affinity-key encoding, so a future scheme change is explicit. */
+const STABLE_KEY_SCHEME = 'dsh-stable-conversation-id/v1'
+
+/** Canonical keys meaning "no usable content" — these must fall back to a fresh id. */
+const EMPTY_CANONICAL_KEYS = new Set(['null', '""', '[]', '{}'])
+
+/**
+ * A deterministic deep value for hashing: object keys sorted, array order kept,
+ * `undefined` (which JSON.stringify would otherwise drop) normalized to `null`.
+ * Returns a FRESH structure, so callers may mutate it without touching the body.
+ */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize)
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>
+    const sorted: Record<string, unknown> = {}
+    for (const key of Object.keys(record).sort()) sorted[key] = canonicalize(record[key])
+    return sorted
+  }
+  return value === undefined ? null : value
+}
+
+/**
+ * Complete, canonical encoding of one message's `content` for the affinity key.
+ * Unlike {@link textOfContent} (prefix matching only, which drops non-text parts)
+ * this keeps EVERY part, so a pure-image first user and two bodies differing only
+ * in their image bytes are distinguished rather than silently ignored. The
+ * leading ACP tag on the first text part is stripped, since it carries a
+ * per-request message number. Operates on a clone from {@link canonicalize}, so
+ * the request body is never mutated.
+ */
+function canonicalContentKey(content: unknown, stripAcp: boolean): string {
+  const canonical = canonicalize(content)
+  const value = stripAcp ? stripLeadingAcpTag(canonical).value : canonical
+  return JSON.stringify(value)
+}
+
+/**
+ * Derive a request-prefix AFFINITY KEY and return it in `X-Conversation-ID` shape.
+ *
+ * ROUTE A / OPT-IN EXPERIMENT (`stableConversationId`, default off). This is a
+ * prefix-derived affinity key, not a host session id: the value hashes the model
+ * id, the first `system` message's FULL content and the FIRST REAL `user`
+ * message's FULL content (skipping the harness's injected context blocks via
+ * {@link injectedPrefixPattern}). Appended history, tool calls and assistant
+ * replies are deliberately NOT part of the key — they grow every turn.
+ *
+ * Known limits, documented in `docs/STABLE-KEY-SEMANTICS.md`: two independent
+ * sessions with an identical prefix SHARE this key; compression, first-message
+ * edits, model switches or session forks may change the key; the value only
+ * claims a v4-shaped layout, never equality with a native `sessionId`. No claim
+ * is made about the upstream's internal mechanism — cache-key partitioning vs
+ * routing affinity are indistinguishable from the client side.
+ *
+ * Encoding: the prefix fields are fed to SHA-256 as a JSON array, so an embedded
+ * U+0000 cannot make two distinct tuples collide; each message's FULL content is
+ * canonicalized (object keys sorted, non-text parts kept), so a pure-image first
+ * user and two bodies differing only in image bytes are handled explicitly. A
+ * body that is not parseable chat JSON, or lacks a usable model / system / first
+ * real user, yields `undefined` and the caller falls back to the fresh per-request
+ * id. No secret, account or machine value is read here.
+ */
+export function deriveStableConversationId(bodyJson: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bodyJson)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const body = parsed as Record<string, unknown>
+  const model = typeof body['model'] === 'string' ? body['model'] as string : ''
+  const messages = body['messages']
+  if (model === '' || !Array.isArray(messages)) return undefined
+  let systemKey: string | undefined
+  let firstRealUserKey: string | undefined
+  const injected = injectedPrefixPattern()
+  for (const value of messages) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const message = value as Record<string, unknown>
+    const role = message['role']
+    if (role === 'system' && systemKey === undefined) systemKey = canonicalContentKey(message['content'], false)
+    if (role === 'user' && firstRealUserKey === undefined && !isInjectedUserMessage(message, injected)) {
+      firstRealUserKey = canonicalContentKey(message['content'], true)
+    }
+  }
+  if (systemKey === undefined || EMPTY_CANONICAL_KEYS.has(systemKey)) return undefined
+  if (firstRealUserKey === undefined || EMPTY_CANONICAL_KEYS.has(firstRealUserKey)) return undefined
+  // A JSON array is an unambiguous tuple encoding: an embedded U+0000 is escaped
+  // by JSON.stringify, so (a, b, c) and (a\0b, c) can never collide.
+  const tuple = JSON.stringify([STABLE_KEY_SCHEME, model, systemKey, firstRealUserKey])
+  const digest = createHash('sha256').update(tuple).digest('hex')
+  return formatAsUuidV4(digest)
 }
 
 /**
@@ -1955,6 +2078,23 @@ export interface WorkBuddyWireIdentity {
    * are untouched either way.
    */
   usageIdentity?: boolean
+  /**
+   * 请求前缀亲和键 A/B 开关（`chatStream` 专用，默认关，路线 A）。
+   *
+   * 开启后 {@link deriveStableConversationId} 从请求体**不变前缀**派生一个
+   * v4 形状的 `X-Conversation-ID`；其余三件套仍是每请求现生成。默认关闭时
+   * 派生函数不运行、`chatHeaders` 收到 `undefined`，因此不进入稳定键分支。
+   *
+   * 这是**只改一个变量**的离线对照实验，见 `docs/STABLE-KEY-SEMANTICS.md`：
+   * 该值是从请求正文派生的亲和键，不是宿主 `sessionId`，不宣称会话隔离，也
+   * 不证明上游按会话分区或具备路由亲和等内部机制。相同前缀的独立会话会共享
+   * 同一个键，压缩 / 首问变化 / 模型切换都可能换键。客户端无法区分缓存键分区
+   * 与路由亲和，因此这里只做可观测的命中率对照，不做机制断言。
+   *
+   * 默认 `false` 是单独决策，不因任何实验成功自动改变；推广默认值需用户另行
+   * 确认。配置文件里的开关由使用者按 `onUpstreamUsage` 的命中率自行决定。
+   */
+  stableConversationId?: boolean
   /**
    * 出站头档位，缺省 {@link DEFAULT_WIRE_PROFILE}。
    *
@@ -2140,6 +2280,7 @@ async function resolveWireIdentity(identity: WorkBuddyWireIdentity): Promise<Wor
 function chatHeaders(
   credential: WorkBuddyCredential,
   identity: WorkBuddyWireIdentity = {},
+  stableConversationId?: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {
     ...commonHeaders(credential, identity),
@@ -2152,7 +2293,7 @@ function chatHeaders(
     ...credential.domain === '' ? { 'X-No-Department-Info': '1' } : { 'X-Domain': credential.domain },
     ...attributionHeaders(identity),
     ...deviceHeaders(credential, identity),
-    ...conversationHeaders('chat', identity),
+    ...conversationHeaders('chat', identity, stableConversationId),
   }
   return headers
 }
@@ -4871,8 +5012,16 @@ export class WorkBuddyUpstreamClient {
       // 身份先算，再判是否已被取消。顺序反过来的话，取消发生在 `await` 期间的
       // 那次请求仍会被发出去（只是带着一个已 abort 的 signal），白打一次上游、
       // 白起一个 SDK 子进程——而调用方早已挂断。
+      const identity = await this.wireIdentity(credential)
+      // 请求前缀亲和键 A/B（路线 A，默认关）：开关缺席时派生函数不运行，
+      // chatHeaders 收到 undefined，不进入稳定键分支。开启时从请求体不变前缀
+      // 派生一个 v4 形状的 X-Conversation-ID；该值是前缀亲和键，不是宿主会话
+      // 标识，也不对上游内部机制作断言（见 docs/STABLE-KEY-SEMANTICS.md）。
+      const stableId = identity.stableConversationId === true
+        ? deriveStableConversationId(bodyJson)
+        : undefined
       const headers = {
-        ...chatHeaders(credential, await this.wireIdentity(credential)),
+        ...chatHeaders(credential, identity, stableId),
         'Authorization': `Bearer ${credential.accessToken}`,
       }
       if (signal?.aborted === true) {

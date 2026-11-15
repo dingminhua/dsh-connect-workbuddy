@@ -1,5 +1,29 @@
 # Changelog
 
+## 未发布（实验性开关，默认关闭）
+
+### 新增：可选 `stableConversationId`（opt-in，默认 `false`）
+
+新增一个**默认关闭**的实验性配置开关 `stableConversationId`，用于让使用者在受控条件下对照
+「稳定 `X-Conversation-ID` 与隐式前缀缓存命中之间的关系」。语义与已知限制的权威定义见
+[`docs/STABLE-KEY-SEMANTICS.md`](docs/STABLE-KEY-SEMANTICS.md)（路线 A：请求前缀派生的亲和键实验）。
+
+- **默认行为零变化**：`stableConversationId` 默认 `false`，默认路径中 `X-Conversation-ID` 等三件套
+  仍然每请求现生成、互不相同。
+- **开启后只影响 `X-Conversation-ID`**：由 `deriveStableConversationId(bodyJson)` 从
+  `model` + 首条 `system` + 第一条真实 `user` 经规范化后派生一个 v4 形状的稳定值；
+  `X-Conversation-Request-ID` / `X-Conversation-Message-ID` / `X-Root-Request-ID` 仍每请求现生成。
+- **配置在插件挂载时采样一次**，改动后需重载插件才生效。
+- 派生键派生自请求内容，**不是宿主 `sessionId`**：压缩 / 首问变化 / 模型切换 / 会话分叉都可能换键，
+  前缀相同的独立会话会共享键；解析失败或缺字段时显式回退到每请求现生成。
+
+> 本开关是实验性、默认关闭的可选能力。**不附带任何命中率实测结论、不声称稳定 ID 能改善命中、
+> 不区分上游缓存键分区与路由亲和等内部机制，也不推广默认值。** 真实上游实验、完整链路验证与 GA
+> 决策属于后续单独工作，须由使用者在指定构建/账号/模型/时间窗口下自行验证并采用限定措辞。
+
+验证：新增 `tests/upstream.spec.ts` 的离线 wire 级单测（默认关闭字节一致、派生键稳定性与回退、
+注入块跳过、多模态首问、NUL 歧义、无状态泄漏等）。
+
 ## 5.24.6 (2026-11-15)
 
 > 版本号是 **patch**：修一处「工具声明被悄悄放宽」的语义丢失，无新增配置项、无接口变化。
