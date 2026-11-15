@@ -6,6 +6,7 @@ import {
   WORKBUDDY_FALLBACK_SYSTEM_PROMPT,
   classifyUpstreamError,
   declaredTools,
+  deriveStableConversationId,
   parseCreditMultiplier,
   parseReasoning,
   parseUpstreamErrorDetail,
@@ -1869,6 +1870,284 @@ describe('the conversation-identity triple (issue #66)', () => {
     })
     await new WorkBuddyUpstreamClient().fetchCredits(credential('www.workbuddy.ai'))
     for (const name of TRIPLE) expect(seen[name]).toBeUndefined()
+  })
+})
+
+describe('stableConversationId A/B (opt-in, default off)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function credential(): WorkBuddyCredential {
+    return {
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresAtMs: 0,
+      domain: 'www.codebuddy.cn',
+      uid: 'u',
+      source: 'desktop',
+      filePath: '/tmp/workbuddy-desktop.info',
+    }
+  }
+
+  /** Capture the headers a chat request with a REAL body went out with. */
+  async function headersFor(
+    bodyJson: string,
+    identity?: WorkBuddyWireIdentity,
+  ): Promise<Record<string, string>> {
+    const seen: Record<string, string> = {}
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      Object.assign(seen, init.headers)
+      return new Response('data: [DONE]\n\n', { status: 200 })
+    })
+    await new WorkBuddyUpstreamClient(undefined, identity).chatStream(credential(), bodyJson)
+    return seen
+  }
+
+  const SYS = 'You are a helpful assistant.'
+  /** A chat body whose invariant prefix is model + system + first real user. */
+  function body(firstUser: string, tail: unknown[] = []): string {
+    return JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: firstUser },
+        ...tail,
+      ],
+    })
+  }
+
+  it('reuses ONE X-Conversation-ID across turns of the same conversation prefix', async () => {
+    // The whole point: appended history, tool calls and replies grow every turn
+    // but must NOT change the prefix-derived key. Hashing the full body (or
+    // threading a per-request id) makes this fail — the mutation the guard catches.
+    const first = await headersFor(body('hello'), { stableConversationId: true })
+    const second = await headersFor(body('hello', [
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: 'follow up' },
+    ]), { stableConversationId: true })
+    expect(second['X-Conversation-ID']).toBe(first['X-Conversation-ID'])
+    // A well-formed v4-shaped UUID, not a raw hex digest.
+    expect(first['X-Conversation-ID']).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    // Only the conversation id is pinned; the other two stay fresh per request,
+    // matching the official applyGatewayHeaders (Message/Request ids are random).
+    expect(second['X-Conversation-Request-ID']).not.toBe(first['X-Conversation-Request-ID'])
+    expect(second['X-Conversation-Message-ID']).not.toBe(first['X-Conversation-Message-ID'])
+  })
+
+  it('keeps ONE conversation id across a growing N-turn history (monotone prefix)', async () => {
+    // Native WorkBuddy resends the FULL history every turn and the upstream only
+    // misses the new suffix (the monotonic-prefix proof in CACHE-HIT-70-RESEARCH).
+    // Model that: turn k carries every message of turn k-1 plus one more
+    // assistant+user pair. The prefix-derived key must be identical on ALL turns —
+    // deriving it from the whole body, from the growing tail, or from a
+    // per-request id makes turn 2 diverge, which is exactly the cold-prefix
+    // behaviour this A/B is meant to test. This is a property test: it bites on
+    // any N, not just the two-turn case above.
+    const firstUser = 'explain the cache'
+    const history: unknown[] = []
+    const ids: string[] = []
+    for (let turn = 0; turn < 6; turn += 1) {
+      if (turn > 0) {
+        history.push(
+          { role: 'assistant', content: `answer ${turn}` },
+          { role: 'user', content: `follow up ${turn}` },
+        )
+      }
+      const seen = await headersFor(body(firstUser, history), { stableConversationId: true })
+      ids.push(seen['X-Conversation-ID']!)
+    }
+    // Six different bodies, ONE prefix-derived key.
+    expect(new Set(ids).size).toBe(1)
+    expect(ids[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+  })
+
+  it('derives a DIFFERENT id for a different first real user (no over-sharing)', async () => {
+    const a = await headersFor(body('hello'), { stableConversationId: true })
+    const b = await headersFor(body('a different question'), { stableConversationId: true })
+    expect(b['X-Conversation-ID']).not.toBe(a['X-Conversation-ID'])
+  })
+
+  it('ignores harness-injected context blocks when picking the first real user', async () => {
+    // The harness appends a "Current runtime context." user block on most turns;
+    // using it as the first user would make the id change every turn and defeat
+    // the whole point. It must be skipped, so two turns sharing one real question
+    // share one conversation id.
+    const a = await headersFor(body('hello'), { stableConversationId: true })
+    const withInjected = JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: 'Current runtime context. sampled at a new time' },
+        { role: 'user', content: 'hello' },
+      ],
+    })
+    const b = await headersFor(withInjected, { stableConversationId: true })
+    expect(b['X-Conversation-ID']).toBe(a['X-Conversation-ID'])
+  })
+
+  it('stays fresh per request when the flag is OFF (default path unchanged)', async () => {
+    // Default off: derive never runs and chatHeaders receives undefined, so the
+    // default request-construction path is unchanged relative to the baseline.
+    // Mutation: flipping the schema default to true turns this red.
+    const first = await headersFor(body('hello'))
+    const second = await headersFor(body('hello'))
+    expect(second['X-Conversation-ID']).not.toBe(first['X-Conversation-ID'])
+  })
+
+  it('returns undefined for a body the derivation cannot use, so the caller falls back', () => {
+    expect(deriveStableConversationId('not json')).toBeUndefined()
+    expect(deriveStableConversationId('{}')).toBeUndefined()
+    expect(deriveStableConversationId(JSON.stringify({ model: 'hy4free', messages: [] }))).toBeUndefined()
+    expect(deriveStableConversationId(JSON.stringify({ model: 'hy4free', messages: [
+      { role: 'user', content: 'no system' },
+    ] }))).toBeUndefined()
+  })
+
+  // ---------------------------------------------------------------------------
+  // C2 edge cases: encoding, multimodal content, purity and route-A limits.
+  // These are the guards the offline validation plan asks for. Each one bites
+  // on the pre-C2 implementation (NUL-join + textOfContent dropping non-text
+  // parts) or on an obvious mutation of the canonical encoder.
+  // ---------------------------------------------------------------------------
+
+  it('encodes the tuple unambiguously: an embedded U+0000 cannot collide two bodies', () => {
+    // Old `model\0system\0user` join maps both of these distinct tuples to the
+    // SAME byte string `hy4free\0a\0b\0c`. The JSON-array encoding keeps them apart.
+    const a = deriveStableConversationId(JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: 'a\u0000b' },
+        { role: 'user', content: 'c' },
+      ],
+    }))
+    const b = deriveStableConversationId(JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: 'a' },
+        { role: 'user', content: 'b\u0000c' },
+      ],
+    }))
+    expect(a).toBeDefined()
+    expect(b).toBeDefined()
+    expect(a).not.toBe(b)
+  })
+
+  it('derives a STABLE key for a pure-image first user (no silent random fallback)', () => {
+    // textOfContent used to drop the image part entirely -> '' -> undefined ->
+    // random id. The canonical FULL-content key keeps the image, so the key is
+    // defined and reproducible instead of falling back per request.
+    const imageBody = (url: string): string => JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: [{ type: 'image_url', image_url: { url } }] },
+      ],
+    })
+    const a = deriveStableConversationId(imageBody('data:image/png;base64,AAAA'))
+    const b = deriveStableConversationId(imageBody('data:image/png;base64,AAAA'))
+    expect(a).toBeDefined()
+    expect(a).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    expect(a).toBe(b)
+  })
+
+  it('distinguishes two first-user bodies that differ ONLY in their image bytes', () => {
+    const imageBody = (url: string): string => JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: [{ type: 'image_url', image_url: { url } }] },
+      ],
+    })
+    const a = deriveStableConversationId(imageBody('data:image/png;base64,AAAA'))
+    const b = deriveStableConversationId(imageBody('data:image/png;base64,BBBB'))
+    expect(a).toBeDefined()
+    expect(b).toBeDefined()
+    expect(a).not.toBe(b)
+  })
+
+  it('canonicalizes object key ORDER so equivalent content yields one key', () => {
+    const partA = { type: 'text', text: 'hello' }
+    const partB = { text: 'hello', type: 'text' } // same values, different key order
+    const make = (part: unknown): string => JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: [part] },
+      ],
+    })
+    const a = deriveStableConversationId(make(partA))
+    const b = deriveStableConversationId(make(partB))
+    expect(a).toBeDefined()
+    expect(a).toBe(b)
+  })
+
+  it('strips the per-request ACP marker number from an array-shaped first user', () => {
+    // The leading <acp ...>mNNNNN</acp> tag carries a per-request message
+    // number; two turns must still share one key after it is removed.
+    const tagged = (n: number): string => JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: [{ type: 'text', text: `<acp tokens="2.1K" type="text">m${n}</acp> hello` }] },
+      ],
+    })
+    const a = deriveStableConversationId(tagged(1))
+    const b = deriveStableConversationId(tagged(2))
+    expect(a).toBeDefined()
+    expect(a).toBe(b)
+  })
+
+  it('is a PURE function: interleaved calls do not leak a "last session" state', () => {
+    const a1 = deriveStableConversationId(body('hello'))
+    const b = deriveStableConversationId(body('a different question'))
+    const a2 = deriveStableConversationId(body('hello'))
+    expect(a1).toBe(a2)
+    expect(a1).not.toBe(b)
+  })
+
+  it('documents route-A limits: model switch / first-question edit CHANGE the key', () => {
+    // This is NOT a whole-session-stable id. Changing an invariant prefix field
+    // (the model or the first real user) changes the affinity key by design.
+    const base = deriveStableConversationId(body('hello'))
+    const otherModel = deriveStableConversationId(JSON.stringify({
+      model: 'hy4-preview',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: 'hello' },
+      ],
+    }))
+    const otherFirstUser = deriveStableConversationId(body('a different question'))
+    expect(base).toBeDefined()
+    expect(otherModel).not.toBe(base)
+    expect(otherFirstUser).not.toBe(base)
+  })
+
+  it('two INDEPENDENT sessions with an identical prefix SHARE one key (route A)', () => {
+    // Known limitation, deliberately asserted rather than hidden: the key is
+    // derived from the request body alone, so it cannot tell two sessions with
+    // byte-identical prefixes apart. No session-isolation claim is made.
+    const a = deriveStableConversationId(body('hello'))
+    const b = deriveStableConversationId(body('hello'))
+    expect(a).toBeDefined()
+    expect(a).toBe(b)
+  })
+
+  it('rejects an empty canonical content (e.g. an empty parts array) instead of hashing nothing', () => {
+    const empty = deriveStableConversationId(JSON.stringify({
+      model: 'hy4free',
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: [] },
+      ],
+    }))
+    expect(empty).toBeUndefined()
   })
 })
 
