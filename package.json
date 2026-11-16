@@ -45,6 +45,7 @@
     "docs/assets",
     "docs/PRIVACY.md",
     "docs/STABLE-KEY-SEMANTICS.md",
+    "docs/ROUTE-B-SESSION-ID.md",
     "screenshots.json",
     "cordis.patch.yml",
     "README.md",

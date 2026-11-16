@@ -48,6 +48,7 @@ import {
   perturbChannelFingerprints,
   requestEvidenceOf,
   rewriteSessionTitleModel,
+  conversationIdFromSessionId,
   WorkBuddyUpstreamClient,
   type UpstreamErrorKind,
   type WorkBuddyChatResult,
@@ -136,6 +137,13 @@ export interface WorkBuddyShimOptions {
    * Default false: it changes bytes the upstream counts, so it is opt-in.
    */
   keepPromptLast?: boolean
+  /**
+   * Route B (opt-in): the shim reads the pi-ai session-affinity header on the
+   * loopback request and maps it to a domain-separated `X-Conversation-ID`
+   * upstream. The real session id is never forwarded. OFF by default.
+   * See `docs/ROUTE-B-SESSION-ID.md`.
+   */
+  sessionConversationId?: () => boolean
   /**
    * Extra literal prefixes (issue #133) treated like the harness's injected
    * markers under `keepPromptLast`, for context blocks a companion plugin
@@ -1488,6 +1496,20 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     ? options.extraInjectedPrefixes.filter(entry => typeof entry === 'string' && entry !== '')
     : []
   const sessionTitleOptions = options.sessionTitle ?? {}
+  /**
+   * Route B (opt-in), read LIVE so the card toggle works without a reload.
+   * pi-ai stamps the host session id on the loopback request as
+   * `x-session-affinity`; we read ONLY that trusted, loopback+bearer-gated
+   * header and map it to a domain-separated digest. The id is never logged,
+   * never forwarded verbatim, and an absent/oversized value is ignored.
+   */
+  const sessionConversationIdEnabled = options.sessionConversationId
+  const readSessionConversationId = (req: IncomingMessage): string | undefined => {
+    if (sessionConversationIdEnabled?.() !== true) return undefined
+    const raw = req.headers['x-session-affinity']
+    const value = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : undefined
+    return value === undefined ? undefined : conversationIdFromSessionId(value)
+  }
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
@@ -1715,6 +1737,11 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       return
     }
 
+    // Route B: computed ONCE per request, from the loopback-only affinity
+    // header, and reused across EVERY attempt (preferred, channel-reject
+    // ladder, and account failover) so the same logical request keeps one
+    // conversation id no matter which rung answers it.
+    const sessionConversationId = readSessionConversationId(req)
     const raw = (await readBody(req)).toString('utf8')
     const prepared = rewriteSessionTitleModel(prepareChatBody(raw, {
       keepPromptLast: keepPromptLastEnabled,
@@ -1762,7 +1789,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const preferred = startPerturbed
       ? perturbChannelFingerprints(prepared, channelPerturbation === 'always') ?? prepared
       : prepared
-    let result = await client.chatStream(credential, preferred, controller.signal)
+    let result = await client.chatStream(credential, preferred, controller.signal, sessionConversationId)
     // A refused PERTURBED body means the rule changed under us: fall back to the
     // plain ladder and let it rediscover what works. Without this the plugin
     // could keep sending a shape that no longer helps, forever. `always` is the
@@ -1770,7 +1797,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     if (channelNeedsPerturbation && !result.ok && result.kind === 'channel_reject') {
       channelNeedsPerturbation = false
       logger?.warn('dsh-connect-workbuddy: a perturbed body was refused too; clearing the learned preference and retrying from the plain form')
-      result = await client.chatStream(credential, prepared, controller.signal)
+      result = await client.chatStream(credential, prepared, controller.signal, sessionConversationId)
     }
 
     /**
@@ -1812,14 +1839,14 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       const forced = forceNeutralHead(prepared)
       if (forced !== undefined) {
         logger?.warn('dsh-connect-workbuddy: the channel gate refused the body; retrying once with the neutral head forced in front of every opening')
-        result = await client.chatStream(credential, forced, controller.signal)
+        result = await client.chatStream(credential, forced, controller.signal, sessionConversationId)
         retriedWithForcedHead = true
       }
       if (!result.ok && result.kind === 'channel_reject' && !controller.signal.aborted) {
         const rescued = perturbChannelFingerprints(forced ?? prepared)
         if (rescued !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the channel gate refused the body again; retrying once with an invisible perturbation of the scanned text')
-          result = await client.chatStream(credential, rescued, controller.signal)
+          result = await client.chatStream(credential, rescued, controller.signal, sessionConversationId)
           retriedWithPerturbation = true
           // THE PERTURBATION IS WHAT WORKED, so remember it: the next request
           // in this process starts perturbed and skips both doomed attempts.
@@ -1836,7 +1863,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         const dense = perturbChannelFingerprints(forced ?? prepared, true)
         if (dense !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the channel gate refused the sparse perturbation too; retrying once with a dense word-boundary perturbation')
-          result = await client.chatStream(credential, dense, controller.signal)
+          result = await client.chatStream(credential, dense, controller.signal, sessionConversationId)
           retriedWithDensePerturbation = true
           // Dense is the strongest form; remembering it is safe only for the
           // `failure` policy, which exists to learn from a successful rescue.
@@ -1948,7 +1975,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       switchedFrom ??= describeAccount(credential)
       switchedBecause ??= failoverReasonText(result)
       credential = next
-      result = await client.chatStream(credential, prepared, controller.signal)
+      result = await client.chatStream(credential, prepared, controller.signal, sessionConversationId)
     }
     // The final attempt's failure — recorded only if the loop did not already
     // record it (it does not: the loop records each attempt as it starts the
@@ -2344,7 +2371,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       const retryTried = [...triedAccountIds, workbuddyAccountId(credential)]
       let retryCredential = credential
       for (;;) {
-        const attempt = await client.chatStream(retryCredential, prepared, controller.signal)
+        const attempt = await client.chatStream(retryCredential, prepared, controller.signal, sessionConversationId)
         if (attempt.ok) {
           // The first attempt's held bytes are dropped, not shown: showing them
           // and then the retry would be the two-answers-spliced-together failure

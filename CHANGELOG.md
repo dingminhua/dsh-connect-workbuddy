@@ -1,5 +1,26 @@
 # Changelog
 
+## 未发布（实验性开关，默认关闭）
+
+### 新增：路线 B —— 从宿主会话 ID 派生上游会话亲和键（opt-in，默认 false）
+
+路线 A（`stableConversationId`）把 `X-Conversation-ID` 固定为请求前缀派生的亲和键，
+压缩 / 首问变化 / 换模型都会换键。路线 B（`sessionConversationId`）改为以**宿主会话 ID**
+为来源：pi-ai 把它作为 session-affinity 头 stamp 到 loopback 请求，shim 读该头并用
+**带域隔离的确定性摘要**（scheme `dsh-session-conversation-id/v1`）映射成 v4 形状 ID，
+沿全部 `chatStream` 路径（含渠道拒绝救援阶梯与账号 failover）作为 `X-Conversation-ID`
+发出。真实 sessionId 从不出进程、不入日志。
+
+- 两个开关独立、默认 `false`；同时打开时路线 B 优先。
+- shim 与 adapter 用 live getter 读开关，切换后下一次请求即生效，无需重载（路线 A 是挂载时采样）。
+- 关闭时模型描述不带 affinity compat 键、shim 不读头、出站字节完全不变。
+- 共享 secret 只做 Bearer 校验，不独立证明头的宿主来源；详见 `docs/ROUTE-B-SESSION-ID.md`。
+
+**限定**：这是实验性能力，不附带任何命中率实测结论，不声称改善缓存，不区分上游内部机制
+（缓存键分区 / 路由亲和 / 其它），也不请求合并后默认打开或发版。
+
+验证：`typecheck` / `build` / `check:pii` / 全量 `test` 全绿；变异验证见 PR 描述。
+
 ## 5.24.9 (2026-11-16)
 
 > 版本号是 **patch**：新增一处只读展示，默认行为、开关、路由形状与池子排序一律未动；

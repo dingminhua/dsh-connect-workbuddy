@@ -7,6 +7,7 @@ import {
   classifyUpstreamError,
   declaredTools,
   deriveStableConversationId,
+  conversationIdFromSessionId,
   parseCreditMultiplier,
   parseReasoning,
   parseUpstreamErrorDetail,
@@ -2148,6 +2149,46 @@ describe('stableConversationId A/B (opt-in, default off)', () => {
       ],
     }))
     expect(empty).toBeUndefined()
+  })
+})
+
+describe('conversationIdFromSessionId (route B, domain-separated digest)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+  it('is deterministic and v4-shaped for a normal session id', () => {
+    const a = conversationIdFromSessionId('<session-id>')
+    const b = conversationIdFromSessionId('<session-id>')
+    expect(a).toBeDefined()
+    expect(a).toMatch(V4)
+    expect(a).toBe(b)
+  })
+
+  it('never collides with the route-A prefix key for identical text', () => {
+    // Domain separation: the two schemes must not share an affinity bucket even
+    // when fed the exact same bytes. Guards against a literal copy of A's hash.
+    const session = conversationIdFromSessionId('same input')
+    const prefix = deriveStableConversationId(JSON.stringify({
+      model: 'same input',
+      messages: [
+        { role: 'system', content: 'same input' },
+        { role: 'user', content: 'same input' },
+      ],
+    }))
+    expect(session).toBeDefined()
+    expect(prefix).toBeDefined()
+    expect(session).not.toBe(prefix)
+  })
+
+  it('trim surrounding whitespace, but reject empty/oversized input', () => {
+    expect(conversationIdFromSessionId('   <session-id>   ')).toBe(conversationIdFromSessionId('<session-id>'))
+    expect(conversationIdFromSessionId('')).toBeUndefined()
+    expect(conversationIdFromSessionId('   ')).toBeUndefined()
+    expect(conversationIdFromSessionId('x'.repeat(257))).toBeUndefined()
+    expect(conversationIdFromSessionId('x'.repeat(256))).toMatch(V4)
+  })
+
+  it('produces different ids for different sessions (no cross-session reuse)', () => {
+    expect(conversationIdFromSessionId('alpha')).not.toBe(conversationIdFromSessionId('beta'))
   })
 })
 

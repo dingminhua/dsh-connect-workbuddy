@@ -225,6 +225,7 @@ export {
   parseUpstreamModel,
   prepareChatBody,
   deriveStableConversationId,
+  conversationIdFromSessionId,
   modelIdOfBody,
   knownRegionOf,
   regionOf,
@@ -785,6 +786,15 @@ export interface Config {
    */
   stableConversationId?: boolean
   /**
+   * Route B (opt-in): derive the upstream `X-Conversation-ID` from the HOST
+   * session id instead of the request prefix. The session id travels from the
+   * host through pi-ai to the loopback shim as session-affinity HEADERS, and the
+   * shim/upstream turn it into a domain-separated digest — the real session id
+   * never leaves the process. OFF by default; independent of route A. See
+   * `docs/ROUTE-B-SESSION-ID.md`. No upstream mechanism is asserted.
+   */
+  sessionConversationId?: boolean
+  /**
    * Move the harness's injected context above the real prompt (issue #132).
    *
    * The WorkBuddy usage page records the last `user` message as the request
@@ -1284,6 +1294,11 @@ export const Config: z<Config> = z.object({
     z.boolean()
       .default(false)
       .description("A/B 开关（路线 A，默认关）：开启时把 X-Conversation-ID 固定为从请求体不变前缀派生的亲和键（其余三件套仍每请求现生成）。该值不是宿主会话标识，不宣称会话隔离，也不证明上游按会话分区；相同前缀的独立会话会共享键。关闭时不进入派生分支。用于离线单变量命中率对照，详见 docs/STABLE-KEY-SEMANTICS.md。改动后需重载插件（配置在挂载时采样一次）。"),
+  ) as unknown as z<boolean>,
+  sessionConversationId: asVolatile(
+    z.boolean()
+      .default(false)
+      .description("Route B (默认关): derive the upstream X-Conversation-ID from the HOST session id instead of the request prefix. The session id reaches the loopback shim as pi-ai session-affinity headers and is replaced by a domain-separated digest before anything is sent upstream — the real session id never leaves the process. Independent of route A; takes effect on the next request without a reload. See docs/ROUTE-B-SESSION-ID.md. No upstream cache-key or routing mechanism is asserted."),
   ) as unknown as z<boolean>,
   wireProfile: asVolatile(
     z.union([z.const('conservative'), z.const('balanced')])
@@ -1871,6 +1886,9 @@ export function apply(ctx: Context, config: Config): void {
       logger: ctx.logger,
       channelPerturbation: unwrapVolatile(config.channelPerturbation) ?? 'failure',
       keepPromptLast: unwrapVolatile(config.keepPromptLast) === true,
+      // Route B: a LIVE getter — the card can be toggled mid-session and the
+      // next request picks it up, unlike route A's mount-time sample.
+      sessionConversationId: () => unwrapVolatile(current().sessionConversationId) === true,
       extraInjectedPrefixes: unwrapVolatile(config.extraInjectedPrefixes) ?? [],
       sessionTitle: unwrapVolatile(config.sessionTitle) ?? {},
       /**
@@ -4667,6 +4685,10 @@ export function apply(ctx: Context, config: Config): void {
             // that look like a broken toggle.
             dropForeignThinking: () => unwrapVolatile(current().dropForeignThinking) === true,
             dropAllThinking: () => unwrapVolatile(current().dropAllThinking) === true,
+            // Route B: LIVE getter; see the shim's matching getter. Both use
+            // `current()` so the model shape and the header reader never
+            // disagree about whether the switch is on for a given request.
+            sessionConversationId: () => unwrapVolatile(current().sessionConversationId) === true,
             onForeignThinking: blocks => {
               latestForeignThinking = { blocks, atMs: Date.now() }
               // NAME THE REASON THAT ACTUALLY APPLIED.
