@@ -12,7 +12,9 @@
  *
  * 隐私 / 零写约束（AGENTS.md / 验收方案 §E1 / §7）：
  *   - 凭证只读本机 vault 明文，经 `parseWorkBuddyAuth(readFileSync(...))` 组装；
- *     绕开会写 `.lock` 的 `WorkBuddyCredentialStore.resolve()`。
+ *     绕开会写 `.lock` 的 `WorkBuddyCredentialStore.resolve()`。选哪个账号由
+ *     `--account-id` 显式指定；多账号且未指定即 CREDENTIAL_AMBIGUOUS 拒绝，绝不
+ *     默默取目录第一个文件（花的是真钱，选择必须是指令而不是遍历顺序）。
  *   - 设备盐只读 `$DSH_HOME/.workbuddy-device.json` 的 `salt`，显式传给 client，
  *     使 `resolveWireIdentity` 早返回（不读盘不写盘），且设备头与真实插件一致。
  *   - 不改 vault / profile / 插件、不安装、不重载；唯一新建文件是 `--out` JSONL。
@@ -26,8 +28,11 @@
  * D 报告/审核包）；全部一致性护栏保留。详见 §11 与 tests/probe-real-adapter.spec.ts。
  *
  * 网络门控：必须同时给 `--real` 与 `--e-phase-authorized`，否则 NOT_RUN(3)、
- * 零网络、零凭证、零文件写入。`--synthetic` 是免费的全流水线离线自测（合成 SSE，
- * 同一 chatStream / header 捕获 / analyzeStream / JSONL 路径），不消耗额度。
+ * 零网络、零凭证、零文件写入。判据由 main() 与 runExperiment() 各自独立从 args
+ * 推导（不接受库级调用方直送 network:true）。lib/ 只在门控放行后动态加载，
+ * 所以未授权路径在**没有构建产物的 checkout 上也能观察**。`--synthetic` 是免费的
+ * 全流水线离线自测（合成 SSE，同一 chatStream / header 捕获 / analyzeStream /
+ * JSONL 路径），不消耗额度，但仍需要 lib/（它测的正是真实代码路径）。
  *
  * 用法：
  *   node scripts/probe-stable-conversation-id-real.mjs --synthetic --groups 2 --turns 2 --out /tmp/dry.jsonl
@@ -43,12 +48,32 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as core from './probe-core.ts'
 import { adaptTerminalUsage } from './probe-usage-adapter.ts'
-import {
-  parseWorkBuddyAuth,
-  prepareChatBody,
-  deriveStableConversationId,
-  WorkBuddyUpstreamClient,
-} from '../lib/index.js'
+// PR review #262（中-2）：`../lib/index.js` 不再是顶层静态 import。静态 import 在
+// 模块链接阶段求值，早于 main() 里的双 flag 门控——未构建的干净 checkout 上，
+// 连「缺 flag ⇒ STATUS NOT_RUN / EXIT 3」这条契约都观察不到（直接
+// ERR_MODULE_NOT_FOUND / exit 1）。现在 lib 只在门控放行之后由 loadLib() 动态加载：
+// 缺 flag 路径在任何 checkout 上都零网络、零凭证、零文件写入，且不需要构建产物。
+let libModule = null
+/** 惰性加载构建产物（仅门控放行后可达）。返回被使用的四个导出，缺一个即 INTERNAL。 */
+async function loadLib() {
+  if (libModule === null) {
+    try {
+      const mod = await import('../lib/index.js')
+      const { parseWorkBuddyAuth, prepareChatBody, deriveStableConversationId, WorkBuddyUpstreamClient } = mod
+      if (typeof parseWorkBuddyAuth !== 'function' || typeof prepareChatBody !== 'function'
+        || typeof deriveStableConversationId !== 'function' || typeof WorkBuddyUpstreamClient !== 'function') {
+        throw new Error('LIB_INCOMPLETE')
+      }
+      libModule = { parseWorkBuddyAuth, prepareChatBody, deriveStableConversationId, WorkBuddyUpstreamClient }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'LIB_INCOMPLETE') throw err
+      // 找不到 lib/（未构建）是一个执行失败类别码，不是门控泄漏：走到这里说明
+      // 双 flag 已放行，联网意图成立。固定码回显，零路径 / 零异常详情。
+      throw new Error('LIB_UNAVAILABLE')
+    }
+  }
+  return libModule
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..')
@@ -79,6 +104,7 @@ export function parseArgs(argv) {
     repeats: 1,
     maxTokens: 16,
     accountAlias: '账号A',
+    accountId: '',
     model: 'hy4free',
     endpointAlias: 'cn-chat-v2',
     seed: 20261113,
@@ -103,6 +129,7 @@ export function parseArgs(argv) {
       case '--max-tokens': out.maxTokens = strictInt(valueAt(i), 'MAX_TOKENS'); i += 1; break
       case '--seed': out.seed = strictInt(valueAt(i), 'SEED'); i += 1; break
       case '--account': out.accountAlias = valueAt(i); i += 1; break
+      case '--account-id': out.accountId = valueAt(i); i += 1; break
       case '--model': out.model = valueAt(i); i += 1; break
       case '--endpoint': out.endpointAlias = valueAt(i); i += 1; break
       case '--wire-profile': out.wireProfile = valueAt(i); i += 1; break
@@ -153,20 +180,55 @@ function homeCandidates() {
   return list
 }
 
-/** 只读加载凭证；错误只映射固定类别码，绝不回显路径 / 异常 / 值。 */
-function loadCredential() {
+/**
+ * 只读加载凭证；错误只映射固定类别码，绝不回显路径 / 异常 / 值。
+ *
+ * PR review #262（中-1）：不再默默取目录排序后的第一个文件。`--real` 会花真钱，
+ * 选哪个账号必须是指令而不是目录遍历顺序：给了 `--account-id` 就只认 `<id>.json`
+ * （本候选没有它则试下一个 home 候选）；没给时，一个候选里恰 1 个账号才用
+ * （resolution='sole'），多于 1 个即 CREDENTIAL_AMBIGUOUS——拒绝选边，错误信息
+ * 说清要么指定、要么去重。解析失败沿旧语义继续试下一候选、候选用尽才报
+ * CREDENTIAL_PARSE。返回值带 resolution 写进 meta，让证据自己说明「这台机器上
+ * 当时是怎么选定的」。离线 CLI 的守护（tests/probe-core.spec.ts：缺 --account
+ * 不得默默取目录第一个文件）与这里守的是同一件事，只是这条路消耗真实额度。
+ * `parseWorkBuddyAuth` 由 runExperiment 从已门控加载的 lib 注入（:46 的注释）。
+ */
+export function loadCredential(accountId, parseWorkBuddyAuth) {
+  const VAULT_ACCOUNT_ID_RE = /^[0-9a-f]{24}$/u // 与 src/auth.ts 的 vault 命名约定一致
+  if (accountId !== undefined && accountId !== '' && !VAULT_ACCOUNT_ID_RE.test(accountId)) {
+    throw new Error('ACCOUNT_ID_INVALID')
+  }
   let lastError = 'CREDENTIAL_NOT_FOUND'
   for (const dshHome of homeCandidates()) {
     const vaultDir = join(dshHome, 'workbuddy-vault', 'cn')
     let files
     try {
       files = readdirSync(vaultDir).filter((f) => f.endsWith('.json')).sort()
-    } catch {
-      lastError = 'CREDENTIAL_VAULT_UNREADABLE'
-      continue
+    } catch (err) {
+      // 「目录根本不存在」是正常形态（比如 HOME 下从未登录过，真实 vault 只在
+      // DSH_HOME 下），静默试下一个候选；只有存在但读不动（权限等）才是值得
+      // 上报的 UNREADABLE。否则最后候选的不存在会污染 lastError，把
+      // NOT_FOUND 误报成 UNREADABLE——这条是守护测试逼出来的真 bug。
+      if (err === null || typeof err !== 'object' || err.code !== 'ENOENT') {
+        lastError = 'CREDENTIAL_VAULT_UNREADABLE'
+      }
+      continue // 这个 home 候选不可用，试下一个
     }
-    if (files.length === 0) { lastError = 'CREDENTIAL_NOT_FOUND'; continue }
-    const vaultPath = join(vaultDir, files[0])
+    if (files.length === 0) continue
+    let chosen
+    let resolution
+    if (accountId !== undefined && accountId !== '') {
+      const wanted = `${accountId}.json`
+      if (!files.includes(wanted)) continue // 本候选没有该账号，试下一个
+      chosen = wanted
+      resolution = 'explicit'
+    } else if (files.length === 1) {
+      chosen = files[0]
+      resolution = 'sole'
+    } else {
+      throw new Error('CREDENTIAL_AMBIGUOUS') // 多账号且未指定 --account-id：拒绝，不挑第一个
+    }
+    const vaultPath = join(vaultDir, chosen)
     let credential
     try {
       credential = parseWorkBuddyAuth(readFileSync(vaultPath, 'utf8'), vaultPath)
@@ -179,7 +241,7 @@ function loadCredential() {
       lastError = 'CREDENTIAL_PARSE'
       continue
     }
-    return credential
+    return { credential, resolution }
   }
   throw new Error(lastError)
 }
@@ -287,6 +349,7 @@ function renderReal(report, meta, extra) {
     `PLAN_HASH ${extra.planHash}`,
     `FROZEN_PLAN_HASH ${extra.frozenPlanHash}`,
     `SALT_SOURCE ${extra.saltSource}`,
+    `ACCOUNT_RESOLUTION ${extra.accountResolution}`,
     `ON_KEY_MATCH ${extra.onKeyMatch}/${extra.onKeyTotal}`,
     `STOP ${extra.stopReason === null ? 'none' : extra.stopReason}`,
     `STATUS ${extra.status}`,
@@ -295,10 +358,20 @@ function renderReal(report, meta, extra) {
 
 /**
  * 跑一次实验。返回 { meta, records, report, lines, exitCode }。
- * `network` 决定走真实上游还是合成自测；调用方负责门控。
+ *
+ * PR review #262（低-6，纵深防御下沉）：`network` 不再是调用方说了算的入参，
+ * 授权只从 args 里的双 flag **推导**。旧签名下任何 import 本模块的脚本传
+ * `{ network: true }` 即可绕过 CLI 门控；现在 opts.network 只被当作调用方意图
+ * 声明：它说 true 而 args 没有双 flag，即 NETWORK_GATE_VIOLATION（显式拒绝，
+ * 不静默降级）；args 带了双 flag，则无论声明与否都授权。断言在 loadLib /
+ * loadCredential 之前：未授权时连构建产物都不加载，零网络零凭证零写。
  */
 export async function runExperiment(opts) {
-  const { args, network } = opts
+  const { args } = opts
+  const network = args.real === true && args.ePhaseAuthorized === true && args.synthetic !== true
+  if (opts.network === true && !network) {
+    throw new Error('NETWORK_GATE_VIOLATION')
+  }
   const synthetic = !network
   const params = {
     groups: args.groups,
@@ -318,10 +391,20 @@ export async function runExperiment(opts) {
   if (!check.ok) {
     throw new Error(check.errors[0]?.code ?? 'PARAM_INVALID')
   }
+  // 门控已放行（真实）或合成自测已显式请求：现在才允许碰 lib/。合成模式也要
+  // lib —— 它走同一 prepareChatBody / chatStream 路径，这正是它值钱的理由。
+  // 注入接缝：测试传 opts.lib 即可在无构建产物、无网络下跑全路径；CLI 不传，
+  // 走 loadLib——门控已在其上方判完，注入不能绕过任何 flag 检查。
+  const libInjected = opts.lib !== undefined && opts.lib !== null
+  const lib = libInjected ? opts.lib : await loadLib()
   const plan = core.buildPlan(params)
 
   const scriptHash = computeScriptHash()
-  const buildHash = computeBuildHash()
+  // buildHash 只对真实运行的证据有意义：lib/ 刚被 loadLib 证明存在，若仍读不到
+  // （竞态删除）报 INTERNAL 而不是静默 MISSING——缺了它证据就无法绑定构建产物。
+  // 测试注入 lib（不经 loadLib、不要求构建）时哈希不适用，显式记 TEST_INJECTED，
+  // 这个值不可能混进任何真实证据文件。
+  const buildHash = libInjected ? 'TEST_INJECTED' : computeBuildHash()
   const planHash = sha256(core.stableStringify(plan))
   let frozenPlanHash = 'MISSING'
   try { frozenPlanHash = sha256(readFileSync(FROZEN_PLAN_PATH)) } catch { /* 可选证据 */ }
@@ -337,7 +420,7 @@ export async function runExperiment(opts) {
   for (const entry of plan.entries) {
     if (bodyFor.has(entry.prefixAlias)) continue
     const content = `${tagFor(entry.prefixAlias)}\n\n${prefix}\n\n${SUFFIX}`
-    bodyFor.set(entry.prefixAlias, prepareChatBody(JSON.stringify({
+    bodyFor.set(entry.prefixAlias, lib.prepareChatBody(JSON.stringify({
       model: params.model,
       messages: [{ role: 'user', content }],
       stream: true,
@@ -351,8 +434,11 @@ export async function runExperiment(opts) {
   let credential
   let deviceSalt
   let saltSource = 'synthetic'
+  let accountResolution = 'synthetic'
   if (!synthetic) {
-    credential = { ...loadCredential() } // 可能抛固定类别码
+    const credInfo = loadCredential(args.accountId, lib.parseWorkBuddyAuth) // 可能抛固定类别码
+    credential = { ...credInfo.credential }
+    accountResolution = credInfo.resolution
     const saltInfo = loadDeviceSalt()
     deviceSalt = saltInfo.salt
     saltSource = saltInfo.source
@@ -365,8 +451,8 @@ export async function runExperiment(opts) {
     deviceSalt = FALLBACK_SALT
   }
 
-  const offClient = new WorkBuddyUpstreamClient(undefined, { deviceSalt })
-  const onClient = new WorkBuddyUpstreamClient(undefined, { deviceSalt, stableConversationId: true })
+  const offClient = new lib.WorkBuddyUpstreamClient(undefined, { deviceSalt })
+  const onClient = new lib.WorkBuddyUpstreamClient(undefined, { deviceSalt, stableConversationId: true })
 
   // 窄范围 fetch 桩：捕获 init.headers 后转发（真实或合成）。串行 ⇒ 每次一捕获一请求。
   // 绑定 globalThis：真实 undici fetch 以裸函数调用更稳妥，避免脱离 receiver 报错。
@@ -445,7 +531,7 @@ export async function runExperiment(opts) {
       // feature 参与一致性：ON 的 conversationId 必须等于派生键。
       if (entry.arm === 'ON') {
         onKeyTotal += 1
-        const derived = deriveStableConversationId(body)
+        const derived = lib.deriveStableConversationId(body)
         if (derived !== undefined && snapshot.conversationId === derived) onKeyMatch += 1
       }
 
@@ -491,6 +577,7 @@ export async function runExperiment(opts) {
     e: {
       runTag,
       saltSource,
+      accountResolution,
       prefixChars: prefix.length,
       planHash,
       frozenPlanHash,
@@ -500,8 +587,8 @@ export async function runExperiment(opts) {
       onKeyTotal,
     },
   }
-  const lines = renderReal(report, meta, {
-    planHash, frozenPlanHash, saltSource, onKeyMatch, onKeyTotal, stopReason,
+  const lines = renderReal(report, meta, {  // lines 只进 stdout；JSONL 写的是 meta/records/report
+    planHash, frozenPlanHash, saltSource, accountResolution, onKeyMatch, onKeyTotal, stopReason,
     status: synthetic ? 'SYNTHETIC_DRY_RUN' : (stopReason === null ? 'COMPLETED' : 'STOPPED'),
   })
   return { meta, records, report, lines, exitCode: report.exitCode }
@@ -519,10 +606,13 @@ function writeJsonl(outPath, meta, records, report) {
   }
 }
 
-async function main() {
+export async function main(argv = process.argv.slice(2)) {
+  // argv 参数化 + export：与离线版 probe-stable-conversation-id.mjs 同一测试接缝
+  // （tests/probe-core.spec.ts 直接调 cli.main([...])）。默认取真实命令行，
+  // CLI 行为不变；门控矩阵因此可以被自动化测试钉住（PR review #262 低-7）。
   let args
   try {
-    args = parseArgs(process.argv.slice(2))
+    args = parseArgs(argv)
   } catch (err) {
     const code = err instanceof Error && /^[A-Z_]+$/u.test(err.message) ? err.message : 'BAD_ARGS'
     process.stdout.write(`STATUS ${code}\nE_PHASE_NOT_RUN\n`)
@@ -549,6 +639,10 @@ async function main() {
   } catch (err) {
     const code = err instanceof Error && /^[A-Z_]+$/u.test(err.message) ? err.message : 'INTERNAL'
     process.stdout.write(`STATUS ${code}\n`)
+    if (code === 'CREDENTIAL_AMBIGUOUS') {
+      // 指引只说出路，不打印 vault 路径、文件清单或账号 id。
+      process.stdout.write('HINT pass --account-id <24-hex-vault-id>, or keep exactly one account in the CN vault\n')
+    }
     process.exitCode = core.EXIT.EXECUTION_FAILURE
     return core.EXIT.EXECUTION_FAILURE
   }

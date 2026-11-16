@@ -36,10 +36,14 @@
   一次孤立网络错误，未补跑未删不利数据）；第二批全新独立重跑 `DATA COMPLETE` /
   `BENEFIT_SUPPORTED`（20/20，配对平均差 91.4 个百分点、95% 区间 `[87.3, 95.4]`）。
 - **工具**：`scripts/probe-core.ts`（零 I/O 纯函数）、`probe-stable-conversation-id-real.mjs`
-  （真实上游驱动，`--real --e-phase-authorized` 双 flag 门控、默认 `NOT_RUN`）、
-  `probe-usage-adapter.ts`（usage 双字段适配）、`recompute-probe*.mjs`（离线复算）与两份离线单测。
-  真实驱动依赖 `lib/index.js`，复现前须 `pnpm run build`（与 PR #249 的探针一致）。
-- 证据与工具全部保留原字节以对齐 `scriptHash`；源码注释里遗留的历史内部指针由权威文档统一澄清。
+  （真实上游驱动，`--real --e-phase-authorized` 双 flag 门控、默认 `NOT_RUN`；门控先于加载
+  `lib/`，未授权路径无需构建即可运行）、`probe-usage-adapter.ts`（usage 双字段适配）、
+  `recompute-probe*.mjs`（离线复算）与三份离线单测（含 `tests/probe-real-gate.spec.ts`：
+  门控与账号选择的守护）。真实复现前仍须 `pnpm run build`（与 PR #249 的探针一致）；
+  `--real` 必须用 `--account-id` 显式指定 vault 账号，多账号未指定即拒绝。
+- 证据文件、`probe-core.ts` 与 `probe-usage-adapter.ts` 保留原字节以对齐 `scriptHash`；驱动
+  按评审修正后 `scriptHash` 变为新值，新旧哈希的对应关系与复算口径见
+  [`docs/E-PHASE-EVIDENCE.md`](docs/E-PHASE-EVIDENCE.md) §8。源码注释里遗留的历史内部指针由权威文档统一澄清。
 
 > 这些读数仍是 **报告者实测、本插件/维护者尚未独立复现**（`docs/WINDOWS.md` §2 的 C 档）：
 > `MECHANISM_PROVEN false`，**不构成机制证明**、不区分缓存键分区与路由亲和、不外推其它账号/模型/端点，

@@ -124,10 +124,11 @@ node scripts/probe-stable-conversation-id.mjs                   # 无 flag 时 S
 node scripts/recompute-probe-real.mjs --in evidence/batch-2/formal-20groups.jsonl
 ```
 
-**真实上游层**：`scripts/probe-stable-conversation-id-real.mjs` 顶层静态
-`import ... from '../lib/index.js'`，因此**复现前必须先 `pnpm run build` 生成 `lib/`**（这是
-PR #249 里 `probe-mid-convo-system.mjs` 的既有惯例）。干净 checkout 里直接跑会因找不到
-`lib/index.js` 在模块链接阶段报错，连 `--synthetic` / `--help` 也不例外。构建之后：
+**真实上游层**：`scripts/probe-stable-conversation-id-real.mjs` 对 `lib/index.js` 的依赖是
+**门控之后的动态 `import()`**（PR review #262 中-2 修正；此前为顶层静态 import）：未授权
+路径在任何 checkout 上都直接可跑，不需要构建产物；授权后若 `lib/` 缺失则以固定类别码
+`STATUS LIB_UNAVAILABLE` 失败，零路径泄漏。真实复现前仍需 `pnpm run build`（这是
+PR #249 里 `probe-mid-convo-system.mjs` 的既有惯例）。构建之后：
 
 ```console
 pnpm run build
@@ -135,9 +136,14 @@ node scripts/probe-stable-conversation-id-real.mjs --synthetic   # 合成 fetch 
 ```
 
 真实对照由 `--real --e-phase-authorized` **双 flag 门控**；缺任一 flag 时打印
-`STATUS NOT_RUN` / `EXIT 3`，零网络、零凭证、零写入。两个 flag 都给才会读取本机凭证、
-按冻结参数发真实上游短请求（消耗少量额度）。凭证路径、设备盐与输出 JSONL 全部只读 / 只写
-`--out`，从不打印 token。新增防护测试 `tests/probe-core.spec.ts`、`tests/probe-real-adapter.spec.ts`
+`STATUS NOT_RUN` / `EXIT 3`，零网络、零凭证、零写入——该判据现在由 `main()` 与
+`runExperiment()` **各自独立**从参数推导（低-6：库级入口不接受调用方直送 `network:true`），
+并由 `tests/probe-real-gate.spec.ts` 在无构建、无凭证、无网络环境下钉住。两个 flag 都给
+才会读取本机凭证：`--account-id <24位hex>` 显式指定 vault 账号文件，**多账号且未指定时
+拒绝运行（`STATUS CREDENTIAL_AMBIGUOUS`）而不是默默取目录第一个文件**（中-1；实际选档方式
+记入 `meta.e.accountResolution`）；单账号可省略。随后按冻结参数发真实上游短请求（消耗少量
+额度）。凭证路径、设备盐与输出 JSONL 全部只读 / 只写 `--out`，从不打印 token。新增防护测试
+`tests/probe-core.spec.ts`、`tests/probe-real-adapter.spec.ts`、`tests/probe-real-gate.spec.ts`
 只依赖 `scripts/`，不碰 `lib/`，所以 `pnpm run test` 在无构建产物时也能跑。
 
 ## 6. 口径与限定
@@ -170,12 +176,23 @@ node scripts/probe-stable-conversation-id-real.mjs --synthetic   # 合成 fetch 
 防止适配悄悄放宽；`7936 / 112 / 8048 / 0.986` 全是「同真实 schema 的合成计数器」，不是真值数据、
 也不是收益结论。
 
-## 8. 关于脚本注释里的遗留内部指针
+## 8. 关于脚本注释里的遗留内部指针与 `scriptHash` 记账
 
 随附的 `scripts/` 与 `tests/` 为保持证据链字节一致**全部保留原字节**（REAL 驱动的
 `scriptHash = ff95a3cce56fc0cdea29dd0b1665e90a7b3fc4f4762b1caf88f5d849808fd140`
 覆盖 `probe-stable-conversation-id-real.mjs` + `probe-usage-adapter.ts` 两文件的排序拼接，
 与两批证据 `meta.scriptHash` 一致；改这两个文件会让证据无法复算对齐）。
+
+**PR review #262 的修正改动了一次 `scriptHash`，如实记账如下。** 驱动按评审要求修复
+中-1（账号选择拒绝默默取第一个文件）与中-2（lib 静态 import 移到门控之后）后，
+`probe-stable-conversation-id-real.mjs` 的字节变了，新的
+`scriptHash = 0a0d301eedb8ef9cb3e1a9fc411888b4183e54e46a41733f752d24e44d4c09b7`。这不破坏既有证据的复算：`scripts/recompute-probe-real.mjs` 是**从 JSONL `meta` 里回显
+的 `scriptHash` 与重算 report 比对**，证据文件本身仍是旧字节、`--synthetic` 冒烟输出的
+新哈希只是「当前驱动」的指纹，两批 `evidence/*.jsonl` 的重算结论（`CONSISTENT` /
+`NOT_EVALUATED`）一字未变。若日后要以新驱动**重跑**真实对照，产出的证据必须记新哈希，
+与旧两批并列各报各的，不得混批。**证据文件与 `probe-core.ts`、`probe-usage-adapter.ts`
+本次未改动。**
+
 因此源码注释里仍留有对「验收方案 §x」「`docs/E-PHASE-FROZEN-PLAN.md` §11」
 「`docs/PROBE-OFFLINE-TESTS.md`」等**本 PR 未附带、且部分在仓库外**的历史内部指针，
 以及 `B6 场景①…⑬` 之类的内部测试编号标题。它们只是注释、不影响运行与复算；
