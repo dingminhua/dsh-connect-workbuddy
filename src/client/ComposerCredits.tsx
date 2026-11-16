@@ -36,6 +36,7 @@ import { applyManualOrder, readOrderAccountIds } from './manual-order'
 import {
   availabilityLine,
   availabilityMark,
+  formatShortClock,
   stateTone,
   testRowOf,
   withTestRow,
@@ -1068,12 +1069,36 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                       // plain-text reading of the line is unchanged.
                       const currentMark = live ? t('composer.current') : undefined
                       const reasonMark = usable ? undefined : availabilityMark(t, availability)
+                      // The credits that are about to lapse (issue #263).
+                      //
+                      // Keyed off `expiringSoon > 0` and NOTHING else. It is
+                      // absent whenever the balance itself is absent — an
+                      // account nobody measured must not claim "nothing is
+                      // lapsing" — and `nearestExpiryMs` alone never triggers
+                      // it, because that figure is the nearest expiry across
+                      // ALL packages: a row with nothing lapsing can still
+                      // carry a date, and printing a warning off it would be
+                      // the removed plain date line all over again (5.20.22).
+                      const lapsing = row.credits === undefined
+                        || row.expiringSoon === undefined
+                        || row.expiringSoon <= 0
+                        ? undefined
+                        : t('row.poolCreditSoon', { count: formatCredits(row.expiringSoon) })
+                      // The instant goes into the title ONLY. On the row it was
+                      // a second line of date on every account — the exact thing
+                      // 5.20.22 took back out of the pool table. The amount is
+                      // what is actionable; the date answers "when", and that
+                      // question is asked by hovering.
+                      const soonest = lapsing === undefined || row.nearestExpiryMs === undefined
+                        ? undefined
+                        : t('composer.creditSoonHint', { time: formatShortClock(row.nearestExpiryMs) })
                       // Whispered: the same facts with the absolute instant, so
                       // hovering still answers "when exactly" and a screen reader
                       // on the row header hears the whole sentence.
                       const spoken = detailLine(
                         live ? t('composer.current') : undefined,
                         usable ? undefined : availabilityLine(t, availability),
+                        soonest,
                       )
                       const whoLabel = spoken === undefined
                         ? row.accountName
@@ -1112,6 +1137,14 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                           </th>
                           <td className="dsm-workbuddy-composer-panel-num">
                             {row.credits === undefined ? '—' : formatCredits(row.credits)}
+                            {/* On its OWN line, under the figure: the column is
+                                right-aligned and tabular, so stacking keeps
+                                every balance flush in one column with its
+                                warning beneath, instead of the figure being
+                                pushed left by a neighbour's text. */}
+                            {lapsing === undefined
+                              ? null
+                              : <span className="dsm-workbuddy-composer-panel-soon">{lapsing}</span>}
                           </td>
                         </tr>
                       )

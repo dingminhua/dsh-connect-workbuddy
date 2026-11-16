@@ -3813,6 +3813,40 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                       : null}
                     {status.creditsError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
+                    {/* Credits about to lapse, for the account this region is
+                        USING (issue #263). `status.credits` is the SELECTED
+                        account's billing answer, NOT a region total, so the
+                        banner names it — an unlabelled figure sitting above a
+                        table of several accounts would be read as the pool's.
+
+                        The pool table already warns per member row
+                        (`row.poolCreditSoon`), but an account outside the pool
+                        has no row there, and the pool can be off entirely, so
+                        this is the one place the fact is guaranteed to appear.
+
+                        Keyed off `expiringSoon > 0` only. `nearestExpiryMs` is
+                        the nearest expiry across ALL packages, so it can be
+                        present while nothing is lapsing; a banner built from it
+                        would announce an expiry that costs the user nothing.
+                        This is also the only place a DATE is printed: per-row
+                        warnings stay amount-only by the 5.20.22 decision, and
+                        here it appears once instead of on every row. */}
+                    {status.credits === undefined
+                      || status.credits.expiringSoon <= 0
+                      ? null
+                      : <p className="dsm-workbuddy-expiry" role="status">
+                          <strong>
+                            {t('row.creditExpirySoon', {
+                              accountName: nameOf(status.accountName),
+                              count: formatNumber(status.credits.expiringSoon),
+                            })}
+                          </strong>
+                          {status.credits.nearestExpiryMs === undefined
+                            ? null
+                            : <span className="dsm-workbuddy-expiry-detail">
+                                {t('row.creditExpiryEarliest', { time: formatDate(status.credits.nearestExpiryMs) })}
+                              </span>}
+                        </p>}
                     {status.refreshError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error" role="alert">{t('row.requestFailedHint', { message: status.refreshError })}</p>}
                     {/* The account pool. Rendered only when the Host reports

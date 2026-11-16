@@ -335,6 +335,15 @@ export const en = {
   'row.poolLogBenefitFailed': '{accountName} claim failed: {message}',
   'row.poolBenefitHint': 'Claim it on the plans page: {url}',
   'row.poolCreditSoon': '{count} expiring within 3 days',
+  // The banner above the account pool (issue #263). Same fact as
+  // `row.poolCreditSoon`, so it keeps the same wording, but it NAMES the
+  // account: `status.credits` is the selected account's answer, not a pool
+  // total, and an unlabelled figure above a multi-account table would be read
+  // as the table's sum.
+  'row.creditExpirySoon': '{accountName}: {count} credits expiring within 3 days',
+  // The one printed expiry date in this plugin's account surfaces. Hover-only
+  // per row by the 5.20.22 decision; here it appears once for the account.
+  'row.creditExpiryEarliest': 'Earliest expiry: {time}',
   'row.poolExcludedRateLimited': 'Rate limited',
   'row.poolExcludedModelBusy': 'Model busy',
   'row.poolExcludedOutOfCredit': 'Out of credits',
@@ -719,6 +728,11 @@ export const en = {
   'composer.credits': 'Credits',
   'composer.switchTo': 'Switch to {account}',
   'composer.current': 'In use',
+  // Hover-only, and the ONLY place this panel names an expiry instant
+  // (issue #263). The visible warning reuses `row.poolCreditSoon` — same fact,
+  // same measurement, so the two surfaces cannot drift apart — and this key
+  // only adds the "when", which 5.20.22 deliberately kept off the printed row.
+  'composer.creditSoonHint': 'Earliest expiry: {time}',
   'composer.noAccounts': 'No account in this region',
   'composer.signedOut': 'Not signed in',
   // The panel's link to this plugin's OWN settings. Kept SHORT ("Settings", not
@@ -1068,6 +1082,13 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolLogBenefitFailed': '{accountName} 领取失败：{message}',
   'row.poolBenefitHint': '去套餐与积分页领取：{url}',
   'row.poolCreditSoon': '{count} 积分 3 天内过期',
+  // 账号池上方的提醒（issue #263）。与 `row.poolCreditSoon` 是同一个事实，措辞
+  // 也刻意保持一致，但这里**点名账号**：`status.credits` 是当前选用那个账号的
+  // 账单答案，不是整池合计，一个不带主语、又放在多账号表格上方的数字会被当成总和。
+  'row.creditExpirySoon': '{accountName}：{count} 积分将在 3 天内过期',
+  // 本插件账号相关界面里唯一打印出来的到期日期。按 5.20.22 的决定，行内只在
+  // 悬停时给出；这里只为一个账号出现一次。
+  'row.creditExpiryEarliest': '最早到期：{time}',
   'row.poolExcludedRateLimited': '被限流',
   'row.poolExcludedModelBusy': '模型繁忙',
   'row.poolExcludedOutOfCredit': '积分耗尽',
@@ -1418,6 +1439,11 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'composer.credits': '积分',
   'composer.switchTo': '切换到 {account}',
   'composer.current': '当前选用',
+  // 只在悬停时出现，也是这个面板唯一说出「几点到期」的地方（issue #263）。
+  // 可见的那条提醒复用 `row.poolCreditSoon`——同一个事实、同一次测量，两处
+  // 措辞因此不会各自漂移；这里只补「什么时候」，而 5.20.22 明确把日期从
+  // 打印出来的行里撤掉了。
+  'composer.creditSoonHint': '最早到期：{time}',
   'composer.noAccounts': '该区域暂无账号',
   'composer.signedOut': '未登录',
   // 面板里通往本插件自身页面的入口。措辞取短（「设置」而不是「WorkBuddy 设置」）：

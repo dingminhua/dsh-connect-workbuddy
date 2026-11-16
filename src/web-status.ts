@@ -1159,6 +1159,13 @@ function volatileFlagOf(field: string): boolean {
  * carries NO `credits` field rather than `0`, so the panel renders "—" instead
  * of telling the user they are out of credits.
  *
+ * Each row also carries how much of that balance lapses within three days
+ * (issue #263). This route is the only place the panel can learn it: the pool
+ * block covers pool MEMBERS only, and an account outside the pool is exactly
+ * the one whose expiring credits would otherwise go unmentioned. The whole
+ * answer is kept rather than just `total` for that reason — the expiry split is
+ * already computed by the same read, so forwarding it costs no extra call.
+ *
  * Failures are contained per account: one dead credential must not blank the
  * table for the accounts that are fine.
  */
@@ -1173,15 +1180,21 @@ export async function workBuddyAccountCredits(
   const exclusions = await deps.accountExclusions?.(region).catch(() => undefined) ?? {}
   return Promise.all(accounts.map(async account => {
     const credential = await store.credentialFor(account.id).catch(() => undefined)
-    const credits = credential === undefined
+    const answer = credential === undefined
       ? undefined
-      : await deps.client.fetchCredits(credential).then(answer => answer.total).catch(() => undefined)
+      : await deps.client.fetchCredits(credential).catch(() => undefined)
     const excludedBy = exclusions[account.id]
     return {
       id: account.id,
       accountName: account.accountName,
       selected: account.selected,
-      ...credits === undefined ? {} : { credits },
+      ...answer === undefined ? {} : { credits: answer.total },
+      // Both fields are optional on the document shape, so they are spread
+      // conditionally (`exactOptionalPropertyTypes`). `expiringSoon` rides
+      // along with the balance and never without it: a lapse figure with no
+      // balance beside it would read as a claim about an unmeasured account.
+      ...answer === undefined ? {} : { expiringSoon: answer.expiringSoon },
+      ...answer?.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: answer.nearestExpiryMs },
       ...excludedBy === undefined ? {} : { excludedBy },
     }
   }))

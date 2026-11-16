@@ -213,3 +213,72 @@ describe('the card splits into three sections', () => {
     await m.unmount()
   })
 })
+
+/**
+ * ISSUE #263 — the accounts section says when credits are about to lapse.
+ *
+ * The reporter pointed at dsh-connect-trae's amber banner
+ * 「有 143 积分将在 3 天内过期 / 最早到期：2026/11/19 08:05」 and asked for the same
+ * in workbuddy. The pool table already prints the amount per member row, but a
+ * non-member has no row there and the pool can be switched off, so this banner
+ * is the only place the fact exists for EVERY account in the region — which is
+ * also why it is the one place a printed DATE is allowed (per-row warnings stay
+ * amount-only by the 5.20.22 decision).
+ */
+describe('issue #263: the accounts section warns about expiring credits', () => {
+  /** The banner, when the card renders one. */
+  const bannerOf = (): Element | null =>
+    document.body.querySelector('.dsm-workbuddy-expiry')
+
+  it('states the total lapsing and the earliest instant', async () => {
+    const m = await mountCard(usageOf({
+      credits: {
+        total: 1875,
+        expiringSoon: 143,
+        nearestExpiryMs: Date.UTC(2026, 10, 19, 0, 5),
+        packages: [],
+      },
+    }))
+    const banner = bannerOf()
+    expect(banner, 'a lapsing balance must be announced').not.toBeNull()
+    expect(banner?.getAttribute('role'), 'it is a status, not an alert').toBe('status')
+    // The banner NAMES the account: `credits` is the selected account's answer,
+    // not a pool total, and an unlabelled figure above a multi-account table
+    // would be read as the table's sum.
+    expect(banner?.querySelector('strong')?.textContent)
+      .toBe('row.creditExpirySoon|accountName=Real One|count=143')
+    // The instant, formatted the way the rest of the card formats one: 24-hour,
+    // and 2026-11-19 00:05 UTC is 08:05 in Asia/Shanghai.
+    expect(banner?.querySelector('.dsm-workbuddy-expiry-detail')?.textContent)
+      .toMatch(/row\.creditExpiryEarliest\|time=11\/19, 08:05/)
+    await m.unmount()
+  })
+
+  it('renders NOTHING when no credits are lapsing', async () => {
+    // The regression this pins: `nearestExpiryMs` is the nearest expiry across
+    // ALL packages, so it is present on an account with nothing lapsing. A
+    // banner keyed off the date would announce an expiry that costs the user
+    // nothing — worse than silence, because it would read as a warning.
+    const m = await mountCard(usageOf({
+      credits: {
+        total: 1875,
+        expiringSoon: 0,
+        nearestExpiryMs: Date.UTC(2027, 0, 1),
+        packages: [],
+      },
+    }))
+    expect(bannerOf()).toBeNull()
+    await m.unmount()
+  })
+
+  it('renders NOTHING when the balance could not be read', async () => {
+    // `credits` absent means "not measured", and an unmeasured region must not
+    // claim its credits are safe. `creditsError` already carries the failure.
+    const m = await mountCard(usageOf({
+      credits: undefined,
+      creditsError: 'upstream down',
+    }))
+    expect(bannerOf()).toBeNull()
+    await m.unmount()
+  })
+})

@@ -423,6 +423,110 @@ describe('ComposerCredits panel follows the manual priority order', () => {
 })
 
 /**
+ * ISSUE #263 — the panel must say which balances are about to lapse.
+ *
+ * The reporter asked, pointing at dsh-connect-trae's amber banner:
+ * 「每个账号快要过期的积分能不能在账号里简单的表达出来」. The pool table already
+ * prints the amount per row, but an account that is not a pool member has no
+ * row there and the pool can be off entirely, so the panel is the one surface
+ * that speaks for EVERY account. The decision that constrains the shape is
+ * 5.20.22: the printed warning is the AMOUNT only, and the date lives on the
+ * row's title — a bare expiry date on every row was removed by request.
+ */
+describe('issue #263: the panel warns about credits that are about to lapse', () => {
+  const soonAccounts = () => ({
+    accounts: [
+      // Lapsing, with an instant for the hover.
+      {
+        id: 'a-1',
+        accountName: 'A One',
+        selected: true,
+        credits: 1072,
+        expiringSoon: 300,
+        nearestExpiryMs: Date.UTC(2026, 10, 19, 0, 5),
+      },
+      // A balance, nothing lapsing — and a FUTURE instant, because
+      // `nearestExpiryMs` is the nearest expiry across ALL packages. Printing a
+      // warning off that date alone would announce an expiry that costs nothing.
+      { id: 'a-2', accountName: 'A Two', selected: false, credits: 300, expiringSoon: 0, nearestExpiryMs: Date.UTC(2027, 0, 1) },
+      // Nothing measured: no balance, so no claim about lapsing either.
+      { id: 'a-3', accountName: 'A Three', selected: false },
+    ],
+  })
+
+  const open = async (): Promise<Mounted> => {
+    stubFetch((url) => ({ body: url.includes('account-credits') ? soonAccounts() : usageOf('cn', 1072) }))
+    // The shared `t` echoes `key|param=value`. That is exactly what this feature
+    // needs asserted: WHICH message the panel chose (the pool's own
+    // `row.poolCreditSoon`, so the two surfaces cannot drift) and the formatted
+    // figure it passed in.
+    const m = await mount(ComposerCredits as any, { t, provider: 'workbuddy' })
+    await m.click(m.buttons()[0] as Element)
+    await m.settle()
+    return m
+  }
+
+  /** The credits cell of the row naming `name`. */
+  const cellOf = (name: string): Element | undefined =>
+    Array.from(document.body.querySelectorAll('.dsm-workbuddy-composer-panel-table tbody tr'))
+      .find(row => row.querySelector('.dsm-workbuddy-composer-panel-name')?.textContent === name)
+      ?.querySelector('td.dsm-workbuddy-composer-panel-num') ?? undefined
+
+  it('prints the lapsing AMOUNT beside the balance it belongs to', async () => {
+    const m = await open()
+    const cell = cellOf('A One')
+    // The same key the pool table prints for the same measurement: one fact, one
+    // wording, on both surfaces.
+    expect(cell?.querySelector('.dsm-workbuddy-composer-panel-soon')?.textContent)
+      .toBe('row.poolCreditSoon|count=300')
+    // And the balance it annotates is still there in the same cell.
+    expect(cell?.textContent).toContain('1,072')
+    await m.unmount()
+  })
+
+  it('says nothing on a row with nothing lapsing, even when a date exists', async () => {
+    // The regression this pins: keying the warning off `nearestExpiryMs` would
+    // print a warning on a healthy row, because that figure is the nearest
+    // expiry across ALL packages and is present whenever any package expires.
+    const m = await open()
+    expect(cellOf('A Two')?.querySelector('.dsm-workbuddy-composer-panel-soon') ?? undefined).toBeUndefined()
+    await m.unmount()
+  })
+
+  it('says nothing on a row whose balance was never measured', async () => {
+    // An unmeasured account renders "—" and must not claim its credits are safe
+    // (expiringSoon: 0) nor that they are lapsing.
+    const m = await open()
+    expect(cellOf('A Three')?.textContent).toContain('—')
+    expect(cellOf('A Three')?.querySelector('.dsm-workbuddy-composer-panel-soon') ?? undefined).toBeUndefined()
+    await m.unmount()
+  })
+
+  it('keeps the expiry INSTANT off the printed row and on the title', async () => {
+    // 5.20.22 removed a plain date line from every row. The date must therefore
+    // be reachable but never printed: the row's `title` carries it, in the same
+    // 24-hour `MM/DD HH:mm` form the rest of the panel uses.
+    const m = await open()
+    const row = Array.from(document.body.querySelectorAll('.dsm-workbuddy-composer-panel-table tbody tr'))
+      .find(node => node.querySelector('.dsm-workbuddy-composer-panel-name')?.textContent === 'A One')
+    const title = row?.getAttribute('title') ?? ''
+    expect(title, 'the instant belongs in the title').toContain('composer.creditSoonHint|time=')
+    // A real formatted instant, not a placeholder: the fixture is 2026-11-19
+    // 00:05 UTC, which is 08:05 in Asia/Shanghai.
+    expect(title, 'and must be a real time').toMatch(/11\/19, 08:05/)
+    expect(row?.textContent, 'but never on the row itself').not.toContain('composer.creditSoonHint')
+    // The instant must be tied to the WARNING, not merely to the presence of a
+    // date: "A Two" has a future expiry and nothing lapsing, and it must not
+    // whisper an expiry the user is not losing anything to.
+    const quiet = Array.from(document.body.querySelectorAll('.dsm-workbuddy-composer-panel-table tbody tr'))
+      .find(node => node.querySelector('.dsm-workbuddy-composer-panel-name')?.textContent === 'A Two')
+    expect(quiet?.getAttribute('title') ?? '', 'nothing lapsing means nothing to whisper')
+      .not.toContain('composer.creditSoonHint')
+    await m.unmount()
+  })
+})
+
+/**
  * The panel and the pool card must agree about AVAILABILITY, not just order.
  *
  * The reported symptom: the card said "被限流 · 10/19 01:32 之后可再用" with an

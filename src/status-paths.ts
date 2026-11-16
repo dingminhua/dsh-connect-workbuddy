@@ -1314,6 +1314,25 @@ export interface WorkBuddyWebAccountCredit {
   selected: boolean
   credits?: number
   /**
+   * Of the balance above, how much lapses within three days (issue #263).
+   *
+   * A subset of `credits`, never a separate pot — same rule as the card's
+   * `WorkBuddyWebCredits.expiringSoon`. Absent together with `credits`: an
+   * unreadable balance has no lapse figure to speak of, and `0` would claim
+   * "nothing is about to be lost" about an account nobody measured.
+   */
+  expiringSoon?: number
+  /**
+   * When the nearest of those packages expires, in ms (issue #263).
+   *
+   * Carried for the row's hover text only. The row itself shows the AMOUNT,
+   * because 5.20.22 removed the bare date line from the pool table: a date
+   * nobody can act on is one more thing to read, while "40 credits lapse"
+   * says what is at stake. The exact instant still answers "how long do I
+   * have" on hover, where it costs no reading.
+   */
+  nearestExpiryMs?: number
+  /**
    * Why this account cannot serve right now, or absent when nothing is wrong
    * (or nothing has been measured yet).
    *

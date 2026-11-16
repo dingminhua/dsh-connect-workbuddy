@@ -773,6 +773,27 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-workbuddy-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-pool-warn{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-warn-primary,#f59e0b);background:rgba(245,158,11,.09);border:1px solid rgba(245,158,11,.3)}
+/* Credits about to lapse, once for the account in use (issue #263).
+   The pool's .dsm-workbuddy-pool-warn is the same amber box, but this one is a
+   COLUMN because it carries two facts: the amount (the actionable half) and the
+   earliest instant (the "when"). Two lines rather than one wrapped sentence —
+   at the card's width a single line would break the amount away from its own
+   sentence on a long date, and the amount is what must stay scannable. */
+.dsm-workbuddy-expiry{
+  display:flex;flex-direction:column;gap:2px;margin:0;
+  padding:9px 11px;border-radius:9px;
+  font-size:12px;line-height:17px;
+  color:var(--dsw-alias-state-warn-primary,#f59e0b);
+  background:rgba(245,158,11,.09);
+  border:1px solid rgba(245,158,11,.3);
+}
+.dsm-workbuddy-expiry strong{font-weight:600}
+/* The instant, a notch quieter than the amount it belongs to: it answers a
+   follow-up question, it is not the message. */
+.dsm-workbuddy-expiry-detail{
+  font-size:11px;line-height:16px;font-weight:400;
+  color:var(--dsw-alias-label-secondary,#c6c9d0);
+}
 /* Ghost members (issue #60): the warning plus one removable chip per id. The
    chips are what make the warning actionable — a ghost has no row in the table
    above, because that roster is the sign-ins this machine still has. */
@@ -1874,6 +1895,17 @@ export const WORKBUDDY_COMPOSER_CSS = `
 }
 .dsm-workbuddy-composer-panel-num{
   text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+/* The "N lapsing within 3 days" warning, under the balance (issue #263).
+   display:block is what puts it on its own line: the cell is a nowrap numeric
+   column, so an inline span would sit beside the figure and stretch the column
+   for every row in a 248px popover. Smaller and quieter than the balance it
+   annotates, in the same warn tone the pool table uses for the same fact — one
+   measurement must read the same on both surfaces. */
+.dsm-workbuddy-composer-panel-soon{
+  display:block;margin-top:1px;
+  font-size:11px;line-height:15px;font-weight:400;
+  color:var(--dsw-alias-state-warn-primary,#f59e0b);
 }
 .dsm-workbuddy-composer-panel-table thead th.dsm-workbuddy-composer-panel-num{padding-right:0}
 .dsm-workbuddy-composer-panel-table tbody th{

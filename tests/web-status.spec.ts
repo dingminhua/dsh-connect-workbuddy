@@ -157,6 +157,35 @@ describe('workBuddyAccountCredits', () => {
     expect(rows).toHaveLength(ACCOUNTS.length)
     expect(rows.every(row => row.excludedBy === undefined)).toBe(true)
   })
+
+  it('carries the lapsing amount and its instant to the panel (issue #263)', async () => {
+    // The reporter's ask — "每个账号快要过期的积分能不能在账号里简单的表达出来"
+    // — cannot be answered by this route's balance alone: the panel renders
+    // `row.credits` and nothing else, so without these two fields the composer
+    // popover has no way to know a balance is about to evaporate. Both must
+    // survive the mapping, because the amount is what is printed and the instant
+    // is what the hover needs.
+    const rows = await workBuddyAccountCredits(deps({ store: () => storeOf(ACCOUNTS) }), 'cn')
+    const first = rows.find(row => row.id === ACCOUNTS[0]!.id)
+    expect(first?.credits).toBe(1875)
+    expect(first?.expiringSoon, 'the amount must reach the panel').toBe(75)
+    expect(first?.nearestExpiryMs, 'and the instant, for the hover').toBe(1_800_000_000_000)
+  })
+
+  it('reports no lapsing amount when the balance read failed', async () => {
+    // An unread balance must not come with `expiringSoon: 0`. "0 lapsing" is a
+    // measurement, and claiming one for an account nobody measured is how a row
+    // that should read "—" starts asserting the user's credits are safe.
+    const rows = await workBuddyAccountCredits(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        credentialFor: async (id: string) => (id === ACCOUNTS[0]!.id ? CREDENTIAL : undefined),
+      }) as never,
+      client: { ...deps().client, fetchCredits: async () => { throw new Error('upstream down') } },
+    }), 'cn')
+    expect(rows.every(row => row.expiringSoon === undefined)).toBe(true)
+    expect(rows.every(row => row.nearestExpiryMs === undefined)).toBe(true)
+  })
 })
 
 describe('workBuddyWebStatus', () => {
