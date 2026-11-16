@@ -57,6 +57,32 @@
 验证：新增 `tests/upstream.spec.ts` 的离线 wire 级单测（默认关闭字节一致、派生键稳定性与回退、
 注入块跳过、多模态首问、NUL 歧义、无状态泄漏等）。
 
+### 新增：`stableConversationId` 的真实上游单变量对照证据与复现工具
+
+新增一组**纯 `scripts/` + `tests/` + `docs/` 的可离线复算证据**，把「稳定 `X-Conversation-ID`
+与隐式前缀缓存命中之间的关系」交给维护者与第三方独立复核；**不改 `src/`、不改默认值、不改开关行为**。
+权威说明与全部限定见 [`docs/E-PHASE-EVIDENCE.md`](docs/E-PHASE-EVIDENCE.md)。
+
+- **证据**：`evidence/batch-1`、`evidence/batch-2` 两批脱敏 JSONL + `SHA256SUMS.txt`，可
+  `shasum -a 256 -c` 核验字节；`node scripts/recompute-probe-real.mjs --in <jsonl>` 纯离线复算。
+- **如实各报各的，不合并不择优**：第一批 `DATA INCOMPLETE` / `NOT_EVALUATED`（19/20 组完整，
+  一次孤立网络错误，未补跑未删不利数据）；第二批全新独立重跑 `DATA COMPLETE` /
+  `BENEFIT_SUPPORTED`（20/20，配对平均差 91.4 个百分点、95% 区间 `[87.3, 95.4]`）。
+- **工具**：`scripts/probe-core.ts`（零 I/O 纯函数）、`probe-stable-conversation-id-real.mjs`
+  （真实上游驱动，`--real --e-phase-authorized` 双 flag 门控、默认 `NOT_RUN`；门控先于加载
+  `lib/`，未授权路径无需构建即可运行）、`probe-usage-adapter.ts`（usage 双字段适配）、
+  `recompute-probe*.mjs`（离线复算）与三份离线单测（含 `tests/probe-real-gate.spec.ts`：
+  门控与账号选择的守护）。真实复现前仍须 `pnpm run build`（与 PR #249 的探针一致）；
+  `--real` 必须用 `--account-id` 显式指定 vault 账号，多账号未指定即拒绝。
+- 证据文件、`probe-core.ts` 与 `probe-usage-adapter.ts` 保留原字节以对齐 `scriptHash`；驱动
+  按评审修正后 `scriptHash` 变为新值，新旧哈希的对应关系与复算口径见
+  [`docs/E-PHASE-EVIDENCE.md`](docs/E-PHASE-EVIDENCE.md) §8。源码注释里遗留的历史内部指针由权威文档统一澄清。
+
+> 这些读数仍是 **报告者实测、本插件/维护者尚未独立复现**（`docs/WINDOWS.md` §2 的 C 档）：
+> `MECHANISM_PROVEN false`，**不构成机制证明**、不区分缓存键分区与路由亲和、不外推其它账号/模型/端点，
+> 也不把 C 档结论自动升级为可改默认值的 A/B 档。端到端完整链路验证（安装/重载/DSH→bili→插件→网关）
+> **未完成**，不在结论内。开关仍默认 `false`，本 PR 不请求改默认值、不请求发版。
+
 ## 5.24.6 (2026-11-15)
 
 > 版本号是 **patch**：修一处「工具声明被悄悄放宽」的语义丢失，无新增配置项、无接口变化。
