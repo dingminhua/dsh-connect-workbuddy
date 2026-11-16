@@ -5059,6 +5059,9 @@ export class WorkBuddyUpstreamClient {
       // chatHeaders 收到 undefined，不进入稳定键分支。开启时从请求体不变前缀
       // 派生一个 v4 形状的 X-Conversation-ID；该值是前缀亲和键，不是宿主会话
       // 标识，也不对上游内部机制作断言（见 docs/STABLE-KEY-SEMANTICS.md）。
+      // 路线 B（默认关）：调用方（shim）传入已做过域隔离摘要的会话亲和键时
+      // 优先采用，路线 A 的派生不再运行；两路都关或 B 值缺席时行为与从前
+      // 完全一致（见 docs/ROUTE-B-SESSION-ID.md）。
       const stableId = sessionConversationId !== undefined && sessionConversationId !== ''
         ? sessionConversationId
         : identity.stableConversationId === true
