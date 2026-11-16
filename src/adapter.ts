@@ -286,6 +286,18 @@ export interface WorkBuddyAdapterOptions {
    */
   dropForeignThinking?: () => boolean
   /**
+   * Route B (opt-in): ask pi-ai to stamp the host's session id onto each request
+   * as session-affinity HEADERS, so the loopback shim can read it and give the
+   * upstream a stable, session-scoped conversation id (a domain-separated
+   * digest; the real session id never leaves the process).
+   *
+   * OFF by default: this changes headers the provider sends AND is only correct
+   * if the shim is loopback-only + bearer-gated (it is — see `src/shim.ts`). Read
+   * LIVE so the card toggle takes effect on the next request without a reload.
+   * See `docs/ROUTE-B-SESSION-ID.md`; no upstream mechanism is asserted.
+   */
+  sessionConversationId?: () => boolean
+  /**
    * Strip EVERY historical thinking block before the request goes out (issue #213).
    *
    * OFF by default, and this one is not a styling choice: the model loses its own
@@ -443,6 +455,7 @@ function toPiModel(
   baseUrl: string,
   identity: string = WORKBUDDY_MODEL_IDENTITY,
   midConvoSystemMessages = false,
+  sessionAffinity = false,
 ): Model<Api> {
   const thinkingLevelMap = workBuddyThinkingLevelMap(info)
   // Declaring this CHANGES THE BYTES we send, so it is not a free statement.
@@ -465,9 +478,25 @@ function toPiModel(
   // until someone measures it there. The failure mode is not a wasted credit: a
   // gateway that reads only the head would keep obeying the OLD prompt, silently.
   // Hence a parameter rather than an unconditional stamp.
-  const compat = midConvoSystemMessages
-    ? { supportsReasoningEffort: thinkingLevelMap !== undefined, supportsMidConvoSystemMessages: true }
-    : { supportsReasoningEffort: thinkingLevelMap !== undefined }
+  const compat = {
+    ...midConvoSystemMessages
+      ? { supportsReasoningEffort: thinkingLevelMap !== undefined, supportsMidConvoSystemMessages: true }
+      : { supportsReasoningEffort: thinkingLevelMap !== undefined },
+    // Route B (opt-in): pi-ai's `createClient` reads these two keys and, when a
+    // session id is present on the request, stamps `session_id` /
+    // `x-client-request-id` / `x-session-affinity` on the HTTP request to the
+    // LOOPBACK shim. The shim — not pi-ai — is the only place that turns that
+    // value into an upstream id, and it uses a domain-separated digest.
+    //
+    // Both keys are absent in the default shape, so `getCompat` keeps pi-ai's
+    // detected default (`sendSessionAffinityHeaders: false`) and NOTHING changes
+    // on the wire for existing users. The value is a captured boolean at model
+    // construction (models are rebuilt on catalog refresh); the live getter on
+    // the adapter option decides WHICH model shape `buildModels` produces.
+    ...sessionAffinity
+      ? { sendSessionAffinityHeaders: true, sessionAffinityFormat: 'openai' as const }
+      : {},
+  }
   return {
     id: info.id,
     name: workBuddyDisplayName(info),
@@ -1668,7 +1697,10 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // international route keeps the pre-existing shape. An unrecognised route id
     // (a test passing a literal, a future region) gets the conservative default.
     const midConvoSystemMessages = regionOfProvider(providerId) === 'cn'
-    return catalog.current().map(info => toPiModel(info, baseUrl, modelIdentity, midConvoSystemMessages))
+    // Route B is read LIVE here so flipping the card can rebuild the model
+    // shape on the next `getModels`/catalog read without a plugin reload.
+    const sessionAffinity = options.sessionConversationId?.() === true
+    return catalog.current().map(info => toPiModel(info, baseUrl, modelIdentity, midConvoSystemMessages, sessionAffinity))
   }
 
   const base = createProvider({

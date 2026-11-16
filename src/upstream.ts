@@ -2034,6 +2034,41 @@ export function deriveStableConversationId(bodyJson: string): string | undefined
 }
 
 /**
+ * Route B: version tag for mapping a HOST session id onto a v4-shaped
+ * conversation id. Deliberately different from {@link STABLE_KEY_SCHEME} so a
+ * session-derived id can never equal a prefix-derived (route A) id — the two
+ * routes must not silently share an upstream affinity bucket.
+ */
+const SESSION_CONVERSATION_KEY_SCHEME = 'dsh-session-conversation-id/v1'
+
+/**
+ * Map a host session id to a v4-SHAPED `X-Conversation-ID` (route B).
+ *
+ * The REAL session id never leaves this process: only this digest is put on the
+ * wire. The digest is domain-separated from route A and from any other hash use,
+ * so the same text cannot collide with a prefix-derived affinity key. The input
+ * is trimmed and length-capped (a defensive bound on a loopback-only header):
+ * an empty or over-long value yields `undefined`, which makes the caller fall
+ * back to the ordinary per-request id rather than send anything derived from
+ * malformed input.
+ *
+ * This is a stable, deterministic LOCAL mapping, NOT the host session id itself
+ * and NOT a claim that the upstream keys any cache by session. It makes no
+ * assertion about upstream internal mechanism (cache-key partitioning vs routing
+ * affinity are indistinguishable from here). See `docs/ROUTE-B-SESSION-ID.md`.
+ */
+export function conversationIdFromSessionId(sessionId: string): string | undefined {
+  const trimmed = sessionId.trim()
+  if (trimmed === '' || trimmed.length > 256) return undefined
+  const digest = createHash('sha256')
+    .update(SESSION_CONVERSATION_KEY_SCHEME)
+    .update('\0')
+    .update(trimmed)
+    .digest('hex')
+  return formatAsUuidV4(digest)
+}
+
+/**
  * 出站身份档位（`docs/DEVICE-IDENTITY-AUDIT.md` 的 P1）。
  *
  * 两档而不是三档：`conservative` 逐字节还原 5.16.0，`balanced` 是 P1 的完整形态。
@@ -4993,6 +5028,13 @@ export class WorkBuddyUpstreamClient {
     credential: WorkBuddyCredential,
     bodyJson: string,
     signal?: AbortSignal,
+    /**
+     * Route B (opt-in): the loopback-only session id the shim read from the
+     * adapter-stamped affinity header, ALREADY mapped to a v4-shaped digest by
+     * the caller. When present it takes precedence over the route-A prefix key.
+     * Purely additive: existing three-argument callers are byte-identical.
+     */
+    sessionConversationId?: string,
   ): Promise<WorkBuddyChatResult> {
     let response: Response
     // Deliberately NO ceiling of our own here, unlike `probeChat`.
@@ -5017,9 +5059,11 @@ export class WorkBuddyUpstreamClient {
       // chatHeaders 收到 undefined，不进入稳定键分支。开启时从请求体不变前缀
       // 派生一个 v4 形状的 X-Conversation-ID；该值是前缀亲和键，不是宿主会话
       // 标识，也不对上游内部机制作断言（见 docs/STABLE-KEY-SEMANTICS.md）。
-      const stableId = identity.stableConversationId === true
-        ? deriveStableConversationId(bodyJson)
-        : undefined
+      const stableId = sessionConversationId !== undefined && sessionConversationId !== ''
+        ? sessionConversationId
+        : identity.stableConversationId === true
+          ? deriveStableConversationId(bodyJson)
+          : undefined
       const headers = {
         ...chatHeaders(credential, identity, stableId),
         'Authorization': `Bearer ${credential.accessToken}`,

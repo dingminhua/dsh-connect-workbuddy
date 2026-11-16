@@ -559,3 +559,43 @@ describe('the model descriptor keeps the prefix cache reusable', () => {
   })
 })
 
+/**
+ * Route B (session-id affinity) is declared on the pi-ai model descriptor as
+ * two `compat` keys. They must be ABSENT in the default shape (so pi-ai's
+ * detected default keeps the wire byte-identical for existing users), and
+ * present only when the opt-in getter returns true. Verified at the descriptor
+ * boundary because nothing downstream of `toPiModel` changes these keys.
+ */
+describe('route B session-affinity compat is opt-in only', () => {
+  const modelsWith = async (enabled: boolean) => {
+    const { createWorkBuddyAdapter } = await import('../src/adapter.ts')
+    const { WORKBUDDY_PROVIDER } = await import('../src/adapter.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+    const { adapter } = createWorkBuddyAdapter({
+      shim: { baseUrl: () => 'http://127.0.0.1:1', token: async () => 'shared-secret' } as never,
+      store: {} as never,
+      catalog: new WorkBuddyCatalog(),
+      sessionConversationId: () => enabled,
+    })
+    const profile = (adapter as unknown as {
+      config: { profiles: () => ReadonlyMap<string, { piProvider: { getModels: () => { id: string, compat?: Record<string, unknown> }[] } }> }
+    }).config.profiles().get(WORKBUDDY_PROVIDER)
+    expect(profile).toBeDefined()
+    return profile!.piProvider.getModels()
+  }
+
+  it('leaves both affinity compat keys absent by default (zero wire change)', async () => {
+    for (const model of await modelsWith(false)) {
+      expect(model.compat?.sendSessionAffinityHeaders, model.id).toBeUndefined()
+      expect(model.compat?.sessionAffinityFormat, model.id).toBeUndefined()
+    }
+  })
+
+  it('declares openai-format session affinity on every model when opted in', async () => {
+    for (const model of await modelsWith(true)) {
+      expect(model.compat?.sendSessionAffinityHeaders, model.id).toBe(true)
+      expect(model.compat?.sessionAffinityFormat, model.id).toBe('openai')
+    }
+  })
+})
+
