@@ -226,20 +226,40 @@ describe('the card splits into three sections', () => {
  * amount-only by the 5.20.22 decision).
  */
 describe('issue #263: the accounts section warns about expiring credits', () => {
-  /** The banner, when the card renders one. */
-  const bannerOf = (): Element | null =>
-    document.body.querySelector('.dsm-workbuddy-expiry')
+  /**
+   * The banner, when the card renders one — scoped to THIS mount's container.
+   *
+   * `document.body` would also see a banner left behind by an earlier test in
+   * this file: a failed assertion skips `unmount()`, the container stays
+   * attached, and the next two cases then assert "no banner" against the
+   * previous case's DOM. Scoping turns a cascading failure into one failure.
+   */
+  const bannerOf = (m: { container: ParentNode }): Element | null =>
+    m.container.querySelector('.dsm-workbuddy-expiry')
+
+  /**
+   * 2026-11-19 08:05 on the MACHINE'S OWN clock.
+   *
+   * Built from LOCAL calendar fields on purpose. `formatDate` renders through
+   * `Intl` with no `timeZone` option, so it prints the local wall clock: a
+   * fixture pinned to `Date.UTC(2026, 10, 19, 0, 5)` renders `08:05` on a
+   * machine in Asia/Shanghai and `00:05` on a CI runner in UTC. That is exactly
+   * how 5.24.9 shipped a red build — the assertion was written on the author's
+   * laptop and encoded its timezone. Same construction, same reason, as the
+   * 24-hour clock test in `pool-render.spec.tsx`.
+   */
+  const expiryAt = new Date(2026, 10, 19, 8, 5).getTime()
 
   it('states the total lapsing and the earliest instant', async () => {
     const m = await mountCard(usageOf({
       credits: {
         total: 1875,
         expiringSoon: 143,
-        nearestExpiryMs: Date.UTC(2026, 10, 19, 0, 5),
+        nearestExpiryMs: expiryAt,
         packages: [],
       },
     }))
-    const banner = bannerOf()
+    const banner = bannerOf(m)
     expect(banner, 'a lapsing balance must be announced').not.toBeNull()
     expect(banner?.getAttribute('role'), 'it is a status, not an alert').toBe('status')
     // The banner NAMES the account: `credits` is the selected account's answer,
@@ -247,10 +267,18 @@ describe('issue #263: the accounts section warns about expiring credits', () => 
     // would be read as the table's sum.
     expect(banner?.querySelector('strong')?.textContent)
       .toBe('row.creditExpirySoon|accountName=Real One|count=143')
-    // The instant, formatted the way the rest of the card formats one: 24-hour,
-    // and 2026-11-19 00:05 UTC is 08:05 in Asia/Shanghai.
-    expect(banner?.querySelector('.dsm-workbuddy-expiry-detail')?.textContent)
-      .toMatch(/row\.creditExpiryEarliest\|time=11\/19, 08:05/)
+    // The instant, formatted the way the rest of the card formats one: 24-hour
+    // `MM/DD HH:mm`. The fixture is a LOCAL 08:05, so these digits hold in every
+    // timezone; only the separator between date and time is locale-dependent
+    // (`11/19, 08:05` under en-US, `11/19 08:05` under zh-CN), so it is optional
+    // here rather than pinned — same rule as `pool-render.spec.tsx`.
+    const detail = banner?.querySelector('.dsm-workbuddy-expiry-detail')?.textContent ?? ''
+    expect(detail).toMatch(/row\.creditExpiryEarliest\|time=11\/19[,、]?\s?08:05/u)
+    // The assertion with teeth for the clock CYCLE: `hourCycle: 'h23'` is the
+    // only thing that keeps a meridiem off screen, and 08:05 is the one time of
+    // day where a 12-hour clock would still print `08:05` — so the marker check
+    // is what proves the format, not the digits above.
+    expect(detail, 'a 24-hour clock, never AM/PM').not.toMatch(/08:05[ \u00a0]?(?:AM|PM)/u)
     await m.unmount()
   })
 
@@ -263,11 +291,11 @@ describe('issue #263: the accounts section warns about expiring credits', () => 
       credits: {
         total: 1875,
         expiringSoon: 0,
-        nearestExpiryMs: Date.UTC(2027, 0, 1),
+        nearestExpiryMs: new Date(2027, 0, 1).getTime(),
         packages: [],
       },
     }))
-    expect(bannerOf()).toBeNull()
+    expect(bannerOf(m)).toBeNull()
     await m.unmount()
   })
 
@@ -278,7 +306,7 @@ describe('issue #263: the accounts section warns about expiring credits', () => 
       credits: undefined,
       creditsError: 'upstream down',
     }))
-    expect(bannerOf()).toBeNull()
+    expect(bannerOf(m)).toBeNull()
     await m.unmount()
   })
 })

@@ -75,7 +75,29 @@ export default defineConfig({
     // leak a `window` into tests that assert host-side behaviour.
     include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],
     environment: 'node',
-    env: isolatedEnv,
+    /**
+     * THE TIMEZONE IS PART OF THE TEST ENVIRONMENT, so it is pinned here.
+     *
+     * 5.24.9 shipped a red CI on this: the #263 tests rendered an expiry
+     * through `Intl` (which formats in the LOCAL zone) and asserted the digits
+     * the author's laptop produced — `08:05` in Asia/Shanghai. GitHub runners
+     * run in UTC, where the same instant renders `00:05`, so two suites went
+     * red on every leg while passing locally. The assertions themselves are now
+     * timezone-independent (see `tests/card-panels.spec.tsx`), and this pin is
+     * the second half of the fix: it makes "green on my machine" and "green on
+     * CI" the same claim instead of two claims that happen to agree.
+     *
+     * Pinning to UTC rather than to the author's zone is deliberate — UTC is
+     * what CI already uses, so the pin can never reintroduce the divergence it
+     * exists to prevent. Tests that want another zone must set `TZ` themselves
+     * and say why.
+     *
+     * Note this does NOT make timezone-dependent PRODUCT behaviour safe to
+     * assert carelessly: a test that builds a fixture from `Date.UTC(...)` and
+     * then hardcodes a wall clock is still wrong, it just fails loudly here
+     * instead of only on CI.
+     */
+    env: { ...isolatedEnv, TZ: 'UTC' },
     // Windows runners cold-start PowerShell very slowly; `processStartTimeMs`
     // shells out to `powershell` there, so give heartbeat tests headroom.
     // Locally (macOS/Linux) each test still finishes in well under a second.

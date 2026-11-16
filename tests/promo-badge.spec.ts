@@ -78,16 +78,28 @@ describe('promoBadgeTooltip', () => {
     expect(promoBadgeTooltip(tierBadge, 'zh-CN')).toBe('资源紧张，旗舰版及高级版会员享优先调度。')
   })
 
-  it('drops a range it cannot place rather than printing a wrong day', () => {
+  it('never prints the exclusive end instant, in a schedule that names no zone', () => {
+    // No declared zone: fall back to the reader's zone rather than inventing
+    // an Asia/Shanghai one. The claim under test is narrow and zone-free —
+    // the EXCLUSIVE boundary is never printed, only the instant before it.
+    //
+    // The fixture's boundary is written in UTC on purpose. With a `+08:00`
+    // boundary the two candidate behaviours render the same day in UTC
+    // ("Oct 31" either way), so the test could not tell "subtracts 1ms" from
+    // "invents Asia/Shanghai" and would stay green through both — a guard
+    // that cannot bite. A `Z` boundary splits them: the reader's zone (UTC,
+    // pinned in vitest.config.ts) says Oct 31 while an invented `+08:00`
+    // says Nov 1.
     const noZone: WorkBuddyPromo = {
       ...nightDiscount,
       id: 'no-zone',
-      schedule: { validUntil: Date.parse('2026-11-01T00:00:00+08:00') },
+      schedule: { validUntil: Date.parse('2026-11-01T00:00:00Z') },
     }
-    // No declared zone: fall back to the reader's zone rather than inventing
-    // an Asia/Shanghai one. It must still be the last day, never the boundary.
     const tooltip = promoBadgeTooltip(noZone, 'en-US')
     expect(tooltip).not.toContain('Nov 1, 2026')
+    // The other half: dropping the range entirely is the alternative to
+    // printing a wrong day, and it must not silently become "no range at all".
+    expect(tooltip).toContain('Oct 31, 2026')
   })
 })
 

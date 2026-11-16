@@ -434,6 +434,19 @@ describe('ComposerCredits panel follows the manual priority order', () => {
  * row's title — a bare expiry date on every row was removed by request.
  */
 describe('issue #263: the panel warns about credits that are about to lapse', () => {
+  /**
+   * 2026-11-19 08:05 on the MACHINE'S OWN clock.
+   *
+   * Built from LOCAL calendar fields on purpose. `formatShortClock` formats
+   * through `Intl` with no `timeZone`, so it prints the local wall clock: a
+   * fixture pinned to `Date.UTC(2026, 10, 19, 0, 5)` renders `08:05` on a
+   * machine in Asia/Shanghai and `00:05` on a CI runner in UTC. That is exactly
+   * how 5.24.9 shipped a red build — the assertion encoded the author's
+   * timezone. Same construction, same reason, as the 24-hour clock test in
+   * `pool-render.spec.tsx`.
+   */
+  const expiryAt = new Date(2026, 10, 19, 8, 5).getTime()
+
   const soonAccounts = () => ({
     accounts: [
       // Lapsing, with an instant for the hover.
@@ -443,12 +456,12 @@ describe('issue #263: the panel warns about credits that are about to lapse', ()
         selected: true,
         credits: 1072,
         expiringSoon: 300,
-        nearestExpiryMs: Date.UTC(2026, 10, 19, 0, 5),
+        nearestExpiryMs: expiryAt,
       },
       // A balance, nothing lapsing — and a FUTURE instant, because
       // `nearestExpiryMs` is the nearest expiry across ALL packages. Printing a
       // warning off that date alone would announce an expiry that costs nothing.
-      { id: 'a-2', accountName: 'A Two', selected: false, credits: 300, expiringSoon: 0, nearestExpiryMs: Date.UTC(2027, 0, 1) },
+      { id: 'a-2', accountName: 'A Two', selected: false, credits: 300, expiringSoon: 0, nearestExpiryMs: new Date(2027, 0, 1).getTime() },
       // Nothing measured: no balance, so no claim about lapsing either.
       { id: 'a-3', accountName: 'A Three', selected: false },
     ],
@@ -511,9 +524,17 @@ describe('issue #263: the panel warns about credits that are about to lapse', ()
       .find(node => node.querySelector('.dsm-workbuddy-composer-panel-name')?.textContent === 'A One')
     const title = row?.getAttribute('title') ?? ''
     expect(title, 'the instant belongs in the title').toContain('composer.creditSoonHint|time=')
-    // A real formatted instant, not a placeholder: the fixture is 2026-11-19
-    // 00:05 UTC, which is 08:05 in Asia/Shanghai.
-    expect(title, 'and must be a real time').toMatch(/11\/19, 08:05/)
+    // A real formatted instant, not a placeholder: the fixture is a LOCAL 08:05,
+    // so these digits hold in every timezone. Only the separator between date
+    // and time is locale-dependent (`11/19, 08:05` under en-US, `11/19 08:05`
+    // under zh-CN), so it is optional rather than pinned — the same rule the
+    // 24-hour clock test in `pool-render.spec.tsx` follows.
+    expect(title, 'and must be a real time').toMatch(/11\/19[,、]?\s?08:05/u)
+    // The assertion with teeth for the clock CYCLE: `hourCycle: 'h23'` is the
+    // only thing keeping a meridiem off screen, and 08:05 is the one time of day
+    // a 12-hour clock would still render as `08:05` — so this, not the digits,
+    // is what pins the format.
+    expect(title, 'a 24-hour clock, never AM/PM').not.toMatch(/08:05[ \u00a0]?(?:AM|PM)/u)
     expect(row?.textContent, 'but never on the row itself').not.toContain('composer.creditSoonHint')
     // The instant must be tied to the WARNING, not merely to the presence of a
     // date: "A Two" has a future expiry and nothing lapsing, and it must not
