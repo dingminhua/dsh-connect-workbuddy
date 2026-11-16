@@ -168,10 +168,23 @@ npm publish
 >
 > **必须再由维护者用 2FA 批准**：到 npmjs.com 的 **Staged Packages** 标签页点 **Approve**；或在 npm CLI **≥ 11.15.0** 下用 `npm stage approve <stage-id>`（本机 npm 若是 11.12.x，`npm stage` 会报 `Unknown command`——那是 CLI 太旧，不是命令不存在）。详见[常见问题](#常见问题)。
 
-**打包内容**：`package.json` 的 `files` 字段已限定只发布 `lib/`、`docs/assets/` 产品截图、`screenshots.json`、`cordis.patch.yml`、`README.md`、`README.en.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`docs/WINDOWS.md`、**`docs/PRIVACY.md`**、`LICENSE`，`tests/` 和 `node_modules/` 不会进入发布包。
+**打包内容**：以 `package.json` 的 `files` 字段为**唯一权威**（`npm pack --dry-run` 的清单即由它推得）。
+当前它包含 `lib/`、`native/`、`icons/`、`locale/`、`docs/assets/` 产品截图、`docs/PRIVACY.md`、
+**`docs/STABLE-KEY-SEMANTICS.md`**、`docs/WINDOWS.md`、`README.md`、`README.en.md`、`CHANGELOG.md`、
+`THIRD_PARTY_NOTICES.md`、`screenshots.json`、`cordis.patch.yml`、`LICENSE`；`tests/`、`scripts/`、
+`evidence/`、`docs/audit/` 与其余 `docs/*.md` 不会进入发布包。**本文件不再维护第二份清单**——5.24.7
+那次「设置文案指向一个不随包的文件」正是「两处各抄一遍、改一处忘改另一处」的产物，改动白名单时只需
+改 `package.json`，随包面由 `tests/privacy-gate.spec.ts` 与 `npm pack --dry-run` 把关。
 
 > **`docs/PRIVACY.md` 是有意随包发布的**：它是给下游使用者的承诺（本插件不收集、不外传什么），
-> 只写在仓库里对内约束、对外不公示，等于把承诺藏起来。其余 `docs/*.md`（含 `docs/audit/`）不进包。
+> 只写在仓库里对内约束、对外不公示，等于把承诺藏起来。
+>
+> **`docs/STABLE-KEY-SEMANTICS.md` 同理，但它是被文案「点名」才必须随包**：设置界面里
+> `stableConversationId` 的说明写着「详见 `docs/STABLE-KEY-SEMANTICS.md`」，而这段文案是该实验开关
+> 在用户侧唯一的说明入口（README 不含它）。文案指向包外文件 = 让用户扑空。**判据**：凡是会渲染进
+> 用户界面的文字（schema `.description()`）提到的 `docs/*.md`，必须在白名单内；这条由
+> `tests/privacy-gate.spec.ts` 动态扫描钉死，新增此类指针却忘了加白名单，测试即红。反之，仅出现在
+> `lib/*.js` 的 JSDoc 注释里的 `docs/*.md` 引用是开发者面包屑（用户不会去翻编译产物），不进包。
 
 **发布前检查**（可选但推荐）：
 

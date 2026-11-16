@@ -40,6 +40,42 @@ describe('the privacy gate is still wired in', () => {
     expect(manifest.files).toContain('docs/PRIVACY.md')
   })
 
+  it('never points the settings UI at a file that does not ship', () => {
+    // WHY THIS EXISTS. 5.24.7 shipped a setting whose description told users to
+    // read `docs/STABLE-KEY-SEMANTICS.md` — a file OUTSIDE the npm `files`
+    // whitelist. Installed users got a link to nothing, and the settings text
+    // is the switch's ONLY user-facing explanation (READMEs do not cover it).
+    // The dead pointer was invisible to every other gate: builds pass, tests
+    // pass, `check-pii` passes — a path inside a string literal breaks nothing.
+    //
+    // The guard is deliberately DYNAMIC: it extracts every `docs/*.md` pointer
+    // from schema descriptions in src/index.ts and requires it to ship. Delete
+    // the whitelist entry, or repoint a description at any unshipped doc, and
+    // this goes red — the bug cannot rot back in silently.
+    const src = readFileSync(join(root, 'src', 'index.ts'), 'utf8')
+    // One nesting level of ASCII parens is tolerated; a description with deeper
+    // nesting would be skipped by this regex. That is fine for a drift net: the
+    // CURRENT descriptions all match (verified by the explicit assertion below
+    // finding the very pointer this test was born from).
+    const descriptions = src.match(/\.description\((?:[^()]|\([^()]*\))*\)/gu) ?? []
+    expect(descriptions.length).toBeGreaterThan(0)
+    const pointers = new Set<string>()
+    for (const d of descriptions) {
+      for (const m of d.matchAll(/docs\/[A-Za-z0-9_.-]+\.md/gu)) pointers.add(m[0])
+    }
+    // One known pointer must exist, or the regex above silently matched nothing
+    // and the loop would pass vacuously — the failure mode this whole test was
+    // written to prevent. 5.24.8 shipped the pointer; it only disappears if
+    // someone rewrites the description on purpose.
+    expect(pointers.has('docs/STABLE-KEY-SEMANTICS.md')).toBe(true)
+    for (const p of pointers) {
+      const ships = manifest.files.some(
+        (entry) => entry === p || (entry.endsWith('/') ? p.startsWith(entry) : `${p}`.startsWith(`${entry}/`)),
+      )
+      expect(ships, `settings description points at ${p}, which does not ship`).toBe(true)
+    }
+  })
+
   it('is a named CI step, so a leak fails a check rather than a pack log', () => {
     // `prepack` already covers the publish path, but it surfaces as a failed
     // `npm pack` with the real reason buried in the output — and it vanishes if
