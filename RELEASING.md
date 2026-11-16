@@ -164,9 +164,11 @@ npm publish
 
 > ⚠️ **`npm publish` 成功退出（exit 0）不等于版本已上线。** 本账号/包现在会走 npm 的**暂存发布（staged publishing）**：此时 registry 返回 **`202 Accepted`**，npm 把它当成功（打印 `info ok`、退出码 0），但版本只是进了**暂存区**，**公开的 packument 里看不到**，用户也装不到。
 >
-> **判据**：`npm publish` 只报 `PUT 202` / `info ok`（**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行），且第 8 步直连核验里 `latest` 仍是旧版本 —— 那就是**待批准**，不是失败。
+> **判据只有一个：第 8 步的直连核验。** `+ dsh-connect-workbuddy@X.Y.Z` 那一行**不能**用来区分「已上线 / 待批准」——5.24.8 实测 `PUT 202` 与 `+` 行**同时出现**，约 4.5 分钟后版本才出现在 packument 上（自动放行，无人点 Approve；npm 的 notice「being processed and may take a few minutes」说的就是这段）。反过来，`PUT 201` + `+` 行也不保证瞬时可见。**看水位**：`time.modified` 前进到本次发布时间、`time['X.Y.Z']` 存在、版本级文档 200 —— 三者齐了才算上线。
 >
-> **必须再由维护者用 2FA 批准**：到 npmjs.com 的 **Staged Packages** 标签页点 **Approve**；或在 npm CLI **≥ 11.15.0** 下用 `npm stage approve <stage-id>`（本机 npm 若是 11.12.x，`npm stage` 会报 `Unknown command`——那是 CLI 太旧，不是命令不存在）。详见[常见问题](#常见问题)。
+> **批准方式**：若直连核验迟迟不过（>10 分钟），到 npmjs.com 的 **Staged Packages** 标签页点 **Approve**；或在 npm CLI **≥ 11.15.0** 下用 `npm stage approve <stage-id>`（本机 npm 若是 11.12.x，`npm stage` 会报 `Unknown command`——那是 CLI 太旧，不是命令不存在）。详见[常见问题](#常见问题)。
+>
+> **还有一段「元数据已可见、tarball 仍 404」的窗口**（5.24.8 实测约 1–2 分钟）：registry 的 packument 与 tarball 的 CDN 边缘复制分开生效。此时**不要**判失败、更不要重发——几分钟后重下即可。
 
 **打包内容**：以 `package.json` 的 `files` 字段为**唯一权威**（`npm pack --dry-run` 的清单即由它推得）。
 当前它包含 `lib/`、`native/`、`icons/`、`locale/`、`docs/assets/` 产品截图、`docs/PRIVACY.md`、
@@ -290,12 +292,13 @@ gh release view vX.Y.Z --json name,tagName,isDraft,isPrerelease,assets
   - `You cannot publish over the previously published versions: X.Y.Z` —— 这才是**已经发布成功**。此时第 8 步的直连核验会显示 `latest: X.Y.Z`，tarball 也能下载。
 
   有一条很实用的判据：**报错从「staged」变成「previously published」，说明中间那次其实已经成功落地**。v3.0.0 发布时就是这样——先看到 staged 的 409，再看到 published 的 409，而 registry 上的发布时间戳正好落在两次尝试之间（即另有一次发布在窗口内完成）。因此**任何时刻都以第 8 步的直连核验为准**，不要凭 `npm publish` 的退出码或某一次报文下结论；两次发布若来自不同的人/会话，只要比对 tarball 的 shasum 一致，就说明发的是同一个构建，没有版本分叉。
-- **`npm publish` 明明成功了（exit 0 / `info ok`），registry 上却查不到新版本**：本账号/包会走 npm 的**暂存发布（staged publishing）**——registry 返回 **`202 Accepted`**，npm 视之为成功，但版本只进了**暂存区**，**未公开**：packument 里没有它、`latest` 不变、用户装不到。别把它当成「发布失败」去重试，更**不要**改版本号重发（那只会再多一个待批准的暂存版本）。
-  - **怎么认出来**：`npm publish` 的输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行（只有 `PUT 202` / `info ok`），且第 8 步直连核验显示 `latest` 仍是旧版本。
-  - **怎么批准**（**必须由维护者带 2FA 操作**）：到 **npmjs.com → Staged Packages** 标签页，核对后点 **Approve**；或在 npm CLI **≥ 11.15.0** + Node **≥ 22.14.0** 下执行 `npm stage approve <stage-id>`（`npm stage list` 可以先列出待批准的版本）。
+- **`npm publish` 明明成功了（exit 0 / `info ok`），registry 上却查不到新版本**：本账号/包会走 npm 的**暂存发布（staged publishing）**——registry 返回 **`202 Accepted`**，npm 视之为成功，但版本在放行前不进公开 packument：`latest` 不变、用户装不到。别把它当成「发布失败」去重试，更**不要**改版本号重发（那只会再多一个待批准/待处理的暂存版本）。
+  - **怎么认出来**：**只看第 8 步的直连核验水位**（`time.modified` 是否前进、`time['X.Y.Z']` 是否存在）。`+ dsh-connect-workbuddy@X.Y.Z` 那一行**不是**判据——5.24.8 实测 `PUT 202` 与 `+` 行**同时出现**，之后约 4.5 分钟版本才出现在 packument（**自动放行，无人点 Approve**）。所以「有 `+` 行」既不排除暂存、也不等于瞬时可见。
+  - **两种放行路径**：其一，npm 自动处理（5.24.8 即是，notice「being processed and may take a few minutes」对应这段窗口）；其二，维护者带 2FA 批准——到 **npmjs.com → Staged Packages** 标签页核对后点 **Approve**，或在 npm CLI **≥ 11.15.0** + Node **≥ 22.14.0** 下 `npm stage approve <stage-id>`（`npm stage list` 可先列出）。直连核验超过 10 分钟仍不过，再走批准。
   - **为什么本机 `npm stage` 用不了**：本机 npm 是 **11.12.x**，而暂存发布的 CLI 支持从 **11.15.0** 才有——`npm stage` 会报 `Unknown command: "stage"`，那是 **CLI 太旧，不是命令不存在**。要么升级 npm，要么直接用网页批准。
-  - 参考：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing/)。v3.0.0、v3.0.2 发布时都撞到这一点，且**两次都不是失败**——版本最终是在维护者批准后才出现在 registry 上。
-- **发布后 `npm view ... version` 还是旧版本 / 甚至 `@新版本` 报 404**：**先别断定发布失败**。本机 `~/.npmrc` 的本地代理会缓存 registry 响应——用第 8 步的 `curl --noproxy '*'` 直连命令复核，或 `npm view --prefer-online`。v1.4.0 发布时就是这样被误判过一次。真正的失败特征是：`npm publish` 输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行。
+  - 参考：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing/)。v3.0.0、v3.0.2 撞到的是「需人工批准」，5.24.8 撞到的是「自动放行 + 延迟可见」——**三者都不是失败**，区别只在放行方式与耗时。
+  - **另一个短暂的假信号**（5.24.8 实测，约 1–2 分钟）：packument 已能看到新版本、`dist.tarball` 却仍回 `404 {"error":"Not found"}`——registry 元数据与 tarball 的 CDN 边缘复制分开生效。同样**不是失败、不要重发**，稍后重下即可；核对请以 `shasum` 对齐本地 `npm pack` 基线为准。
+- **发布后 `npm view ... version` 还是旧版本 / 甚至 `@新版本` 报 404**：**先别断定发布失败**。本机 `~/.npmrc` 的本地代理会缓存 registry 响应——用第 8 步的 `curl --noproxy '*'` 直连命令复核，或 `npm view --prefer-online`。v1.4.0 发布时就是这样被误判过一次。**直连仍查不到时，先按上一条区分「暂存/延迟可见」与真失败**（`+` 那一行不是判据，`time.modified` 水位才是）。真失败的签名是 npm 明确报错退出（EOTP 之外），或 `PUT` 既非 201 也非 202。
 - **`npm whoami` 报 E401**：说明 `~/.npmrc` 里的 `_authToken` 已失效（注意 `npm whoami` 偶尔会回显**缓存**的上一次结果，别被它迷惑）。先 `npm login --auth-type=web` 重新登录再发布。
 - **`npm error code E404 ... GET https://registry.npmjs.org/-/v1/done?authId=***`**：**2FA 会话过期**，不是包名错、也不是网络问题（npm 轮询约 92 次 ≈4.6 分钟后作废该 authId）。重跑 `npm publish` 生成新链接即可，**不需要改版本号**——此时包一个字节都没上传。
 - **想用 `authId` 判断「这条链接属于哪次运行」——做不到，别试**：npm **自己**就把 `authId` 遮蔽成 `***` 写进日志（与上一条登录链接的 `***` 同源），所以它不可能出现在任何日志里。要归属请换指纹：**轮询次数**（近百次 = 超时；十几次就 `GET 200` = 当场确认成功）、日志起始时间（文件名即 UTC 时间戳）、`~/.zsh_history`。详见 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §2。
