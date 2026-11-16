@@ -85,7 +85,10 @@ grep -c '">=0.1.7-rc.1 <0.3.0-0"' package.json
 grep -c '"@deepseek-ai/dsh[a-z-]*": ">=0.1.7-rc.1 <0.3.0-0"' package.json
 
 # overrides 必须整块指向本次复核过的那条宿主线，且不含任何别的版本串
-grep -E "'@deepseek-ai/dsh-[a-z-]+': 0\.2\." pnpm-workspace.yaml | sort -u | awk '{print $3}' | sort -u
+# 输出应是「条数 + 唯一版本号」，且版本号只有一条（例如 `25 0.2.2-rc.3`）。
+# 注意不要用 `awk '{print $3}'`：这些行只有两个字段，$3 恒为空 —— 那样这条
+# 「不得跳过」的检查会永远静默通过，恰好漏掉它本该抓的「混入别的版本串」。
+grep -E "'@deepseek-ai/dsh-[a-z-]+':" pnpm-workspace.yaml | sed -E "s/.*': *//" | sort | uniq -c
 
 # 宿主线是否已经前进？有 0.3.x 的 tag 就说明该复核上界了
 git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
