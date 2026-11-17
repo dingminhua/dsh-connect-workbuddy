@@ -1,9 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { oauthPoll, oauthStart, regionOfOAuthAccount } from '../src/oauth.ts'
+import { jwtIdentityOf, oauthPoll, oauthStart, regionOfOAuthAccount } from '../src/oauth.ts'
 import { WorkBuddyCredentialStore, workbuddyAccountId } from '../src/auth.ts'
 import { mkdtemp, mkdir, rm, writeFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+/** Minimal JSON Response stub for the fetch-based protocol tests. */
+function jsonResp(body: unknown): Response {
+  return { ok: true, status: 200, text: async () => JSON.stringify(body) } as unknown as Response
+}
+
+/** Build an unsigned JWT-shaped token with a chosen payload (identity tests). */
+function jwtOf(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  return `${header}.${body}.signature`
+}
 
 /**
  * The OAuth module is protocol-plumbing: the tests stub fetch and pin the
@@ -104,26 +116,22 @@ describe('oauth sign-in protocol', () => {
     if ('error' in started) throw new Error(started.error)
     expect(await oauthPoll(started.loginId, 'cn')).toEqual({ done: false })
 
-    vi.stubGlobal('fetch', async (url: string | URL | Request) => {
+    const profileHeaders: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
       const key = String(url).replace(/^https:\/\/[^/]+/, '')
       if (key.startsWith('/v2/plugin/auth/token')) {
-        return {
-          ok: true, status: 200,
-          text: async () => JSON.stringify({
-            code: 0,
-            data: {
-              accessToken: 'at-1', refresh_token: 'rt-1',
-              expires_in: 3600, refreshExpiresAt: Date.now() + 7 * 86400000,
-              domain: 'www.codebuddy.cn',
-            },
-          }),
-        } as unknown as Response
+        return jsonResp({
+          code: 0,
+          data: {
+            accessToken: 'at-1', refresh_token: 'rt-1',
+            expires_in: 3600, refreshExpiresAt: Date.now() + 7 * 86400000,
+            domain: 'www.codebuddy.cn',
+          },
+        })
       }
-      if (key.startsWith('/v2/plugin/login/account')) {
-        return {
-          ok: true, status: 200,
-          text: async () => JSON.stringify({ code: 0, data: { uid: 'uid-9', nickname: 'Zeta', uin: '1009' } }),
-        } as unknown as Response
+      if (key.startsWith('/v2/plugin/')) {
+        profileHeaders.push((init?.headers ?? {}) as Record<string, string>)
+        return jsonResp({ code: 0, data: { uid: 'uid-9', nickname: 'Zeta', uin: '1009' } })
       }
       return { ok: false, status: 404, text: async () => '' } as unknown as Response
     })
@@ -135,6 +143,9 @@ describe('oauth sign-in protocol', () => {
     expect(answer.account.uid).toBe('uid-9')
     expect(answer.account.nickname).toBe('Zeta')
     expect(answer.account.domain).toBe('www.codebuddy.cn')
+    // The identity call carries the same Bearer + X-Domain headers as before.
+    expect(profileHeaders).toHaveLength(1)
+    expect(profileHeaders[0]).toMatchObject({ Authorization: 'Bearer at-1', 'X-Domain': 'www.codebuddy.cn' })
     expect(answer.account.expiresAtMs).toBeGreaterThan(Date.now())
     expect(answer.account.expiresAtMs).toBeLessThanOrEqual(Date.now() + 3600 * 1000)
   })
@@ -146,7 +157,7 @@ describe('oauth sign-in protocol', () => {
         code: 0,
         data: { accessToken: 'at-2', refreshToken: 'rt-2', expiresAt: Date.now() / 1000 + 3600, domain: 'www.codebuddy.cn' },
       },
-      '/v2/plugin/login/account': { code: 0, data: { uid: 'uid-2' } },
+      '/v2/plugin/account': { code: 0, data: { uid: 'uid-2' } },
     })
     const started = await oauthStart('cn')
     if ('error' in started) throw new Error(started.error)
@@ -155,6 +166,106 @@ describe('oauth sign-in protocol', () => {
     const second = await oauthPoll(started.loginId, 'cn')
     expect(second.done).toBe(true)
     if (!second.done || !('error' in second)) throw new Error('expected the repeated poll to be terminal')
+  })
+
+  // ---- #267 / #268 / #269: 未命名账号 + accounts overwriting each other ----
+  // The upstream's /v2/plugin/login/account answers 12151 with empty data for
+  // every credential. The empty identity collapsed every OAuth account onto
+  // one vault id (hence only one 未命名账号 showing even after two logins).
+
+  /** Start a login and answer /auth/token with the given access token. */
+  async function startAndPollWithToken(accessToken: string, routes: Record<string, unknown> = {}): Promise<{
+    answer: Awaited<ReturnType<typeof oauthPoll>>
+    urls: string[]
+  }> {
+    const urls: string[] = []
+    stubFetch({ '/v2/plugin/auth/state?platform=workbuddy': { code: 0, data: { state: 'st-id' } } })
+    const started = await oauthStart('global', { base: 'https://www.workbuddy.ai' })
+    if ('error' in started) throw new Error(started.error)
+    vi.stubGlobal('fetch', async (url: string | URL | Request) => {
+      const key = String(url).replace(/^https:\/\/[^/]+/, '')
+      urls.push(key)
+      if (key.startsWith('/v2/plugin/auth/token')) {
+        return jsonResp({ code: 0, data: { accessToken, refreshToken: 'rt', domain: 'www.workbuddy.ai' } })
+      }
+      return jsonResp(routes[key] ?? { code: -1 })
+    })
+    return { answer: await oauthPoll(started.loginId, 'global'), urls }
+  }
+
+  it('uses /v2/plugin/account first and ignores an empty 12151 legacy answer', async () => {
+    const token = jwtOf({ sub: '', nickname: '', uin: '' })
+    const { answer, urls } = await startAndPollWithToken(token, {
+      '/v2/plugin/account': { code: 0, msg: 'OK', data: { uid: '账号A-uid', nickname: '账号A', uin: '100000000001' } },
+      '/v2/plugin/login/account': { code: 12151, msg: '12151:not choose login account', data: {} },
+    })
+    expect(answer.done).toBe(true)
+    if (!answer.done || 'error' in answer) throw new Error('expected success')
+    expect(answer.account.uid).toBe('账号A-uid')
+    expect(answer.account.nickname).toBe('账号A')
+    expect(answer.account.uin).toBe('100000000001')
+    // Only the correct endpoint was tried; the broken one was not needed.
+    expect(urls).toContain('/v2/plugin/account')
+    expect(urls).not.toContain('/v2/plugin/login/account')
+  })
+
+  it('rejects an empty profile from /account and falls back to /login/account', async () => {
+    const token = jwtOf({ sub: '', nickname: '', uin: '' })
+    const { answer, urls } = await startAndPollWithToken(token, {
+      '/v2/plugin/account': { code: 12151, data: {} },
+      '/v2/plugin/login/account': { code: 0, data: { uid: 'legacy-uid', nickname: 'Legacy' } },
+    })
+    expect(answer.done).toBe(true)
+    if (!answer.done || 'error' in answer) throw new Error('expected success')
+    expect(answer.account.uid).toBe('legacy-uid')
+    expect(answer.account.nickname).toBe('Legacy')
+    expect(urls).toContain('/v2/plugin/account')
+    expect(urls).toContain('/v2/plugin/login/account')
+  })
+
+  it('recovers identity from the JWT when both profile endpoints answer 12151', async () => {
+    const token = jwtOf({ sub: 'jwt-sub-1', nickname: 'jwt-nick', uin: '1001', preferred_username: 'alias' })
+    const { answer } = await startAndPollWithToken(token, {
+      '/v2/plugin/account': { code: 12151, data: {} },
+      '/v2/plugin/login/account': { code: 12151, data: {} },
+    })
+    expect(answer.done).toBe(true)
+    if (!answer.done || 'error' in answer) throw new Error('expected success')
+    expect(answer.account.uid).toBe('jwt-sub-1')
+    expect(answer.account.nickname).toBe('jwt-nick')
+    expect(answer.account.uin).toBe('1001')
+  })
+
+  it('two empty-profile OAuth logins keep DISTINCT vault ids (no overwrite)', async () => {
+    const ids: string[] = []
+    const names: string[] = []
+    for (const [sub, nick] of [['sub-aaa', 'Alice'], ['sub-bbb', 'Bob']] as const) {
+      const token = jwtOf({ sub, nickname: nick })
+      const { answer } = await startAndPollWithToken(token, {
+        '/v2/plugin/account': { code: 12151, data: {} },
+        '/v2/plugin/login/account': { code: 12151, data: {} },
+      })
+      if (!answer.done || 'error' in answer) throw new Error('expected success')
+      expect(answer.account.uid).toBe(sub)
+      expect(answer.account.nickname).toBe(nick)
+      names.push(answer.account.nickname ?? '')
+      // The real store derives the vault id from uin ?? uid ?? nickname.
+      ids.push(workbuddyAccountId({
+        uid: answer.account.uid,
+        ...answer.account.uin === undefined ? {} : { uin: answer.account.uin },
+        ...answer.account.nickname === undefined ? {} : { nickname: answer.account.nickname },
+      }))
+    }
+    expect(new Set(ids).size).toBe(2)
+    expect(names).toEqual(['Alice', 'Bob'])
+  })
+
+  it('jwtIdentityOf tolerates malformed or non-JWT tokens', () => {
+    const empty = { sub: '', nickname: '', uin: '', preferredUsername: '' }
+    expect(jwtIdentityOf('not-a-jwt')).toEqual(empty)
+    expect(jwtIdentityOf('aaa.!!!notbase64!!!.ccc')).toEqual(empty)
+    expect(jwtIdentityOf('aaa.' + Buffer.from('not json').toString('base64url') + '.ccc')).toEqual(empty)
+    expect(jwtIdentityOf('')).toEqual(empty)
   })
 
   it('regionOfOAuthAccount routes by the token domain', () => {

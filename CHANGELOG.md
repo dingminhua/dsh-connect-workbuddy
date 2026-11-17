@@ -1,5 +1,37 @@
 # Changelog
 
+## 5.24.11 (2026-11-17)
+
+> 版本号是 **patch**：只纠正一处 OAuth 账号资料采集，默认行为、出站字节（仅登录成功那一刻）、
+> 既有开关与池子排序一律未动；无破坏性改动。来自 issue #267 / #268 / #269。
+
+### 修复：OAuth 添加的账号不再显示「未命名账号」，多个账号不再互相覆盖
+
+报告者的现象一致：网页/扫码登录添加账号后显示 `未命名账号`；登录第二个账号只显示一个，前一个被覆盖；
+密码登录两个账号也只看到一个。三者是同一个根因。
+
+`collectAccount()`（`src/oauth.ts`）此前只从 `{API_PREFIX}/login/account` 读账号资料。上游现在对这个端点
+**无论哪把凭据**都回 `{"code":12151,"msg":"12151:not choose login account","data":{}}`。空 envelope 被当成
+正常资料接受后，`uid` / `nickname` / `uin` 全为空：
+
+- 显示上，空名字走到卡片的 `row.accountUnnamed` → `未命名账号`；
+- 身份上，`workbuddyAccountId()` 以 `uin ?? uid ?? nickname ?? 'unknown'` 求 sha256，空字段让每个账号
+  都落到同一个 vault id，于是第二个登录直接覆盖第一个的文件。
+
+改动只有一条采集链，分三层：
+
+1. **先试 `/v2/plugin/account`**：同一 Bearer / X-Domain 头，返回完整身份（uid / nickname / uin）；旧端点
+   仅作为仍服务它的主机的回退保留。
+2. **拒绝空资料**：任一端点返回的 data 没有非空 uid 就当作没拿到，继续试下一个——12151 的空 envelope
+   不再被当成有效身份。
+3. **JWT 兜底**：两端点都空或不可达时，从 access token 的 JWT payload 里取 `sub` / `nickname` /
+   `uin` / `preferred_username`。这**不是鉴权**（token 已被 `/auth/token` 接受，这里只当显示元数据与稳定
+   id 种子读，非空才用），只是让身份不会因为上游端点故障而彻底丢失。
+
+守护测试在 `tests/oauth.spec.ts`：优先新端点、拒绝 12151 空资料后回退旧端点、JWT 兜底、两个空资料账号得到
+不同 vault id、畸形 token 不抛错、身份调用仍带 Bearer + X-Domain。三项均已做变异验证——把端点顺序改回旧
+的、去掉空资料拒绝、去掉 JWT 兜底，相应测试都会变红。
+
 ## 5.24.10 (2026-11-17)
 
 > 版本号是 **patch**：新增一个**默认关闭**的实验开关（路线 B），默认行为、出站字节、

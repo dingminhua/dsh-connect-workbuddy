@@ -7,7 +7,10 @@
  *   向 `{billing_base}{API_PREFIX}/auth/state?platform={platform}` 申请一个
  *   state，用户在浏览器打开授权页完成登录，客户端轮询
  *   `{billing_base}{API_PREFIX}/auth/token?state={state}` 换取凭据，再以
- *   Bearer 调 `{API_PREFIX}/login/account` 拉取账号资料。三步的 URL 形态、
+ *   Bearer 调 `{API_PREFIX}/account` 拉取账号资料（旧实现用的是
+ *   `{API_PREFIX}/login/account`，但上游已让该端点对任何凭据都回
+ *   `12151:not choose login account`、data 为空，见 issue #267/#268/#269；
+ *   现在先试 `/account`，再为仍服务旧端点的主机保留回退）。三步的 URL 形态、
  *   响应字段双拼写（camelCase/snake_case）容错、以及「区域必须绑定会话」的
  *   约定均沿用该实现。
  * 改动：端点按本插件 `upstream.ts` 的区域约定路由 —— CN 为
@@ -214,7 +217,65 @@ function terminalOf(session: LoginSession): WorkBuddyOAuthPollResult {
   return { done: true, error: session.error ?? 'the sign-in ended without a result' }
 }
 
-/** Fetch the account profile and assemble the success value. */
+/** Identity fields carried by a JWT payload, keyed by their common claims. */
+interface JwtIdentity extends Record<string, unknown> {
+  sub: string
+  nickname: string
+  uin: string
+  preferredUsername: string
+}
+
+/**
+ * Decode an access token's unsigned JWT payload, purely to recover identity
+ * when the profile endpoints answer empty (issue #267/#268/#269). This is NOT
+ * authentication — the token was already accepted by `/auth/token` and every
+ * byte here is attacker-controlled; only non-empty strings are ever used, as
+ * display metadata and as a stable account-id seed, never as a permission.
+ * A malformed/unsupported token simply yields no claims.
+ */
+export function jwtIdentityOf(token: string): JwtIdentity {
+  const empty: JwtIdentity = { sub: '', nickname: '', uin: '', preferredUsername: '' }
+  if (typeof token !== 'string') return empty
+  const parts = token.split('.')
+  if (parts.length < 2) return empty
+  let decoded: string
+  try {
+    decoded = Buffer.from(parts[1] ?? '', 'base64url').toString('utf8')
+  } catch {
+    return empty
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(decoded)
+  } catch {
+    return empty
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return empty
+  const payload = parsed as Record<string, unknown>
+  return {
+    sub: firstString(payload, ['sub', 'Sub']),
+    nickname: firstString(payload, ['nickname', 'NickName']),
+    uin: firstString(payload, ['uin', 'Uin']),
+    preferredUsername: firstString(payload, ['preferred_username', 'preferredUsername', 'PreferredUsername']),
+  }
+}
+
+/** Whether a profile carries the one field every real identity must have. */
+function hasIdentity(profile: Record<string, unknown>): boolean {
+  return firstString(profile, ['uid', 'Uid', 'userId', 'UserID']) !== ''
+}
+
+/**
+ * Fetch the account profile and assemble the success value.
+ *
+ * The upstream's `/login/account` endpoint answers `code 12151` ("not choose
+ * login account") with an empty `data` envelope for EVERY credential. Taking
+ * that empty profile at face value made every OAuth account hash to the same
+ * vault id and display as 未命名账号 (#267/#268/#269). So try `/account` first
+ * on the same host with the same headers, keep the legacy endpoint only as a
+ * fallback, accept neither when its data has no uid, and as a last resort read
+ * the identity claims from the token itself.
+ */
 async function collectAccount(
   session: LoginSession,
   accessToken: string,
@@ -225,22 +286,33 @@ async function collectAccount(
   const domain = firstString(tokenData, ['domain', 'Domain'])
   if (domain !== '') headers['X-Domain'] = domain
   let profile: Record<string, unknown> = {}
-  try {
-    const response = await doFetch(`${session.base}${API_PREFIX}/login/account`, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(30_000),
-    })
-    const document = await readJson(response)
-    if (document !== undefined) profile = envelopeData(document)
-  } catch {
-    // The profile is display metadata; its absence must not fail a login
-    // whose tokens are already in hand. uid falls back to the JWT's own
-    // sub claim below.
+  for (const profilePath of [`${API_PREFIX}/account`, `${API_PREFIX}/login/account`]) {
+    try {
+      const response = await doFetch(`${session.base}${profilePath}`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(30_000),
+      })
+      const document = await readJson(response)
+      if (document === undefined) continue
+      const candidate = envelopeData(document)
+      if (!hasIdentity(candidate)) continue
+      profile = candidate
+      break
+    } catch {
+      // The profile is display metadata; a transport blip must not fail a
+      // login whose tokens are already in hand. The JWT fallback below keeps
+      // the account identifiable even when neither endpoint is reachable.
+    }
   }
-  const uid = firstString(profile, ['uid', 'Uid', 'userId', 'UserID'])
+  // Last resort: the token itself carries the identity. Without this, a host
+  // serving neither profile endpoint (or serving both empty) would again
+  // collapse distinct accounts into the same id — the original bug.
+  const jwt = jwtIdentityOf(accessToken)
+  const uid = firstString(profile, ['uid', 'Uid', 'userId', 'UserID']) || jwt.sub
   const nickname = optionalString(profile, ['nickname', 'NickName', 'nickname', 'ScreenName'])
-  const uin = optionalString(profile, ['uin', 'Uin'])
+    ?? optionalString(jwt, ['nickname', 'preferredUsername'])
+  const uin = optionalString(profile, ['uin', 'Uin']) ?? optionalString(jwt, ['uin'])
   const enterpriseId = optionalString(profile, ['enterpriseId', 'EnterpriseId'])
   // 0 = the upstream did not state an expiry; the vault keeps the field and
   // the store treats the token as always-needing-refresh until one succeeds.
