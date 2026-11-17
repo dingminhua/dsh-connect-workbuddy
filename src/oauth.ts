@@ -310,6 +310,19 @@ async function collectAccount(
   // collapse distinct accounts into the same id — the original bug.
   const jwt = jwtIdentityOf(accessToken)
   const uid = firstString(profile, ['uid', 'Uid', 'userId', 'UserID']) || jwt.sub
+  // …and when even the token carries nothing, REFUSE rather than hash an empty
+  // identity.
+  //
+  // `workbuddyAccountId` derives the vault id from `uin ?? uid ?? nickname`.
+  // An empty string is not nullish, so `''` survives that chain and every such
+  // account hashes to the same constant — one file, second login overwrites the
+  // first. That is the same symptom #267/#268/#269 reported, reached by a
+  // narrower road: an opaque (non-JWT) token plus two endpoints answering 12151.
+  // An account nobody can name is not an account this plugin can store; saying
+  // so is better than silently replacing the previous one.
+  if (uid === '') {
+    throw new Error('上游未返回账号身份（两个资料端点与令牌里都没有 id），无法区分这是哪个账号；请更新插件后重试')
+  }
   const nickname = optionalString(profile, ['nickname', 'NickName', 'nickname', 'ScreenName'])
     ?? optionalString(jwt, ['nickname', 'preferredUsername'])
   const uin = optionalString(profile, ['uin', 'Uin']) ?? optionalString(jwt, ['uin'])

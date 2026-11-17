@@ -260,6 +260,40 @@ describe('oauth sign-in protocol', () => {
     expect(names).toEqual(['Alice', 'Bob'])
   })
 
+  // The test above keeps the ids distinct via the JWT's `sub`. This one takes
+  // the road where even that is unavailable, and it is not hypothetical: the
+  // access token is opaque whenever the upstream does not hand out a JWT, and
+  // then `jwtIdentityOf` returns all-empty by design. Both profile endpoints
+  // answering 12151 on top of that leaves `uid: ''`.
+  //
+  // `workbuddyAccountId` derives the vault id from `uin ?? uid ?? nickname`, and
+  // an empty string is not nullish, so `''` survives that chain: every such
+  // account hashed to the SAME constant, meaning the second login overwrote the
+  // first file. Measured before the fix — two opaque-token logins both produced
+  // the id `e44e62b3…`. Refusing the login is the honest outcome: an account
+  // nobody can name cannot be stored without inventing an identity, and
+  // inventing one is how distinct accounts became one.
+  it('refuses a login whose identity is empty everywhere, instead of overwriting', async () => {
+    vi.stubGlobal('fetch', async (url: string | URL | Request) => {
+      const key = String(url).replace(/^https:\/\/[^/]+/, '')
+      if (key.startsWith('/v2/plugin/auth/state')) return jsonResp({ code: 0, data: { state: 'st-opaque' } })
+      if (key.startsWith('/v2/plugin/auth/token')) {
+        // No dots at all: not a JWT, so no `sub` to fall back on.
+        return jsonResp({ code: 0, data: { accessToken: 'opaque-token', refreshToken: 'rt', domain: 'www.workbuddy.ai' } })
+      }
+      return jsonResp({ code: 12151, msg: '12151:not choose login account', data: {} })
+    })
+    const started = await oauthStart('global', { base: 'https://www.workbuddy.ai' })
+    if ('error' in started) throw new Error(started.error)
+    const answer = await oauthPoll(started.loginId, 'global')
+    expect(answer.done).toBe(true)
+    // NOT `account`: the login ends with an error the card can show, and nothing
+    // reaches the vault, so the previously stored account survives untouched.
+    expect('error' in answer).toBe(true)
+    if (!('error' in answer)) throw new Error('expected a refusal')
+    expect(answer.error).toContain('身份')
+  })
+
   it('jwtIdentityOf tolerates malformed or non-JWT tokens', () => {
     const empty = { sub: '', nickname: '', uin: '', preferredUsername: '' }
     expect(jwtIdentityOf('not-a-jwt')).toEqual(empty)
