@@ -321,10 +321,35 @@ async function collectAccount(
   // An account nobody can name is not an account this plugin can store; saying
   // so is better than silently replacing the previous one.
   if (uid === '') {
-    throw new Error('上游未返回账号身份（两个资料端点与令牌里都没有 id），无法区分这是哪个账号；请更新插件后重试')
+    // Say what actually went wrong; do not send the reader to the wrong fix.
+    // Two different failures land here and they need different next steps:
+    //   - both profile endpoints answering 12151 right now (their incident)
+    //     -> retry later;
+    //   - an opaque token plus empty endpoints -> there is genuinely no identity
+    //     to be had, and retrying will not change that.
+    // The earlier wording ("请更新插件后重试") was wrong for both: this plugin
+    // already reads every source it knows, so an update is not the remedy and
+    // the message implied our code was stale.
+    throw new Error(
+      '无法识别这个账号：上游没有返回账号资料，登录令牌里也没有可用的身份信息。'
+      + '这通常是上游资料接口临时异常，请稍后重新登录；如果一直这样，说明这种登录方式不再提供身份信息。',
+    )
   }
-  const nickname = optionalString(profile, ['nickname', 'NickName', 'nickname', 'ScreenName'])
-    ?? optionalString(jwt, ['nickname', 'preferredUsername'])
+  // Display name, in the order a person would expect:
+  //   1. the profile's own nickname (the name the app itself would show);
+  //   2. the JWT's `nickname` claim, when it has one;
+  //   3. `preferred_username` — the LOGIN ID, which on this upstream is
+  //      usually a phone number.
+  //
+  // The third step is deliberate: an account whose name is its login id reads
+  // as "unnamed" otherwise, and 未命名账号 was the symptom users reported
+  // (#268). Showing the number is less pretty but it is true, it is the
+  // account's own identifier, and it is strictly better than a placeholder that
+  // tells the user nothing. `uid` is never used for this — an opaque id is not
+  // a name.
+  const nickname = optionalString(profile, ['nickname', 'NickName', 'ScreenName'])
+    ?? optionalString(jwt, ['nickname'])
+    ?? optionalString(jwt, ['preferredUsername'])
   const uin = optionalString(profile, ['uin', 'Uin']) ?? optionalString(jwt, ['uin'])
   const enterpriseId = optionalString(profile, ['enterpriseId', 'EnterpriseId'])
   // 0 = the upstream did not state an expiry; the vault keeps the field and

@@ -294,6 +294,32 @@ describe('oauth sign-in protocol', () => {
     expect(answer.error).toContain('身份')
   })
 
+  // The display name has a deliberate ORDER. A real token from this upstream
+  // carries `preferred_username` = the login id (a phone number) and often no
+  // `nickname` at all, so an account would show 未命名账号 unless the last step
+  // is allowed to use it. Showing the number is true and identifies the account;
+  // a placeholder tells the user nothing. `uid` is never used — an opaque id is
+  // not a name.
+  it('shows the nickname when there is one, and the login id when there is not', async () => {
+    // (a) nickname present: it wins over the login id.
+    const withNick = await startAndPollWithToken(
+      jwtOf({ sub: 'sub-1', nickname: '账号A', preferred_username: '13800000000' }),
+      { '/v2/plugin/account': { code: 12151, data: {} }, '/v2/plugin/login/account': { code: 12151, data: {} } },
+    )
+    if (!withNick.answer.done || 'error' in withNick.answer) throw new Error('expected success')
+    expect(withNick.answer.account.nickname).toBe('账号A')
+
+    // (b) no nickname: fall back to `preferred_username` rather than to a blank.
+    const withoutNick = await startAndPollWithToken(
+      jwtOf({ sub: 'sub-2', preferred_username: '13800000000' }),
+      { '/v2/plugin/account': { code: 12151, data: {} }, '/v2/plugin/login/account': { code: 12151, data: {} } },
+    )
+    if (!withoutNick.answer.done || 'error' in withoutNick.answer) throw new Error('expected success')
+    expect(withoutNick.answer.account.nickname).toBe('13800000000')
+    // …and the id still comes from `sub`, never from the display name.
+    expect(withoutNick.answer.account.uid).toBe('sub-2')
+  })
+
   it('jwtIdentityOf tolerates malformed or non-JWT tokens', () => {
     const empty = { sub: '', nickname: '', uin: '', preferredUsername: '' }
     expect(jwtIdentityOf('not-a-jwt')).toEqual(empty)
