@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import type { WorkBuddyUpstreamModel, WorkBuddyWireIdentity } from '../src/upstream.ts'
 import {
@@ -1874,7 +1876,7 @@ describe('the conversation-identity triple (issue #66)', () => {
   })
 })
 
-describe('stableConversationId A/B (opt-in, default off)', () => {
+describe('stableConversationId A/B (explicit flag; schema default on since 5.24.15)', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -2466,5 +2468,23 @@ describe('the global two-channel read, end to end', () => {
     const shared = models.find(model => model.id === 'shared-model')
     expect(shared?.promos, 'the shared row lost the app document\'s badge').toHaveLength(1)
     expect(shared?.promos?.[0]?.badge?.label).toBe('夜间折扣')
+  })
+})
+
+describe('stableConversationId 的 config schema 默认值（5.24.15 起默认开，#275）', () => {
+  it('声明 .default(true)——把它改回 false 必须让本测试变红', () => {
+    // 上面的 A/B 测试测的是 client 层「显式传 flag」的行为；config schema 的
+    // 默认值是另一层（index.ts:1755 把 config.stableConversationId 流进 client）。
+    // 翻默认值只改 schema，client 层测试一概不红，所以这里单独钉住声明本身。
+    // 依据 #275 的冻结单变量实验 + 维护者独立复现（87.1pp [81.9,92.0]），
+    // 这是独立决策、不是实验成功的自动结果；回退默认值属产品决策，须显式改这里。
+    const source = readFileSync(
+      fileURLToPath(new URL('../src/index.ts', import.meta.url)),
+      'utf8',
+    )
+    const match = source.match(
+      /stableConversationId:\s*asVolatile\([\s\S]*?\.default\((true|false)\)/,
+    )
+    expect(match?.[1], 'stableConversationId 的 schema 默认值必须是 true').toBe('true')
   })
 })

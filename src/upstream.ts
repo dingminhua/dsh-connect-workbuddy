@@ -1834,19 +1834,18 @@ function commonHeaders(
  * VALUES. The gateway does not verify where these ids come from — any well-formed
  * UUID passes — so nothing here is a secret and nothing is persisted.
  *
- * DEFAULT: `X-Conversation-ID` is freshly generated per request, like the other
- * two ids. That is the shape the gate was bisected with and the shape the tests
- * below pin; it is also the shape the plugin has always sent on this path. There
- * is an OPT-IN A/B mode (`stableConversationId`, see
- * {@link deriveStableConversationId}) that instead pins a v4-SHAPED value derived
- * from the request's stable prefix — a prefix-derived AFFINITY KEY, not a host
- * session id. Only `X-Conversation-ID` is pinned: the request, message and root
- * ids stay per-request. This switch exists for an offline single-variable hit-rate
- * comparison; it makes NO claim about how the upstream keys or partitions any
- * cache, and it does not prove that stable ids improve anything. The mode is OFF
- * by default — enabling it changes a byte the gateway sees, and a hypothesis is
- * not a reason to change the default shape for every account before it has been
- * measured. See docs/STABLE-KEY-SEMANTICS.md.
+ * DEFAULT (since 5.24.15): `X-Conversation-ID` is pinned to a v4-SHAPED value
+ * derived from the request's stable prefix — a prefix-derived AFFINITY KEY, not a
+ * host session id (see {@link deriveStableConversationId}). Only `X-Conversation-ID`
+ * is pinned: the request, message and root ids stay fresh per request. This was
+ * promoted from an opt-in A/B mode after #275's frozen single-variable experiment
+ * plus the maintainer's independent replication (87.1pp [81.9, 92.0],
+ * BENEFIT_SUPPORTED); before 5.24.15 every id was freshly generated per request.
+ * Setting `stableConversationId: false` restores that original shape, which is
+ * also what the per-request tests below pin. No claim is made about how the
+ * upstream keys or partitions any cache — cache-key partitioning vs routing
+ * affinity are indistinguishable from the client side. See
+ * docs/STABLE-KEY-SEMANTICS.md.
  *
  * APPLIED TO BOTH REGIONS on purpose. The CN gateway tolerates their absence
  * today, so this is harmless there — and a header that is only ever sent on one
@@ -1979,7 +1978,7 @@ function canonicalContentKey(content: unknown, stripAcp: boolean): string {
 /**
  * Derive a request-prefix AFFINITY KEY and return it in `X-Conversation-ID` shape.
  *
- * ROUTE A / OPT-IN EXPERIMENT (`stableConversationId`, default off). This is a
+ * ROUTE A (`stableConversationId`, default on since 5.24.15). This is a
  * prefix-derived affinity key, not a host session id: the value hashes the model
  * id, the first `system` message's FULL content and the FIRST REAL `user`
  * message's FULL content (skipping the harness's injected context blocks via
@@ -2115,20 +2114,20 @@ export interface WorkBuddyWireIdentity {
    */
   usageIdentity?: boolean
   /**
-   * 请求前缀亲和键 A/B 开关（`chatStream` 专用，默认关，路线 A）。
+   * 请求前缀亲和键开关（`chatStream` 专用，5.24.15 起默认开，路线 A）。
    *
    * 开启后 {@link deriveStableConversationId} 从请求体**不变前缀**派生一个
-   * v4 形状的 `X-Conversation-ID`；其余三件套仍是每请求现生成。默认关闭时
-   * 派生函数不运行、`chatHeaders` 收到 `undefined`，因此不进入稳定键分支。
+   * v4 形状的 `X-Conversation-ID`；其余三件套仍是每请求现生成。设为 `false` 时
+   * 派生函数不运行、`chatHeaders` 收到 `undefined`，回到每请求现生成的原形状。
    *
-   * 这是**只改一个变量**的离线对照实验，见 `docs/STABLE-KEY-SEMANTICS.md`：
    * 该值是从请求正文派生的亲和键，不是宿主 `sessionId`，不宣称会话隔离，也
    * 不证明上游按会话分区或具备路由亲和等内部机制。相同前缀的独立会话会共享
    * 同一个键，压缩 / 首问变化 / 模型切换都可能换键。客户端无法区分缓存键分区
-   * 与路由亲和，因此这里只做可观测的命中率对照，不做机制断言。
+   * 与路由亲和，见 `docs/STABLE-KEY-SEMANTICS.md`，不做机制断言。
    *
-   * 默认 `false` 是单独决策，不因任何实验成功自动改变；推广默认值需用户另行
-   * 确认。配置文件里的开关由使用者按 `onUpstreamUsage` 的命中率自行决定。
+   * 默认值由 #275 的冻结单变量实验与维护者独立复现后翻为 `true`（87.1pp
+   * [81.9, 92.0]，BENEFIT_SUPPORTED）；这是单独决策，不因实验本身自动改变。
+   * 使用者仍可在配置里设为 `false` 恢复原形状。
    */
   stableConversationId?: boolean
   /**
@@ -5117,10 +5116,10 @@ export class WorkBuddyUpstreamClient {
       // 那次请求仍会被发出去（只是带着一个已 abort 的 signal），白打一次上游、
       // 白起一个 SDK 子进程——而调用方早已挂断。
       const identity = await this.wireIdentity(credential)
-      // 请求前缀亲和键 A/B（路线 A，默认关）：开关缺席时派生函数不运行，
-      // chatHeaders 收到 undefined，不进入稳定键分支。开启时从请求体不变前缀
-      // 派生一个 v4 形状的 X-Conversation-ID；该值是前缀亲和键，不是宿主会话
-      // 标识，也不对上游内部机制作断言（见 docs/STABLE-KEY-SEMANTICS.md）。
+      // 请求前缀亲和键（路线 A，5.24.15 起默认开）：从请求体不变前缀派生一个
+      // v4 形状的 X-Conversation-ID；该值是前缀亲和键，不是宿主会话标识，也不对
+      // 上游内部机制作断言（见 docs/STABLE-KEY-SEMANTICS.md）。设为 false 时派生
+      // 函数不运行，chatHeaders 收到 undefined，回到每请求现生成的原形状。
       // 路线 B（默认关）：调用方（shim）传入已做过域隔离摘要的会话亲和键时
       // 优先采用，路线 A 的派生不再运行；两路都关或 B 值缺席时行为与从前
       // 完全一致（见 docs/ROUTE-B-SESSION-ID.md）。

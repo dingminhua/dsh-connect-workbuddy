@@ -1292,8 +1292,8 @@ export const Config: z<Config> = z.object({
   ) as unknown as z<boolean>,
   stableConversationId: asVolatile(
     z.boolean()
-      .default(false)
-      .description("A/B 开关（路线 A，默认关）：开启时把 X-Conversation-ID 固定为从请求体不变前缀派生的亲和键（其余三件套仍每请求现生成）。该值不是宿主会话标识，不宣称会话隔离，也不证明上游按会话分区；相同前缀的独立会话会共享键。关闭时不进入派生分支。用于离线单变量命中率对照，详见 docs/STABLE-KEY-SEMANTICS.md。改动后需重载插件（配置在挂载时采样一次）。"),
+      .default(true)
+      .description("路线 A（默认开）：把 X-Conversation-ID 固定为从请求体不变前缀派生的亲和键（其余三件套仍每请求现生成），以复用上游前缀缓存。该值不是宿主会话标识，不宣称会话隔离，也不证明上游按会话分区；相同前缀的独立会话会共享键。设为 false 则回到每请求现生成的默认形状。依据 #275 的冻结单变量实验与维护者独立复现（87.1pp [81.9,92.0]，BENEFIT_SUPPORTED）翻为默认开；实验口径与边界见 docs/STABLE-KEY-SEMANTICS.md。改动后需重载插件（配置在挂载时采样一次）。"),
   ) as unknown as z<boolean>,
   sessionConversationId: asVolatile(
     z.boolean()

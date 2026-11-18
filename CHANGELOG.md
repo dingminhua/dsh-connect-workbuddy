@@ -2,8 +2,27 @@
 
 ## 5.24.15 (2026-11-18)
 
-> 版本号是 **patch**：只改 `package.json` 的一处 peer 元数据声明，运行时代码、出站字节、
-> 既有开关与池子排序一律未动。来自 issue #277。
+> 版本号是 **patch**：两处改动——`package.json` 的一处 peer 元数据声明（#277），以及把
+> `stableConversationId` 的默认值从 `false` 翻成 `true`（#275，会改变出站的一个头）。
+> 池子选号、账号身份、开关语义一律未动。来自 issue #277 与 #275。
+
+### 改进：稳定会话键（路线 A）默认开启，提升前缀缓存复用
+
+`stableConversationId` 自 5.24.15 起默认 `true`：默认路径从请求体**不变前缀**（model +
+首条 system + 第一条真实 user）派生 `X-Conversation-ID` 亲和键，让同一段对话复用上游隐式
+前缀缓存；`X-Conversation-Request-ID` / `X-Conversation-Message-ID` / `X-Root-Request-ID`
+仍每请求现生成。设为 `false` 即回到「每请求现生成三件套」的原形状。
+
+默认值从 `false` 翻到 `true` 依据 #275 的完整证据链：冻结单变量实验（20 组冷前缀，
+`BENEFIT_SUPPORTED`），维护者本人在全新 checkout 上的独立复现（`MEAN_D 87.1pp
+[81.9, 92.0]`，240/240 完整，与此前报告者读数同向、CI 重叠），加上真实多轮稳态 80–90%
+的观察。这是**独立决策**，不是实验成功的自动结果。
+
+**边界（如实说明）**：`87.1pp` 来自逐字节固定的人工长前缀逐轮重发，不等于真实多轮收益；
+`MECHANISM_PROVEN=false`，区分不了缓存键分区与路由亲和，不外推到其它账号 / 模型 / 端点。
+该值是前缀派生亲和键、不是宿主会话标识，相同前缀的独立会话会共享同一个键。开关在插件
+挂载时采样一次，改动后需重载插件才生效。路线 B（`sessionConversationId`）仍默认关闭。
+语义与限制见 `docs/STABLE-KEY-SEMANTICS.md`。
 
 ### 改进：把 `react` 标成可选 peer，允许在 DSH Go（鸿蒙 / iOS）上安装
 
