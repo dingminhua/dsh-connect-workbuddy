@@ -112,6 +112,65 @@ describe('issue #258 — recognising a body-size refusal', () => {
     expect(isBodyOversizeRefusal('oversize request rejected by the local gateway (byte limit)')).toBe(true)
   })
 
+  /**
+   * Issue #278: the three real 422 BODIES (not log lines). The earlier tests
+   * above all fed the matcher LOG lines carrying a byte comparison, which is
+   * why the trigger stayed green while never firing on the real chain — the
+   * body a host receives carries neither the numbers nor "refused locally".
+   * No component identifier is written into these assertions; they are pinned
+   * verbatim as the measured wording only.
+   */
+  it('recognises the real 422 response bodies, which carry no byte comparison', () => {
+    // (a) unattributedByteOversizeRefusal — the one the reporter hit.
+    expect(isBodyOversizeRefusal(
+      'billion-context refused this request locally: it is not attributed to a bili-managed session '
+      + 'and its body is larger than the silent-direct byte ceiling, so forwarding it would send a '
+      + 'multi-megabyte prompt to the provider uncompressed (#5405). Route the conversation through a '
+      + 'bili-managed session so it can be compressed, or retry after the host re-establishes attribution.',
+    )).toBe(true)
+
+    // (b) emptySlotOversizeRefusal — no_live_state variant.
+    expect(isBodyOversizeRefusal(
+      "billion-context refused this request locally: the native interceptor's live-state slot is empty "
+      + '(the plugin is between activations or was deactivated), and this model request is larger than '
+      + 'the silent-direct byte ceiling — forwarding it would send the prompt to the provider uncompressed (#5405).',
+    )).toBe(true)
+
+    // (c) a generic component saying the same fact in its own words: "byte
+    // ceiling" without any "silent-direct" must still match on the phrase.
+    expect(isBodyOversizeRefusal(
+      'the local gateway refused this request: the serialized body exceeded its byte ceiling',
+    )).toBe(true)
+
+    // (d) "silent-direct" + "refus" without EITHER byte phrase: a local
+    // refusal because the body cannot be sent straight through. This isolates
+    // the second matcher — without it the three cases above would still pass
+    // on "byte ceiling" alone, making this branch untested decoration.
+    expect(isBodyOversizeRefusal(
+      'billion-context refused this request locally: the body cannot be forwarded '
+      + 'over the silent-direct path uncompressed, so retry through a managed session',
+    )).toBe(true)
+  })
+
+  /**
+   * Deliberately NOT matched (issue #278 §五). Widening the byte matcher to
+   * these would make it compete with `isContextOverflow` or fold history for a
+   * failure that is not about the body at all.
+   */
+  it('does not widen into token overflow or unrelated refusals', () => {
+    // A local gateway that has moved to TOKEN wording is left to the host's
+    // context-overflow recovery: no "byte" and no "silent-direct" here.
+    expect(isBodyOversizeRefusal(
+      "billion-context refused this request locally: the model request is priced over the model's context window",
+    )).toBe(false)
+    // The proxy-failure / fallback wording has no silent-direct marker either.
+    expect(isBodyOversizeRefusal('the local proxy is down; refusing this request')).toBe(false)
+    // A 429 soft-rate refusal is unrelated to payload size.
+    expect(isBodyOversizeRefusal('429 soft_rate 6004: too many requests')).toBe(false)
+    // A generic bad-request is not a body-size problem.
+    expect(isBodyOversizeRefusal('invalid_request_error: messages must alternate roles')).toBe(false)
+  })
+
   it('does NOT claim TOKEN overflow, which the host already recovers from', () => {
     // Treating these here would make two authorities compete over one failure.
     expect(isBodyOversizeRefusal('prompt is too long (upstream code 11115)')).toBe(false)
@@ -231,6 +290,18 @@ describe('issue #258 — the adapter must ASK for the rescue', () => {
   it('recognises a body-size refusal as its own cause', () => {
     expect(rescueCauseOf(message('refused locally: 8,401,132 B > 8,388,608 B'))).toBe('body-bytes')
     expect(rescueCauseOf(message('the body exceeds the local request-body limit'))).toBe('body-bytes')
+  })
+
+  it('forwards the real 422 body to the body-bytes rescue (issue #278)', () => {
+    // The trigger fixed in #258 only reaches this second layer if the first
+    // layer recognises the body the host actually receives — with no byte
+    // comparison and the "refused this request locally" wording. This pins
+    // that whole path, not just the leaf matcher.
+    expect(rescueCauseOf(message(
+      'billion-context refused this request locally: it is not attributed to a bili-managed session '
+      + 'and its body is larger than the silent-direct byte ceiling, so forwarding it would send a '
+      + 'multi-megabyte prompt to the provider uncompressed (#5405).',
+    ))).toBe('body-bytes')
   })
 
   it('keeps the token overflow on the window cause', () => {

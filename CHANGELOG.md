@@ -1,5 +1,42 @@
 # Changelog
 
+## 5.24.16 (2026-11-19)
+
+> 版本号是 **patch**：只在 `isBodyOversizeRefusal`（长会话 422 救援的第一层入口判定）里补两种
+> 语义措辞，不改折叠目标、不改池子选号、不改任何开关语义或出站头；无破坏性改动。来自 issue #278。
+
+### 修复：长会话 422 仍进不了救援——入口判定漏认 bili 当前实际的拒绝措辞
+
+承接 #258。#258 把「请求体字节超限」接进了历史折叠链：第一层认出字节超限后在回复里插入
+`prompt is too long (request body exceeded the local byte limit)`，第二层 `rescueCauseOf` 据此
+按 `body-bytes`（当前测量 × 0.9）折叠。方向是对的，但 #278 在 5.24.15 上实测发现**第一层
+一次都没命中**，于是第二层永远不执行，长会话仍稳定 422、永久卡死。
+
+两处漏认：
+
+1. **#258 的测试喂的是日志行，不是响应体。** `8,401,132 B > 8,388,608 B` 这串只出现在
+   bili 的 `logHostEvent` 日志里，宿主拿到的 422 body 里根本没有字节比较。报告者照着日志写
+   了正例，测试全绿，真实链路上一次都匹配不上。「修好的目标从没被够到」。
+2. **匹配器要的短语和实际报文差一点。** 它认 `byte limit` + `refused locally`；bili 0.1.216
+   实际写的是 `byte ceiling` + `refused this request locally`——两个词都差一截，双否。
+
+改法：不写死任何组件标识符（`docs/DESIGN.md` §零 第 4 条——写死别人的标识符属于「随代码走」，
+对方改名或消失后代码还留着），只补两条语义判断：`byte ceiling` 与 `byte limit` 是同一件事的
+两种英文说法；`silent-direct` + `refus` 描述的是「这条请求因为不能直连发送而被本地拒绝」，
+与谁生成的无关。同步把函数注释里「每条真实拒绝都带字节比较」的过时说法改成事实：数值比较在
+日志里、不在响应体里。
+
+**边界（如实说明）**：0.1.216 已把这族报文的 token 口径变体（"priced over the model's
+context window"）刻意留在匹配之外——它没有 `byte`、也没有 `silent-direct`，继续交给
+`isContextOverflow` 处理，避免两个权威竞争同一个失败。这部分属于 bili 侧（其 PR #6546
+尚未合入 0.1.216），本插件不越界。折叠后重发的 body 是否确实低于 8 MiB 仍未验证——8 MiB 是
+bili 的内部常量，不在本仓库手里；能证明的只有入口判定会命中、会进救援、目标一定低于当前测量。
+
+守护测试（`tests/issue258-body-oversize-rescue.spec.ts`）：三条真实 422 body 正例（含把整条
+报文送进 `rescueCauseOf` 的第二层验证）、四条反例（token 口径 / proxy 挂掉 / 429 / 普通
+400），双向变异验证——摘掉 `byte ceiling` 红 1 条，摘掉 `silent-direct + refus` 红 1 条，
+把判定放宽成任意 `refus` 红 1 条（反例咬住），全部恢复后 20 条全绿。
+
 ## 5.24.15 (2026-11-18)
 
 > 版本号是 **patch**：两处改动——`package.json` 的一处 peer 元数据声明（#277），以及把

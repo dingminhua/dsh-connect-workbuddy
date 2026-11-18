@@ -1150,11 +1150,16 @@ export const BODY_OVERSIZE_MARKER = 'prompt is too long (request body exceeded t
  *
  * A local proxy/gateway in front of the provider may refuse a request whose
  * serialized body exceeds some byte ceiling it enforces. Measured shapes, from
- * a real report:
+ * real reports:
  *
- *   bili_gate_oversize_refusal_unattributed_bytes
- *   (8,401,132 B > 8,388,608 B)
+ *   "8,401,132 B > 8,388,608 B"                          (LOG line, not the body)
  *   "unattributed oversized model request refused locally with a 422"
+ *   "its body is larger than the silent-direct byte ceiling"          (422 body)
+ *
+ * The number comparison above is a LOG line, not the text returned to the
+ * host: a real 422 body may carry NO byte comparison at all (issue #278). That
+ * is why the phrase-level checks below matter — measuring only against the log
+ * line left the trigger passing its tests yet dead on the real chain.
  *
  * MATCHED BY MEANING, NOT BY NAME. That is the crux of the design decision
  * here: matching a plugin's identifier would be the "special-case another
@@ -1163,11 +1168,18 @@ export const BODY_OVERSIZE_MARKER = 'prompt is too long (request body exceeded t
  * module. A refusal that only says `oversize`/`too large` in BYTES is the class;
  * which component produced it is not this plugin's business, and a future
  * component with different wording that still says so is covered for free.
+ * `byte ceiling` and `byte limit` are two English spellings of the same thing;
+ * `silent-direct` + `refus` describes a request refused locally because it
+ * cannot be sent straight through — no component name is involved in either.
  *
  * What is deliberately NOT matched: `too_many_tokens`, `context length
  * exceeded`, `11115` and friends. Those are TOKEN overflow, which the host
  * already recovers from on its own; treating them here would make two
- * authorities compete over the same failure.
+ * authorities compete over the same failure. For the same reason a refusal
+ * that has moved to TOKEN wording ("priced over the model's context window")
+ * is left to `isContextOverflow` even if a local gateway emitted it — widening
+ * this matcher into token territory would claim a failure that is not about
+ * BYTES any more.
  */
 export function isBodyOversizeRefusal(text: string): boolean {
   if (text === '') return false
@@ -1182,11 +1194,22 @@ export function isBodyOversizeRefusal(text: string): boolean {
   const localByte = lower.includes('byte limit')
   const localRefusal = lower.includes('refused locally')
   // "byte limit" IS a byte ceiling, stated plainly — it needs no second word.
-  if (localByte) return true
+  // Issue #278: "byte ceiling" is the same fact in different English; matching
+  // it keeps us reading the MEANING rather than binding to one exact spelling
+  // (or to a component's identifier). `DESIGN.md` §零 rules out the latter.
+  if (localByte || lower.includes('byte ceiling')) return true
   // `oversize` alone is too weak: an upstream can say "oversized" about an
   // IMAGE, and folding history would not fix that. It has to be paired with an
   // explicit "refused locally" that names a body.
-  return oversize && localRefusal
+  if (oversize && localRefusal) return true
+  // Issue #278: a real 422 body can name neither a byte comparison nor the
+  // exact "refused locally" phrase — e.g. "refused this request locally ...
+  // larger than the silent-direct byte ceiling". `silent-direct` + `refus`
+  // still reads as "a local refusal because it cannot be sent straight
+  // through", with no component name and no plugin coupling. Kept separate
+  // from `oversize && localRefusal` so a generic "oversized image" still does
+  // not trigger a history fold.
+  return lower.includes('silent-direct') && lower.includes('refus')
 }
 
 /**
