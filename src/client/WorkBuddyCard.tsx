@@ -4520,7 +4520,24 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 // accounts they already had. The line below is what a first
                 // paint in flight looks like; the `detail=fast` document
                 // normally replaces it within one local round trip.
-                ? <p className="dsm-workbuddy-usage-text" role="status">{t('row.accountsLoading')}</p>
+                ? <>
+                    <p className="dsm-workbuddy-usage-text" role="status">{t('row.accountsLoading')}</p>
+                    {/*
+                      Account tools — above all IMPORT — do not wait on the usage
+                      document (issue #279). Import writes straight into the local
+                      vault: it needs no decoded sign-in and no account to exist,
+                      and on a fresh machine (Docker / Linux with no WorkBuddy
+                      desktop app) it is the ONLY way to get an account in at all.
+                      Hiding it for the whole loading window tied "can I import"
+                      to "has the account read answered", which is the coupling
+                      the reporter hit: the card sat on 正在加载账号… with no way
+                      in. Rendered here in its OWN container; the signed-in and
+                      signed-out-not-loading branches render the SAME node in
+                      their own containers, and the three states are mutually
+                      exclusive, so exactly one copy exists at any moment.
+                    */}
+                    <div className="dsm-workbuddy-pool-tools">{accountTools}</div>
+                  </>
                 : null}
               {status.status === 'signed-out' && !loading
                 ? <>
@@ -4615,6 +4632,15 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                     >
                       {t('row.usageRetry')}
                     </button>
+                    {/*
+                      Import is still available when the usage document FAILED
+                      (issue #279). The failure is exactly the case where a user
+                      has no readable account snapshot — and that is when a file
+                      imported from another machine is most needed. Import does
+                      not depend on the account read (it writes the vault), so
+                      error must not be the one state that locks the door.
+                    */}
+                    <div className="dsm-workbuddy-pool-tools">{accountTools}</div>
                   </div>
                 : null}
             </div>

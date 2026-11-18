@@ -170,12 +170,35 @@ describe('the card paints the account table from the first-paint document (issue
     expect(m.text()).not.toContain('row.signedOutHint')
     expect(m.text()).not.toContain('row.accountsRescan')
 
+    // Issue #279: IMPORT must not wait on the account document. On a fresh
+    // Docker/Linux machine with no desktop sign-in this is the ONLY way in, so
+    // hiding it for the whole loading window ties "can I import" to "has the
+    // read answered". The button lives here even while nothing has answered.
+    expect(m.text()).toContain('row.transferImport')
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-tools').length).toBe(1)
+
     for (const blocked of held) blocked.release()
     await m.settle()
     // Once an answer lands the loading line yields to the real signed-out
     // guidance with its re-detect button.
     expect(m.text()).toContain('row.accountsRescan')
     expect(m.text()).not.toContain('row.accountsLoading')
+    await m.unmount()
+  })
+
+  it('keeps IMPORT available when the usage document fails (issue #279)', async () => {
+    // A failed account read is the state with NO usable snapshot — exactly when
+    // a file carried over from another machine is most needed. Import does not
+    // read that document (it writes the vault), so the error state must not be
+    // the one state that hides it.
+    stubFetch(() => ({ status: 500, body: { error: 'usage unavailable' } }))
+    const m = await mount(WorkBuddyCard, { t, settingsScope: fakeScope({}), view: 'page' })
+    await m.settle()
+
+    expect(m.text()).toContain('row.transferImport')
+    // Still exactly one copy — the loading and error branches are exclusive.
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-tools').length).toBe(1)
+
     await m.unmount()
   })
 
