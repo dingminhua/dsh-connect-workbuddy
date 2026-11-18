@@ -1,5 +1,28 @@
 # Changelog
 
+## 5.24.15 (2026-11-18)
+
+> 版本号是 **patch**：只改 `package.json` 的一处 peer 元数据声明，运行时代码、出站字节、
+> 既有开关与池子排序一律未动。来自 issue #277。
+
+### 改进：把 `react` 标成可选 peer，允许在 DSH Go（鸿蒙 / iOS）上安装
+
+此前 `peerDependencies.react` 是 `^18.2.0`，但 `peerDependenciesMeta` 只把
+`@earendil-works/pi-ai` 标成了 optional。DSH Go 的鸿蒙 / iOS 安装器共用同一份依赖图
+解析器（`resolveGraph`），对每个 peer 只接受两种落点：命中宿主包表，或
+`peerDependenciesMeta[name].optional === true`。`react` 两者都不占，于是在解析阶段直接报
+`ERR_OHOS_PLUGIN_PACKAGE: unsupported non-host peer react`——尚未下载、未写 profile。
+
+本插件的 `lib/client.js` 确实 require `react` / `react/jsx-runtime` / `react-dom`，但这些前端库
+由宿主 Web 运行时的 `window.__ModuleLoader__` 注入，不来自 node_modules；`lib/index.js` 与
+`lib/bin.js` 对 React 零引用。因此把 `react` 标成 optional 只移除安装期的硬校验，不改变运行时
+行为：一旦环境提供 react，仍须满足 `^18.2.0` 的版本约束。
+
+**证据边界（如实说明）**：iOS 侧有实测——runtime 压缩包内无 react / react-dom 的 package.json，
+而 runtime 自带 client 包在同一注入机制下 require React 能正常运行；鸿蒙侧尚无真机 / 模拟器
+实测，安装包解析通过后 client 能否加载取决于宿主 WebView 是否同样注入 React。本次只解决
+「装不上」，不代表已验证鸿蒙端运行。
+
 ## 5.24.14 (2026-11-17)
 
 > 版本号是 **patch**：只在工具 schema 的发送前改写链里增加一种形状，默认行为、出站字节、
