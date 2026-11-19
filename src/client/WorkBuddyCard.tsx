@@ -61,6 +61,7 @@ import {
   withWorkBuddyRegionFastDetail,
   WORKBUDDY_POLL_INTERVALS_MS,
 } from '../status-paths.ts'
+import { ambiguousNameIds, qualifyName } from './model-name-collision.ts'
 import type {
   WorkBuddyCreditPosition,
   WorkBuddyWebMediaModel,
@@ -2149,6 +2150,11 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   // re-mapped onto the current catalog by model id.
   const draft = drafts[activeRegion]
   const visibleModels = draft?.models ?? (status.status === 'signed-in' ? status.models : [])
+  // Issue #280: two rows can share the same upstream name (the international
+  // free/paid flash twins). Qualify both at DRAW time only — never write the
+  // suffix into `model.name`, or it would be persisted to `lastCatalog` on Save
+  // and become a stale lie the next time the upstream renames a row.
+  const ambiguousModelIds = ambiguousNameIds(visibleModels)
   /**
    * The LIVE load levels, keyed by model id.
    *
@@ -4042,7 +4048,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                 />
                                 <span className="dsm-workbuddy-model-copy">
                                   <span className="dsm-workbuddy-model-name">
-                                    {model.name}
+                                    {qualifyName(model.name, model.id, ambiguousModelIds)}
                                     {effectiveRate(model) === undefined ? null
                                       // The SAME token the picker shows: the label slot
                                       // appends `x0.00` to the model name (see

@@ -917,7 +917,13 @@ describe('the pool: regression guards for the audited defects', () => {
  * `setTimeout` because a slow CI box then takes longer instead of failing.
  */
 async function waitFor(done: () => Promise<boolean>, label: string): Promise<void> {
-  const deadline = Date.now() + 10_000
+  // Budget matches vitest's `testTimeout` (30s, see vitest.config.ts). The old
+  // 10s ceiling caused intermittent failures under full parallel load — the
+  // auto-checkin tick is a one-shot setTimeout that gets starved when 8 workers
+  // compete for CPU (recorded in docs/DSH-0.2.2-RC3-FOLLOWUP.md §5.1). This is a
+  // ceiling, not a fixed sleep: a healthy tick still returns in ~25ms, while a
+  // genuinely broken poll still fails (just 20s later).
+  const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
     if (await done()) return
     await new Promise(resolve => setTimeout(resolve, 25))

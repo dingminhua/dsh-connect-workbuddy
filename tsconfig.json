@@ -59,6 +59,7 @@
     "tests/model-label-wiring.spec.tsx",
     "tests/cli-bridge-live-pill.spec.tsx",
     "tests/issue120-picker-rate-duplicate.spec.tsx",
+    "tests/issue280-picker-rate-after-qualifier.spec.tsx",
     "tests/card-media-models.spec.tsx",
     "tests/card-channel-continue.spec.tsx",
     "tests/issue170-status-retry.spec.tsx",

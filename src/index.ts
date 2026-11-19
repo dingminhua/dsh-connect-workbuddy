@@ -61,6 +61,7 @@ import { BENEFIT_CACHE_MS, claimableBenefits, type WorkBuddyBenefitView } from '
 import {
   createWorkBuddyAdapter,
   regionOfProvider,
+  ambiguousNameIds,
   workBuddyDisplayName,
   workBuddyModelInput,
   WORKBUDDY_GLOBAL_PROVIDER,
@@ -153,6 +154,7 @@ export {
   WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
   createWorkBuddyAdapter,
   regionOfProvider,
+  ambiguousNameIds,
   workBuddyDisplayName,
   workBuddyModelInput,
   workBuddyThinkingLevelMap,
@@ -4799,9 +4801,13 @@ export function apply(ctx: Context, config: Config): void {
             // rather than from the array a previous refresh wrote.
             effectiveImageIds(state, live),
           )
+          // Issue #280: same-name rows are ambiguous in the picker except by
+          // their (upstream-controlled) price suffix. Qualify both with their
+          // ids, from the roster THIS discovery answered — no hardcoded id.
+          const ambiguousIds = ambiguousNameIds(next)
           return next.map(model => ({
             id: model.id,
-            name: workBuddyDisplayName(model),
+            name: workBuddyDisplayName(model, ambiguousIds),
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
             inputModalities: workBuddyModelInput(model),

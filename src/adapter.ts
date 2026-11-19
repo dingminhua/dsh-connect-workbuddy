@@ -378,6 +378,56 @@ export function workBuddyModelInput(info: WorkBuddyModelInfo): ('text' | 'image'
 }
 
 /**
+ * Ids whose display name COLLIDES with another row of the same roster
+ * (issue #280).
+ *
+ * WHY THIS EXISTS. The international catalog carries two rows whose upstream
+ * `name` is identical (`Deepseek-V4.1-Flash`) while their ids and rates differ
+ * (a free row and a paid `-sg` row). The picker then showed two lines that
+ * differed ONLY by the `x0.00` / `x0.03` suffix, so selecting the "free" one
+ * and later seeing the paid one billed was indistinguishable from the upstream
+ * changing its price — the reporter could not tell which row they had picked.
+ * The fix is to make the two rows tell themselves apart, not to guess which
+ * rate is correct (that is a fact about the upstream, not this plugin).
+ *
+ * DATA-DRIVEN, NOT A HARDCODED ID LIST. Any two rows sharing a name in ANY
+ * region are ambiguous, whether the collision is a version twin, a channel
+ * twin or something the upstream adds next month. A fixed id pair would age
+ * the moment the vendor renames one, and would silently miss the next such
+ * pair — the same "symbol exists but content is wrong" trap issue #281 found
+ * in the channel-gate table. Name equality is the only fact the plugin can
+ * read without asserting a price or a product decision.
+ *
+ * @param models - One region's roster, in display order.
+ * @returns The ids that share their `name` with a different id.
+ */
+export function ambiguousNameIds(
+  models: readonly Pick<WorkBuddyModelInfo, 'id' | 'name'>[],
+): ReadonlySet<string> {
+  const counts = new Map<string, number>()
+  for (const model of models) counts.set(model.name, (counts.get(model.name) ?? 0) + 1)
+  const ambiguous = new Set<string>()
+  for (const model of models) {
+    if ((counts.get(model.name) ?? 0) > 1) ambiguous.add(model.id)
+  }
+  return ambiguous
+}
+
+/**
+ * The name to DRAW for one row, with an id qualifier when its name collides.
+ *
+ * The qualifier goes BEFORE the multiplier suffix that {@link workBuddyDisplayName}
+ * appends, so the picker's `splitCatalogRate` (which strips a trailing
+ * ` · x<rate>`) keeps the disambiguated base and still draws exactly one rate.
+ */
+export function disambiguatedName(
+  info: Pick<WorkBuddyModelInfo, 'id' | 'name'>,
+  ambiguousIds?: ReadonlySet<string>,
+): string {
+  return ambiguousIds?.has(info.id) === true ? `${info.name} (${info.id})` : info.name
+}
+
+/**
  * DSH-facing display name: the model name plus the upstream credit multiplier,
  * spelled the way WorkBuddy's own selector does (`GLM-5.3 · x0.79`).
  *
@@ -387,11 +437,20 @@ export function workBuddyModelInput(info: WorkBuddyModelInfo): ('text' | 'image'
  * settings, and the request wire (`model: <id>` reaching the shim). A model
  * without a parsed multiplier keeps its bare name; a zero multiplier shows
  * `x0.00`, matching WorkBuddy's rendering of free models.
+ *
+ * @param info - The catalog row.
+ * @param ambiguousIds - Ids whose name collides in this roster (issue #280).
+ *                       Omitted means "no collision", so single-model callers
+ *                       and the existing tests keep the historical name.
  */
-export function workBuddyDisplayName(info: WorkBuddyModelInfo): string {
-  const base = info.creditMultiplier === undefined
-    ? info.name
-    : `${info.name} · x${info.creditMultiplier.toFixed(2)}`
+export function workBuddyDisplayName(
+  info: WorkBuddyModelInfo,
+  ambiguousIds?: ReadonlySet<string>,
+): string {
+  const base = disambiguatedName(info, ambiguousIds)
+  const withRate = info.creditMultiplier === undefined
+    ? base
+    : `${base} · x${info.creditMultiplier.toFixed(2)}`
   // Load does NOT ride on this string any more. The host renders the model
   // name verbatim, and the plugin now draws the load badge in the host's own
   // picker through the `conversation.input.model.label` slot
@@ -399,7 +458,7 @@ export function workBuddyDisplayName(info: WorkBuddyModelInfo): string {
   // rather than a character whose colour belongs to the emoji font. Leaving
   // the emoji here as well would show the same fact twice, in two visual
   // languages. See `src/busy.ts`.
-  return base
+  return withRate
 }
 
 /**
@@ -456,6 +515,7 @@ function toPiModel(
   identity: string = WORKBUDDY_MODEL_IDENTITY,
   midConvoSystemMessages = false,
   sessionAffinity = false,
+  ambiguousIds?: ReadonlySet<string>,
 ): Model<Api> {
   const thinkingLevelMap = workBuddyThinkingLevelMap(info)
   // Declaring this CHANGES THE BYTES we send, so it is not a free statement.
@@ -499,7 +559,7 @@ function toPiModel(
   }
   return {
     id: info.id,
-    name: workBuddyDisplayName(info),
+    name: workBuddyDisplayName(info, ambiguousIds),
     api: 'openai-completions',
     provider: identity,
     baseUrl,
@@ -1700,7 +1760,14 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // Route B is read LIVE here so flipping the card can rebuild the model
     // shape on the next `getModels`/catalog read without a plugin reload.
     const sessionAffinity = options.sessionConversationId?.() === true
-    return catalog.current().map(info => toPiModel(info, baseUrl, modelIdentity, midConvoSystemMessages, sessionAffinity))
+    // Issue #280: two rows that share a display name are indistinguishable in
+    // the picker except by the price suffix, which the upstream can change.
+    // Qualify BOTH with their ids so the user can tell which one they picked.
+    // Computed per build (not cached): a refresh rebuilds the roster, and the
+    // collision can come and go with it.
+    const roster = catalog.current()
+    const ambiguousIds = ambiguousNameIds(roster)
+    return roster.map(info => toPiModel(info, baseUrl, modelIdentity, midConvoSystemMessages, sessionAffinity, ambiguousIds))
   }
 
   const base = createProvider({

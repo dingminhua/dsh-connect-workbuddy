@@ -1,5 +1,97 @@
 # Changelog
 
+## 5.25.1 (2026-11-19)
+
+> 版本号是 **patch**：两处都是显示/出站文案层——给渠道指纹清洗补一层「形态表」，
+> 给同名模型补一个按数据推导的 id 后缀。不改模型 id、路由、凭据、计费规则或任何开关；
+> 发往上游的聊天请求体只在命中第三方 CLI 自报家门句时才改写（此前这些请求会 400），
+> 其余请求逐字节不变。来自 issue #281 与 issue #280。
+
+### 修复：渠道改写表覆盖不到第三方 CLI 的「自报家门」句（issue #281）
+
+`CHANNEL_GATE_PHRASES` 是字面表，每一行 `from` 用 `includes` 精确匹配，锁死一种措辞。
+第三方编码 CLI（grok / codex / claude 均已实测）把**自己的**身份写进 `system`，插件改不了
+它们的提示，只能在出站前改写；而字面行只要厂商换版本号（`4.6`→`5.0`）、换动词
+（`released`→`built`）、换产品名或换介词就静默漏掉——清洗函数原样返回、请求照发、日志无异常，
+直到一条 `assistant` 历史消息把整个会话永久毒化（400 / 11128）。
+
+改法：在字面表之后加一层 `CHANNEL_GATE_PATTERNS` 形态表，锁「身份句 + 创造动词 + 已知厂商」
+的形态而非逐字措辞。两行：一行认带版本号的 Grok + xAI，一行不认产品名只认厂商（换品牌仍兜住）。
+三个实装细节都写进注释并钉进测试：① 版本号里的点必须放行，否则 `Claude 2.1.327` 会在
+`2.1` 处被当句末而整句漏掉；② 必须吃到句末，否则产出 `agent's Claude Agent SDK ...` 残句；
+③ 替换串不带句点，因为尾部 `[^.\n]*` 已经吃掉了原句点，再加一个会打印 `..`。
+形态行锚在行首，普通正文里提到厂商（`The product X released by Y in 2023`）逐字节不动。
+
+守护测试（`tests/issue281-channel-gate-shape-patterns.spec.ts`）：命中矩阵 13 条、放过矩阵 7 条、
+残句断言、幂等、以及 `prepareChatBody` 在 system/assistant 上生效而 user/tool 不动。
+变异验证：摘掉形态循环 → 4 条红，恢复后全绿；既有 #163/#167/#189/#98 等 118 条渠道测试全过。
+
+### 修复：国际版同名模型行无法区分选中的是哪一个（issue #280）
+
+国际目录里 `deepseek-v4.1-flash`（免费）与 `deepseek-v4.1-flash-sg`（付费）**上游显示名完全相同**，
+选择器只剩 `x0.00` / `x0.03` 后缀能区分；上游改一次价，用户就无法分辨「选中的那行」和
+「个人中心扣费的那行」是不是同一个。插件无从知道哪个倍率是真的（那是上游事实，且会变——
+见 #214），能做的是让两行自己说清楚身份。
+
+改法：**按数据推导**，不做硬编码 id 对。任一名单里同名两行，就在 DSH 展示名
+（`workBuddyDisplayName`，覆盖 `buildModels` 与 model discovery 两条路径）和卡片行
+（绘制时用 `qualifyName`）上补 `(模型id)` 后缀。卡片只在**绘制时**加，绝不写回 `model.name`，
+因此 Save 不会把后缀存进 `lastCatalog`。后缀放在 ` · x<倍率>` 之前，选择器的
+`splitCatalogRate` 仍只画一个倍率，促销折扣照常生效（#120）。模型 id、路由、请求体、计费一律不变。
+
+守护测试（`tests/issue280-same-name-model-twins.spec.ts`）：同名检测（host/client 两侧）、
+唯一名不动、两行名字不同、无碰撞时保持旧名、卡片不改写持久化名、选择器仍只一个倍率、
+折扣仍生效、以及对**新出现的**同名对也自动生效（证明不是写死 id）。
+变异验证：让碰撞检测永不命中 → 5 条红，恢复后全绿。
+
+## 5.25.0 (2026-11-19)
+
+> 版本号是 **minor**：开发依赖栈从 DSH `0.2.2-rc.3` 整块换到 `0.2.2-rc.5`，并把跨 rc.4 / rc.5
+> 的两份升级指南逐面复核登记；不改一行运行时源码，不改任何用户可见行为。逐面复核见
+> [`docs/DSH-0.2.2-RC5-FOLLOWUP.md`](docs/DSH-0.2.2-RC5-FOLLOWUP.md)。
+
+### 变更：依赖基线整块跟到 0.2.2-rc.5
+
+桌面宿主已升到 `0.2.2-rc.5`。`pnpm-workspace.yaml` 的 `overrides` 把 25 条 `dsh-*`
+由 `0.2.2-rc.3` 整块换成 `0.2.2-rc.5`，lockfile 重生成后 rc.3 残留 0 条、25 条 override
+全部可解析。`cordis 4.1.0`、`schemastery 3.19.0`、`pi-ai 1.3.0` 三个钉不动——rc.5 的
+`dsh-llm-pi-ai` 仍声明 `@earendil-works/pi-ai ^1.3.0`，已核对。
+
+`package.json` 的 peer / devDeps 范围**不改**：`>=0.1.7-rc.1 <0.3.0-0` 已放行 rc.5，
+上界 `<0.3.0-0` 仍明确挡住 0.3.0 线。`tests/dsh-line.spec.ts` 的闸门实算通过。
+
+### 复核：两份升级指南都不需要本插件适配
+
+从 rc.3 到 rc.5 跨两份指南：`v0.2.2-rc.3` 的 `deepseek-refusal-code`
+（`MALFORMED_RESPONSE` → `CONTENT_REFUSED`）与 `v0.2.2-rc.4` 的
+`web-search-deepseek-model-default`（DeepSeek 路由上的搜索改走 Messages 搜索）。
+
+两者都与本插件正交：
+
+- `CONTENT_REFUSED` 由宿主的 `dsh-llm-deepseek` 在**DeepSeek 官方路由**上产生；
+  本插件注册的是 `workbuddy` / `workbuddy-global`，且对 `turn/end` 失败按插件自己写进
+  message 的字面量分类（见 `src/channel-continue.ts` 的 `isChannelRejectFailure`），
+  不按宿主重分类出的 `LlmFailure.code` 分类——一个内容拒答本就不该触发「自动续发继续」。
+- 搜索默认只在 `deepseek-official` / `deepseek-account` 路由上改变；本插件的模型挂在
+  WorkBuddy 路由下，仍走 `deepseek-search-api`，源码里也无任何 `searchProvider` 引用。
+
+逐包比对：源码直接 import 的 5 个 `dsh-*` 包，`lib/` 在 rc.3 与 rc.5 之间**逐字节相同**；
+typecheck 0 error 也印证了这一点（动的只有版本号）。没有改动源码。
+
+### 收尾：结清 rc.3 复核 §5.1 的偶发超时
+
+[`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md) §5.1 记录的
+`tests/pool-e2e.spec.ts` 满并行偶发超时（10s 预算被 CPU 争抢饿到）按该文档给出的方案处理：
+`waitFor` 预算 10s → 30s，与 `vitest.config.ts` 的 `testTimeout` 对齐。这是上限而非固定等待，
+健康 tick 仍约 25ms 返回、真正坏掉的轮询依旧失败。本轮完整 `pnpm run check` 全绿、
+未再超时；但只跑了一次，没有把它写成「已根治」，若 CI 仍偶发则按 rc.3 §5.1 的另一方案
+挪到独立文件。
+
+### 验收
+
+`pnpm run check`（typecheck → build → check:pii → test）退出码 0：
+215 文件 / 3725 通过 / 2 按平台跳过，`tsc` 两个项目 0 error，`check-pii` 扫描 472 文件（31 随包发布）clean。
+
 ## 5.24.17 (2026-11-19)
 
 > 版本号是 **patch**：只改一处 UI 挂载点——让账号导入导出工具区在「正在加载账号」和账号文档

@@ -85,7 +85,7 @@ grep -c '">=0.1.7-rc.1 <0.3.0-0"' package.json
 grep -c '"@deepseek-ai/dsh[a-z-]*": ">=0.1.7-rc.1 <0.3.0-0"' package.json
 
 # overrides 必须整块指向本次复核过的那条宿主线，且不含任何别的版本串
-# 输出应是「条数 + 唯一版本号」，且版本号只有一条（例如 `25 0.2.2-rc.3`）。
+# 输出应是「条数 + 唯一版本号」，且版本号只有一条（例如 `25 0.2.2-rc.5`）。
 # 注意不要用 `awk '{print $3}'`：这些行只有两个字段，$3 恒为空 —— 那样这条
 # 「不得跳过」的检查会永远静默通过，恰好漏掉它本该抓的「混入别的版本串」。
 grep -E "'@deepseek-ai/dsh-[a-z-]+':" pnpm-workspace.yaml | sed -E "s/.*': *//" | sort | uniq -c
@@ -103,7 +103,7 @@ git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
 - [ ] 上界带 `-0` 后缀（写成 `<0.3.0` 等于不挡：DSH 至今全部 tag 都是预发布，围栏会静默失效）
 - [ ] 两条 README 的「受支持的宿主范围」表与 `package.json` 三者一致
 - [ ] 若本次放宽了上界，已在 `CHANGELOG.md` 说明**依据**（哪些包、如何复核），而不是只写「支持新版本」
-- [ ] **pi-ai 与宿主同批升级**：`dsh-llm-pi-ai` 的 `@earendil-works/pi-ai` 依赖是精确下限（0.2.2-rc.3 为 `^1.3.0`），把 pi-ai 单独留在旧代会因 `providers/all` 缺导出而**启动失败**，不是类型问题
+- [ ] **pi-ai 与宿主同批升级**：`dsh-llm-pi-ai` 的 `@earendil-works/pi-ai` 依赖是精确下限（0.2.2-rc.5 仍为 `^1.3.0`），把 pi-ai 单独留在旧代会因 `providers/all` 缺导出而**启动失败**，不是类型问题
 - [ ] **overrides 里每一条都真的能解析**：`pnpm why <pkg>` 无输出、且 lockfile 里也没有它，说明这条 override
       指向的版本**从未被任何包依赖**（`dsh-invariants` 就这样挂了一年多，而它锁的版本在 npm 上根本不存在）。
       逐条查：有依赖的必须能解析，没依赖的直接删，别让它继续在清单里声称一份不存在的依赖

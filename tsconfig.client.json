@@ -66,6 +66,7 @@
     "tests/cli-bridge-live-pill.spec.tsx",
     "tests/issue120-picker-rate-duplicate.spec.tsx",
     "tests/issue120-promo-discount.spec.ts",
+    "tests/issue280-picker-rate-after-qualifier.spec.tsx",
     "tests/issue124-enterprise-credits.spec.ts",
     "tests/card-media-models.spec.tsx",
     "tests/card-channel-continue.spec.tsx",

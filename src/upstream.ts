@@ -2849,17 +2849,76 @@ const CHANNEL_GATE_PHRASES: readonly (readonly [string, string])[] = [
 ]
 
 /**
+ * Shape-locked rewrites for THIRD-PARTY coding CLIs' self-introduction lines
+ * (issue #281).
+ *
+ * WHY A SECOND TABLE AT ALL. `CHANNEL_GATE_PHRASES` above is a literal table:
+ * every `from` is matched with `out.includes(from)`, so each row freezes one
+ * exact wording. Third-party CLIs write their OWN identity into `system` (grok,
+ * codex and claude were all captured doing so), and the plugin cannot edit their
+ * prompts — outbound rewriting is the only lever it has. A literal row added
+ * for one captured sentence silently stops matching the moment the vendor
+ * bumps a version (`4.6` → `5.0`), swaps a verb (`released` → `built`),
+ * renames the product or changes a preposition. Worse, the failure is SILENT:
+ * the scrub returns the text unchanged, the request goes out untouched, and
+ * nothing logs — until a session is poisoned again. These regex rows lock the
+ * SHAPE (identity clause + creator verb + known vendor) instead of the exact
+ * words, so those routine changes stay covered.
+ *
+ * WHICH ROLES. This table is applied by the same function as the literal table,
+ * which `prepareChatBody` calls on `system` and `assistant` parts only — the
+ * roles the gate reads (`scansOpening`). Codex writes the line under
+ * `developer`, which `prepareChatBody` renames to `system` before this runs, so
+ * it is covered too.
+ *
+ * TWO ROWS, AND WHY BOTH. The first locks the known xAI product name (Grok) and
+ * tolerates version numbers, optional articles and the creator verb being
+ * omitted. The second ignores the PRODUCT entirely and recognises the creator
+ * alone, so a vendor rename still lands. Both replace the whole sentence through
+ * the trailing `[^.\n]*`: stopping at the vendor name produced broken text like
+ * `You are an autonomous coding agent's Claude Agent SDK is the runtime.` in
+ * the reporter's end-to-end runs. The replacement is idempotent — it no longer
+ * contains "You are" followed by a creator clause — and both patterns are
+ * anchored to a line start (`m` flag on the vendor row, word boundary on the
+ * Grok row) so ordinary prose such as `The product X released by Y in 2023`
+ * passes through byte-for-byte.
+ *
+ * `.` is only allowed INSIDE a version number (followed by a word character or
+ * a digit) in the span patterns, so it can carry `4.6` / `2.1.327` but can never
+ * jump a sentence boundary.
+ */
+const CHANNEL_GATE_PATTERNS: readonly (readonly [RegExp, string])[] = [
+  [
+    /\bYou are\s+(?:an?\s+)?(?:the\s+)?Grok\b(?:[^.\n]|\.(?=[\w])){0,60}?\b(?:(?:released|made|built|created|developed|trained|powered)\s+)?(?:by|from)\s+xAI\b[^.\n]*/gi,
+    // No trailing period: the `[^.\n]*` above already consumes the input's
+    // sentence-ending period when there is one. Adding one here printed `..`.
+    'You are an autonomous coding agent',
+  ],
+  [
+    // 不认产品名只认厂商：换品牌仍能兜住。版本号里的点用 `\.(?=\d)` 放行，
+    // 否则 "Claude 2.1.327" 会在 "2.1" 处被当成句末、整句漏掉。
+    /^[ \t]*You are\s+(?:[^.\n]|\.(?=\d)){0,120}?\b(?:released|made|built|created|developed|trained|powered)\s+(?:by|on|from)\s+(?:xAI|Anthropic|OpenAI|Google(?:\s+DeepMind)?|Meta|Mistral)\b[^.\n]*/gm,
+    'You are an autonomous coding agent',
+  ],
+]
+
+/**
  * Rewrite the measured gate phrases in one text part.
  *
  * Exported for the tests and for callers that build a body themselves. It is
  * idempotent: every `to` string is different from its `from` string and no
  * rewrite recreates another `from` string, so a second pass is a no-op.
+ *
+ * The literal table runs first (stable, auditable DSH wording), then the shape
+ * table catches third-party CLI identities. Both are idempotent and independent
+ * of each other, so the order is not load-bearing.
  */
 export function rewriteChannelFingerprintPhrases(text: string): string {
   let out = text
   for (const [from, to] of CHANNEL_GATE_PHRASES) {
     if (out.includes(from)) out = out.replaceAll(from, to)
   }
+  for (const [re, to] of CHANNEL_GATE_PATTERNS) out = out.replace(re, to)
   return out
 }
 
