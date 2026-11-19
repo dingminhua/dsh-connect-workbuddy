@@ -1,5 +1,33 @@
 # Changelog
 
+## 5.25.2 (2026-11-19)
+
+> 版本号是 **patch**：只改依赖声明这一层——把 `@deepseek-ai/dsh-client-ui-primitives`、
+> `@deepseek-ai/dsh-client-ui-renderer`、`@deepseek-ai/dsh-client-ui-settings` 三个 peer 标成
+> optional。不改一行运行时源码，不改模型 id、路由、凭据、计费规则或任何开关；桌面端用户可见行为
+> 逐字节不变。来自 issue #283。
+
+### 修复：三个客户端 UI peer 让插件在 DSH Go 上装不上（issue #283）
+
+DSH Go 在下载任何东西之前先解析插件的 peer 图：一个既不是宿主包（`hostPackages`）、又没在
+`peerDependenciesMeta` 里标成 optional 的 peer，会直接以
+`unsupported non-host peer <name>` 中止安装——依赖图解析阶段就失败，未下载、未写 profile。
+这三个 `dsh-client-ui-*` 是宿主的**Web 端**包：由宿主 Web 运行时（`window.__ModuleLoader__`）
+注入，不进 `node_modules`，注册表 scope 也不是 `installation`，因此在 DSH Go 上不在宿主包表里。
+本轮先卡在 `dsh-client-ui-primitives`（`react` 已在 5.24.15 标 optional，见 #277）。
+
+改法：把三个 peer 标成 optional，与 `react`、`@earendil-works/pi-ai` 同形。**没有删掉 peer 声明**——
+删掉会连带丢掉类型契约，也会破坏 `tests/dsh-line.spec.ts` 强制的那条
+「devDependencies 与 peerDependencies 逐条相等」。
+
+之所以敢标 optional：这三个包在 `src/client/**` 里**只以 `import type` 出现**，只贡献类型、
+不产生运行时依赖，缺了也不会让插件跑不起来。守护测试（`tests/issue283-optional-client-ui-peers.spec.ts`）
+不只钉住那三个 `optional: true`，还钉住「它们仍然只是类型引用」——将来谁把其中之一改成值导入，
+`optional` 就会变成一句假话，测试立刻变红。变异验证：摘掉一条 optional → 红；把类型导入改成值导入
+→ 红；恢复后全绿。
+
+`dsh.client.inject` 未改动：那是宿主侧的注入清单，与 peer 是两件事。
+
 ## 5.25.1 (2026-11-19)
 
 > 版本号是 **patch**：只改渠道指纹清洗这一层——给字面表补一层「形态表」。不改模型 id、
