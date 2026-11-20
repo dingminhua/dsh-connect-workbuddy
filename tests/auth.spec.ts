@@ -12,6 +12,7 @@ import {
   WorkBuddyCredentialStore,
 } from '../src/auth.ts'
 import type { WorkBuddyCredential, WorkBuddyEncryptedCredentialError } from '../src/auth.ts'
+import { isCredentialRejectedError, WorkBuddyCredentialRejectedError } from '../src/upstream.ts'
 
 let root: string
 beforeEach(async () => {
@@ -774,6 +775,26 @@ describe('WorkBuddyCredentialStore refresh', () => {
       refresh: async () => { throw new Error('nope') },
     })
     await expect(store.resolve()).rejects.toThrow(/sign in again/)
+  })
+
+  it('keeps the credential-rejected marker when an expired refresh is refused (issue #285)', async () => {
+    // The reporter's CN card showed "未登录" and hid every account even though
+    // the desktop app was signed in and the export dialog listed four of them.
+    // The cause: refresh()'s 401 was a WorkBuddyCredentialRejectedError, but the
+    // expiry wrapper replaced it with a plain Error, so the card's classifier
+    // could not see the refusal. The marker must survive resolve().
+    await writeAuth(LIVE, accountDoc({
+      auth: { accessToken: 'token-dead', refreshToken: 'r', expiresAt: Date.now() - 1000 },
+    }))
+    const rejected = new WorkBuddyCredentialRejectedError(401)
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: join(root, 'own-auth.json'),
+      refresh: async () => { throw rejected },
+    })
+    const error = await store.resolve().then(() => undefined, (e: unknown) => e)
+    expect(error).toBe(rejected)
+    expect(isCredentialRejectedError(error)).toBe(true)
   })
 })
 

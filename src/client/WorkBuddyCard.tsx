@@ -2621,12 +2621,59 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     selectionLost,
     message: status.status === 'signed-out' ? status.message : undefined,
     searched,
+    // Issue #285: a token refused DURING REFRESH is not "no sign-in found".
+    // The generic hint sends the user to re-sign-in even when another healthy
+    // local account would fix it. Suppress it here; the dedicated
+    // credential-refused block below carries the accurate advice.
+    credentialRejected: status.status === 'signed-out' && status.credentialRejected === true,
   })
   /**
    * Whether this region runs a saved choice, per the Host. `undefined` only on
    * the error branch, which renders no picker and therefore no state line.
    */
   const selectionExplicit = status.status === 'error' ? undefined : status.selectionExplicit
+
+  /**
+   * The credential-refused advice, shared by the signed-in and signed-out
+   * branches (issue #285). A token can be refused either on a credits read of
+   * an otherwise usable credential, or during `resolve()`'s refresh — the two
+   * land on different `status` values but need the SAME remedy. Keeping one
+   * JSX node is what stops the signed-out copy from drifting back to the
+   * misleading "sign in once" while the signed-in copy says "switch account".
+   */
+  const credentialRejected = status.status !== 'error' && status.credentialRejected === true
+  const rejectedAccountName = status.status === 'signed-in'
+    ? status.accountName
+    : status.status === 'signed-out'
+      ? nameOf(status.accounts.find(account => account.selected)?.accountName ?? '')
+      : ''
+  const recovery = status.status === 'error' ? undefined : status.recovery
+  const credentialRefusedBlock = !credentialRejected ? null : (
+    <section className="dsm-workbuddy-usage-error" role="alert">
+      <strong>{t('row.credentialRejectedTitle')}</strong>
+      <p>{t('row.credentialRejectedIntro', { accountName: nameOf(rejectedAccountName) })}</p>
+      {recovery?.usableAccount !== undefined
+        ? <p>{t('row.credentialRejectedSwitch', { accountName: nameOf(recovery.usableAccount.accountName) })}</p>
+        : recovery?.reloginRequired === true
+          ? <p>{t('row.credentialRejectedRelogin')}</p>
+          : <p>{t('row.credentialRejectedChoose')}</p>}
+      {recovery?.usableAccount === undefined
+        ? null
+        : <button
+            type="button"
+            className="dsm-btn dsm-btn-outline"
+            disabled={switchingAccount || !canWrite}
+            onClick={() => {
+              const target = recovery.usableAccount
+              if (target !== undefined) void switchAccount(target.accountId)
+            }}
+          >
+            {switchingAccount
+              ? t('row.accountsScanning')
+              : t('row.credentialRejectedSwitchAction', { accountName: nameOf(recovery.usableAccount.accountName) })}
+          </button>}
+    </section>
+  )
 
   /**
    * Account-adding and account-migration controls, defined ONCE and rendered
@@ -3785,32 +3832,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                 : null}
               {status.status === 'signed-in'
                 ? <>
-                    {status.credentialRejected === true
-                      ? <section className="dsm-workbuddy-usage-error" role="alert">
-                          <strong>{t('row.credentialRejectedTitle')}</strong>
-                          <p>{t('row.credentialRejectedIntro', { accountName: nameOf(status.accountName) })}</p>
-                          {status.recovery?.usableAccount !== undefined
-                            ? <p>{t('row.credentialRejectedSwitch', { accountName: nameOf(status.recovery.usableAccount.accountName) })}</p>
-                            : status.recovery?.reloginRequired === true
-                              ? <p>{t('row.credentialRejectedRelogin')}</p>
-                              : <p>{t('row.credentialRejectedChoose')}</p>}
-                          {status.recovery?.usableAccount === undefined
-                            ? null
-                            : <button
-                                type="button"
-                                className="dsm-btn dsm-btn-outline"
-                                disabled={switchingAccount || !canWrite}
-                                onClick={() => {
-                                  const target = status.recovery?.usableAccount
-                                  if (target !== undefined) void switchAccount(target.accountId)
-                                }}
-                              >
-                                {switchingAccount
-                                  ? t('row.accountsScanning')
-                                  : t('row.credentialRejectedSwitchAction', { accountName: nameOf(status.recovery.usableAccount.accountName) })}
-                              </button>}
-                        </section>
-                      : null}
+                    {credentialRefusedBlock}
                     {status.creditsError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error">{t('row.creditsError', { message: status.creditsError })}</p>}
                     {/* Credits about to lapse, for the account this region is
@@ -4554,6 +4576,12 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                           the detail. */}
                       {signedOutText(notice, t)}
                     </p>
+                    {/* Issue #285: when the token was refused during REFRESH, the
+                        region is still `signed-out` but its accounts are present.
+                        Show the same switch/re-login advice the signed-in branch
+                        uses, so a healthy local account becomes the one-click
+                        fix instead of an invisible option behind "未登录". */}
+                    {credentialRefusedBlock}
                     {/* Re-detect stays HERE as well, not only in the pool block:
                         the pool renders for a signed-in region only, and "I just
                         signed in over there, look again" is precisely a

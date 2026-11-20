@@ -1532,6 +1532,17 @@ export type WorkBuddyWebUsage =
     /** The persisted account id matches no local account. */
     selectionLost?: boolean
     /**
+     * The upstream refused the credential that `resolve()` tried to refresh
+     * (issue #285). Distinct from a genuinely signed-out machine: local accounts
+     * ARE present (`accounts` is populated and the export dialog can see them),
+     * but the selected token was rejected. Without this marker the card fell
+     * into the generic signed-out branch, hid every account, and told the user
+     * "未登录" in both the settings card and the model picker.
+     */
+    credentialRejected?: boolean
+    /** Present only alongside {@link credentialRejected}. */
+    recovery?: WorkBuddyWebRecovery
+    /**
      * The vault directory exists but could not be READ (issue #199).
      *
      * A directory whose DACL excludes the current user (the issue #199 lockout:

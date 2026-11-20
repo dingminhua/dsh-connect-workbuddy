@@ -344,6 +344,30 @@ describe('signedOutNotice', () => {
     }
   })
 
+  it('names a refresh-time rejection instead of telling the user to sign in (issue #285)', () => {
+    // A token refused DURING REFRESH leaves the region signed-out but its
+    // accounts are on disk (export sees them). "Sign in once in the desktop
+    // app" was the headline the reporter saw, even when another healthy local
+    // account could fix it with one click.
+    for (const searched of [[], [failure('wrong-region')], [failure('encrypted')]]) {
+      const notice = signedOutNotice({
+        selectionLost: false,
+        message: RESOLVE_MESSAGE,
+        searched,
+        credentialRejected: true,
+      })
+      expect(notice.key).toBe('row.credentialRejectedNotice')
+      expect(notice.fallback).toBeUndefined()
+    }
+    const rendered = signedOutText(
+      signedOutNotice({ selectionLost: false, message: undefined, searched: [], credentialRejected: true }),
+      key => zh[key],
+    )
+    expect(rendered).toBe(zh['row.credentialRejectedNotice'])
+    expect(rendered).not.toContain('在 WorkBuddy 桌面 App 里登录一次')
+    expect(en['row.credentialRejectedNotice'].length).toBeGreaterThan(0)
+  })
+
   it('never returns copy that is missing from a locale', () => {
     for (const table of [en, zh]) {
       expect(table['row.signedOutWrongRegion'].length).toBeGreaterThan(0)

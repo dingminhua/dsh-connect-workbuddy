@@ -159,8 +159,15 @@ export function signedOutNotice(input: {
   selectionLost: boolean
   message: string | undefined
   searched: readonly WorkBuddyWebSearchPath[]
+  /**
+   * The upstream refused the selected token while the plugin was refreshing it
+   * (issue #285). Accounts are present — "sign in once" is the wrong headline;
+   * the card's dedicated refusal block owns the advice instead.
+   */
+  credentialRejected?: boolean
 }): SignedOutNotice {
   if (input.selectionLost) return { key: 'row.selectionLostMessage' }
+  if (input.credentialRejected === true) return { key: 'row.credentialRejectedNotice' }
   // `encrypted` OUTRANKS `wrong-region`, and the order was reversed until
   // issue #68 — which is where it was caught. The two can appear TOGETHER, and
   // that combination is not exotic: `diagnose()` probes BOTH regions' files, so

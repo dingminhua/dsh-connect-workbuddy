@@ -91,6 +91,7 @@ import type {
   WorkBuddyWebPoolExclusion,
   WorkBuddyWebProbeOutcome,
   WorkBuddyWebProbeResult,
+  WorkBuddyWebRecovery,
   WorkBuddyWebTpsAnswer,
   WorkBuddyWebTpsResult,
   WorkBuddyWebSearchPath,
@@ -1223,6 +1224,32 @@ type WorkBuddyLiveFigures = Pick<
 >
 
 /**
+ * Decide what the user can do about a refused credential in one region.
+ *
+ * Shared by the two refusal paths: a credits/check-in read that was rejected
+ * on an otherwise usable credential ({@link liveFigures}), and a `resolve()`
+ * whose TOKEN REFRESH was rejected outright (issue #285 — the CN card hid all
+ * of its accounts while the export dialog still saw them). The recovery answer
+ * must not depend on which path noticed the refusal: both offer the same
+ * "switch to a verified account / sign in again" advice.
+ */
+async function credentialRecoveryOf(
+  deps: WorkBuddyStatusRouteOptions,
+  region: WorkBuddyRegion,
+  rejectedAccountId: string | undefined,
+): Promise<WorkBuddyWebRecovery> {
+  return resolveCredentialRecovery({
+    region,
+    store: deps.store(region),
+    ...rejectedAccountId === undefined ? {} : { rejectedAccountId },
+    // Without an injected probe nothing can be verified, so no account is
+    // claimed usable — `reloginRequired` then still reports the one case that
+    // needs no probe (there is nothing else to switch to).
+    probe: deps.accountUsable ?? (async () => false),
+  })
+}
+
+/**
  * Read the selected account's live figures, and classify a refusal.
  *
  * Extracted so the first-paint path can omit it as a unit: the two calls here
@@ -1246,15 +1273,7 @@ async function liveFigures(
   const rejected = [creditsResult, checkinResult].some(
     result => result.status === 'rejected' && isCredentialRejectedError(result.reason),
   )
-  const recovery = !rejected ? undefined : await resolveCredentialRecovery({
-    region,
-    store: deps.store(region),
-    ...selected === undefined ? {} : { rejectedAccountId: selected.id },
-    // Without an injected probe nothing can be verified, so no account is
-    // claimed usable — `reloginRequired` then still reports the one case that
-    // needs no probe (there is nothing else to switch to).
-    probe: deps.accountUsable ?? (async () => false),
-  })
+  const recovery = !rejected ? undefined : await credentialRecoveryOf(deps, region, selected?.id)
   return {
     ...creditsResult.status === 'fulfilled'
       ? { credits: toCredits(creditsResult.value) }
@@ -1385,10 +1404,26 @@ export async function workBuddyWebStatus(
     // saved id (the tokens here are fine — re-pick or clear) versus a genuinely
     // signed-out machine (the "sign in again" hint is then accurate).
     const webAccounts = accounts.map(toWebAccount)
+    // Issue #285: a TOKEN REFRESH rejected upstream used to be wrapped in an
+    // ordinary "sign in again" Error, so this branch reported the whole region
+    // as signed-out and the card hid `webAccounts` — even though the export
+    // dialog could list them and the desktop app was signed in. Now that the
+    // store re-throws a credential refusal with its marker intact, classify it
+    // here exactly as `liveFigures` classifies a refused credits read: keep
+    // the accounts on the document AND carry the actionable recovery advice.
+    // The card renders both its signed-out notice and the credential-refused
+    // block from these fields, so the user sees the real fix instead of a
+    // blank "未登录" (also in the model picker).
+    const refreshRejected = isCredentialRejectedError(error)
+    const recovery = !refreshRejected ? undefined : await credentialRecoveryOf(
+      deps, region, accounts.find(account => account.selected)?.id,
+    )
     return {
       status: 'signed-out',
       accounts: webAccounts,
       message: safeMessage(error),
+      ...!refreshRejected ? {} : { credentialRejected: true },
+      ...recovery === undefined ? {} : { recovery },
       selectionExplicit,
       enabled,
       showCreditsInMainUi,

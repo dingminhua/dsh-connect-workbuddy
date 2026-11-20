@@ -35,7 +35,7 @@ import { dirname, join, posix, resolve } from 'node:path'
 import { resolveDshHome, withFileLock, writeFileAtomic } from './host-peers.ts'
 import { isEncryptedFieldWrapper, openEncryptedField, readAtRestKey, WORKBUDDY_APP_EXECUTABLE_ENV } from './at-rest.ts'
 import { protectCredentialDirectory } from './windows-acl.ts'
-import { regionOf, type WorkBuddyRefreshOutcome, type WorkBuddyRegion } from './upstream.ts'
+import { isCredentialRejectedError, regionOf, type WorkBuddyRefreshOutcome, type WorkBuddyRegion } from './upstream.ts'
 
 /** Normalized WorkBuddy credential, timestamps in epoch milliseconds. */
 export interface WorkBuddyCredential {
@@ -2257,6 +2257,18 @@ export class WorkBuddyCredentialStore {
       return refreshed
     } catch (error: unknown) {
       if (credential.expiresAtMs > Date.now() + 30_000) return credential
+      // A refresh whose upstream said 401/403 is the SAME credential refusal as
+      // a credits read that said 401 — the token the app stored is no longer
+      // accepted, and re-signing in changes nothing until the user does so. The
+      // card classifies `WorkBuddyCredentialRejectedError` into actionable
+      // "switch account / sign in again" advice, but only while the marker
+      // survives. Wrapping it in a plain Error here used to strip that marker,
+      // so a rejected CN token fell through to the generic signed-out branch:
+      // the card hid every account (issue #285, "国内版不显示账号") while the
+      // export dialog still showed them, and the model picker read "未登录".
+      // Re-throw the ORIGINAL error so its code survives the module boundary;
+      // other refresh failures keep the existing expiry-plus-remedy message.
+      if (isCredentialRejectedError(error)) throw error
       throw new Error(
         `workbuddy: token refresh failed and the access token is expired (${String(error)});`
         + ' open the WorkBuddy desktop app once to sign in again',

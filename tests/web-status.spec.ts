@@ -255,6 +255,36 @@ describe('workBuddyWebStatus', () => {
     expect(status.selectionLost).toBeUndefined()
   })
 
+  it('classifies a credential refused during refresh without hiding the accounts (issue #285)', async () => {
+    // The CN region's token expired and the refresh endpoint answered 401.
+    // The card used to render it as a plain signed-out machine: no account rows
+    // (though export saw them), no recovery advice, "未登录" everywhere. The
+    // status route must keep the rows and carry the same recovery answer a
+    // refused credits read gets.
+    const probed: string[] = []
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new WorkBuddyCredentialRejectedError(401) },
+        selectionLost: async () => false,
+        hasExplicitSelection: () => true,
+      }) as never,
+      accountUsable: async (_region, account) => {
+        probed.push(account.id)
+        return account.id === 'bbb'
+      },
+    }), 'cn')
+    expect(status.status).toBe('signed-out')
+    if (status.status !== 'signed-out') return
+    // The way out of this state must remain visible.
+    expect(status.accounts).toHaveLength(2)
+    expect(status.credentialRejected).toBe(true)
+    expect(probed).toEqual(['bbb'])
+    expect(status.recovery?.usableAccount).toEqual({ accountId: 'bbb', accountName: 'Beta' })
+    expect(status.recovery?.reloginRequired).toBe(false)
+  })
+
   it('keeps the signed-in document free of selectionLost', async () => {
     const status = await workBuddyWebStatus(deps({
       store: () => ({ ...baseStore(), selectionLost: async () => true }) as never,

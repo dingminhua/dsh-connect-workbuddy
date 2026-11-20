@@ -1,5 +1,46 @@
 # Changelog
 
+## 5.25.3 (2026-11-20)
+
+> 版本号是 **patch**：只修一条错误分类路径——过期 token 在刷新时被上游拒绝（401/403）之后，
+> 卡片不再把自己伪装成「未登录」并藏起账号。不改模型 id、路由、计费规则或任何开关；登录与
+> 模型选择的行为只在「凭据被拒绝」这一条分支上改变。来自 issue #285。
+
+### 修复：国内版 token 刷新被拒绝后伪装成未登录、账号全消失（issue #285）
+
+报告的现象：国内版 tab 前的灯不亮、设置卡片里一行账号都没有、模型选择器选 `workbuddy cn`
+显示「未登录」，但「导出账号」对话框明确列出四个已登录账号，国际版一切正常。
+
+根因在两处错误分类的叠加：
+
+1. `auth.ts` 的 `refreshNow()` 在 token 已过期、且刷新端点回 401/403 时抛出的是
+   `WorkBuddyCredentialRejectedError`（带 `WORKBUDDY_CREDENTIAL_REJECTED` 标记）；但这段逻辑
+   把它包成一条普通 `Error`（「token refresh failed and the access token is expired…」），
+   标记在包装时丢失。
+2. `web-status.ts` 组装卡片文档时，`store.resolve()` 的这条拒绝落进通用 catch，整个区域被
+   判成 `signed-out`。卡片据此隐藏账号表、只画「未登录」；composer 胶囊同理。而导出走的是
+   `store.accounts()`，不受 `resolve()` 失败影响——所以两个界面给出了相反的答案。
+
+改法（对两处各修正一处，正是根因所在）：
+
+- `refreshNow()` 在刷新失败为 `WorkBuddyCredentialRejectedError` 时**原样重抛**，让标记跨过模块
+  边界；其它刷新失败仍保留原来的「已过期 + 去桌面端重新登录」文案。
+- `workBuddyWebStatus()` 的 catch 分支用同一个 `isCredentialRejectedError()` 识别这条拒绝，
+  给 `signed-out` 文档带上 `credentialRejected` 与 `recovery`（和「积分读取被拒」走同一套
+  `resolveCredentialRecovery`），账号列表照常下发；不再把「凭据被拒」误报成「没有登录」。
+- 卡片（`WorkBuddyCard`）与 composer 胶囊（`ComposerCredits`）据此渲染已有账号与切换/重新登录
+  建议，而不是一句「未登录」：`signedOutNotice` 新增拒绝分支，卡片把拒绝建议块提到 signed-in /
+  signed-out 两支共用，composer 在拒绝时画账号表并在表头给出恢复提示。`status-paths.ts` 的
+  `signed-out` 文档补上两个可选字段，`locales.ts` 中英各补对应文案。
+
+这套改法保持一条不变量：`status: 'signed-out'` 仍表示「当前没有可用凭据」，但**凭据被拒**与
+**真正没有账号**必须可区分——前者有账号列表、有恢复出路，后者才该说「去登录一次」。
+
+守护测试：`tests/auth.spec.ts` 钉住「刷新被拒时标记存活」；`tests/web-status.spec.ts` 钉住「刷新
+被拒时账号不隐藏、带恢复信息」；`tests/searched-paths.spec.ts` 钉住「headline 不再说重新登录」。
+三条各做变异验证：摘掉对应修复 → 对应测试红，恢复后全绿。`pnpm run check` 全过
+（typecheck + build + 隐私扫描 + 3733 条测试）。
+
 ## 5.25.2 (2026-11-19)
 
 > 版本号是 **patch**：只改依赖声明这一层——把 `@deepseek-ai/dsh-client-ui-primitives`、

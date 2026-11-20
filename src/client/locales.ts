@@ -58,6 +58,10 @@ export const en = {
   // with a rescan that looks like it worked.
   'row.rescanHidesKept': 'The accounts you removed are still hidden: the plugin could not update its own list file. On Windows this is usually a file lock — close antivirus or sync tools that may be holding files in the DSH profile, then try again.',
   'row.credentialRejectedTitle': 'WorkBuddy refused this account\'s token',
+  // Headline for a token that was refused during REFRESH (issue #285), when the
+  // region stays signed-out but its accounts are still on disk. The dedicated
+  // refusal block below carries the switch/re-login advice.
+  'row.credentialRejectedNotice': 'The signed-in token was refused by WorkBuddy, but your local accounts are still present — see the recovery options below.',
   'row.credentialRejectedIntro': 'The token for "{accountName}" is no longer accepted by the upstream, so credits and check-in are unavailable. Signing in again only helps if the problem is the token itself — here is what actually applies:',
   'row.credentialRejectedSwitch': 'Another sign-in on this machine answered the upstream: "{accountName}". Switching to it fixes this — no need to sign in again.',
   'row.credentialRejectedSwitchAction': 'Switch to "{accountName}"',
@@ -735,6 +739,11 @@ export const en = {
   'composer.creditSoonHint': 'Earliest expiry: {time}',
   'composer.noAccounts': 'No account in this region',
   'composer.signedOut': 'Not signed in',
+  // Issue #285: the selected token was refused by the upstream, but the local
+  // accounts are still present (the export dialog can see them). The panel
+  // shows them; these two lines say why the balances are blank and what helps.
+  'composer.credentialRejectedReLogin': 'The signed-in token was refused by WorkBuddy. Sign in again in the desktop app.',
+  'composer.credentialRejectedSwitch': 'The signed-in token was refused by WorkBuddy. Switch to "{accountName}" below to recover.',
   // The panel's link to this plugin's OWN settings. Kept SHORT ("Settings", not
   // "WorkBuddy settings"): the popover is ~250px wide and the header already
   // carries the region title and the batch test, so a longer label wrapped the
@@ -833,6 +842,9 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 说明发生了什么、该做什么，而不是让用户以为「重新检测」成功了。
   'row.rescanHidesKept': '已删除的账号仍是隐藏状态：插件没能更新自己的名单文件。Windows 上通常是文件被占用——请关闭可能正在占用 DSH 配置目录的杀毒/同步工具后重试。',
   'row.credentialRejectedTitle': 'WorkBuddy 拒绝了这个账号的 token',
+  // 刷新 token 时被上游拒绝的 headline（issue #285）：区域仍未登录，但账号还在
+  // 本机。下面专门的拒绝块负责给出切换/重新登录的解决办法。
+  'row.credentialRejectedNotice': '当前登录的 token 被 WorkBuddy 拒绝，但本机账号仍在——请按下方的恢复提示处理。',
   'row.credentialRejectedIntro': '「{accountName}」的 token 已不被上游接受，所以积分与签到都用不了。重新登录只在「确实是 token 的问题」时才有用——当前实际适用的是下面这一条：',
   'row.credentialRejectedSwitch': '本机另一个账号「{accountName}」刚刚实测可用，切换到它即可恢复，不必重新登录。',
   'row.credentialRejectedSwitchAction': '切换到「{accountName}」',
@@ -1446,6 +1458,10 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'composer.creditSoonHint': '最早到期：{time}',
   'composer.noAccounts': '该区域暂无账号',
   'composer.signedOut': '未登录',
+  // issue #285：选中的 token 被上游拒绝，但本机账号还在（导出对话框能看到）。
+  // 面板会把账号列出来，这两行说明余额为什么是空的、以及该怎么做。
+  'composer.credentialRejectedReLogin': '当前登录的 token 被 WorkBuddy 拒绝，请在桌面端重新登录。',
+  'composer.credentialRejectedSwitch': '当前登录的 token 被 WorkBuddy 拒绝，可在下方切换到「{accountName}」恢复。',
   // 面板里通往本插件自身页面的入口。措辞取短（「设置」而不是「WorkBuddy 设置」）：
   // 这个浮层只有约 250px 宽，头部还要放区域标题和一键测试，长标签会把标题挤成
   // 两行。面板本身就只属于这个插件，去处由 tooltip 说明，短词不丢信息。

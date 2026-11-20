@@ -765,7 +765,14 @@ export function ComposerCredits(props: ComposerCreditsProps) {
 
   const signedIn = usage?.status === 'signed-in' ? usage : undefined
   const total = signedIn === undefined ? undefined : creditsOf(signedIn)
-  const signedOut = usage !== undefined && usage.status === 'signed-out'
+  // Issue #285: a rejected token leaves the region in `signed-out` with its
+  // account list still attached (the accounts are on disk and exportable). That
+  // is NOT "未登录" — telling the user so contradicted the account table the
+  // settings card and export dialog both showed. Paint the account rows and a
+  // short, honest explanation instead of the generic signed-out empty state.
+  const signedOutDocument = usage !== undefined && usage.status === 'signed-out' ? usage : undefined
+  const credentialRejected = signedOutDocument?.credentialRejected === true
+  const signedOut = signedOutDocument !== undefined && !credentialRejected
   const valueText = total === undefined ? '—' : formatCredits(total)
   const label = t(activeRegion === 'cn' ? 'composer.pointsCn' : 'composer.pointsGlobal')
 
@@ -803,10 +810,11 @@ export function ComposerCredits(props: ComposerCreditsProps) {
    */
   const selectedId = accountCredits?.find(account => account.selected)?.id
     ?? (signedIn === undefined ? undefined : signedIn.accountId)
+  const documentAccounts = signedIn?.accounts ?? signedOutDocument?.accounts ?? []
   const sourceRows: WorkBuddyWebAccountCredit[] = accountCredits
-    ?? (signedIn === undefined
+    ?? (documentAccounts.length === 0
       ? []
-      : signedIn.accounts.map(account => ({
+      : documentAccounts.map(account => ({
           id: account.id,
           accountName: account.accountName,
           selected: account.selected,
@@ -994,6 +1002,14 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             : rows.length === 0
               ? <p className="dsm-workbuddy-composer-panel-empty">{t('composer.noAccounts')}</p>
               : (
+                <>
+                {credentialRejected
+                  ? <p className="dsm-workbuddy-composer-panel-empty">
+                      {signedOutDocument?.recovery?.usableAccount === undefined
+                        ? t('composer.credentialRejectedReLogin')
+                        : t('composer.credentialRejectedSwitch', { accountName: signedOutDocument.recovery.usableAccount.accountName })}
+                    </p>
+                  : null}
                 <table className="dsm-workbuddy-composer-panel-table">
                   <thead>
                     <tr>
@@ -1151,6 +1167,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                     })}
                   </tbody>
                 </table>
+                </>
               )}
           <div className="dsm-workbuddy-composer-panel-foot">
             <span>
