@@ -16,6 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AccountPool } from '../src/client/AccountPool.tsx'
+import { en, zh } from '../src/client/locales.ts'
 import { accountOf, fakeScope, mount, poolOf, stubFetch, t } from './pool-render-helpers.tsx'
 
 afterEach(() => { vi.unstubAllGlobals() })
@@ -1634,6 +1635,12 @@ describe('the mode bar draws both switches the same way', () => {
     const m = await mount(AccountPool, baseProps())
     expect(m.button('row.poolGrowthRedeemRun'), 'redeem-now button present').toBeDefined()
     expect(m.button('row.poolGrowthActivityRun'), 'activate-now button present').toBeDefined()
+    // The buttons act on CHECKED accounts, so their labels must say so — same
+    // as 签到勾选的账号 / 测试勾选的账号 beside them.
+    expect(zh['row.poolGrowthRedeemRun']).toContain('勾选')
+    expect(zh['row.poolGrowthActivityRun']).toContain('勾选')
+    expect(en['row.poolGrowthRedeemRun']).toContain('selected')
+    expect(en['row.poolGrowthActivityRun']).toContain('selected')
     await m.unmount()
   })
 
