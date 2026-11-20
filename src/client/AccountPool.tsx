@@ -2317,6 +2317,23 @@ function renderAccountRow(input: {
         ? h('span', { className: 'dsm-workbuddy-pool-soon' },
             t('row.poolCreditSoon', { count: formatNumber(account.expiringSoon) }))
         : null,
+      // All three day-state stamps together beside the credits (issue #286):
+      // 已签到 / 已兑换 / 已点亮. Compact and smaller than the row text — these
+      // are quiet confirmations, not the facts the row is about. Only successful
+      // states appear; an untouched account shows nothing.
+      account.checkedInToday === true || account.growthRedeemedToday === true || account.growthActiveToday === true
+        ? h('span', { className: 'dsm-workbuddy-pool-daystamps' },
+            account.checkedInToday === true
+              ? h('span', { className: 'dsm-workbuddy-pool-daystamp' }, t('row.poolCheckedIn'))
+              : null,
+            account.growthRedeemedToday === true
+              ? h('span', { className: 'dsm-workbuddy-pool-daystamp' }, t('row.poolGrowthRedeemed'))
+              : null,
+            account.growthActiveToday === true
+              ? h('span', { className: 'dsm-workbuddy-pool-daystamp' }, t('row.poolGrowthActive'))
+              : null,
+          )
+        : null,
       // Claimable benefits (issue #79). Rendered ONLY when there is at least one:
       // a claimed campaign and a lapsed one both arrive here ABSENT, so the line
       // disappears by itself once nothing is left to take — that absence is the
@@ -2477,35 +2494,22 @@ function renderAccountRow(input: {
     // identity line), which meant a screen reader reached 「已签到」 before the
     // verdict it belongs with while the eye met it after. Now the DOM order is the
     // visual order on that line: verdict → check-in → buttons.
+    // The check-in cell stays as a GRID CELL (the template names its area), but
+    // the successful 已签到 stamp now lives with the other two in the credits
+    // column — the user asked for all three state stamps together, beside the
+    // credits. What remains here is only the NOT-done / unread hints, which are
+    // the actionable half ("you should check in") rather than a duplicate stamp.
     checkinSupported
       ? h('span', { className: 'dsm-workbuddy-pool-checkin' },
-          // Enterprise accounts have no consumer check-in at all (issue #129):
-          // showing 「未签到」 would tell them to perform an action the upstream
-          // already refuses with `10001`, which reads as their own mistake.
           account.enterprise === true
             ? h('span', { className: 'dsm-workbuddy-pool-unknown' }, t('row.poolCheckinEnterprise'))
-            // Three states, not two: an unread account says nothing rather than
-            // claiming "not checked in", which would contradict a check-in the user
-            // just watched succeed.
             : account.checkedInToday === undefined
               ? h('span', { className: 'dsm-workbuddy-pool-unknown', title: t('row.poolNeverTested') },
                   t('row.poolCheckinUnknown'))
               : account.checkedInToday
-                ? h('span', { className: 'dsm-workbuddy-pool-checked' }, t('row.poolCheckedIn'))
+                ? null
                 : t('row.poolNotCheckedIn'),
         )
-      // Absent entirely where the region has no check-in: an empty column would
-      // still imply the state exists and is merely unknown.
-      : null,
-    // Growth completion stamps (issue #286), siblings of the 已签到 stamp above.
-    // Only rendered for accounts the day's job settled — an untouched account
-    // shows nothing (never a red "not done"), so the stamps are stable and the
-    // row does not clutter up with counts.
-    account.growthRedeemedToday === true
-      ? h('span', { className: 'dsm-workbuddy-pool-checked' }, t('row.poolGrowthRedeemed'))
-      : null,
-    account.growthActiveToday === true
-      ? h('span', { className: 'dsm-workbuddy-pool-checked' }, t('row.poolGrowthActive'))
       : null,
     // Per-row actions, LAST cell of the row: test this one account, and forget
     // this account's plugin-stored credential. The test reuses the batch's

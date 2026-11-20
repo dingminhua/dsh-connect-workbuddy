@@ -1661,8 +1661,14 @@ describe('the mode bar draws both switches the same way', () => {
         growthActivityToday: { done: 1, total: 9 },
       }),
     }))
-    expect(m.container.textContent).toContain('row.poolGrowthRedeemed')
-    expect(m.container.textContent).toContain('row.poolGrowthActive')
+    // All three stamps live together in ONE compact group INSIDE the credits
+    // cell, not three separate spans on the account line.
+    const group = m.container.querySelector('.dsm-workbuddy-pool-credits .dsm-workbuddy-pool-daystamps')
+    expect(group, 'a compact stamp group sits inside the credits cell').not.toBeNull()
+    expect(group?.querySelectorAll('.dsm-workbuddy-pool-daystamp').length, 'three stamps').toBe(3)
+    expect(group?.textContent).toContain('row.poolCheckedIn')
+    expect(group?.textContent).toContain('row.poolGrowthRedeemed')
+    expect(group?.textContent).toContain('row.poolGrowthActive')
     expect(m.container.textContent, 'no aggregate fraction').not.toContain('row.poolGrowthRedeemToday')
     expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-status'), 'no status bar under switch').toBeNull()
     await m.unmount()

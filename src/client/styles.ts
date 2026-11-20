@@ -1029,6 +1029,12 @@ export const WORKBUDDY_CARD_CSS = `
  * is a seasonal campaign, so the row keeps its honest wrap instead. */
 .dsm-workbuddy-pool-credits{grid-area:credits;display:flex;flex-direction:row;flex-wrap:wrap;align-items:baseline;justify-content:flex-end;gap:0 6px;min-width:0;justify-self:end;text-align:right;font-variant-numeric:tabular-nums}
 .dsm-workbuddy-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}
+/* All three day-state stamps (已签到/已兑换/已点亮) sit together beside the
+   credits. Smaller than the row text (11px) and quiet-success green — they are
+   confirmations, not the facts the row is about. The group wraps on narrow cards
+   rather than pushing the credits figure off the right edge. */
+.dsm-workbuddy-pool-daystamps{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:2px 6px;font-size:11px;line-height:16px;color:var(--dsw-alias-state-success-primary,#22a06b)}
+.dsm-workbuddy-pool-daystamp{white-space:nowrap}
 .dsm-workbuddy-pool-soon{font-size:11px;line-height:16px;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 /* Claimable benefits (issue #79). A quiet line by default — it is an opportunity, not a fault — and loud only when the window is about to close. */
 .dsm-workbuddy-pool-benefits{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999);min-width:0}
