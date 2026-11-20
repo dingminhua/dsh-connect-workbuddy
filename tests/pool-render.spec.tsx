@@ -1665,10 +1665,14 @@ describe('the mode bar draws both switches the same way', () => {
     // cell, not three separate spans on the account line.
     const group = m.container.querySelector('.dsm-workbuddy-pool-credits .dsm-workbuddy-pool-daystamps')
     expect(group, 'a compact stamp group sits inside the credits cell').not.toBeNull()
-    expect(group?.querySelectorAll('.dsm-workbuddy-pool-daystamp').length, 'three stamps').toBe(3)
-    expect(group?.textContent).toContain('row.poolCheckedIn')
-    expect(group?.textContent).toContain('row.poolGrowthRedeemed')
-    expect(group?.textContent).toContain('row.poolGrowthActive')
+    const stamps = Array.from(group?.querySelectorAll('.dsm-workbuddy-pool-daystamp') ?? [])
+    expect(stamps.length, 'three stamps').toBe(3)
+    // Icons, not text: each is an svg with a title tooltip + aria-label instead
+    // of a visible 已签到/已兑换/已点亮 label.
+    expect(group?.textContent?.trim(), 'no visible text in the stamp group').toBe('')
+    expect(stamps.every(s => s.querySelector('svg') !== null), 'each stamp is an svg icon').toBe(true)
+    const tips = stamps.map(s => s.getAttribute('title'))
+    expect(tips).toEqual(['row.poolCheckedIn', 'row.poolGrowthRedeemed', 'row.poolGrowthActive'])
     expect(m.container.textContent, 'no aggregate fraction').not.toContain('row.poolGrowthRedeemToday')
     expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-status'), 'no status bar under switch').toBeNull()
     await m.unmount()

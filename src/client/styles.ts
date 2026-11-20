@@ -1033,8 +1033,8 @@ export const WORKBUDDY_CARD_CSS = `
    credits. Smaller than the row text (11px) and quiet-success green — they are
    confirmations, not the facts the row is about. The group wraps on narrow cards
    rather than pushing the credits figure off the right edge. */
-.dsm-workbuddy-pool-daystamps{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:2px 6px;font-size:11px;line-height:16px;color:var(--dsw-alias-state-success-primary,#22a06b)}
-.dsm-workbuddy-pool-daystamp{white-space:nowrap}
+.dsm-workbuddy-pool-daystamps{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-state-success-primary,#22a06b)}
+.dsm-workbuddy-pool-daystamp{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;background:rgba(34,160,107,.14);cursor:help}
 .dsm-workbuddy-pool-soon{font-size:11px;line-height:16px;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 /* Claimable benefits (issue #79). A quiet line by default — it is an opportunity, not a fault — and loud only when the window is about to close. */
 .dsm-workbuddy-pool-benefits{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999);min-width:0}

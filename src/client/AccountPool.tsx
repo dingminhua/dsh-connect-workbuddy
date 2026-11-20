@@ -299,6 +299,38 @@ function formatNumber(value: number): string {
   return formatCredits(value)
 }
 
+/**
+ * One small line-icon for a day-state stamp (issue #286): check = checked in,
+ * gift = tier redeemed, bolt = active today. Drawn inline with `currentColor`
+ * so the green CSS token carries through; `aria-hidden` because the wrapping
+ * span already carries role=img + aria-label + title tooltip.
+ */
+function dayStateIcon(kind: 'check' | 'gift' | 'bolt'): ReturnType<typeof h> {
+  const shared = {
+    width: 12,
+    height: 12,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.6,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+    focusable: 'false',
+  }
+  if (kind === 'check') {
+    return h('svg', shared, h('path', { d: 'M3 8.5l3.2 3.2L13 5' }))
+  }
+  if (kind === 'gift') {
+    return h('svg', shared,
+      h('rect', { x: 2.5, y: 6.5, width: 11, height: 7, rx: 1 }),
+      h('path', { d: 'M2 6.5h12M8 6.5V13.5' }),
+      h('path', { d: 'M8 6.5C6 6.5 5 6 5 4.8c0-.9.9-1.5 1.8-1.2C8 4 8 6.5 8 6.5zM8 6.5c2 0 3-.5 3-1.7 0-.9-.9-1.5-1.8-1.2C8 4 8 6.5 8 6.5z' }),
+    )
+  }
+  return h('svg', shared, h('path', { d: 'M9 2L4 9h3.2L6.5 14 12 7H8.8L9 2z' }))
+}
+
 function formatClock(value: number): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -2317,20 +2349,37 @@ function renderAccountRow(input: {
         ? h('span', { className: 'dsm-workbuddy-pool-soon' },
             t('row.poolCreditSoon', { count: formatNumber(account.expiringSoon) }))
         : null,
-      // All three day-state stamps together beside the credits (issue #286):
-      // 已签到 / 已兑换 / 已点亮. Compact and smaller than the row text — these
-      // are quiet confirmations, not the facts the row is about. Only successful
-      // states appear; an untouched account shows nothing.
+      // All three day-state stamps together beside the credits (issue #286), as
+      // ICONS with no text: ✔ check-in, 🎁 redeemed, ⚡ active. Each carries a
+      // `title` tooltip so hover still says what it means (reusing the existing
+      // label strings — no new translations). Only successful states appear; an
+      // untouched account shows nothing. Icons are aria-labelled for screen
+      // readers even though the visual text is gone.
       account.checkedInToday === true || account.growthRedeemedToday === true || account.growthActiveToday === true
         ? h('span', { className: 'dsm-workbuddy-pool-daystamps' },
             account.checkedInToday === true
-              ? h('span', { className: 'dsm-workbuddy-pool-daystamp' }, t('row.poolCheckedIn'))
+              ? h('span', {
+                  className: 'dsm-workbuddy-pool-daystamp',
+                  title: t('row.poolCheckedIn'),
+                  role: 'img',
+                  'aria-label': t('row.poolCheckedIn'),
+                }, dayStateIcon('check'))
               : null,
             account.growthRedeemedToday === true
-              ? h('span', { className: 'dsm-workbuddy-pool-daystamp' }, t('row.poolGrowthRedeemed'))
+              ? h('span', {
+                  className: 'dsm-workbuddy-pool-daystamp',
+                  title: t('row.poolGrowthRedeemed'),
+                  role: 'img',
+                  'aria-label': t('row.poolGrowthRedeemed'),
+                }, dayStateIcon('gift'))
               : null,
             account.growthActiveToday === true
-              ? h('span', { className: 'dsm-workbuddy-pool-daystamp' }, t('row.poolGrowthActive'))
+              ? h('span', {
+                  className: 'dsm-workbuddy-pool-daystamp',
+                  title: t('row.poolGrowthActive'),
+                  role: 'img',
+                  'aria-label': t('row.poolGrowthActive'),
+                }, dayStateIcon('bolt'))
               : null,
           )
         : null,
