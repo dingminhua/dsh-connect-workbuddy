@@ -1539,7 +1539,11 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               checked: active.growthRedeem,
               disabled: !canEditPool,
               onChange: (event: { currentTarget: { checked: boolean } }) => {
-                editDraft(current => ({ ...current, growthRedeem: event.currentTarget.checked }))
+                // Capture the value synchronously: React nulls `currentTarget`
+                // before the queued editDraft updater runs. Reading it inside
+                // the updater throws "Cannot read properties of null (checked)".
+                const next = event.currentTarget.checked
+                editDraft(current => ({ ...current, growthRedeem: next }))
               },
             }),
             h('span', { className: 'sw-track' }),
@@ -1554,7 +1558,8 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
               checked: active.growthActivity,
               disabled: !canEditPool,
               onChange: (event: { currentTarget: { checked: boolean } }) => {
-                editDraft(current => ({ ...current, growthActivity: event.currentTarget.checked }))
+                const next = event.currentTarget.checked
+                editDraft(current => ({ ...current, growthActivity: next }))
               },
             }),
             h('span', { className: 'sw-track' }),

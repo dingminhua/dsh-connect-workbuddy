@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.26.1 (2026-11-20)
+
+> 补丁版，修 5.26.0 引入的配置区渲染崩溃，模型服务与积分不受影响。
+
+- **修复**：成长中心两个新开关的 `onChange` 在 `editDraft` 的延迟更新器**内部**读
+  `event.currentTarget.checked`，而 React 在事件处理器返回后就把 `currentTarget` 置空，
+  点击时抛 `Cannot read properties of null (reading 'checked')`，导致整个配置区渲染失败。
+  改为像签到开关那样在处理器里同步捕获 `const next = event.currentTarget.checked` 再交给
+  更新器。新增回归测试「点击两个成长开关更新草稿而不抛错」，并做变异验证：改回旧写法
+  测试即红、恢复后绿。
+
 ## 5.26.0 (2026-11-20)
 
 > 版本号是 **minor**：新增「成长中心」两类后台收益——连签档位自动兑换、今日活跃自动点亮。

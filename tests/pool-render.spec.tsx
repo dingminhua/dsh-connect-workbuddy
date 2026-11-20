@@ -1629,6 +1629,25 @@ describe('the mode bar draws both switches the same way', () => {
     await m.unmount()
   })
 
+  it('clicking the two growth switches updates the draft without throwing (issue #286)', async () => {
+    // Regression for a real crash: reading `event.currentTarget.checked` INSIDE
+    // the queued editDraft updater throws "Cannot read properties of null
+    // (reading 'checked')" — React nulls currentTarget after the handler returns.
+    // Both switches must capture the value synchronously, like the check-in one.
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, bothSwitches())
+    const growthBlocks = m.container.querySelectorAll('.dsm-workbuddy-pool-auto-checkin')
+    const growth = growthBlocks[growthBlocks.length - 1]
+    expect(growth, 'the growth switch block renders').not.toBeNull()
+    const boxes = Array.from(growth!.querySelectorAll<HTMLInputElement>('input[type=checkbox]'))
+    expect(boxes.length, 'two growth switches').toBe(2)
+    for (const box of boxes) {
+      await expect(m.click(box)).resolves.toBeUndefined()
+    }
+    expect(m.button('row.poolSaved').disabled, 'clicking them dirtied the draft').toBe(false)
+    await m.unmount()
+  })
+
   it('never styles the check-in label as the mode BAR (the nesting that caused it)', async () => {
     stubFetch(() => ({ body: {} }))
     const m = await mount(AccountPool, bothSwitches())
