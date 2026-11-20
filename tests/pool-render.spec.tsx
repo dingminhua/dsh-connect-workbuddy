@@ -1637,10 +1637,31 @@ describe('the mode bar draws both switches the same way', () => {
     await m.unmount()
   })
 
-  it('shows a growth-job progress line from the runner state (issue #286)', async () => {
-    // The user's complaint: ticking the switch looked like "nothing happened".
-    // The switch alone gives no feedback — the runner's daily progress must
-    // render a status line, exactly as the check-in switch does.
+  it('shows per-account 已兑换/已点亮 stamps, NOT an aggregate X/Y count (issue #286)', async () => {
+    // The user rejected the top "已兑换 8/17 / 已点亮 8/9" summary. They want
+    // the same stable per-row stamp the check-in column uses: 已签到 / 已兑换 /
+    // 已点亮. So the status lives on the account row, not under the switch.
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [accountOf({ ...GENUINE_ACCOUNT, growthRedeemedToday: true, growthActiveToday: true })],
+        growthRedeem: true,
+        growthActivity: true,
+        // Even if a stale aggregate status is present, it must NOT be rendered.
+        growthRedeemToday: { done: 1, total: 9 },
+        growthActivityToday: { done: 1, total: 9 },
+      }),
+    }))
+    expect(m.container.textContent).toContain('row.poolGrowthRedeemed')
+    expect(m.container.textContent).toContain('row.poolGrowthActive')
+    expect(m.container.textContent, 'no aggregate fraction').not.toContain('row.poolGrowthRedeemToday')
+    expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-status'), 'no status bar under switch').toBeNull()
+    await m.unmount()
+  })
+
+  it('shows no growth stamp for an account the job has not touched', async () => {
     stubFetch(() => ({ body: {} }))
     const m = await mount(AccountPool, baseProps({
       pool: poolOf({
@@ -1648,46 +1669,10 @@ describe('the mode bar draws both switches the same way', () => {
         effectiveMemberAccountIds: [GENUINE_ID],
         accounts: [GENUINE_ACCOUNT],
         growthRedeem: true,
-        growthRedeemToday: { done: 1, total: 2 },
       }),
     }))
-    const lines = Array.from(m.container.querySelectorAll('.dsm-workbuddy-pool-auto-checkin-status'))
-    expect(lines.length, 'a growth status line renders').toBeGreaterThanOrEqual(1)
-    // The render helper returns the locale KEY with params, not translated text.
-    expect(m.container.textContent).toContain('row.poolGrowthRedeemToday')
-    // No retry / error noise, even if a stale status carries those fields.
-    expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-pending')).toBeNull()
-    expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-error')).toBeNull()
-    await m.unmount()
-  })
-
-  it('shows an "armed" line the moment a growth switch is saved but has not run', async () => {
-    stubFetch(() => ({ body: {} }))
-    const m = await mount(AccountPool, baseProps({
-      pool: poolOf({
-        memberAccountIds: [GENUINE_ID],
-        effectiveMemberAccountIds: [GENUINE_ID],
-        accounts: [GENUINE_ACCOUNT],
-        growthActivity: true,
-        // No growthActivityToday yet — the runner has not ticked.
-      }),
-    }))
-    expect(m.container.textContent).toContain('row.poolGrowthArmed')
-    await m.unmount()
-  })
-
-  it('shows the "all settled" growth headline when nothing is pending', async () => {
-    stubFetch(() => ({ body: {} }))
-    const m = await mount(AccountPool, baseProps({
-      pool: poolOf({
-        memberAccountIds: [GENUINE_ID],
-        effectiveMemberAccountIds: [GENUINE_ID],
-        accounts: [GENUINE_ACCOUNT],
-        growthActivity: true,
-        growthActivityToday: { done: 1, total: 1 },
-      }),
-    }))
-    expect(m.container.textContent).toContain('row.poolGrowthActivityDone')
+    expect(m.container.textContent).not.toContain('row.poolGrowthRedeemed')
+    expect(m.container.textContent).not.toContain('row.poolGrowthActive')
     await m.unmount()
   })
 

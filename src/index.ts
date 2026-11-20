@@ -3593,6 +3593,19 @@ export function apply(ctx: Context, config: Config): void {
       growthRedeemToday: region => growthTodayOf('growth-redeem', region),
       growthActivityToday: region => growthTodayOf('growth-activity', region),
       /**
+       * Per-account growth completion for the row stamps (issue #286). Backed by
+       * the runner's day state: an account is "done" once today's job addressed
+       * it, regardless of whether it redeemed or was already active. No upstream
+       * read, so it is safe on the card's poll.
+       */
+      growthDoneAccountIds: (region, cap) => {
+        const state = growthState[growthKey(cap, region)]
+        if (state === undefined || state.day !== localDayKey(Date.now())) return {}
+        const map: Record<string, boolean> = {}
+        for (const id of state.doneAccountIds) map[id] = true
+        return map
+      },
+      /**
        * Manual "run now" for a growth job (issue #286). Same batch + state as
        * the timer, but ignores the opt-in switch and the backoff clock: the user
        * asked for it now. Returns check-in-shaped rows for the shared log UI.

@@ -424,6 +424,9 @@ export const en = {
   'row.poolGrowthActivityHint': 'On: once a day the plugin sends ONE short chat turn per pooled account through the console session, which lights up "active today". This spends a little credit. Accounts already active get no turn. Available in both regions.',
   'row.poolGrowthActivityToday': 'Active today: {done} of {total}',
   'row.poolGrowthActivityDone': 'Active today: all {total}',
+  // Per-account stamps on the row (issue #286), sibling of 已签到.
+  'row.poolGrowthRedeemed': 'Redeemed',
+  'row.poolGrowthActive': 'Activated',
   // Manual "run now" buttons + log lines (issue #286).
   'row.poolGrowthRedeemRun': 'Redeem now',
   'row.poolGrowthRedeemRunning': 'Redeeming…',
@@ -1198,6 +1201,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.poolGrowthActivityHint': '开启：插件每天通过控制台会话为池内每个账号发一条简短对话，点亮「今日活跃」。这会消耗少量积分；今日已活跃的账号不会发。国内版与国际版均可用。',
   'row.poolGrowthActivityToday': '已点亮 {done} / {total}',
   'row.poolGrowthActivityDone': '已点亮 全部 {total}',
+  'row.poolGrowthRedeemed': '已兑换',
+  'row.poolGrowthActive': '已点亮',
   // 手动「立即执行」按钮与日志（issue #286）。
   'row.poolGrowthRedeemRun': '立即兑换',
   'row.poolGrowthRedeemRunning': '兑换中…',

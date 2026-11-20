@@ -667,6 +667,15 @@ export interface WorkBuddyPoolDeps {
    */
   cachedCheckedInToday?(region: WorkBuddyRegion): Readonly<Record<string, boolean>>
   /**
+   * Per-account growth completion for today (issue #286), from the runner's own
+   * day state — no upstream read. `true` only for accounts the job settled today;
+   * absent for accounts it has not covered. Drives the per-row 已兑换/已点亮 stamp.
+   */
+  growthDoneAccountIds?(
+    region: WorkBuddyRegion,
+    cap: 'growth-redeem' | 'growth-activity',
+  ): Readonly<Record<string, boolean>>
+  /**
    * Claimable promotional benefits per account id (issue #79).
    *
    * Only campaigns the account can STILL claim are present; a claimed or lapsed
@@ -1639,6 +1648,10 @@ async function workBuddyWebPool(
     ? pool.cachedCheckedInToday?.(region) ?? {}
     : await pool.checkedInToday?.(region).catch(() => ({} as Record<string, boolean>))
       ?? {} as Record<string, boolean>
+  // Growth completion is runner state, not an upstream read — cheap in both the
+  // fast first paint and the full document (issue #286).
+  const growthRedeemed = pool.growthDoneAccountIds?.(region, 'growth-redeem') ?? {}
+  const growthActive = pool.growthDoneAccountIds?.(region, 'growth-activity') ?? {}
   // Claimable benefits per account (issue #79). Read the same two ways as the
   // check-in column: the first paint uses this process's readings (no request),
   // the full document pays for two status calls per account. A failed or absent
@@ -1717,6 +1730,8 @@ async function workBuddyWebPool(
       current: account.id === currentAccountId,
       member,
       ...checkedIn[account.id] === undefined ? {} : { checkedInToday: checkedIn[account.id] as boolean },
+      ...growthRedeemed[account.id] === true ? { growthRedeemedToday: true } : {},
+      ...growthActive[account.id] === true ? { growthActiveToday: true } : {},
       ...(() => {
         // Only campaigns that can still be claimed survive this map; a claimed
         // or lapsed one never reaches the card at all (issue #79). The title is

@@ -2041,6 +2041,16 @@ export interface WorkBuddyWebPoolAccount {
    */
   checkedInToday?: boolean
   /**
+   * Whether this account's streak tiers were redeemed/settled today (issue #286).
+   * ABSENT means the growth job has not covered this account today.
+   */
+  growthRedeemedToday?: boolean
+  /**
+   * Whether this account was lit "active today" by the job (issue #286).
+   * ABSENT means the growth job has not covered this account today.
+   */
+  growthActiveToday?: boolean
+  /**
    * Promotional benefits this account can STILL claim (issue #79).
    *
    * Never carries a claimed or lapsed campaign: the issue's rule is that those
