@@ -314,6 +314,7 @@ import {
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
+  type WorkBuddyWebGrowthToday,
   type WorkBuddyWebModel,
   type WorkBuddyWebPackage,
   type WorkBuddyWebPoolExclusion,
@@ -3578,6 +3579,13 @@ export function apply(ctx: Context, config: Config): void {
         // 「今日：N 个全部已签」 while every row read 未签到.
         return todaySummary(state, Date.now())
       },
+      /**
+       * Today's growth-job progress (issue #286), from the runner's own in-memory
+       * state — same source the tick writes, so the card cannot drift from what
+       * actually ran. `undefined` when the switch is off or nothing has run yet.
+       */
+      growthRedeemToday: region => growthTodayOf('growth-redeem', region),
+      growthActivityToday: region => growthTodayOf('growth-activity', region),
       checkin: async region => {
         const rows = await checkinAllAccounts(
           await poolTargets(region),
@@ -4569,6 +4577,17 @@ export function apply(ctx: Context, config: Config): void {
   const growthRunning: Partial<Record<string, boolean>> = {}
   const GROWTH_IDLE_MS = AUTO_CHECKIN_IDLE_MS
   const growthKey = (cap: GrowthCapability, region: WorkBuddyRegion): string => `${cap}:${region}`
+
+  /** Today's summary for one growth job, for the card's status line. */
+  function growthTodayOf(
+    cap: GrowthCapability,
+    region: WorkBuddyRegion,
+  ): WorkBuddyWebGrowthToday | undefined {
+    if (!growthEnabled(cap, region)) return undefined
+    const state = growthState[growthKey(cap, region)]
+    if (state === undefined) return undefined
+    return todaySummary(state, Date.now())
+  }
 
   /** Both growth capabilities apply to both regions — unlike check-in. */
   const GROWTH_REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']

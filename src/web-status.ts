@@ -85,6 +85,7 @@ import type {
   WorkBuddyWebAccount,
   WorkBuddyWebAccountCredit,
   WorkBuddyWebAutoCheckinToday,
+  WorkBuddyWebGrowthToday,
   WorkBuddyWebCredits,
   WorkBuddyWebPool,
   WorkBuddyWebPoolAccount,
@@ -737,6 +738,10 @@ export interface WorkBuddyPoolDeps {
    * happened.
    */
   autoCheckinToday?(region: WorkBuddyRegion): WorkBuddyWebAutoCheckinToday | undefined
+  /** Today's streak-redeem progress (issue #286), from the runner's own state. */
+  growthRedeemToday?(region: WorkBuddyRegion): WorkBuddyWebGrowthToday | undefined
+  /** Today's active-today progress (issue #286), from the runner's own state. */
+  growthActivityToday?(region: WorkBuddyRegion): WorkBuddyWebGrowthToday | undefined
   /**
    * Test every account of one region against the resolved target model.
    *
@@ -1742,6 +1747,14 @@ async function workBuddyWebPool(
     ...(() => {
       const today = pool.autoCheckinToday?.(region)
       return today === undefined ? {} : { autoCheckinToday: today }
+    })(),
+    ...(() => {
+      const today = pool.growthRedeemToday?.(region)
+      return today === undefined ? {} : { growthRedeemToday: today }
+    })(),
+    ...(() => {
+      const today = pool.growthActivityToday?.(region)
+      return today === undefined ? {} : { growthActivityToday: today }
     })(),
     ...target.modelId === undefined ? {} : { targetModelId: target.modelId },
     ...target.staleModelId === undefined ? {} : { staleTargetModelId: target.staleModelId },

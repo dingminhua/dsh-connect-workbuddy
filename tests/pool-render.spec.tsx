@@ -1629,6 +1629,57 @@ describe('the mode bar draws both switches the same way', () => {
     await m.unmount()
   })
 
+  it('shows a growth-job progress line from the runner state (issue #286)', async () => {
+    // The user's complaint: ticking the switch looked like "nothing happened".
+    // The switch alone gives no feedback — the runner's daily progress must
+    // render a status line, exactly as the check-in switch does.
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [GENUINE_ACCOUNT],
+        growthRedeem: true,
+        growthRedeemToday: { done: 1, total: 2, pending: 1 },
+      }),
+    }))
+    const lines = Array.from(m.container.querySelectorAll('.dsm-workbuddy-pool-auto-checkin-status'))
+    expect(lines.length, 'a growth status line renders').toBeGreaterThanOrEqual(1)
+    // The render helper returns the locale KEY with params, not translated text.
+    expect(m.container.textContent).toContain('row.poolGrowthRedeemToday')
+    await m.unmount()
+  })
+
+  it('shows an "armed" line the moment a growth switch is saved but has not run', async () => {
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [GENUINE_ACCOUNT],
+        growthActivity: true,
+        // No growthActivityToday yet — the runner has not ticked.
+      }),
+    }))
+    expect(m.container.textContent).toContain('row.poolGrowthArmed')
+    await m.unmount()
+  })
+
+  it('shows the "all settled" growth headline when nothing is pending', async () => {
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps({
+      pool: poolOf({
+        memberAccountIds: [GENUINE_ID],
+        effectiveMemberAccountIds: [GENUINE_ID],
+        accounts: [GENUINE_ACCOUNT],
+        growthActivity: true,
+        growthActivityToday: { done: 1, total: 1, pending: 0 },
+      }),
+    }))
+    expect(m.container.textContent).toContain('row.poolGrowthActivityDone')
+    await m.unmount()
+  })
+
   it('clicking the two growth switches updates the draft without throwing (issue #286)', async () => {
     // Regression for a real crash: reading `event.currentTarget.checked` INSIDE
     // the queued editDraft updater throws "Cannot read properties of null

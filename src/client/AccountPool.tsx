@@ -468,6 +468,52 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   })()
 
   /**
+   * Growth-job progress lines (issue #286), same shape as check-in so the three
+   * jobs read consistently. Read from the SAVED switches for the same reason as
+   * `autoCheckinStatus`: a draft that says "on" has not started the runner yet.
+   * The runner publishes `growthRedeemToday` / `growthActivityToday` only once it
+   * has actually attempted the job, so absence honestly means "not run yet".
+   */
+  const growthStatusLine = (
+    today: { done: number, total: number, pending: number, lastError?: string } | undefined,
+    doneKey: Parameters<Translate>[0],
+    todayKey: Parameters<Translate>[0],
+  ) => {
+    if (today === undefined) return null
+    const headline = today.pending === 0 && today.done === today.total
+      ? t(doneKey, { total: String(today.total) })
+      : t(todayKey, { done: String(today.done), total: String(today.total) })
+    return h('div', { className: 'dsm-workbuddy-pool-auto-checkin-status' },
+      h('span', { className: 'dsm-workbuddy-pool-auto-checkin-line' }, headline),
+      today.pending === 0
+        ? null
+        : h('span', { className: 'dsm-workbuddy-pool-auto-checkin-pending' },
+            t('row.poolAutoCheckinPending', { count: String(today.pending) })),
+      today.lastError === undefined
+        ? null
+        : h('span', { className: 'dsm-workbuddy-pool-auto-checkin-error' },
+            t('row.poolAutoCheckinFailed', { message: today.lastError })),
+    )
+  }
+  // Before the first tick there is no runner state yet. Show an explicit "armed"
+  // line the instant the switch is saved, so ticking it is not a silent no-op
+  // while the card waits for its next poll to learn the runner's progress.
+  const growthArmed = (on: boolean, today: unknown) => {
+    if (!on || today !== undefined) return null
+    return h('div', { className: 'dsm-workbuddy-pool-auto-checkin-status' },
+      h('span', { className: 'dsm-workbuddy-pool-auto-checkin-line' }, t('row.poolGrowthArmed')),
+    )
+  }
+  const growthRedeemStatus = saved.growthRedeem
+    ? growthStatusLine(pool?.growthRedeemToday, 'row.poolGrowthRedeemDone', 'row.poolGrowthRedeemToday')
+      ?? growthArmed(true, pool?.growthRedeemToday)
+    : null
+  const growthActivityStatus = saved.growthActivity
+    ? growthStatusLine(pool?.growthActivityToday, 'row.poolGrowthActivityDone', 'row.poolGrowthActivityToday')
+      ?? growthArmed(true, pool?.growthActivityToday)
+    : null
+
+  /**
    * Membership that actually resolves to a local sign-in — what a batch runs on.
    *
    * The HOST computes this and sends it, so the card cannot drift from the
@@ -1551,6 +1597,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           h('b', { className: 'dsm-workbuddy-pool-modebar-label' }, t('row.poolGrowthRedeem')),
         ),
         h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolGrowthRedeemHint')),
+        growthRedeemStatus,
         h('div', { className: 'dsm-workbuddy-pool-switchrow' },
           h('label', { className: 'sw' },
             h('input', {
@@ -1567,6 +1614,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           h('b', { className: 'dsm-workbuddy-pool-modebar-label' }, t('row.poolGrowthActivity')),
         ),
         h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolGrowthActivityHint')),
+        growthActivityStatus,
       ),
     ),
 

@@ -2089,6 +2089,14 @@ export interface WorkBuddyWebAutoCheckinToday {
   /** Why the last attempt failed, when it did. */
   lastError?: string
 }
+/**
+ * Today's progress for one growth background job (issue #286). Same shape as
+ * check-in so the card renders all three with one status-line helper; "done"
+ * means settled today (redeemed / already-redeemed for `growthRedeem`, lit /
+ * already-lit for `growthActivity`), not "succeeded" — a skipped account still
+ * counts as settled because it needs no further attempt.
+ */
+export type WorkBuddyWebGrowthToday = WorkBuddyWebAutoCheckinToday
 export interface WorkBuddyWebPool {
   enabled: boolean
   /**
@@ -2121,6 +2129,10 @@ export interface WorkBuddyWebPool {
    * settled, and asking it to guess is how the count would drift from the truth.
    */
   autoCheckinToday?: WorkBuddyWebAutoCheckinToday
+  /** Today's streak-redeem progress, when that switch is on and the job ran. */
+  growthRedeemToday?: WorkBuddyWebGrowthToday
+  /** Today's active-today progress, when that switch is on and the job ran. */
+  growthActivityToday?: WorkBuddyWebGrowthToday
   /** The model a test would use right now; absent when none can be resolved. */
   targetModelId?: string
   /**
