@@ -112,6 +112,10 @@ export interface PoolPreferences {
    * claims a background job is running before the write landed.
    */
   autoCheckin: boolean
+  /** Auto-redeem claimable growth tiers (issue #286). Draft, opt-in. */
+  growthRedeem: boolean
+  /** Auto-light "active today" via ACP (issue #286). Draft, opt-in. */
+  growthActivity: boolean
   /**
    * Per-account test model, keyed by account id (issue #61).
    *
@@ -385,6 +389,8 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     // Absent reads as OFF: this switch authorises a real WRITE on the user's
     // account, so "the host could not answer" must never become "on".
     autoCheckin: pool?.autoCheckin === true,
+    growthRedeem: pool?.growthRedeem === true,
+    growthActivity: pool?.growthActivity === true,
     // Copied verbatim (issue #61), including entries whose model has left the
     // catalog: the host keeps them for the same reason, and dropping one here
     // would make the next Save delete the user's choice.
@@ -427,6 +433,8 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     // accounts, so flipping it must go through Save like every other field here
     // rather than taking effect on the click.
     || draft.autoCheckin !== saved.autoCheckin
+    || draft.growthRedeem !== saved.growthRedeem
+    || draft.growthActivity !== saved.growthActivity
   )
 
   /**
@@ -1519,6 +1527,42 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
             autoCheckinStatus,
           )
         : null,
+      // GROWTH CENTER (issue #286): two opt-in background jobs, BOTH regions.
+      // Same DOM shape as the check-in switch, same "draft until Save" rule. Kept
+      // separate from check-in because the growth API exists in both regions —
+      // the international account has no check-in but DOES have these rewards.
+      h('div', { className: 'dsm-workbuddy-pool-auto-checkin' },
+        h('div', { className: 'dsm-workbuddy-pool-switchrow' },
+          h('label', { className: 'sw' },
+            h('input', {
+              type: 'checkbox',
+              checked: active.growthRedeem,
+              disabled: !canEditPool,
+              onChange: (event: { currentTarget: { checked: boolean } }) => {
+                editDraft(current => ({ ...current, growthRedeem: event.currentTarget.checked }))
+              },
+            }),
+            h('span', { className: 'sw-track' }),
+          ),
+          h('b', { className: 'dsm-workbuddy-pool-modebar-label' }, t('row.poolGrowthRedeem')),
+        ),
+        h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolGrowthRedeemHint')),
+        h('div', { className: 'dsm-workbuddy-pool-switchrow' },
+          h('label', { className: 'sw' },
+            h('input', {
+              type: 'checkbox',
+              checked: active.growthActivity,
+              disabled: !canEditPool,
+              onChange: (event: { currentTarget: { checked: boolean } }) => {
+                editDraft(current => ({ ...current, growthActivity: event.currentTarget.checked }))
+              },
+            }),
+            h('span', { className: 'sw-track' }),
+          ),
+          h('b', { className: 'dsm-workbuddy-pool-modebar-label' }, t('row.poolGrowthActivity')),
+        ),
+        h('p', { className: 'dsm-workbuddy-pool-note' }, t('row.poolGrowthActivityHint')),
+      ),
     ),
 
     // "In use" and "in the pool" are orthogonal, and the row cannot say both

@@ -2107,6 +2107,10 @@ export interface WorkBuddyWebPool {
    * runner happens to be doing with the previous value.
    */
   autoCheckin?: boolean
+  /** Auto-redeem claimable growth-tiers (issue #286). Absent means OFF. */
+  growthRedeem?: boolean
+  /** Auto-light "active today" via ACP (issue #286). Absent means OFF. */
+  growthActivity?: boolean
   /**
    * What the automatic check-in has done today, when it is switched on.
    *

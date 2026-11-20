@@ -134,10 +134,15 @@ import {
 } from './auto-checkin.ts'
 import type { AutoCheckinState } from './auto-checkin.ts'
 import { readAutoCheckinState, writeAutoCheckinState } from './auto-checkin-store.ts'
+import { activateGrowth } from './growth-acp.ts'
+import { activateGrowthAll, redeemGrowthAll } from './growth-run.ts'
+import type { GrowthTarget } from './growth-run.ts'
+import { readGrowthState, writeGrowthState } from './growth-state-store.ts'
+import type { GrowthCapability } from './growth-state-store.ts'
 import { createFileRosterSeenStore } from './roster-seen-store.ts'
 import type { RosterSeenStore } from './roster-seen-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
-import { WorkBuddyUpstreamClient, APP_VERSION, knownRegionOf, regionOf } from './upstream.ts'
+import { WorkBuddyUpstreamClient, APP_VERSION, knownRegionOf, regionOf, growthHostOf } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { attachBusyLevels } from './busy.ts'
 import type { WorkBuddyBusyLevel } from './busy.ts'
@@ -175,7 +180,7 @@ export {
 } from './native-modality.ts'
 // Re-exported above for consumers, and imported here because the image-selection
 // seeding (issue #168) is what applies the same table the card pre-ticks with.
-import { imageDefaultFor } from './native-modality.ts'
+import { imageDefaultFor, isRouterModelId } from './native-modality.ts'
 import { defaultOffModelIds, offDefaultFor, lastRefusalFor, recordRefusal, REFUSES_OFF_MODEL_IDS, withEffectiveOff } from './off-thinking.ts'
 export { defaultOffModelIds, offDefaultFor, REFUSES_OFF_MODEL_IDS, withEffectiveOff }
 export {
@@ -638,6 +643,23 @@ export interface WorkBuddyPoolPreferences {
    * and the runner refuses to start there.
    */
   autoCheckin?: boolean
+  /**
+   * Whether the plugin redeems claimable streak tiers automatically (issue #286).
+   *
+   * OFF by default, like `autoCheckin`: a redeem is a real WRITE on the account.
+   * Unlike check-in it is available in BOTH regions — the growth-streak endpoint
+   * answers `code 0` in each. Only tiers the gateway marks `available` are ever
+   * redeemed, so a repeat run writes nothing.
+   */
+  growthRedeem?: boolean
+  /**
+   * Whether the plugin lights up "active today" through a console ACP session
+   * (issue #286). OFF by default: one short model turn is sent PER account per
+   * day, which spends a little credit. Idempotent — an already-active account
+   * gets no session. Available in BOTH regions; it is the only growth reward the
+   * international gateway still offers.
+   */
+  growthActivity?: boolean
 }
 
 /** Plugin configuration. */
@@ -955,6 +977,8 @@ const poolConfig = z.object({
    * background path spend a request per account per day learning a refusal.
    */
   autoCheckin: z.boolean().default(false).description('Claim the daily check-in automatically for the accounts checked into this pool (opt-in). Idempotent: an account already checked in today is reported, never re-claimed. Only the CN region has a daily check-in.'),
+  growthRedeem: z.boolean().default(false).description('Redeem claimable streak-growth tiers automatically (opt-in, both regions). Only tiers the gateway marks available are written; a locked tier is skipped. Idempotent across repeat runs.'),
+  growthActivity: z.boolean().default(false).description('Light up "active today" via one console ACP session per account per day (opt-in, both regions). Spends a small amount of credit. Idempotent: an already-active account sends no session.'),
   orderAccountIds: z.array(z.string()).default([]).description('The user\'s hand-ordered pool order, as account ids. Independent of membership: an id need not be checked in (it only takes effect once the account is a member), and ids not listed sort last. Separate from memberAccountIds so reordering never conflicts with, or is destroyed by, a membership edit.'),
 })
 
@@ -4289,6 +4313,8 @@ export function apply(ctx: Context, config: Config): void {
       // `=== true`, not `?? false`: an older profile has no key at all, and an
       // absent answer must read as OFF — this switch authorises a real WRITE.
       autoCheckin: pool?.autoCheckin === true,
+      growthRedeem: pool?.growthRedeem === true,
+      growthActivity: pool?.growthActivity === true,
     }
   }
 
@@ -4526,6 +4552,156 @@ export function apply(ctx: Context, config: Config): void {
   syncAutoCheckin()
   ctx.effect(() => () => { stopAutoCheckin() })
 
+  /* ---------------------------------------------------------------------- *
+   * Background growth tasks (issue #286): streak redeem + active-today.
+   *
+   * Same timer shape as auto-check-in, but keyed by (capability, region) so the
+   * three daily states — checked-in, active, redeemed — never overwrite one
+   * another. Both capabilities run in BOTH regions; the two opt-in switches are
+   * independent, and each capability's idempotency is enforced at the SOURCE:
+   *   - redeem sends only tiers the gateway marked `available`;
+   *   - activity reads the heatmap and sends NO ACP session when already active.
+   * A per-day `doneAccountIds` is only a cost optimisation on top (skip accounts
+   * this process already settled today), never the correctness guarantee.
+   * ---------------------------------------------------------------------- */
+  const growthTimers: Partial<Record<string, ReturnType<typeof setTimeout>>> = {}
+  const growthState: Partial<Record<string, AutoCheckinState>> = {}
+  const growthRunning: Partial<Record<string, boolean>> = {}
+  const GROWTH_IDLE_MS = AUTO_CHECKIN_IDLE_MS
+  const growthKey = (cap: GrowthCapability, region: WorkBuddyRegion): string => `${cap}:${region}`
+
+  /** Both growth capabilities apply to both regions — unlike check-in. */
+  const GROWTH_REGIONS: readonly WorkBuddyRegion[] = ['cn', 'global']
+  const GROWTH_CAPABILITIES: readonly GrowthCapability[] = ['growth-redeem', 'growth-activity']
+
+  function growthEnabled(cap: GrowthCapability, region: WorkBuddyRegion): boolean {
+    const prefs = poolPreferencesOf(current(), region)
+    // Redeem/activity are meaningful only for pooled accounts; the pool being
+    // OFF means no membership list was authorised, so nothing may be touched.
+    if (!prefs.enabled) return false
+    return cap === 'growth-redeem' ? prefs.growthRedeem : prefs.growthActivity
+  }
+
+  /** The ACP model for one region: its first advertised model, or a safe fallback. */
+  function growthAcpModel(region: WorkBuddyRegion): string {
+    const roster = displayModels(current(), region).filter(model => !isRouterModelId(model.id))
+    return roster[0]?.id ?? (region === 'cn' ? 'hy3' : 'deepseek-v4.1-flash')
+  }
+
+  /** Run one capability for one region across its pooled members. Never throws. */
+  async function growthTick(cap: GrowthCapability, region: WorkBuddyRegion): Promise<void> {
+    const key = growthKey(cap, region)
+    if (growthRunning[key] === true) return
+    growthRunning[key] = true
+    try {
+      if (!growthEnabled(cap, region)) return
+      const nowMs = Date.now()
+      const today = localDayKey(nowMs)
+      const stored = growthState[key] ?? await readGrowthState(cap, region)
+      const state = stored === undefined || stored.day !== today
+        ? emptyAutoCheckinState(today)
+        : stored
+      growthState[key] = state
+      const all: GrowthTarget[] = (await poolMemberAccounts(region)).map(account => ({
+        accountId: account.id,
+        accountName: account.accountName,
+      }))
+      const targets = pendingTargets(
+        all.map(target => ({ ...target })),
+        state,
+      )
+      if (!isDue(state, targets.length, nowMs)) {
+        scheduleGrowth(cap, region, GROWTH_IDLE_MS)
+        return
+      }
+      const store = stacks[region].store
+      let rows
+      if (cap === 'growth-redeem') {
+        rows = await redeemGrowthAll(targets, {
+          credentialFor: id => store.credentialFor(id),
+          readStreak: credential => client.fetchGrowthStreak(credential as WorkBuddyCredential),
+          redeem: (credential, tier) => client.redeemGrowthTier(credential as WorkBuddyCredential, tier),
+        })
+      } else {
+        const model = growthAcpModel(region)
+        rows = await activateGrowthAll(targets, async accountId => {
+          const credential = await store.credentialFor(accountId)
+          if (credential === undefined) return { status: 'failed', reason: 'no stored credential' }
+          // One host derivation for both the console API and its Origin/Referer,
+          // following the credential's own region — never a region argument.
+          const host = growthHostOf(credential)
+          return activateGrowth({
+            base: host,
+            accessToken: credential.accessToken,
+            origin: host,
+            model,
+            heatmap: async () => {
+              const cell = await client.fetchGrowthToday(credential)
+              return cell === undefined ? undefined : { isActive: cell.isActive, score: cell.score }
+            },
+          })
+        })
+      }
+      // Growth rows use done/skipped/failed; foldAttempt reasons in terms of
+      // claimed/already. Map at this seam so the daily state still means
+      // "settled accounts" without changing the shared folding rules.
+      const folded = foldAttempt(state, rows.map(row => ({
+        accountId: row.accountId,
+        accountName: row.accountName,
+        status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
+      })), nowMs, targets.length + state.doneAccountIds.length)
+      growthState[key] = folded
+      await writeGrowthState(cap, region, folded)
+      const pending = pendingTargets(
+        all.map(target => ({ ...target })),
+        folded,
+      ).length
+      scheduleGrowth(cap, region, nextDelayMs(folded, pending) ?? GROWTH_IDLE_MS)
+    } catch (error: unknown) {
+      ctx.logger.warn(`dsh-connect-workbuddy: growth tick failed (${cap}/${region})`, error)
+      scheduleGrowth(cap, region, GROWTH_IDLE_MS)
+    } finally {
+      growthRunning[key] = false
+    }
+  }
+
+  function scheduleGrowth(cap: GrowthCapability, region: WorkBuddyRegion, delayMs: number): void {
+    const key = growthKey(cap, region)
+    const existing = growthTimers[key]
+    if (existing !== undefined) clearTimeout(existing)
+    const timer = setTimeout(() => { void growthTick(cap, region) }, delayMs)
+    timer.unref?.()
+    growthTimers[key] = timer
+  }
+
+  function syncGrowth(): void {
+    for (const cap of GROWTH_CAPABILITIES) {
+      for (const region of GROWTH_REGIONS) {
+        const key = growthKey(cap, region)
+        if (growthEnabled(cap, region)) {
+          if (growthTimers[key] === undefined) scheduleGrowth(cap, region, 0)
+          continue
+        }
+        const timer = growthTimers[key]
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          delete growthTimers[key]
+        }
+      }
+    }
+  }
+
+  function stopGrowth(): void {
+    for (const timer of Object.values(growthTimers)) clearTimeout(timer)
+    for (const key of Object.keys(growthTimers)) delete growthTimers[key]
+  }
+
+  // The settings object is live; re-sync on every write just like auto-check-in.
+  // Called once here and again from the settings-change path below.
+  function refreshGrowthSchedules(): void { syncGrowth() }
+  refreshGrowthSchedules()
+  ctx.effect(() => () => { stopGrowth() })
+
   // Settings registration (0.1.7+ only).
   // `SettingsForms` dropped `installSection` entirely and exposes
   // `configure({auto}, owner)`; calling the removed method unconditionally made
@@ -4598,6 +4774,9 @@ export function apply(ctx: Context, config: Config): void {
       // The auto check-in switch lives in the same volatile region slot, so this
       // is also where turning it on or off takes effect — without a restart.
       syncAutoCheckin()
+      // The two growth switches (issue #286) are volatile siblings; re-arm or
+      // disarm their timers on the same update so a toggle takes effect at once.
+      refreshGrowthSchedules()
       // 总开关同样是 volatile：不重挂，所以预热链要在这里跟随，否则关着启动的
       // 进程打开开关后永远没有定时器（只有一次请求才偶尔取到 token）。
       syncDeviceSdk()

@@ -1601,11 +1601,15 @@ describe('the mode bar draws both switches the same way', () => {
     })
   }
 
-  it('renders two switches, and both use the same internal markup', async () => {
+  it('renders the pool + check-in switches, and every switch uses the same markup', async () => {
     stubFetch(() => ({ body: {} }))
     const m = await mount(AccountPool, bothSwitches())
     const switches = Array.from(m.container.querySelectorAll('.dsm-workbuddy-pool .sw'))
-    expect(switches, 'the pool switch AND the check-in switch').toHaveLength(2)
+    // Pool + check-in, plus the two opt-in growth switches (issue #286). The
+    // invariant that matters is not the exact count but the SHARED SHAPE below:
+    // every switch is a label.sw holding input + track, so none renders at the
+    // host default size. Pin a minimum of 2 so the original pair is always here.
+    expect(switches.length, 'the pool switch AND the check-in switch').toBeGreaterThanOrEqual(2)
     for (const sw of switches) {
       // The shared shape is what makes them look alike: a hidden checkbox plus
       // the styled track. A second switch drawn with a bare <input> would have

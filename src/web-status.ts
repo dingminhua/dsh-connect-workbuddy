@@ -584,6 +584,10 @@ export interface WorkBuddyPoolDeps {
      * profile until someone ticks it.
      */
     autoCheckin?: boolean
+    /** Auto-redeem claimable streak tiers (issue #286, opt-in, both regions). */
+    growthRedeem?: boolean
+    /** Auto-light "active today" via ACP (issue #286, opt-in, both regions). */
+    growthActivity?: boolean
   }
   /** One region's CHECKED accounts, plus their credits and last measurements. */
   members(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolMember[]>
@@ -1730,6 +1734,8 @@ async function workBuddyWebPool(
     // draft-and-save cycle must show what is stored. Absent reads as OFF, which
     // is the truth for every profile until someone ticks it.
     ...preferences.autoCheckin !== true ? {} : { autoCheckin: true },
+    ...preferences.growthRedeem !== true ? {} : { growthRedeem: true },
+    ...preferences.growthActivity !== true ? {} : { growthActivity: true },
     // Only when the runner has something to say. An object full of zeroes would
     // make "nothing has run" indistinguishable from "ran and found nothing to
     // do", and the card renders those differently.

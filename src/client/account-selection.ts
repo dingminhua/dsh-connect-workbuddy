@@ -1091,6 +1091,10 @@ export async function writePoolPreferences(
      * would silently switch a background job OFF on an unrelated save.
      */
     autoCheckin?: boolean
+    /** Auto-redeem claimable growth tiers (issue #286). Omitted = leave untouched. */
+    growthRedeem?: boolean
+    /** Auto-light "active today" via ACP (issue #286). Omitted = leave untouched. */
+    growthActivity?: boolean
   },
 ): Promise<void> {
   // The merge starts from the EXISTING slot, read here rather than taken from
@@ -1109,6 +1113,18 @@ export async function writePoolPreferences(
     memberAccountIds: preferences.memberAccountIds,
     orderAccountIds: preferences.orderAccountIds,
   }
+  // Carry forward the two growth switches when this caller predates them (issue
+  // #286): a save from an older card must not silently turn them off. A caller
+  // that DID supply them overwrites these values below.
+  const currentPool = (scope.getSnapshot().value as {
+    regions?: Record<string, { pool?: Record<string, unknown> }>
+  } | null | undefined)?.regions?.[region]?.pool
+  if (preferences.growthRedeem === undefined && typeof currentPool?.['growthRedeem'] === 'boolean') {
+    slot['growthRedeem'] = currentPool['growthRedeem']
+  }
+  if (preferences.growthActivity === undefined && typeof currentPool?.['growthActivity'] === 'boolean') {
+    slot['growthActivity'] = currentPool['growthActivity']
+  }
   if (preferences.probeInputTokens !== undefined) {
     slot['probeInputTokens'] = preferences.probeInputTokens
   }
@@ -1116,6 +1132,12 @@ export async function writePoolPreferences(
   // is a real value and must be written (it is how the user turns the job off).
   if (preferences.autoCheckin !== undefined) {
     slot['autoCheckin'] = preferences.autoCheckin
+  }
+  if (preferences.growthRedeem !== undefined) {
+    slot['growthRedeem'] = preferences.growthRedeem
+  }
+  if (preferences.growthActivity !== undefined) {
+    slot['growthActivity'] = preferences.growthActivity
   }
   const merged = nextRegionPool(scope.getSnapshot().value, region, slot)
   const next = merged[region] as Record<string, unknown>
@@ -1149,6 +1171,10 @@ export async function writePoolPreferences(
     const storedOrder = pool['orderAccountIds']
     if (!Array.isArray(storedOrder) || storedOrder.length !== preferences.orderAccountIds.length) return false
     if (!storedOrder.every((id, index) => id === preferences.orderAccountIds[index])) return false
+    // Growth switches, when the caller supplied them (issue #286). Absent means
+    // "leave untouched", so there is nothing to verify in that case.
+    if (preferences.growthRedeem !== undefined && pool['growthRedeem'] !== preferences.growthRedeem) return false
+    if (preferences.growthActivity !== undefined && pool['growthActivity'] !== preferences.growthActivity) return false
     // Everything compared above matched. Returning `undefined` here (which is
     // what a trailing `if` without a final `return` would do) reads as "did not
     // land" and would leave the draft on screen after a successful save.

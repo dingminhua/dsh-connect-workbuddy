@@ -315,6 +315,64 @@ export interface WorkBuddyCheckinClaim {
   isStreakDay: boolean
 }
 
+/* ------------------------------------------------------------------------- *
+ * Growth center (issue #286)
+ * ------------------------------------------------------------------------- *
+ * Two read-only facts and one write, shared by BOTH regions. The growth API
+ * lives on the SAME host as billing, so every method here reuses
+ * `billingBase(credential, cnBaseOf())` and `billingHeaders(...)` — the region
+ * follows `credential.domain`, never a `region` argument. That is the whole
+ * point: one implementation serves CN and international accounts alike.
+ *
+ * ENDPOINT SHAPES (measured by the issue reporter on both regions, 2026-11-20):
+ *   GET /v2/activity/growth/heatmap  → data.today.{is_active,score,date,status_text}
+ *   GET /activity/growth/streak      → data.{streak,makeup_cards,redemption_status}
+ *   POST /activity/growth/redeem     body {"tier":"7d"|"14d"|"28d"}
+ * The prefix rule is CONFUSED in the reporter's own attachment: one file says
+ * "growth paths must NOT carry /v2", while the summary table says both spellings
+ * answer 200 and "METHOD matters more than prefix". The read methods below try
+ * the `/v2` form first and fall back to the bare form on a 404, so either
+ * upstream reality works. Only `redeem` (a WRITE) is pinned to one path.
+ */
+
+/** Today's heatmap cell: whether the account was active and its score. */
+export interface WorkBuddyGrowthToday {
+  date: string
+  isActive: boolean
+  score: number
+  statusText?: string
+}
+
+/** One redeemable streak tier as the upstream publishes it. */
+export interface WorkBuddyGrowthTier {
+  tier: string
+  days: number
+  credit: number
+  energy?: number
+  cards?: number
+  chances?: number
+}
+
+/** Streak + redemption snapshot, reduced to what the card and runner need. */
+export interface WorkBuddyGrowthStreak {
+  days: number
+  monthTotalDays: number
+  monthConsumedDays: number
+  nextTier?: string
+  nextTierRemaining: number
+  /** Tier ids (`7d`/`14d`/`28d`) the gateway says are claimable NOW. */
+  availableTiers: readonly string[]
+  makeupCardBalance: number
+}
+
+/** Result of redeeming one tier. */
+export interface WorkBuddyGrowthRedeemResult {
+  tier: string
+  credit: number
+  energy?: number
+  alreadyClaimed?: boolean
+}
+
 /**
  * One promotional benefit the account may or may not still be entitled to.
  *
@@ -1778,6 +1836,15 @@ function billingBase(credential: WorkBuddyCredential, cnBase?: string): string {
   // reset). An override that fixed chat but left check-in and credits on a
   // blocked host would look like a half-broken plugin rather than a workaround.
   return cnBase === undefined || cnBase === '' ? CN_BILLING_BASE : cnBase
+}
+
+/**
+ * Console/growth host for a credential — the SAME host `billingBase` resolves
+ * to (issue #286). Exported so the ACP layer can address the console API
+ * without re-deriving the region from the domain itself.
+ */
+export function growthHostOf(credential: WorkBuddyCredential, cnBase?: string): string {
+  return billingBase(credential, cnBase)
 }
 
 function originReferer(credential: WorkBuddyCredential): string {
@@ -6019,6 +6086,135 @@ export class WorkBuddyUpstreamClient {
       credit: numberField('credit'),
       streakDays: numberField('streak_days'),
       isStreakDay: data['is_streak_day'] === true,
+    }
+  }
+
+  /**
+   * GET one growth-center path, trying `/v2` then the bare form.
+   *
+   * The attachment disagrees with itself on whether growth paths carry `/v2`
+   * (see the endpoint note above). Rather than pin one spelling and be wrong on
+   * half the deployments, a 404 on the first form retries the second. Only a
+   * clean `code: 0` envelope is accepted; a business error is returned as-is.
+   * Returns `undefined` when NEITHER shape answered successfully.
+   */
+  private async readGrowthData(
+    credential: WorkBuddyCredential,
+    barePath: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    const base = billingBase(credential, this.cnBaseOf())
+    for (const path of [`/v2${barePath}`, barePath]) {
+      let response: Response
+      try {
+        response = await fetch(`${base}${path}`, {
+          method: 'GET',
+          headers: billingHeaders(credential, await this.wireIdentity(credential)),
+          signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+        })
+      } catch {
+        // A transport fault on the first spelling is retried on the second;
+        // both failing simply yields no answer (callers report it honestly).
+        continue
+      }
+      if (!response.ok) {
+        if (response.status === 404) continue
+        return undefined
+      }
+      let envelope: Envelope
+      try {
+        envelope = await readEnvelope(response)
+      } catch {
+        return undefined
+      }
+      if (envelope.code !== 0) return undefined
+      return typeof envelope.data === 'object' && envelope.data !== null
+        ? envelope.data as Record<string, unknown>
+        : {}
+    }
+    return undefined
+  }
+
+  /** Today's heatmap cell, or undefined when the gateway gave no usable answer. */
+  async fetchGrowthToday(credential: WorkBuddyCredential): Promise<WorkBuddyGrowthToday | undefined> {
+    const data = await this.readGrowthData(credential, '/activity/growth/heatmap')
+    if (data === undefined) return undefined
+    const today = typeof data['today'] === 'object' && data['today'] !== null
+      ? data['today'] as Record<string, unknown>
+      : undefined
+    if (today === undefined) return undefined
+    const numberField = (key: string): number => typeof today[key] === 'number' ? today[key] as number : 0
+    return {
+      date: typeof today['date'] === 'string' ? today['date'] : '',
+      isActive: today['is_active'] === true,
+      score: numberField('score'),
+      ...typeof today['status_text'] === 'string' && today['status_text'] !== ''
+        ? { statusText: today['status_text'] as string }
+        : {},
+    }
+  }
+
+  /** Streak + redemption snapshot, or undefined when unreadable. */
+  async fetchGrowthStreak(credential: WorkBuddyCredential): Promise<WorkBuddyGrowthStreak | undefined> {
+    const data = await this.readGrowthData(credential, '/activity/growth/streak')
+    if (data === undefined) return undefined
+    const streak = typeof data['streak'] === 'object' && data['streak'] !== null
+      ? data['streak'] as Record<string, unknown>
+      : {}
+    const redemption = typeof data['redemption_status'] === 'object' && data['redemption_status'] !== null
+      ? data['redemption_status'] as Record<string, unknown>
+      : {}
+    const cards = typeof data['makeup_cards'] === 'object' && data['makeup_cards'] !== null
+      ? data['makeup_cards'] as Record<string, unknown>
+      : {}
+    const num = (obj: Record<string, unknown>, key: string): number =>
+      typeof obj[key] === 'number' ? obj[key] as number : 0
+    // `redemption_status` carries `tier_7d_status: "available" | "locked"` and
+    // a `tiers[]` array. Derive claimable ids from the status fields so a tier
+    // the gateway marks locked is NEVER redeemed (a write we must not send).
+    const availableTiers: string[] = []
+    for (const tier of ['7d', '14d', '28d']) {
+      if (redemption[`tier_${tier}_status`] === 'available') availableTiers.push(tier)
+    }
+    return {
+      days: num(streak, 'days'),
+      monthTotalDays: num(streak, 'month_total_days'),
+      monthConsumedDays: num(streak, 'month_consumed_days'),
+      ...typeof streak['next_tier'] === 'string' && streak['next_tier'] !== ''
+        ? { nextTier: streak['next_tier'] as string }
+        : {},
+      nextTierRemaining: num(streak, 'next_tier_remaining'),
+      availableTiers,
+      makeupCardBalance: num(cards, 'balance'),
+    }
+  }
+
+  /**
+   * Redeem one streak tier. The CALLER must only pass a tier the gateway marked
+   * `available`; this method does not re-check, so the decision stays in the
+   * batch runner where it can be reported and tested. The browser/host route
+   * guards this mutation with POST + loopback like every other write.
+   */
+  async redeemGrowthTier(
+    credential: WorkBuddyCredential,
+    tier: string,
+  ): Promise<WorkBuddyGrowthRedeemResult> {
+    const response = await fetch(`${billingBase(credential, this.cnBaseOf())}/activity/growth/redeem`, {
+      method: 'POST',
+      headers: billingHeaders(credential, await this.wireIdentity(credential)),
+      body: JSON.stringify({ tier }),
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const num = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      tier,
+      credit: num('credit'),
+      ...typeof data['energy'] === 'number' ? { energy: data['energy'] as number } : {},
+      ...data['already_claimed'] === true ? { alreadyClaimed: true } : {},
     }
   }
 

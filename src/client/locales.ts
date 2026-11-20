@@ -414,6 +414,11 @@ export const en = {
   // does not tell a user that a background job will write to their account.
   'row.poolAutoCheckin': 'Check in automatically each day',
   'row.poolAutoCheckinHint': 'On: the plugin claims the daily check-in for the accounts checked into this pool, once a day, in the background. It reads first and never re-claims an account already checked in, so a restart cannot double-claim. Off: nothing runs until you press the button. A missed day resets the streak.',
+  // Growth center (issue #286) — both switches opt-in, both regions.
+  'row.poolGrowthRedeem': 'Redeem growth rewards automatically',
+  'row.poolGrowthRedeemHint': 'On: once a day the plugin redeems any streak tier the gateway marks available, for each pooled account. Locked tiers are skipped, so repeat runs write nothing. Available in both regions.',
+  'row.poolGrowthActivity': 'Light up "active today" automatically',
+  'row.poolGrowthActivityHint': 'On: once a day the plugin sends ONE short chat turn per pooled account through the console session, which lights up "active today". This spends a little credit. Accounts already active get no turn. Available in both regions.',
   'row.poolAutoCheckinToday': 'Today: {done} of {total} checked in',
   'row.poolAutoCheckinDone': 'Today: all {total} checked in',
   'row.poolAutoCheckinPending': '{count} still to retry',
@@ -1162,6 +1167,11 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 自动签到（issue #191）。默认关，且标题写的是「它会做什么」而不是功能名。
   'row.poolAutoCheckin': '每天自动签到',
   'row.poolAutoCheckinHint': '开启：插件在后台为勾选进池的账号领取每日签到，一天一次。它先读状态、已签到的不重复领取，所以重启也不会多领。关闭：不点按钮就什么都不会发生。漏一天会断连签。',
+  // 成长中心（issue #286）：两个开关均默认关闭，两个区都可用。
+  'row.poolGrowthRedeem': '自动兑换成长奖励',
+  'row.poolGrowthRedeemHint': '开启：插件每天为池内每个账号兑换上游标记为可领的连签档位，已锁的档位跳过，因此重复运行不会重复写。国内版与国际版均可用。',
+  'row.poolGrowthActivity': '自动点亮「今日活跃」',
+  'row.poolGrowthActivityHint': '开启：插件每天通过控制台会话为池内每个账号发一条简短对话，点亮「今日活跃」。这会消耗少量积分；今日已活跃的账号不会发。国内版与国际版均可用。',
   'row.poolAutoCheckinToday': '今日：已签 {done} / {total}',
   'row.poolAutoCheckinDone': '今日：{total} 个全部已签',
   'row.poolAutoCheckinPending': '待重试 {count} 个',

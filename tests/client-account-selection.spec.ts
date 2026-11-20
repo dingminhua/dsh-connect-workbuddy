@@ -286,6 +286,30 @@ describe('writePoolPreferences', () => {
     expect(pool).toEqual({ ...PREFERENCES })
   })
 
+  it('round-trips the two growth switches when they are supplied (issue #286)', async () => {
+    // Both are opt-in: absent means "leave untouched"; supplied false is a real
+    // value that must be written (it is how the user turns a job back off).
+    const { scope, document } = scopeWith({ regions: { cn: {} } })
+    await writePoolPreferences(scope, 'cn', {
+      ...PREFERENCES,
+      growthRedeem: true,
+      growthActivity: false,
+    })
+    const pool = (document()['regions'] as Record<string, { pool?: Record<string, unknown> }>).cn?.pool
+    expect(pool?.['growthRedeem']).toBe(true)
+    expect(pool?.['growthActivity']).toBe(false)
+  })
+
+  it('leaves growth switches untouched when the caller omits them', async () => {
+    const { scope, document } = scopeWith({
+      regions: { cn: { pool: { ...PREFERENCES, growthRedeem: true, growthActivity: true } } },
+    })
+    await writePoolPreferences(scope, 'cn', { ...PREFERENCES })
+    const pool = (document()['regions'] as Record<string, { pool?: Record<string, unknown> }>).cn?.pool
+    expect(pool?.['growthRedeem']).toBe(true)
+    expect(pool?.['growthActivity']).toBe(true)
+  })
+
   it('PRESERVES the model list when saving pool preferences', async () => {
     // The pool shares a slot with the model list, so this write must merge
     // rather than replace — otherwise configuring the pool would delete the

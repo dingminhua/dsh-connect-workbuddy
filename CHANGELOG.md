@@ -1,5 +1,51 @@
 # Changelog
 
+## 5.26.0 (2026-11-20)
+
+> 版本号是 **minor**：新增「成长中心」两类后台收益——连签档位自动兑换、今日活跃自动点亮。
+> 来自 issue #286（报告者附了本机实测文档与参考 Python 实现）。不改任何既有模型/路由/计费/
+> 身份规则；两项能力都是**默认关闭**的 opt-in 开关，关闭时对现有行为逐字节不变。
+
+### 新增：成长中心两项收益，两区通用（issue #286）
+
+插件此前只有 CN 的每日签到；成长中心剩下三块收益都没有。本版按与维护者讨论的取舍，**只做
+其中两项**，砍掉 Buddy 领养 + 派猫旅行（最复杂、依赖今日活跃、且只有 CN 有收益）。社区资料
+里 `growth`/`heatmap`/`acp`/`buddy/travel` 等端点在插件中原本命中数全为 0。
+
+- **连签档位自动兑换**：`growthRedeem`，默认关，CN/global 两区都可用。`upstream.ts` 新增
+  `fetchGrowthStreak` / `redeemGrowthTier`，复用 `billingBase`/`billingHeaders`——区域由
+  `credential.domain` 决定，方法体一处实现服务两区。只兑换网关标记 `available` 的档位，
+  `locked` 跳过，所以重复运行不写任何东西。**关键前提**：国际版连签是否真有可兑档位尚未在
+  真机验证（报告者的签到 `active=false` 与连签回 `streak.days` 两处描述对不上），开关默认关
+  使得这一点不影响现网。成长路径前缀 `/v2` 与裸路径的读法在附件里自相矛盾，`readGrowthData`
+  对 GET 先试 `/v2`、404 再退回裸路径，两种上游现实都能工作。
+- **今日活跃自动点亮**：`growthActivity`，默认关，CN/global 两区都可用。这是国际版唯一确定
+  能拿到的成长收益，且只有走控制台 ACP 会话才点亮——`/v2/chat/completions` 正常计费但不计
+  活跃。新增 `growth-acp.ts` 实现四步会话（建会话 → 补取 session → SSE 取 `acp-connection-id`
+  → JSON-RPC `initialize` + `session/prompt` → 尽力 DELETE 收尾），SSE 解析、端点归一化、
+  幂等前置读、4×1.5s 轮询确认都做成纯函数 + 注入 `fetch`/`sleep`，无 Host 可单测。文案明说
+  **每账号每天发一条对话、消耗少量积分**；今日已活跃的账号一条都不发。模型按该区目录现取，
+  不写死参考实现里的 id。
+- **多账号与通用性**：两项复用 `checkinAllAccounts` 的批处理形状——`credentialFor(id)` 逐账号
+  取凭据而不改选中账号，串行 + 间隔 + 单行隔离失败。新 `growth-run.ts` 只多一层「只兑
+  available / 幂等活跃」的能力边界，区域无关。
+- **状态与调度**：新 `growth-state-store.ts` 按「能力 + 区」分别落盘（`.workbuddy-growth-redeem.*`
+  / `.workbuddy-growth-activity.*`），与签到的 `doneAccountIds` 三者互不覆盖；沿用 `auto-checkin.ts`
+  的 `foldAttempt`/`isDue`/`nextDelayMs`/本地午夜翻日/常驻 idle 心跳。插件无创建 DSH 定时任务的
+  API，故采用进程内定时器（重启不补拍），不实现资料建议的 00:05/12:05 墙钟两拍。
+- **UI**：`AccountPool` 能力栏新增两个开关，与签到开关同形、同「保存才生效」规则，文案中英同步。
+  两个开关都是 `default(false)`，且旧存档缺这两个键时读为关、保存不会被回写覆盖。
+
+**边界与未验证**：本版未在任何真实账号上发过写请求——插件仓库无凭据，不在本机 $DSH_HOME 读
+真实 token 代用户操作。ACP 协议按报告者实测文档实现并逐条单测，但真机连通性需报告者/用户在
+勾选开关后自行确认。`growthHostOf` 复用已有的 CN/global 基址解析，成长域新端点是否对所有
+部署都通，同上。
+
+守护测试：`upstream-growth`（含「只兑 available」前缀回退）、`growth-acp`（幂等/四步/SSE/
+无连接头失败）、`growth-run`（多账号隔离/锁档位不写）、`growth-state-store`（能力隔离/区合并/
+无 token）、`client-account-selection`（开关往返与缺省保留）。三条核心防护都做变异验证：摘掉
+守卫对应测试变红，恢复后全绿。`pnpm run check` 全过。
+
 ## 5.25.3 (2026-11-20)
 
 > 版本号是 **patch**：只修一条错误分类路径——过期 token 在刷新时被上游拒绝（401/403）之后，
