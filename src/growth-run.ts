@@ -37,6 +37,29 @@ export interface GrowthRow {
   credit?: number
 }
 
+/**
+ * Map growth rows into the check-in row shape `foldAttempt` accepts.
+ *
+ * The `message` must be carried through: `foldAttempt` uses a failed row's
+ * message as `lastError`, and falls back to `accountId` when it is absent — so
+ * dropping it here makes the card show a raw 24-hex account id as "last attempt
+ * failed" (the bug this helper pins). Both the timer and the manual run call
+ * this ONE mapping so they cannot drift.
+ */
+export function growthRowsForFold(rows: readonly GrowthRow[]): {
+  accountId: string
+  accountName: string
+  status: 'claimed' | 'already' | 'failed'
+  message?: string
+}[] {
+  return rows.map(row => ({
+    accountId: row.accountId,
+    accountName: row.accountName,
+    status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
+    ...row.message === undefined ? {} : { message: row.message },
+  }))
+}
+
 /** Dependencies for the redeem batch, injected for tests. */
 export interface RedeemBatchDeps {
   credentialFor(accountId: string): Promise<{ accessToken: string } | undefined>

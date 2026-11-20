@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.27.1 (2026-11-21)
+
+> 补丁版，修重启后从真实状态发现的进度记账 bug。用户重启验证后反馈「8/9 一直卡着」。
+
+- **修复 lastError 显示成账号 id**：定时与手动两条路径把成长结果喂给 `foldAttempt` 时都
+  丢了 `row.message`，而 `foldAttempt` 对失败行会以 `accountId` 兜底——于是卡片把一串
+  24 位十六进制账号 id 当成「上次失败原因」显示。真实原因其实是 `growth streak was not
+  readable`（某账号读不到成长端点）。抽出 `growthRowsForFold` 纯函数，两条路径共用并保留
+  message；加测试：喂进真实 message 后 `foldAttempt.lastError` 必须是原因而非 id，并做
+  变异验证（去掉 message 传递即红）。
+- **修复手动运行把分母算大**：手动路径给 `foldAttempt` 传的是全部账号，却又叠加了已完成
+  账号数（`all.length + doneAccountIds.length`），导致 `scopeSize` 从 9 膨胀到 17、进度
+  显示 8/17 且 `pending` 永不为 0 反复重试。手动路径改为只传 `all.length`。
+- 这两处只影响状态记账与显示，不改任何上游写操作。`pnpm run check` 全过（3770 条测试）。
+  注意：已落盘的坏状态（scopeSize=17、lastError=hash）会在新版本下一次 tick 时被正确值覆盖。
+
 ## 5.27.0 (2026-11-20)
 
 > 功能版：成长中心两项收益新增「立即执行」手动按钮。用户反馈只有自动开关、缺手动入口。

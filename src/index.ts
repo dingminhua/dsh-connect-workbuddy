@@ -135,7 +135,7 @@ import {
 import type { AutoCheckinState } from './auto-checkin.ts'
 import { readAutoCheckinState, writeAutoCheckinState } from './auto-checkin-store.ts'
 import { activateGrowth } from './growth-acp.ts'
-import { activateGrowthAll, redeemGrowthAll } from './growth-run.ts'
+import { activateGrowthAll, growthRowsForFold, redeemGrowthAll } from './growth-run.ts'
 import type { GrowthTarget } from './growth-run.ts'
 import { readGrowthState, writeGrowthState } from './growth-state-store.ts'
 import type { GrowthCapability } from './growth-state-store.ts'
@@ -3607,11 +3607,7 @@ export function apply(ctx: Context, config: Config): void {
         // Fold into today's state so the manual run is reflected in the status
         // line too, and persist it. A manual run that fails all rows still gets
         // its attempt recorded so the backoff clock can advance.
-        const folded = foldAttempt(state, rows.map(row => ({
-          accountId: row.accountId,
-          accountName: row.accountName,
-          status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
-        })), nowMs, all.length + state.doneAccountIds.length)
+        const folded = foldAttempt(state, growthRowsForFold(rows), nowMs, all.length)
         growthState[key] = folded
         await writeGrowthState(cap, region, folded)
         return rows.map(row => ({
@@ -4712,11 +4708,7 @@ export function apply(ctx: Context, config: Config): void {
       // Growth rows use done/skipped/failed; foldAttempt reasons in terms of
       // claimed/already. Map at this seam so the daily state still means
       // "settled accounts" without changing the shared folding rules.
-      const folded = foldAttempt(state, rows.map(row => ({
-        accountId: row.accountId,
-        accountName: row.accountName,
-        status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
-      })), nowMs, targets.length + state.doneAccountIds.length)
+      const folded = foldAttempt(state, growthRowsForFold(rows), nowMs, targets.length + state.doneAccountIds.length)
       growthState[key] = folded
       await writeGrowthState(cap, region, folded)
       const pending = pendingTargets(

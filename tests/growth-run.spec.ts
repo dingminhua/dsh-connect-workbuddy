@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { emptyAutoCheckinState, foldAttempt } from '../src/auto-checkin.ts'
 import {
   activateGrowthAll,
+  growthRowsForFold,
   redeemGrowthAll,
   type RedeemBatchDeps,
 } from '../src/growth-run.ts'
@@ -9,6 +11,35 @@ const targets = [
   { accountId: 'a', accountName: 'Alpha' },
   { accountId: 'b', accountName: 'Beta' },
 ]
+
+describe('growthRowsForFold (issue #286, hash-as-error bug)', () => {
+  it('carries the real failure message so foldAttempt never shows a raw account id', () => {
+    // The reported bug: lastError was a 24-hex account id because the mapping
+    // dropped `message` and foldAttempt fell back to `accountId`.
+    const rows = growthRowsForFold([
+      { accountId: 'ba217455a46db83f7d3891ee', accountName: 'A', status: 'failed', message: 'growth streak was not readable' },
+      { accountId: 'ok1', accountName: 'B', status: 'done', message: 'redeemed 7d' },
+      { accountId: 'skip1', accountName: 'C', status: 'skipped', message: 'no tier is available to redeem' },
+    ])
+    expect(rows[0]).toEqual({
+      accountId: 'ba217455a46db83f7d3891ee', accountName: 'A', status: 'failed',
+      message: 'growth streak was not readable',
+    })
+    expect(rows[1]?.status).toBe('claimed')
+    expect(rows[2]?.status).toBe('already')
+  })
+
+  it('feeds a real message into foldAttempt, not the account id', () => {
+    // End-to-end with the shared folding state machine: the lastError it
+    // produces must be the human reason, never the id.
+    const state = emptyAutoCheckinState('2026-11-21')
+    const folded = foldAttempt(state, growthRowsForFold([
+      { accountId: 'hex-hex-hex', accountName: 'A', status: 'failed', message: 'growth streak was not readable' },
+    ]), 1_000, 1)
+    expect(folded.lastError).toBe('growth streak was not readable')
+    expect(folded.lastError).not.toContain('hex-hex-hex')
+  })
+})
 
 describe('redeemGrowthAll', () => {
   function deps(over: Partial<RedeemBatchDeps> = {}): RedeemBatchDeps {
