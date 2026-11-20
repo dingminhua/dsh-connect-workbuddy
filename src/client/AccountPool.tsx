@@ -329,7 +329,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   // A stale re-read after a VERIFIED write — a different fact from a failed
   // save, and it must not borrow the 「保存失败：」 framing (issue #131).
   const [staleNotice, setStaleNotice] = useState<string | undefined>(undefined)
-  const [busy, setBusy] = useState<'checkin' | 'test' | undefined>(undefined)
+  const [busy, setBusy] = useState<'checkin' | 'test' | 'growth-redeem' | 'growth-activity' | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   // Seeded from the shared store so a remount continues the same history.
   const [log, setLog] = useState<readonly PoolLogEntry[]>(() => logStore.get(region) ?? [])
@@ -787,7 +787,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   }, [editDraft, pool])
 
   /** Run one batch action against the Host. */
-  const runAction = useCallback(async (action: 'checkin' | 'test'): Promise<void> => {
+  const runAction = useCallback(async (action: 'checkin' | 'test' | 'growth-redeem' | 'growth-activity'): Promise<void> => {
     setBusy(action)
     setActionError(undefined)
     // Count what the batch will ACTUALLY run on — the same set the Host itself
@@ -813,7 +813,11 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     appendLog(
       action === 'checkin'
         ? t('row.poolLogCheckinStart', { count: memberCount })
-        : t('row.poolLogTestStart', { count: memberCount, model: pool?.targetModelId ?? '' }),
+        : action === 'growth-redeem'
+          ? t('row.poolLogGrowthRedeemStart', { count: memberCount })
+          : action === 'growth-activity'
+            ? t('row.poolLogGrowthActivityStart', { count: memberCount })
+            : t('row.poolLogTestStart', { count: memberCount, model: pool?.targetModelId ?? '' }),
       'info',
     )
     /**
@@ -916,7 +920,26 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           }))
         }
         if (!mounted.current) return
-        if (action === 'checkin') {
+        if (action === 'growth-redeem' || action === 'growth-activity') {
+          for (const row of (body?.rows ?? []) as WorkBuddyWebPoolCheckinRow[]) {
+            const name = row.accountName === '' || row.accountName === undefined
+              ? t('row.accountUnnamed')
+              : row.accountName
+            if (row.status === 'claimed') {
+              appendLog(t(action === 'growth-redeem' ? 'row.poolLogGrowthRedeemDone' : 'row.poolLogGrowthActivityDone', {
+                accountName: name,
+                credit: row.credit === undefined ? '' : ` +${row.credit}`,
+              }), 'ok')
+            } else if (row.status === 'already') {
+              appendLog(t('row.poolLogGrowthAlready', { accountName: name }), 'info')
+            } else if (row.status === 'skipped') {
+              appendLog(t('row.poolLogGrowthSkipped', { accountName: name }), 'info')
+            } else {
+              appendLog(t('row.poolLogGrowthFailed', { accountName: name, message: row.message ?? t('row.requestFailed') }), 'error')
+            }
+          }
+          appendLog(t(action === 'growth-redeem' ? 'row.poolLogGrowthRedeemBatchDone' : 'row.poolLogGrowthActivityBatchDone'), 'ok')
+        } else if (action === 'checkin') {
           for (const row of (body?.rows ?? []) as WorkBuddyWebPoolCheckinRow[]) {
             if (row.status === 'claimed') {
               appendLog(t('row.poolLogCheckinClaimed', {
@@ -1753,6 +1776,23 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
                 onClick: () => { void runAction('checkin') },
               }, busy === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll'))
             : null,
+          // Growth "run now" buttons (issue #286). Both regions, both manual —
+          // deliberately NOT gated on the opt-in switches: a click is the user
+          // explicitly asking to run it once, which is independent of the timer.
+          h('button', {
+            type: 'button',
+            className: 'dsm-btn dsm-btn-outline',
+            disabled: busy !== undefined || effectiveMembers.length === 0,
+            title: t('row.poolGrowthRedeemRunHint'),
+            onClick: () => { void runAction('growth-redeem') },
+          }, busy === 'growth-redeem' ? t('row.poolGrowthRedeemRunning') : t('row.poolGrowthRedeemRun')),
+          h('button', {
+            type: 'button',
+            className: 'dsm-btn dsm-btn-outline',
+            disabled: busy !== undefined || effectiveMembers.length === 0,
+            title: t('row.poolGrowthActivityRunHint'),
+            onClick: () => { void runAction('growth-activity') },
+          }, busy === 'growth-activity' ? t('row.poolGrowthActivityRunning') : t('row.poolGrowthActivityRun')),
           h('button', {
             type: 'button',
             className: 'dsm-btn dsm-btn-outline',

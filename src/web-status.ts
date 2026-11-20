@@ -725,6 +725,13 @@ export interface WorkBuddyPoolDeps {
    */
   checkin?(region: WorkBuddyRegion): Promise<readonly WorkBuddyPoolCheckinRow[]>
   /**
+   * Manually run one growth job for every pooled account (issue #286). These are
+   * the on-demand equivalents of the two opt-in background switches. Absent
+   * means the action answers 503. The row shape is shared with the check-in
+   * batch (`done`/`skipped`/`failed` plus a message).
+   */
+  growthRun?(region: WorkBuddyRegion, action: 'growth-redeem' | 'growth-activity'): Promise<readonly WorkBuddyPoolCheckinRow[]>
+  /**
    * What the automatic check-in has settled today, when it is switched on
    * (issue #191).
    *
@@ -2174,6 +2181,18 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
             }
             const rows = await pool.checkin(region)
             return json(res, 200, { action: 'checkin', rows })
+          }
+          if (action === 'growth-redeem' || action === 'growth-activity') {
+            // Manual equivalents of the two opt-in background jobs (issue #286).
+            // NOT gated on the opt-in switches: a manual action is the user
+            // explicitly asking to run it now, so the switch (which governs the
+            // background timer) must not gate it. Membership is still enforced
+            // above — an empty pool runs nothing.
+            if (pool.growthRun === undefined) {
+              return json(res, 503, { reason: 'pool-unavailable', error: 'pool growth action unavailable' })
+            }
+            const rows = await pool.growthRun(region, action)
+            return json(res, 200, { action, rows })
           }
           if (pool.test === undefined) {
             return json(res, 503, { reason: 'pool-unavailable', error: 'pool test unavailable' })

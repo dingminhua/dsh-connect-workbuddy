@@ -198,15 +198,16 @@ export function oauthActionOf(url: string): WorkBuddyOAuthAction | undefined {
   return value === 'start' || value === 'poll' ? value : undefined
 }
 
-/** The pool batch actions. `remove` is per-account and never batch-wide. */
-export type WorkBuddyPoolAction = 'checkin' | 'test' | 'remove'
+/** The pool batch actions. `remove` is per-account and never batch-wide; the two growth actions are manual equivalents of the opt-in background jobs (issue #286). */
+export type WorkBuddyPoolAction = 'checkin' | 'test' | 'remove' | 'growth-redeem' | 'growth-activity'
 
 /** Read the pool action off a request URL; unknown/absent means undefined. */
 export function poolActionOf(url: string): WorkBuddyPoolAction | undefined {
   const at = url.indexOf('?')
   if (at === -1) return undefined
   const value = new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_POOL_ACTION_PARAM)
-  return value === 'checkin' || value === 'test' || value === 'remove' ? value : undefined
+  return value === 'checkin' || value === 'test' || value === 'remove'
+    || value === 'growth-redeem' || value === 'growth-activity' ? value : undefined
 }
 
 /** Query parameter naming ONE pool account a per-row request addresses. */

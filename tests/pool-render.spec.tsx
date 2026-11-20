@@ -1629,6 +1629,14 @@ describe('the mode bar draws both switches the same way', () => {
     await m.unmount()
   })
 
+  it('renders manual "run now" buttons for both growth jobs (issue #286)', async () => {
+    stubFetch(() => ({ body: {} }))
+    const m = await mount(AccountPool, baseProps())
+    expect(m.button('row.poolGrowthRedeemRun'), 'redeem-now button present').toBeDefined()
+    expect(m.button('row.poolGrowthActivityRun'), 'activate-now button present').toBeDefined()
+    await m.unmount()
+  })
+
   it('shows a growth-job progress line from the runner state (issue #286)', async () => {
     // The user's complaint: ticking the switch looked like "nothing happened".
     // The switch alone gives no feedback — the runner's daily progress must

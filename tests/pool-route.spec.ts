@@ -101,6 +101,9 @@ function poolDeps(overrides: Partial<WorkBuddyPoolDeps> = {}): WorkBuddyPoolDeps
     // action elsewhere, and the tests below drive the CN shape.
     checkinSupported: () => true,
     checkin: async () => [{ accountId: 'a', accountName: 'Alpha', status: 'claimed', credit: 60 }],
+    growthRun: async (_region: WorkBuddyRegion, action: string) => [
+      { accountId: 'a', accountName: 'Alpha', status: 'claimed', message: action },
+    ],
     test: async (_region: WorkBuddyRegion, modelId: string) => [
       { accountId: 'a', accountName: 'Alpha', result: { modelId, outcome: 'ok' } },
     ],
@@ -257,6 +260,29 @@ describe('the account-pool route', () => {
     expect(status()).toBe(200)
     expect(body()['action']).toBe('checkin')
     expect((body()['rows'] as unknown[]).length).toBe(1)
+  })
+
+  it('runs the two growth batches for the addressed region (issue #286)', async () => {
+    for (const action of ['growth-redeem', 'growth-activity']) {
+      const handler = await mountPoolHandler(deps(poolDeps()))
+      const { res, status, body } = response()
+      await handler(request('POST', `${WORKBUDDY_POOL_PATH}?region=cn&action=${action}`), res)
+      expect(status()).toBe(200)
+      expect(body()['action']).toBe(action)
+      const rows = body()['rows'] as { status: string }[]
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.status).toBe('claimed')
+    }
+  })
+
+  it('answers 503 for a growth action when the Host has no growth runner', async () => {
+    const noGrowth = poolDeps()
+    delete (noGrowth as { growthRun?: unknown }).growthRun
+    const handler = await mountPoolHandler(deps(noGrowth))
+    const { res, status, body } = response()
+    await handler(request('POST', `${WORKBUDDY_POOL_PATH}?region=cn&action=growth-redeem`), res)
+    expect(status()).toBe(503)
+    expect(body()['reason']).toBe('pool-unavailable')
   })
 
   it('resolves the free model itself rather than trusting the client', async () => {

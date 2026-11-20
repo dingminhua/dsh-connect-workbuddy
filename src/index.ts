@@ -3586,6 +3586,42 @@ export function apply(ctx: Context, config: Config): void {
        */
       growthRedeemToday: region => growthTodayOf('growth-redeem', region),
       growthActivityToday: region => growthTodayOf('growth-activity', region),
+      /**
+       * Manual "run now" for a growth job (issue #286). Same batch + state as
+       * the timer, but ignores the opt-in switch and the backoff clock: the user
+       * asked for it now. Returns check-in-shaped rows for the shared log UI.
+       */
+      growthRun: async (region, action) => {
+        const cap: GrowthCapability = action === 'growth-redeem' ? 'growth-redeem' : 'growth-activity'
+        const key = growthKey(cap, region)
+        const nowMs = Date.now()
+        const stored = growthState[key] ?? await readGrowthState(cap, region)
+        const state = stored === undefined || stored.day !== localDayKey(nowMs)
+          ? emptyAutoCheckinState(localDayKey(nowMs))
+          : stored
+        const all: GrowthTarget[] = (await poolMemberAccounts(region)).map(account => ({
+          accountId: account.id,
+          accountName: account.accountName,
+        }))
+        const rows = await runGrowthBatch(cap, region, all)
+        // Fold into today's state so the manual run is reflected in the status
+        // line too, and persist it. A manual run that fails all rows still gets
+        // its attempt recorded so the backoff clock can advance.
+        const folded = foldAttempt(state, rows.map(row => ({
+          accountId: row.accountId,
+          accountName: row.accountName,
+          status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
+        })), nowMs, all.length + state.doneAccountIds.length)
+        growthState[key] = folded
+        await writeGrowthState(cap, region, folded)
+        return rows.map(row => ({
+          accountId: row.accountId,
+          accountName: row.accountName,
+          status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
+          ...row.credit === undefined ? {} : { credit: row.credit },
+          ...row.message === undefined ? {} : { message: row.message },
+        }))
+      },
       checkin: async region => {
         const rows = await checkinAllAccounts(
           await poolTargets(region),
@@ -4607,6 +4643,45 @@ export function apply(ctx: Context, config: Config): void {
     return roster[0]?.id ?? (region === 'cn' ? 'hy3' : 'deepseek-v4.1-flash')
   }
 
+  /**
+   * Execute one growth batch over the given targets — the ONE implementation
+   * both the background timer and the manual "run now" button call. Never throws
+   * at the batch level; each account's problem is captured on its own row by the
+   * runner. Returns the raw growth rows (done/skipped/failed).
+   */
+  async function runGrowthBatch(
+    cap: GrowthCapability,
+    region: WorkBuddyRegion,
+    targets: readonly GrowthTarget[],
+  ): Promise<ReturnType<typeof redeemGrowthAll>> {
+    const store = stacks[region].store
+    if (cap === 'growth-redeem') {
+      return redeemGrowthAll(targets, {
+        credentialFor: id => store.credentialFor(id),
+        readStreak: credential => client.fetchGrowthStreak(credential as WorkBuddyCredential),
+        redeem: (credential, tier) => client.redeemGrowthTier(credential as WorkBuddyCredential, tier),
+      })
+    }
+    const model = growthAcpModel(region)
+    return activateGrowthAll(targets, async accountId => {
+      const credential = await store.credentialFor(accountId)
+      if (credential === undefined) return { status: 'failed', reason: 'no stored credential' }
+      // One host derivation for both the console API and its Origin/Referer,
+      // following the credential's own region — never a region argument.
+      const host = growthHostOf(credential)
+      return activateGrowth({
+        base: host,
+        accessToken: credential.accessToken,
+        origin: host,
+        model,
+        heatmap: async () => {
+          const cell = await client.fetchGrowthToday(credential)
+          return cell === undefined ? undefined : { isActive: cell.isActive, score: cell.score }
+        },
+      })
+    })
+  }
+
   /** Run one capability for one region across its pooled members. Never throws. */
   async function growthTick(cap: GrowthCapability, region: WorkBuddyRegion): Promise<void> {
     const key = growthKey(cap, region)
@@ -4633,34 +4708,7 @@ export function apply(ctx: Context, config: Config): void {
         scheduleGrowth(cap, region, GROWTH_IDLE_MS)
         return
       }
-      const store = stacks[region].store
-      let rows
-      if (cap === 'growth-redeem') {
-        rows = await redeemGrowthAll(targets, {
-          credentialFor: id => store.credentialFor(id),
-          readStreak: credential => client.fetchGrowthStreak(credential as WorkBuddyCredential),
-          redeem: (credential, tier) => client.redeemGrowthTier(credential as WorkBuddyCredential, tier),
-        })
-      } else {
-        const model = growthAcpModel(region)
-        rows = await activateGrowthAll(targets, async accountId => {
-          const credential = await store.credentialFor(accountId)
-          if (credential === undefined) return { status: 'failed', reason: 'no stored credential' }
-          // One host derivation for both the console API and its Origin/Referer,
-          // following the credential's own region — never a region argument.
-          const host = growthHostOf(credential)
-          return activateGrowth({
-            base: host,
-            accessToken: credential.accessToken,
-            origin: host,
-            model,
-            heatmap: async () => {
-              const cell = await client.fetchGrowthToday(credential)
-              return cell === undefined ? undefined : { isActive: cell.isActive, score: cell.score }
-            },
-          })
-        })
-      }
+      const rows = await runGrowthBatch(cap, region, targets)
       // Growth rows use done/skipped/failed; foldAttempt reasons in terms of
       // claimed/already. Map at this seam so the daily state still means
       // "settled accounts" without changing the shared folding rules.
