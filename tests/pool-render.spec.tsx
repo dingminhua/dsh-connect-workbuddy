@@ -1648,13 +1648,16 @@ describe('the mode bar draws both switches the same way', () => {
         effectiveMemberAccountIds: [GENUINE_ID],
         accounts: [GENUINE_ACCOUNT],
         growthRedeem: true,
-        growthRedeemToday: { done: 1, total: 2, pending: 1 },
+        growthRedeemToday: { done: 1, total: 2 },
       }),
     }))
     const lines = Array.from(m.container.querySelectorAll('.dsm-workbuddy-pool-auto-checkin-status'))
     expect(lines.length, 'a growth status line renders').toBeGreaterThanOrEqual(1)
     // The render helper returns the locale KEY with params, not translated text.
     expect(m.container.textContent).toContain('row.poolGrowthRedeemToday')
+    // No retry / error noise, even if a stale status carries those fields.
+    expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-pending')).toBeNull()
+    expect(m.container.querySelector('.dsm-workbuddy-pool-auto-checkin-error')).toBeNull()
     await m.unmount()
   })
 
@@ -1681,7 +1684,7 @@ describe('the mode bar draws both switches the same way', () => {
         effectiveMemberAccountIds: [GENUINE_ID],
         accounts: [GENUINE_ACCOUNT],
         growthActivity: true,
-        growthActivityToday: { done: 1, total: 1, pending: 0 },
+        growthActivityToday: { done: 1, total: 1 },
       }),
     }))
     expect(m.container.textContent).toContain('row.poolGrowthActivityDone')

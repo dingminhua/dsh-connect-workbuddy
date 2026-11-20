@@ -20,6 +20,8 @@
  * @module dsh-connect-workbuddy/growth-run
  */
 
+import type { AutoCheckinState } from './auto-checkin.ts'
+
 /** One pool member as a growth batch addresses it. */
 export interface GrowthTarget {
   accountId: string
@@ -58,6 +60,62 @@ export function growthRowsForFold(rows: readonly GrowthRow[]): {
     status: row.status === 'done' ? 'claimed' : row.status === 'skipped' ? 'already' : 'failed',
     ...row.message === undefined ? {} : { message: row.message },
   }))
+}
+
+/* ------------------------------------------------------------------------- *
+ * Growth day state — deliberately NOT the check-in retry state machine.
+ *
+ * Check-in records only SUCCESSFUL accounts so a failed one is retried with
+ * backoff (that is right for a reward you must not miss). Growth is different:
+ * "active today" and "redeem available tiers" are idempotent per-day facts, and
+ * the user asked for a STABLE "已兑换 / 已点亮" state — an account we already
+ * attempted today is settled, whether it redeemed something, was already done,
+ * or the gateway was unreachable. Re-trying it produces exactly the "待重试 N /
+ * 上次失败" noise the user rejected. So these helpers mark every addressed
+ * account settled and never carry `lastError`/`failures` forward.
+ * ------------------------------------------------------------------------- */
+
+/** Accounts still due today: pool members minus those already settled. */
+export function growthPendingTargets<T extends { accountId: string }>(
+  targets: readonly T[],
+  state: AutoCheckinState | undefined,
+): T[] {
+  const done = new Set(state?.doneAccountIds ?? [])
+  return targets.filter(target => !done.has(target.accountId))
+}
+
+/**
+ * Fold one growth attempt into today's state: every addressed account is marked
+ * settled. No backoff, no `lastError` — the card shows a plain done/total count.
+ * `scopeSize` is the REAL member count passed by the caller (never accumulated),
+ * so a manual run cannot inflate the denominator the way the earlier bug did.
+ */
+export function foldGrowthAttempt(
+  state: AutoCheckinState,
+  attemptedIds: readonly string[],
+  scopeSize: number,
+  nowMs: number,
+): AutoCheckinState {
+  const done = new Set([...state.doneAccountIds, ...attemptedIds])
+  return {
+    day: state.day,
+    doneAccountIds: [...done],
+    scopeSize,
+    failures: 0,
+    lastAttemptAtMs: nowMs,
+  }
+}
+
+/** A day summary with NO pending/retry/failure fields — just done of total. */
+export function growthTodaySummary(
+  state: AutoCheckinState | undefined,
+  day: string,
+): { done: number; total: number } | undefined {
+  if (state === undefined || state.day !== day) return undefined
+  return {
+    done: Math.min(state.doneAccountIds.length, state.scopeSize),
+    total: state.scopeSize,
+  }
 }
 
 /** Dependencies for the redeem batch, injected for tests. */

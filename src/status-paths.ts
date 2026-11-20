@@ -2091,13 +2091,19 @@ export interface WorkBuddyWebAutoCheckinToday {
   lastError?: string
 }
 /**
- * Today's progress for one growth background job (issue #286). Same shape as
- * check-in so the card renders all three with one status-line helper; "done"
- * means settled today (redeemed / already-redeemed for `growthRedeem`, lit /
- * already-lit for `growthActivity`), not "succeeded" — a skipped account still
- * counts as settled because it needs no further attempt.
+ * Today's progress for one growth background job (issue #286).
+ *
+ * Deliberately NOT the check-in shape: growth has no retry/backoff semantics.
+ * An account attempted today is settled whether it redeemed, was already done,
+ * or was unreachable, so there is no `pending`/`lastError` to show — just a
+ * stable "已兑换 / 已点亮 X / Y" count the user asked for.
  */
-export type WorkBuddyWebGrowthToday = WorkBuddyWebAutoCheckinToday
+export interface WorkBuddyWebGrowthToday {
+  /** Accounts settled today (attempted, redeemed, or already done). */
+  done: number
+  /** Accounts in scope today — the real pool member count. */
+  total: number
+}
 export interface WorkBuddyWebPool {
   enabled: boolean
   /**

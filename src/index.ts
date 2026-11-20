@@ -135,7 +135,13 @@ import {
 import type { AutoCheckinState } from './auto-checkin.ts'
 import { readAutoCheckinState, writeAutoCheckinState } from './auto-checkin-store.ts'
 import { activateGrowth } from './growth-acp.ts'
-import { activateGrowthAll, growthRowsForFold, redeemGrowthAll } from './growth-run.ts'
+import {
+  activateGrowthAll,
+  foldGrowthAttempt,
+  growthPendingTargets,
+  growthTodaySummary,
+  redeemGrowthAll,
+} from './growth-run.ts'
 import type { GrowthTarget } from './growth-run.ts'
 import { readGrowthState, writeGrowthState } from './growth-state-store.ts'
 import type { GrowthCapability } from './growth-state-store.ts'
@@ -3604,10 +3610,10 @@ export function apply(ctx: Context, config: Config): void {
           accountName: account.accountName,
         }))
         const rows = await runGrowthBatch(cap, region, all)
-        // Fold into today's state so the manual run is reflected in the status
-        // line too, and persist it. A manual run that fails all rows still gets
-        // its attempt recorded so the backoff clock can advance.
-        const folded = foldAttempt(state, growthRowsForFold(rows), nowMs, all.length)
+        // Mark every addressed account settled — no retry, no backoff, no
+        // lastError. The card shows a stable "已兑换/已点亮 X/Y" count and never
+        // re-attempts an account that already ran today.
+        const folded = foldGrowthAttempt(state, rows.map(row => row.accountId), all.length, nowMs)
         growthState[key] = folded
         await writeGrowthState(cap, region, folded)
         return rows.map(row => ({
@@ -4617,8 +4623,7 @@ export function apply(ctx: Context, config: Config): void {
   ): WorkBuddyWebGrowthToday | undefined {
     if (!growthEnabled(cap, region)) return undefined
     const state = growthState[growthKey(cap, region)]
-    if (state === undefined) return undefined
-    return todaySummary(state, Date.now())
+    return growthTodaySummary(state, localDayKey(Date.now()))
   }
 
   /** Both growth capabilities apply to both regions — unlike check-in. */
@@ -4696,26 +4701,22 @@ export function apply(ctx: Context, config: Config): void {
         accountId: account.id,
         accountName: account.accountName,
       }))
-      const targets = pendingTargets(
-        all.map(target => ({ ...target })),
-        state,
-      )
-      if (!isDue(state, targets.length, nowMs)) {
+      const targets = growthPendingTargets(all, state)
+      if (targets.length === 0) {
+        // Everyone was already settled today: nothing to retry, just keep the
+        // idle heartbeat alive for the day rollover.
         scheduleGrowth(cap, region, GROWTH_IDLE_MS)
         return
       }
       const rows = await runGrowthBatch(cap, region, targets)
-      // Growth rows use done/skipped/failed; foldAttempt reasons in terms of
-      // claimed/already. Map at this seam so the daily state still means
-      // "settled accounts" without changing the shared folding rules.
-      const folded = foldAttempt(state, growthRowsForFold(rows), nowMs, targets.length + state.doneAccountIds.length)
+      // Every addressed account is settled for the day — including one whose
+      // upstream read failed. No backoff/lastError: the user asked for a stable
+      // "已兑换/已点亮" state, not a retry loop. Denominator is the real member
+      // count, never accumulated.
+      const folded = foldGrowthAttempt(state, rows.map(row => row.accountId), all.length, nowMs)
       growthState[key] = folded
       await writeGrowthState(cap, region, folded)
-      const pending = pendingTargets(
-        all.map(target => ({ ...target })),
-        folded,
-      ).length
-      scheduleGrowth(cap, region, nextDelayMs(folded, pending) ?? GROWTH_IDLE_MS)
+      scheduleGrowth(cap, region, GROWTH_IDLE_MS)
     } catch (error: unknown) {
       ctx.logger.warn(`dsh-connect-workbuddy: growth tick failed (${cap}/${region})`, error)
       scheduleGrowth(cap, region, GROWTH_IDLE_MS)

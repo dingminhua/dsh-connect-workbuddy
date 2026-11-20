@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { emptyAutoCheckinState, foldAttempt } from '../src/auto-checkin.ts'
 import {
   activateGrowthAll,
+  foldGrowthAttempt,
+  growthPendingTargets,
   growthRowsForFold,
+  growthTodaySummary,
   redeemGrowthAll,
   type RedeemBatchDeps,
 } from '../src/growth-run.ts'
@@ -38,6 +41,43 @@ describe('growthRowsForFold (issue #286, hash-as-error bug)', () => {
     ]), 1_000, 1)
     expect(folded.lastError).toBe('growth streak was not readable')
     expect(folded.lastError).not.toContain('hex-hex-hex')
+  })
+})
+
+describe('growth stable day state (issue #286, no retry/no error noise)', () => {
+  const targets = [
+    { accountId: 'a' }, { accountId: 'b' }, { accountId: 'c' },
+  ]
+
+  it('settles EVERY attempted account, including a failed one — never retried', () => {
+    const state = emptyAutoCheckinState('2026-11-21')
+    const folded = foldGrowthAttempt(state, ['a', 'b'], 3, 1000)
+    // 'b' "failed" upstream but was attempted, so it is settled: no pending.
+    expect(growthPendingTargets(targets, folded).map(t => t.accountId)).toEqual(['c'])
+    const next = foldGrowthAttempt(folded, ['c'], 3, 2000)
+    expect(growthPendingTargets(targets, next)).toEqual([])
+  })
+
+  it('carries NO failures / lastError / backoff — a plain done of total', () => {
+    const state = emptyAutoCheckinState('2026-11-21')
+    const folded = foldGrowthAttempt(state, ['a', 'b'], 3, 1000)
+    expect(folded.failures).toBe(0)
+    expect(folded.lastError).toBeUndefined()
+    const summary = growthTodaySummary(folded, '2026-11-21')
+    expect(summary).toEqual({ done: 2, total: 3 })
+  })
+
+  it('uses the real member count, never an inflated denominator', () => {
+    // The old bug: a manual run added doneAccountIds to total -> 8/17.
+    let state = emptyAutoCheckinState('2026-11-21')
+    state = foldGrowthAttempt(state, ['a', 'b', 'c'], 3, 1000)
+    state = foldGrowthAttempt(state, ['a', 'b', 'c'], 3, 2000)
+    expect(growthTodaySummary(state, '2026-11-21')).toEqual({ done: 3, total: 3 })
+  })
+
+  it('reports nothing for a different day (local midnight rollover)', () => {
+    const state = foldGrowthAttempt(emptyAutoCheckinState('2026-11-20'), ['a'], 3, 1000)
+    expect(growthTodaySummary(state, '2026-11-21')).toBeUndefined()
   })
 })
 

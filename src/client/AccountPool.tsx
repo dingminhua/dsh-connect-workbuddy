@@ -468,31 +468,23 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   })()
 
   /**
-   * Growth-job progress lines (issue #286), same shape as check-in so the three
-   * jobs read consistently. Read from the SAVED switches for the same reason as
-   * `autoCheckinStatus`: a draft that says "on" has not started the runner yet.
-   * The runner publishes `growthRedeemToday` / `growthActivityToday` only once it
-   * has actually attempted the job, so absence honestly means "not run yet".
+   * Growth-job status line (issue #286): a STABLE "已兑换 / 已点亮 X/Y" count,
+   * no retry/backoff/error text. Growth is a per-day idempotent fact — once an
+   * account was attempted today it is settled, so there is deliberately no
+   * "待重试" or "上次失败" line (the user rejected that noise). Read from the
+   * SAVED switch: a draft that says "on" has not started the runner yet.
    */
   const growthStatusLine = (
-    today: { done: number, total: number, pending: number, lastError?: string } | undefined,
+    today: { done: number, total: number } | undefined,
     doneKey: Parameters<Translate>[0],
     todayKey: Parameters<Translate>[0],
   ) => {
     if (today === undefined) return null
-    const headline = today.pending === 0 && today.done === today.total
+    const headline = today.done >= today.total
       ? t(doneKey, { total: String(today.total) })
       : t(todayKey, { done: String(today.done), total: String(today.total) })
     return h('div', { className: 'dsm-workbuddy-pool-auto-checkin-status' },
       h('span', { className: 'dsm-workbuddy-pool-auto-checkin-line' }, headline),
-      today.pending === 0
-        ? null
-        : h('span', { className: 'dsm-workbuddy-pool-auto-checkin-pending' },
-            t('row.poolAutoCheckinPending', { count: String(today.pending) })),
-      today.lastError === undefined
-        ? null
-        : h('span', { className: 'dsm-workbuddy-pool-auto-checkin-error' },
-            t('row.poolAutoCheckinFailed', { message: today.lastError })),
     )
   }
   // Before the first tick there is no runner state yet. Show an explicit "armed"
