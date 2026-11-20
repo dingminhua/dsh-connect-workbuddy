@@ -128,12 +128,12 @@ import {
   localDayKey,
   nextDelayMs,
   pendingTargets,
-  checkinReadingFresh,
   todaySummary,
   AUTO_CHECKIN_IDLE_MS,
 } from './auto-checkin.ts'
 import type { AutoCheckinState } from './auto-checkin.ts'
 import { readAutoCheckinState, writeAutoCheckinState } from './auto-checkin-store.ts'
+import { doneTodayMap, isDoneToday, markDoneToday } from './daily-done-store.ts'
 import { activateGrowth } from './growth-acp.ts'
 import {
   activateGrowthAll,
@@ -1835,39 +1835,15 @@ export function apply(ctx: Context, config: Config): void {
   )
 
   /**
-   * How long a check-in reading is reused before asking the upstream again.
-   *
-   * The card polls the usage route every 60 seconds, but "did this account
-   * check in today" changes only when a check-in runs or the day rolls over.
-   * Without a cache, a 10-account pool cost ~14,400 upstream requests a day for
-   * an answer that was almost always identical.
-   */
-  const CHECKIN_CACHE_MS = 10 * 60_000
-
-  /**
-   * Per-region, per-account check-in readings.
-   *
-   * Invalidated by this plugin's own check-in batch (the only writer that can
-   * change the answer during a session), so the user sees their result
-   * immediately instead of waiting out the TTL.
-   *
-   * A reading is ALSO bounded by the local day, not just by the TTL — see
-   * `checkinReadingFresh`. Both readers go through it, because an entry is an
-   * answer to "has this account checked in TODAY" and a `true` read at 23:58
-   * must not be served at 00:08.
-   */
-  const checkinStateCache: Partial<
-    Record<WorkBuddyRegion, Record<string, { checkedIn: boolean, atMs: number }>>
-  > = {}
-
-  /**
    * Per-region, per-account benefit readings (issue #79).
    *
-   * Same shape and same reasoning as `checkinStateCache`: claim state changes
-   * when a human acts on the web page or in the desktop app, not spontaneously,
-   * so a per-poll read of two endpoints per account would be thousands of
-   * requests a day to learn nothing. Coarser than the check-in TTL because a
-   * benefit window is measured in days, not hours.
+   * "Did this account check in today" is NOT cached here any more: it lives in
+   * the persistent done-today memory (`daily-done-store`), so a fact observed
+   * once is never re-read that day — not even after a restart. Benefit claim
+   * state changes when a human acts on the web page or in the desktop app, not
+   * spontaneously, so a per-poll read of two endpoints per account would be
+   * thousands of requests a day to learn nothing. Its window is measured in
+   * days, not hours.
    */
   const benefitStateCache: Partial<
     Record<WorkBuddyRegion, Record<string, {
@@ -3408,31 +3384,24 @@ export function apply(ctx: Context, config: Config): void {
         if (region !== 'cn' || !poolPreferencesOf(current(), region).enabled) return {}
         const store = stacks[region].store
         const accounts = await store.accounts()
-        const now = Date.now()
         const entries = await Promise.all(accounts.map(async account => {
           // Enterprise accounts do not support check-in; avoid that request.
           if (account.enterprise === true) return undefined
-          // Serve from the cache while it is fresh. The card uses a configurable
-          // polling interval, but "did this account check in today" only changes when a
-          // check-in runs or the day rolls over — so re-reading it on every
-          // poll meant ~14,400 requests/day for a 10-account pool. A check-in
-          // this plugin performs invalidates its own entry (see `checkin`).
-          //
-          // "Fresh" includes the local day (issue #232): the TTL alone would
-          // serve yesterday's reading across midnight, and the poll would then
-          // report an account as done on a day nobody claimed it.
-          const cached = checkinStateCache[region]?.[account.id]
-          if (cached !== undefined && checkinReadingFresh(cached.atMs, now, CHECKIN_CACHE_MS)) {
-            return [account.id, cached.checkedIn] as const
+          // Once recorded done TODAY (by us or by the user in the official
+          // client), never ask upstream again today — that is the whole point of
+          // the day-done memory. Only an account with NO record is read, once.
+          if (await isDoneToday('checkin', region, account.id)) {
+            return [account.id, true] as const
           }
           const credential = await store.credentialFor(account.id).catch(() => undefined)
           if (credential === undefined) return undefined
           const status = await client.fetchCheckinStatus(credential).catch(() => undefined)
           // Personal accounts can also have no active check-in campaign.
           if (status === undefined || !status.active) return undefined
-          checkinStateCache[region] = {
-            ...checkinStateCache[region],
-            [account.id]: { checkedIn: status.todayCheckedIn, atMs: now },
+          if (status.todayCheckedIn) {
+            // The first observation of "done" is enough: persist it so no later
+            // poll (nor a restart today) re-reads this account.
+            await markDoneToday('checkin', region, [account.id])
           }
           return [account.id, status.todayCheckedIn] as const
         }))
@@ -3446,21 +3415,15 @@ export function apply(ctx: Context, config: Config): void {
        * on one request per account. An unmeasured account is absent, which the
        * card already renders as unknown rather than as "not checked in".
        */
-      cachedCheckedInToday(region) {
-        // Same guard as the full read: with the pool off there is no table to
-        // fill, so nothing is reported.
-        if (!poolPreferencesOf(current(), region).enabled) return {}
-        const now = Date.now()
-        const state = checkinStateCache[region] ?? {}
-        const cached: Record<string, boolean> = {}
-        for (const [accountId, entry] of Object.entries(state)) {
-          // Day-bounded as well as TTL-bounded (issue #232): a reading taken
-          // yesterday answers a different question than today's column asks.
-          if (!checkinReadingFresh(entry.atMs, now, CHECKIN_CACHE_MS)) continue
-          cached[accountId] = entry.checkedIn
-        }
-        return cached
-      },
+      /**
+       * Today's checked-in accounts for the first paint (issue #77).
+       *
+       * Reads the persistent done-today memory and NOTHING else: no upstream
+       * request, so painting never blocks, and — unlike the old in-memory TTL
+       * cache — it survives a restart within the same day. An account with no
+       * record is absent, which the card already renders as unknown.
+       */
+      cachedCheckedInToday: region => doneTodayMap('checkin', region),
       /**
        * Claimable promotional benefits per account (issue #79).
        *
@@ -3598,11 +3561,17 @@ export function apply(ctx: Context, config: Config): void {
        * it, regardless of whether it redeemed or was already active. No upstream
        * read, so it is safe on the card's poll.
        */
-      growthDoneAccountIds: (region, cap) => {
-        const state = growthState[growthKey(cap, region)]
-        if (state === undefined || state.day !== localDayKey(Date.now())) return {}
-        const map: Record<string, boolean> = {}
-        for (const id of state.doneAccountIds) map[id] = true
+      // Read the PERSISTENT done-today map so the row stamps survive a restart —
+      // same source as check-in, no upstream request on the card's poll. Also
+      // UNION in the growth runner's own persisted day state: profiles upgraded
+      // from before this store existed already have done accounts there but no
+      // day-map entries, and their stamps must not vanish until the next tick.
+      growthDoneAccountIds: async (region, cap) => {
+        const map: Record<string, boolean> = { ...await doneTodayMap(cap, region) }
+        const state = growthState[growthKey(cap, region)] ?? await readGrowthState(cap, region)
+        if (state !== undefined && state.day === localDayKey(Date.now())) {
+          for (const id of state.doneAccountIds) map[id] = true
+        }
         return map
       },
       /**
@@ -3629,6 +3598,9 @@ export function apply(ctx: Context, config: Config): void {
         const folded = foldGrowthAttempt(state, rows.map(row => row.accountId), all.length, nowMs)
         growthState[key] = folded
         await writeGrowthState(cap, region, folded)
+        // Also record each settled account in the persistent day map so the row
+        // stamps are available immediately and survive a restart.
+        await markDoneToday(cap, region, rows.map(row => row.accountId))
         return rows.map(row => ({
           accountId: row.accountId,
           accountName: row.accountName,
@@ -3642,14 +3614,13 @@ export function apply(ctx: Context, config: Config): void {
           await poolTargets(region),
           poolRunnerDeps(region),
         )
-        // Drop the cached readings for accounts this batch touched, so the
-        // card's check-in column reflects the result immediately rather than
-        // showing the pre-batch state until the TTL expires.
-        for (const row of rows) {
-          if (row.status === 'failed') continue
-          const cached = checkinStateCache[region]
-          if (cached !== undefined) delete cached[row.accountId]
-        }
+        // A successful claim (or an already-checked-in account) is done TODAY:
+        // record it so the card shows the result at once and later polls never
+        // re-read these accounts. Failed rows are left unrecorded and may be read
+        // again next poll.
+        await markDoneToday('checkin', region, rows
+          .filter(row => row.status === 'claimed' || row.status === 'already')
+          .map(row => row.accountId))
         if (rows.some(row => row.status !== 'failed')) {
           await poolMembersOf(region)
           await applyPoolSelection(region)
@@ -4534,13 +4505,11 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       const rows = await checkinAllAccounts(targets, poolRunnerDeps(region))
-      // Drop the cached readings for accounts this batch touched, exactly as the
-      // manual action does, so the card's column reflects the result at once.
-      for (const row of rows) {
-        if (row.status === 'failed') continue
-        const cached = checkinStateCache[region]
-        if (cached !== undefined) delete cached[row.accountId]
-      }
+      // Record successful claims as done today — same as the manual action — so
+      // later polls never re-read them. Failed rows stay unrecorded.
+      await markDoneToday('checkin', region, rows
+        .filter(row => row.status === 'claimed' || row.status === 'already')
+        .map(row => row.accountId))
       // Refresh balance evidence and selection immediately after check-in.
       if (rows.some(row => row.status !== 'failed')) {
         await poolMembersOf(region)
@@ -4729,6 +4698,7 @@ export function apply(ctx: Context, config: Config): void {
       const folded = foldGrowthAttempt(state, rows.map(row => row.accountId), all.length, nowMs)
       growthState[key] = folded
       await writeGrowthState(cap, region, folded)
+      await markDoneToday(cap, region, rows.map(row => row.accountId))
       scheduleGrowth(cap, region, GROWTH_IDLE_MS)
     } catch (error: unknown) {
       ctx.logger.warn(`dsh-connect-workbuddy: growth tick failed (${cap}/${region})`, error)

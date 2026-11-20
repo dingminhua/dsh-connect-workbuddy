@@ -660,12 +660,12 @@ export interface WorkBuddyPoolDeps {
    * Today's check-in state, from the cells already measured this process.
    *
    * The first-paint counterpart of {@link checkedInToday}: reads the Host's
-   * measurement cache and nothing else, so a first paint never waits on one
-   * upstream request per account. An account it has not measured is simply
+   * local done-today memory and nothing else, so a first paint never waits on
+   * one upstream request per account. An account it has not measured is simply
    * absent, which the card renders as unknown — the same meaning as a failed
    * per-account read in the full document.
    */
-  cachedCheckedInToday?(region: WorkBuddyRegion): Readonly<Record<string, boolean>>
+  cachedCheckedInToday?(region: WorkBuddyRegion): Promise<Readonly<Record<string, boolean>>> | Readonly<Record<string, boolean>>
   /**
    * Per-account growth completion for today (issue #286), from the runner's own
    * day state — no upstream read. `true` only for accounts the job settled today;
@@ -674,7 +674,7 @@ export interface WorkBuddyPoolDeps {
   growthDoneAccountIds?(
     region: WorkBuddyRegion,
     cap: 'growth-redeem' | 'growth-activity',
-  ): Readonly<Record<string, boolean>>
+  ): Promise<Readonly<Record<string, boolean>>> | Readonly<Record<string, boolean>>
   /**
    * Claimable promotional benefits per account id (issue #79).
    *
@@ -1645,13 +1645,13 @@ async function workBuddyWebPool(
   // already-measured cells only (no per-account request), so it can report
   // nothing at all; the full document fills the column in later.
   const checkedIn: Readonly<Record<string, boolean>> = fast
-    ? pool.cachedCheckedInToday?.(region) ?? {}
+    ? await pool.cachedCheckedInToday?.(region) ?? {}
     : await pool.checkedInToday?.(region).catch(() => ({} as Record<string, boolean>))
       ?? {} as Record<string, boolean>
   // Growth completion is runner state, not an upstream read — cheap in both the
   // fast first paint and the full document (issue #286).
-  const growthRedeemed = pool.growthDoneAccountIds?.(region, 'growth-redeem') ?? {}
-  const growthActive = pool.growthDoneAccountIds?.(region, 'growth-activity') ?? {}
+  const growthRedeemed = await pool.growthDoneAccountIds?.(region, 'growth-redeem') ?? {}
+  const growthActive = await pool.growthDoneAccountIds?.(region, 'growth-activity') ?? {}
   // Claimable benefits per account (issue #79). Read the same two ways as the
   // check-in column: the first paint uses this process's readings (no request),
   // the full document pays for two status calls per account. A failed or absent
