@@ -155,6 +155,24 @@ export const en = {
   // a static "expand or collapse" would make the reader work out which applies.
   'row.modelsRefresh': 'Refresh from WorkBuddy',
   'row.modelsRefreshing': 'Refreshing models…',
+  // THE DIRECTORY IS A PARTIAL ANSWER (issue #288). One of the two product
+  // documents the international region reads was refused — a rate limit, a
+  // transport error — and the other one answered, so the list on screen is
+  // missing rows the upstream does publish. Without this notice a rate limit
+  // looked exactly like "the upstream only offers this one model", and the
+  // user could not tell which of the two they were looking at.
+  'row.catalogDegraded': 'Model directory degraded: the {missing} read failed ({reason}). This list comes from the {used} directory, so it may be incomplete.',
+  // The upstream states its recovery time in prose, so this is the only place
+  // the user learns when the limit lifts. Absent when the upstream named no
+  // time — the plugin never invents one.
+  'row.catalogDegradedReset': 'The upstream says it recovers at {at}.',
+  // Which rows are from the saved snapshot rather than from this read. They
+  // are the upstream's offer — the refused document still publishes them — so
+  // they are kept, and named, instead of quietly vanishing.
+  'row.catalogDegradedCarried': 'Not returned by this read, still from the saved directory: {models}.',
+  'row.catalogSourceApp': 'the app channel',
+  'row.catalogSourceCli': 'the CLI channel',
+  'row.catalogSourceLegacy': 'the legacy directory',
   'row.discard': 'Discard changes',
   'row.save': 'Save',
   'row.saving': 'Saving…',
@@ -941,6 +959,19 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 而不是区块的标签——写成固定的「展开或收起」会让读者自己去想该按哪个。
   'row.modelsRefresh': '从 WorkBuddy 刷新',
   'row.modelsRefreshing': '正在刷新模型…',
+  // 目录是「残缺回答」（issue #288）。国际区读的两份产品文档里有一份被拒（限流、
+  // 网络错误），另一份答了，于是屏幕上的列表少了上游确实在提供的行。没有这行提示
+  // 时，限流看起来和「上游只给这一个模型」一模一样，用户无从分辨自己在看哪一种。
+  'row.catalogDegraded': '模型目录降级：{missing}读取失败（{reason}）。当前列表来自{used}，可能不完整。',
+  // 恢复时间由上游写在报文里，所以这是用户唯一能看到「什么时候解禁」的地方。上游
+  // 没给时间时就不显示——插件从不编一个时间出来。
+  'row.catalogDegradedReset': '上游给出的恢复时间：{at}。',
+  // 哪些行来自上次保存的目录。它们仍是上游的目录（被拒的那份文档照样发布它们），
+  // 所以保留并点名，而不是悄悄消失。
+  'row.catalogDegradedCarried': '本次没读到、仍来自已保存目录的模型：{models}。',
+  'row.catalogSourceApp': '应用通道',
+  'row.catalogSourceCli': 'CLI 通道',
+  'row.catalogSourceLegacy': '旧版目录',
   'row.discard': '放弃修改',
   'row.save': '保存',
   'row.saving': '保存中…',

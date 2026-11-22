@@ -16,7 +16,7 @@
  */
 
 import { isRouterModelId } from './native-modality.ts'
-import type { WorkBuddyUpstreamModel } from './upstream.ts'
+import type { WorkBuddyCatalogDegradation, WorkBuddyUpstreamModel } from './upstream.ts'
 
 /** One model entry the adapter exposes. */
 export type WorkBuddyModelInfo = WorkBuddyUpstreamModel
@@ -264,6 +264,27 @@ export class WorkBuddyCatalog {
   private enabled = true
 
   /**
+   * Why the current roster is a PARTIAL answer, when it is one.
+   *
+   * ISSUE #288. The international region reads two product documents that
+   * publish different rosters, so a refused read is answered from the other
+   * one and the answer is missing rows the upstream does publish. That roster
+   * used to be presented as if it were the whole truth — filtered by the
+   * user's own selection, so a rate limit could leave the model picker with
+   * one row and no explanation.
+   *
+   * The flag is what lets the card say "the directory is degraded, this part is
+   * the saved snapshot" instead of leaving the user to guess. It is process
+   * state, like the load level: a fact about this minute, never persisted.
+   *
+   * CLEARED by a fresh upstream read that was NOT degraded, and KEPT by a
+   * derivation (`origin: 'derived'`), because a roster derived from a degraded
+   * read is still degraded — re-deriving it on a settings change must not
+   * quietly promote a partial answer into a complete one.
+   */
+  private degraded: WorkBuddyCatalogDegradation | undefined
+
+  /**
    * @param region Seeds the static fallback for this region; each region's
    * provider must never serve the other region's roster before its first
    * live refresh lands.
@@ -361,12 +382,35 @@ export class WorkBuddyCatalog {
    * landed — and the list it passes then is the static fallback. Letting that
    * count as live is what re-opened issue #32 (see {@link hasLiveRoster}).
    *
+   * `degraded` says the upstream answer was a PARTIAL one (issue #288) — a
+   * refused product document, answered from the other one. It is accepted
+   * ONLY on an `upstream` write: a derivation inherits the degradation it was
+   * derived from, so it cannot clear it and cannot invent one.
+   *
    * The default is `'upstream'` so every pre-existing call site keeps meaning
    * what it meant; only the re-derivation path opts into `'derived'`.
    */
-  set(models: readonly WorkBuddyModelInfo[], origin: 'upstream' | 'derived' = 'upstream'): void {
+  set(
+    models: readonly WorkBuddyModelInfo[],
+    origin: 'upstream' | 'derived' = 'upstream',
+    degraded?: WorkBuddyCatalogDegradation,
+  ): void {
     if (models.length === 0) throw new Error('workbuddy model catalog cannot be empty')
-    if (origin === 'upstream') this.live = true
+    if (origin === 'upstream') {
+      this.live = true
+      this.degraded = degraded
+    }
     this.models = models.map(model => ({ ...model }))
+  }
+
+  /**
+   * Why the current roster is partial, when it is.
+   *
+   * Absent means "the roster is the upstream's whole offer" — which is the
+   * answer to "can I tell the user the list is complete?", not a claim that
+   * the upstream was reachable at this very moment.
+   */
+  degradation(): WorkBuddyCatalogDegradation | undefined {
+    return this.degraded
   }
 }

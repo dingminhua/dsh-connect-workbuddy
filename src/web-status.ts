@@ -41,6 +41,7 @@ import { Config, unwrapVolatileDeep } from './index.ts'
 import type { WorkBuddyRecoveryCandidate } from './credential-recovery.ts'
 import type { WorkBuddyMediaModel } from './image-gen.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
+import type { WorkBuddyCatalogDegradation, WorkBuddyCatalogRead } from './upstream.ts'
 import type { WorkBuddyBenefitView } from './benefits.ts'
 import { WORKBUDDY_BENEFIT_TITLES } from './benefits.ts'
 import { isCredentialRejectedError } from './upstream.ts'
@@ -52,6 +53,7 @@ import type {
 } from './account-pool-run.ts'
 import { fastDetailOf, regionOfStatusUrl, regionsMapOf, transferActionOf } from './status-paths.ts'
 import type { WorkBuddyCreditPosition } from './status-paths.ts'
+import { toWebCatalogDegradation } from './status-paths.ts'
 import type { RosterSeenReadout } from './roster-seen-store.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
@@ -142,7 +144,7 @@ export interface WorkBuddyStatusRouteOptions {
    */
   defaultThinkingEfforts?(region: WorkBuddyRegion): Readonly<Record<string, string | undefined>>
   /** Re-read the live catalog of one region from the upstream. */
-  discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
+  discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<WorkBuddyCatalogRead>
   /**
    * Record what a refresh just read, so the directory — and therefore every
    * price on it — stops being a snapshot of an older day (issue #214).
@@ -167,7 +169,16 @@ export interface WorkBuddyStatusRouteOptions {
    * paints its draft from the ANSWER, so a 503 leaves the draft untouched and
    * the user sees a real error instead of a stale list that looks refreshed.
    */
-  persistModels?(region: WorkBuddyRegion, models: readonly WorkBuddyModelInfo[]): Promise<void>
+  persistModels?(region: WorkBuddyRegion, read: WorkBuddyCatalogRead): Promise<void>
+  /**
+   * Whether the requested region's model directory is a PARTIAL answer
+   * (issue #288) — one product document was refused and the other one
+   * answered, so the list is missing rows the upstream does publish.
+   *
+   * Optional: absent means the Host does not track the fact, and the card
+   * shows no notice rather than inventing one.
+   */
+  catalogDegradation?(region: WorkBuddyRegion): WorkBuddyCatalogDegradation | undefined
   /**
    * Which ids of the requested region's roster THIS machine first saw inside the
    * new-model window (the "· N 新模型" segment), plus a note when the on-disk
@@ -1395,6 +1406,13 @@ export async function workBuddyWebStatus(
   // The LIVE load levels, beside the model list rather than inside it: the
   // card's list is the SAVED roster, and a saved roster has no load level.
   const busyLevels = deps.busyLevels?.(region) ?? {}
+  // Whether the model directory is a PARTIAL answer (issue #288): one product
+  // document was refused and the other one answered. The card shows it as a
+  // notice, so the user can tell a short directory from a failed read.
+  const catalogDegraded = (() => {
+    const degradation = deps.catalogDegradation?.(region)
+    return degradation === undefined ? undefined : toWebCatalogDegradation(degradation)
+  })()
   const authStatus = await store.status()
   // Whether a saved per-region choice is in effect, on every branch: the card
   // needs it to show that clearing really did return the region to the app's
@@ -1521,6 +1539,11 @@ export async function workBuddyWebStatus(
     enabledModelIds: [...deps.enabledModelIds(region)],
     imageModelIds: [...deps.imageModelIds(region)],
     offModelIds: [...deps.offModelIds(region)],
+    // The directory is a PARTIAL answer when one product document was refused
+    // (issue #288). Carried so the card can tell "the upstream only offers one
+    // model" apart from "the upstream could not be read, and this is what
+    // survived" — on screen the two look identical otherwise.
+    ...catalogDegraded === undefined ? {} : { catalogDegraded },
   }
   // The first paint carries no live figures at all: this is the await that used
   // to make the account list wait on a billing endpoint (issue #77).
@@ -1999,13 +2022,23 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           ? (json(res, 503, { error: 'model refresh cannot be persisted' }), false)
           : true,
     }, async (_req, res, region) => {
-      const models = await deps.discoverModels!(region)
+      const read = await deps.discoverModels!(region)
       // Persist BEFORE answering: the write is what the caller's next read
       // depends on, and a failure must surface as a failure. Only the DIRECTORY
       // is written (`persistModels` owns the merge); the user's selection is the
       // card's draft until they press Save.
-      await deps.persistModels!(region, models)
-      json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets(region))) })
+      await deps.persistModels!(region, read)
+      // The degradation rides along with the answer (issue #288): a refresh
+      // that fell back to the other product document produced a PARTIAL
+      // directory, and the card must not narrow the user's picks to the rows
+      // that survived it. The card keeps the ones the refused document
+      // published and says which they are.
+      json(res, 200, {
+        models: read.models.map(model => toWebModel(model, deps.contextBudgets(region))),
+        ...read.degraded === undefined
+          ? {}
+          : { degraded: toWebCatalogDegradation(read.degraded) },
+      })
     })
     endpointRegion({
       path: WORKBUDDY_MEDIA_MODELS_PATH,

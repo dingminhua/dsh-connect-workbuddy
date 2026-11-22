@@ -63,7 +63,7 @@
 
 import { fallbackModelsFor, withoutRouters } from './catalog.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyRegion } from './upstream.ts'
+import type { WorkBuddyCatalogRead, WorkBuddyRegion } from './upstream.ts'
 
 /**
  * The capability fields a saved directory may carry but must never be trusted
@@ -264,6 +264,51 @@ export function isUnconfiguredFallbackSnapshot(
   // `reasoning` block at all, and calling that "the unconfigured placeholder"
   // would delete every rate the user is depending on.
   return saved.every(model => model.reasoning === undefined && model.creditMultiplier === undefined)
+}
+
+/**
+ * The roster an upstream READ answers with.
+ *
+ * ISSUE #288, and the whole of it. The international region reads the product
+ * configuration twice — as the CLI channel and as the app channel — because
+ * neither document is a superset of the other. When one of the two reads is
+ * refused (a rate limit, a transport error) the answer comes from the other
+ * one, and that answer is missing every row the refused document published:
+ * the CLI-only rows (`fast-model`, `balanced-model`, `primary-model`,
+ * `deepseek-v4.1-flash`, `hy4-preview`, …) are exactly what the app document
+ * does not carry.
+ *
+ * The answer is then filtered by the user's own selection — so a rate limit
+ * could leave the model picker with a single row, while the profile still
+ * held the whole directory and nothing on screen said why. The reporter's
+ * words: 「模型选择器静默降级成只剩 1 个模型」.
+ *
+ * SO A DEGRADED READ IS ANSWERED WITH THE SAVED DIRECTORY BESIDE IT. The rows
+ * the refused document published are still the upstream's offer; they are just
+ * not in this answer. Merging the saved directory back in is the same rule
+ * issue #32 states — a refresh must never withdraw a model the user is on —
+ * and it is what keeps the picker whole while the upstream is refusing.
+ *
+ * A HEALTHY READ ANSWERS ALONE. The upstream is the truth about what it
+ * currently offers, and the saved directory is a snapshot of one moment; the
+ * union would keep offering models the upstream has since withdrawn. That
+ * difference is deliberate: a COMPLETE read may narrow the list, a PARTIAL one
+ * may not.
+ *
+ * @param saved The region's saved directory (may be empty).
+ * @param read The upstream read: its roster, and whether it was degraded.
+ */
+export function rosterOfRead(
+  saved: readonly WorkBuddyModelInfo[],
+  read: WorkBuddyCatalogRead,
+): readonly WorkBuddyModelInfo[] {
+  if (read.degraded === undefined) return read.models
+  // The merge, not `resolveRoster`: this roster IS a live answer, so the
+  // static fallback must not take part in it. `mergeRoster` overlays the
+  // surviving rows' capabilities and appends the saved rows the surviving
+  // document does not carry — those keep the capabilities they were saved
+  // with, which is the best answer available while their document is refused.
+  return mergeRoster(saved, read.models)
 }
 
 /**

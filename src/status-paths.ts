@@ -14,6 +14,8 @@
 
 import type { WorkBuddyBusyLevel } from './busy.ts'
 import type { WorkBuddyPromo } from './promo.ts'
+import { parseUpstreamResetAt, redactUpstreamText } from './probe.ts'
+import type { WorkBuddyCatalogDegradation } from './upstream.ts'
 
 /** Plugin-owned usage endpoint consumed by its browser half. */
 export const WORKBUDDY_USAGE_PATH = '/plugins/dsh-connect-workbuddy/usage'
@@ -1376,6 +1378,70 @@ export interface WorkBuddyWebSearchPath {
  */
 export type WorkBuddyWebRegion = 'cn' | 'global'
 
+/**
+ * This region's model directory is a PARTIAL answer (issue #288).
+ *
+ * The international region reads two product documents that publish different
+ * rosters, and the CN region falls back to a legacy document when the modern
+ * one stops answering. Either way a refused read is answered from the other
+ * document — and the answer is missing rows the upstream does publish.
+ *
+ * The card needs this to tell TWO apart that look identical on screen:
+ *
+ *   - "the directory only has one model" (the user's own selection), and
+ *   - "the directory could not be read, so this is what survived" (a rate
+ *     limit, a transport error).
+ *
+ * Without it the second case was silent, and the user could not tell that the
+ * list they were looking at was a fallback rather than the upstream's offer.
+ */
+export interface WorkBuddyWebCatalogDegradation {
+  /** The document that was NOT read. */
+  missing: 'app' | 'cli' | 'legacy'
+  /** The document the answer came from instead. */
+  used: 'app' | 'cli' | 'legacy'
+  /**
+   * The upstream's own words about the failure, redacted and truncated.
+   *
+   * The upstream states its recovery time in prose, so this sentence is worth
+   * showing verbatim — it is the only place the user learns when the limit
+   * lifts.
+   */
+  reason: string
+  /**
+   * The recovery time the upstream stated, in epoch ms.
+   *
+   * ABSENT means "the upstream named no time" — never "now" and never a guess.
+   */
+  resetAtMs?: number
+}
+
+/**
+ * Project the Host's degradation onto the wire shape.
+ *
+ * The upstream's body is REDACTED before it crosses to the browser, for the
+ * same reason the pool redacts it before it touches the disk: this is a raw
+ * upstream string, and a failure body that happens to carry a token-shaped
+ * fragment must not be shown on screen (see `redactUpstreamText`).
+ *
+ * The recovery time is PARSED from that body rather than carried by the
+ * upstream layer, so the parser that reads the upstream's two spellings
+ * (Chinese and English) stays the one this codebase already uses for the pool's
+ * cooldowns — a second copy of it would be a second chance to loosen it.
+ */
+export function toWebCatalogDegradation(
+  degradation: WorkBuddyCatalogDegradation,
+): WorkBuddyWebCatalogDegradation {
+  const reason = redactUpstreamText(degradation.body.trim())
+  const resetAtMs = parseUpstreamResetAt(degradation.body)
+  return {
+    missing: degradation.missing,
+    used: degradation.used,
+    reason,
+    ...resetAtMs === undefined ? {} : { resetAtMs },
+  }
+}
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebUsage =
   /**
@@ -1712,6 +1778,15 @@ export type WorkBuddyWebUsage =
     models: readonly WorkBuddyWebModel[]
     enabledModelIds: readonly string[]
     imageModelIds: readonly string[]
+    /**
+     * This region's model directory is a PARTIAL answer (issue #288).
+     *
+     * ABSENT means "the directory is the upstream's whole offer" — the two
+     * states are different facts and the card says different things about
+     * them, so the field is absent rather than false when there is nothing to
+     * report.
+     */
+    catalogDegraded?: WorkBuddyWebCatalogDegradation
     /**
      * Model ids whose `off` thinking level is offered (issue #34): the saved
      * selection, seeded from the built-in rule the first time it is read.

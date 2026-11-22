@@ -700,6 +700,13 @@ export const WORKBUDDY_CARD_CSS = `
    the header reads as one group of equal actions. */
 .dsm-workbuddy-models-sweep{white-space:nowrap}
 .dsm-workbuddy-models-sweep-summary{margin:6px 0 0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The degraded-directory notice (issue #288). AMBER, not red: nothing failed —
+   one product document was refused and the other one answered, so the list is
+   short rather than wrong. Red would read as "the plugin is broken", and the
+   user would go looking for a fault that is not there. */
+.dsm-workbuddy-models-degraded{margin:8px 0 0;padding:8px 10px;border:1px solid var(--dsw-alias-state-warn-primary,#f59e0b);border-radius:8px}
+.dsm-workbuddy-models-degraded-line{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-warn-primary,#f59e0b);word-break:break-word}
+.dsm-workbuddy-models-degraded-line+.dsm-workbuddy-models-degraded-line{margin-top:4px}
 .dsm-workbuddy-model-probe{flex:none;padding:3px 10px;font-size:11px;line-height:16px}
 .dsm-workbuddy-model-probe-result{margin:0;font-size:12px;line-height:18px;word-break:break-word}
 .dsm-workbuddy-model-probe-result-ok{color:var(--dsw-alias-state-success-primary,#22a06b)}

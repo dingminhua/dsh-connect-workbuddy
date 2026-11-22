@@ -38,6 +38,7 @@ import {
   isUnconfiguredFallbackSnapshot,
   repairedCatalog,
   resolveRoster,
+  rosterOfRead,
 } from './catalog-sync.ts'
 import {
   clearRegionAccountSelection,
@@ -100,7 +101,7 @@ import type {
 import { recordBodyReport, type WorkBuddyUsageCounts } from './body-report.ts'
 import { cooldownOf, outcomeOfFailure, probeModel, redactUpstreamText, resolveProbeInputTokens } from './probe.ts'
 import { measureTps } from './tps.ts'
-import type { UpstreamErrorKind } from './upstream.ts'
+import type { UpstreamErrorKind, WorkBuddyCatalogRead } from './upstream.ts'
 import {
   checkinAllAccounts,
   probeUpdatesOf,
@@ -2363,7 +2364,7 @@ export function apply(ctx: Context, config: Config): void {
   const discoverModels = async (
     region: WorkBuddyRegion,
     signal?: AbortSignal,
-  ): Promise<readonly WorkBuddyModelInfo[]> => {
+  ): Promise<WorkBuddyCatalogRead> => {
     const credential = await stacks[region].store.resolve()
     // The user's own selection rides along with the refresh. The upstream
     // roster may drop a model the user is running (the app channel's `cli`
@@ -2372,9 +2373,36 @@ export function apply(ctx: Context, config: Config): void {
     // refresh would silently withdraw the model the user is on, which is the
     // exact failure issue #32 was filed for. The document still publishes it
     // and the chat endpoint still answers for it, so it stays in the roster.
+    //
+    // ⚠️ THE KEEP CONTRACT IS PER DOCUMENT (issue #288). The kept ids are
+    // re-added only when the SAME document still publishes them, so a read
+    // that fell back to the other document drops the rows that document does
+    // not carry. That is why the answer is a READ and not a bare roster: the
+    // caller has to know the directory is partial.
     const keep = regionStateOf(current(), region).enabledModelIds ?? []
     return client.fetchModels(credential, signal, keep)
   }
+
+  /**
+   * The runtime roster an upstream read answers with.
+   *
+   * ISSUE #288. A DEGRADED read — one of the product documents was refused (a
+   * rate limit, a transport error) and the other one answered — is NOT the
+   * upstream's whole offer: it is missing every row the refused document
+   * published. So the SAVED directory fills that gap, and the roster is the
+   * union of the two — the same shape `applySelection` builds through
+   * {@link resolveRoster}, and the same rule issue #32 states: a refresh must
+   * never withdraw a model the user is on.
+   *
+   * The rule itself lives in {@link rosterOfRead}, next to the merge it uses,
+   * so the runtime, the discovery answer and the card's refresh cannot drift
+   * into answering three different things.
+   */
+  const rosterOfReadFor = (
+    region: WorkBuddyRegion,
+    read: WorkBuddyCatalogRead,
+  ): readonly WorkBuddyModelInfo[] =>
+    rosterOfRead(regionStateOf(current(), region).lastCatalog ?? [], read)
   /**
    * Record a refresh the card just asked for (issue #214).
    *
@@ -2408,8 +2436,9 @@ export function apply(ctx: Context, config: Config): void {
    */
   const persistRefreshedModels = async (
     region: WorkBuddyRegion,
-    models: readonly WorkBuddyModelInfo[],
+    read: WorkBuddyCatalogRead,
   ): Promise<void> => {
+    const models = rosterOfReadFor(region, read)
     if (models.length === 0) return
     const state = regionStateOf(current(), region)
     // Derive the runtime roster from the SAME rules the startup refresh uses,
@@ -2424,7 +2453,11 @@ export function apply(ctx: Context, config: Config): void {
       ),
       new Set(savedOffModelIds(state, models)),
     )
-    stacks[region].catalog.set(next)
+    // The degradation rides along with the roster (issue #288): a directory
+    // read from the surviving document is a partial answer, and the card has
+    // to be able to say so. `origin: 'upstream'` because this roster IS the
+    // upstream's answer — a degraded one, but still the upstream's.
+    stacks[region].catalog.set(next, 'upstream', read.degraded)
     invalidateCatalog()
     // The DIRECTORY. `repairRegionCatalog` is the one writer that knows the
     // merge (it preserves the other region and this slot's sibling fields,
@@ -2432,11 +2465,16 @@ export function apply(ctx: Context, config: Config): void {
     // fingerprint already agrees). Reusing it rather than writing here keeps
     // one definition of "what a correct directory looks like".
     //
+    // The RAW answer goes in, not the derived roster: the repair merges the
+    // saved directory over it, so the rows the refused document published are
+    // kept with the capabilities they were saved with — a degraded read must
+    // not shrink the directory either (issue #288).
+    //
     // `strict` because THIS call is the answer to a user's click: the route
     // reports the fresh prices on the strength of this write, so a swallowed
     // failure would produce a 200 for a save that did not happen — the exact
     // class of bug being fixed here.
-    await repairRegionCatalog(region, models, { strict: true })
+    await repairRegionCatalog(region, read.models, { strict: true })
   }
   /**
    * The region's MEDIA models, cached briefly for the card's read-only roster.
@@ -3091,6 +3129,15 @@ export function apply(ctx: Context, config: Config): void {
     // card — which renders `displayModels()` — kept showing the saved
     // directory's prices while the reply carried the upstream's.
     persistModels: persistRefreshedModels,
+    /**
+     * Whether this region's directory is a PARTIAL answer (issue #288).
+     *
+     * Read off the catalog, which is the one place that knows: the upstream
+     * read that produced the current roster is the only writer of the fact, and
+     * a derivation keeps it. The card turns it into a notice, so a short model
+     * list is never mistaken for the upstream's whole offer.
+     */
+    catalogDegradation: region => stacks[region].catalog.degradation(),
     /**
      * This region's first-sighting readout, the data behind the composer pill's
      * "· N 新模型" segment.
@@ -5006,9 +5053,14 @@ export function apply(ctx: Context, config: Config): void {
           // this is defence in depth against a stale model-picker refresh.
           if (!regionEnabled(current(), region)) return []
           const discovered = await discoverModels(region, signal)
+          // A DEGRADED read is answered with the saved directory's rows beside
+          // the surviving ones (issue #288) — otherwise a refused product
+          // document could empty the model picker down to the handful of rows
+          // the other document happens to carry, with nothing saying why.
+          const roster = rosterOfReadFor(region, discovered)
           // Load levels are stamped on the RUNTIME roster only — see
           // `withBusyLevels` for why the settings draft stays free of them.
-          const live = await withBusyLevels(region, discovered, signal)
+          const live = await withBusyLevels(region, roster, signal)
           const state = regionStateOf(current(), region)
           const next = withImageSelection(
             deriveCatalog(
@@ -5064,16 +5116,22 @@ export function apply(ctx: Context, config: Config): void {
         void (async () => {
           try {
             const credential = await stacks[region].store.resolve()
-            const models = await withBusyLevels(
-              region,
-              await client.fetchModels(
-                credential,
-                undefined,
-                regionStateOf(current(), region).enabledModelIds ?? [],
-              ),
+            const read = await client.fetchModels(
+              credential,
+              undefined,
+              regionStateOf(current(), region).enabledModelIds ?? [],
             )
+            // A DEGRADED read is answered with the saved directory's rows
+            // beside the surviving ones (issue #288): the refused document's
+            // rows are still the upstream's offer, they are just not in this
+            // answer. Without them a rate limit could leave the picker with
+            // one row and nothing to explain it.
+            const models = await withBusyLevels(region, rosterOfReadFor(region, read))
             if (stopped) return
             const state = regionStateOf(current(), region)
+            // The degradation rides with the roster, so the card can say the
+            // directory is partial (issue #288) instead of the user reading
+            // the shrunken list as their own selection.
             stacks[region].catalog.set(withEffectiveOff(
               withImageSelection(
                 deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
@@ -5084,7 +5142,7 @@ export function apply(ctx: Context, config: Config): void {
                 effectiveImageIds(state, models),
               ),
               new Set(savedOffModelIds(state, models)),
-            ))
+            ), 'upstream', read.degraded)
             adapters[region].invalidate()
             // Record when THIS machine first saw each id of the roster that just
             // landed — the whole "· N 新模型" story. This is the ONLY writer of
@@ -5118,7 +5176,10 @@ export function apply(ctx: Context, config: Config): void {
             // before writing, and awaiting here is what keeps the two writers
             // from landing out of order.
             await regionsFieldHealed
-            await repairRegionCatalog(region, models)
+            // The RAW answer, not the derived roster: the repair merges the
+            // saved directory over it, so a degraded read heals the directory
+            // instead of shrinking it (issue #288).
+            await repairRegionCatalog(region, read.models)
           } catch (error: unknown) {
             ctx.logger.warn(
               `dsh-connect-workbuddy: dynamic ${region} model catalog unavailable; serving the static fallback list`,

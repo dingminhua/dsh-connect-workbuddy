@@ -793,7 +793,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient().fetchModels(credential(domain))
+    const { models } = await new WorkBuddyUpstreamClient().fetchModels(credential(domain))
     expect(models.map(model => model.id)).toEqual(['glm-5.3'])
     const isGlobal = /(?:^|\.)codebuddy\.ai$|(?:^|\.)workbuddy\.ai$/.test(domain)
     expect(urls).toHaveLength(isGlobal ? 2 : 1)
@@ -858,7 +858,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
+    const { models } = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
     expect(seen).toHaveLength(2)
     expect(seen.map(headers => headers['User-Agent'])).toEqual([
       'CLI/2.63.2 CodeBuddy/2.63.2',
@@ -898,7 +898,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
       } as unknown as Response
     })
     const client = new WorkBuddyUpstreamClient(message => { fallbacks.push(message) })
-    const models = await client.fetchModels(credential('www.workbuddy.ai'))
+    const { models } = await client.fetchModels(credential('www.workbuddy.ai'))
     expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
     expect(fallbacks).toHaveLength(1)
     expect(fallbacks[0]).toContain('using the CLI document only')
@@ -930,7 +930,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
       } as unknown as Response
     })
     const client = new WorkBuddyUpstreamClient(message => { fallbacks.push(message) })
-    const models = await client.fetchModels(credential('www.workbuddy.ai'))
+    const { models } = await client.fetchModels(credential('www.workbuddy.ai'))
     expect(models.map(model => model.id)).toEqual(['hy4free'])
     expect(fallbacks).toHaveLength(1)
     expect(fallbacks[0]).toContain('using the app document only')
@@ -960,7 +960,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
+    const { models } = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
     expect(models).toHaveLength(1)
     expect(models[0]?.creditMultiplier).toBe(0.03)
   })
@@ -1027,7 +1027,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         },
       }),
     }) as unknown as Response)
-    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.codebuddy.cn'))
+    const { models } = await new WorkBuddyUpstreamClient().fetchModels(credential('www.codebuddy.cn'))
     // The badge travels with the model, so the card can draw it without a
     // second upstream request.
     expect(models[0]?.promos?.map(promo => promo.id)).toEqual([
@@ -1060,7 +1060,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         },
       }),
     }) as unknown as Response)
-    const models = await new WorkBuddyUpstreamClient()
+    const { models } = await new WorkBuddyUpstreamClient()
       .fetchModels(credential('www.codebuddy.cn'), undefined, ['minimax-m2.7'])
     expect(models.map(model => model.id)).toEqual(['hy3', 'minimax-m2.7'])
     expect(models[1]?.creditMultiplier).toBe(0.26)
@@ -1085,7 +1085,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         },
       }),
     }) as unknown as Response)
-    const models = await new WorkBuddyUpstreamClient()
+    const { models } = await new WorkBuddyUpstreamClient()
       .fetchModels(credential('www.codebuddy.cn'), undefined, ['minimax-m2.7'])
     expect(models.map(model => model.id)).toEqual(['minimax-m2.7'])
   })
@@ -1105,7 +1105,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         },
       }),
     }) as unknown as Response)
-    const models = await new WorkBuddyUpstreamClient()
+    const { models } = await new WorkBuddyUpstreamClient()
       .fetchModels(credential('www.codebuddy.cn'), undefined, ['minimax-m2.7'])
     expect(models.map(model => model.id)).toEqual(['hy3'])
   })
@@ -1131,7 +1131,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         },
       }),
     }) as unknown as Response)
-    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.codebuddy.cn'))
+    const { models } = await new WorkBuddyUpstreamClient().fetchModels(credential('www.codebuddy.cn'))
     expect(models.map(model => model.id)).toEqual(['hy4-preview'])
     expect(models.some(model => model.id === 'auto')).toBe(false)
   })
@@ -1158,7 +1158,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+    const { models } = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
       .fetchModels(credential('www.codebuddy.cn'))
     expect(urls).toEqual([
       'https://copilot.tencent.com/v3/config',
@@ -1287,7 +1287,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+    const { models } = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
       .fetchModels(credential('www.codebuddy.cn'))
     expect(urls).toEqual(['https://copilot.tencent.com/v3/config'])
     // The app's own record: the paid `hy4-preview` at x0.29 (the free Hy4 tier
@@ -1320,7 +1320,7 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
         }),
       } as unknown as Response
     })
-    const models = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
+    const { models } = await new WorkBuddyUpstreamClient(message => fallbacks.push(message))
       .fetchModels(credential('www.codebuddy.cn'))
     expect(urls).toEqual([
       'https://copilot.tencent.com/v3/config',
@@ -2454,7 +2454,7 @@ describe('the global two-channel read, end to end', () => {
     })
 
     const client = new WorkBuddyUpstreamClient()
-    const models = await client.fetchModels({
+    const { models } = await client.fetchModels({
       accessToken: 't', uid: '', domain: 'workbuddy.ai', accountId: 'a', accountName: 'A',
     } as unknown as WorkBuddyCredential)
 

@@ -925,13 +925,15 @@ describe('registerWorkBuddyStatusRoute', () => {
     // `tests/issue214-fallback-price.spec.ts`.
     const persisted: { region: string, ids: string[] }[] = []
     const handler = await mountRefreshHandler({
-      discoverModels: async () => [
-        { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, supportsImages: true },
-        { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, maxTokens: 50_000, supportsImages: false },
-        { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
-      ],
-      persistModels: async (region, models) => {
-        persisted.push({ region, ids: models.map(model => model.id) })
+      discoverModels: async () => ({
+        models: [
+          { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, supportsImages: true },
+          { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, maxTokens: 50_000, supportsImages: false },
+          { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
+        ],
+      }),
+      persistModels: async (region, read) => {
+        persisted.push({ region, ids: read.models.map(model => model.id) })
       },
     })
     const { res, status, body } = response()
@@ -950,6 +952,74 @@ describe('registerWorkBuddyStatusRoute', () => {
     // checkbox has to stay unchecked rather than being pre-checked on a guess.
     expect(hy3.supportsImages).toBeUndefined()
     expect('supportsImages' in hy3).toBe(false)
+  })
+
+  it('answers a degraded refresh with WHICH document was refused (issue #288)', async () => {
+    // The refresh route used to answer the rows and nothing else, so a read
+    // that fell back to the other product document was indistinguishable from
+    // a complete one — and the card, which re-maps the user's picks onto the
+    // fresh roster, silently narrowed the selection because of it.
+    const handler = await mountRefreshHandler({
+      discoverModels: async () => ({
+        models: [{ id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 }],
+        degraded: {
+          missing: 'cli',
+          used: 'app',
+          body: 'usage exceeds frequency limit, your usage will reset at 2026-11-23 09:22:26 UTC+8',
+        },
+      }),
+      persistModels: async () => {},
+    })
+    const { res, status, body } = response()
+    await handler(request(), res)
+    expect(status()).toBe(200)
+    const answer = body() as {
+      models?: { id: string }[]
+      degraded?: { missing?: string, used?: string, reason?: string, resetAtMs?: number }
+    }
+    expect(answer.degraded?.missing).toBe('cli')
+    expect(answer.degraded?.used).toBe('app')
+    // The upstream's own words reach the card, and the recovery time is
+    // PARSED out of them — that sentence is the only place the user learns
+    // when the limit lifts.
+    expect(answer.degraded?.reason).toContain('usage exceeds frequency limit')
+    expect(answer.degraded?.resetAtMs).toBe(Date.parse('2026-11-23T01:22:26Z'))
+  })
+
+  it('answers a complete refresh with NO degradation', async () => {
+    // The absence is a fact: a complete read may narrow the user's picks, so
+    // the card must be able to tell the two cases apart.
+    const handler = await mountRefreshHandler({
+      discoverModels: async () => ({
+        models: [{ id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 }],
+      }),
+      persistModels: async () => {},
+    })
+    const { res, status, body } = response()
+    await handler(request(), res)
+    expect(status()).toBe(200)
+    expect((body() as { degraded?: unknown }).degraded).toBeUndefined()
+  })
+
+  it('carries the degradation on the status answer (issue #288)', async () => {
+    // The card's model list comes from the status route, so the notice about a
+    // partial directory has to travel with it: otherwise the list on screen is
+    // short and nothing says why.
+    const captured = await mountRoutes({
+      catalogDegradation: region => region === 'global'
+        ? { missing: 'cli', used: 'app', body: 'usage exceeds frequency limit, reset at 2026-11-23 09:22:26 UTC+8' }
+        : undefined,
+    })
+    const usage = captured.find(entry => entry.path === WORKBUDDY_USAGE_PATH)
+    if (usage === undefined) throw new Error('usage route was not registered')
+    const { res, status, body } = response()
+    await usage.handler(request('GET', undefined, `${WORKBUDDY_USAGE_PATH}?region=global`), res)
+    expect(status()).toBe(200)
+    const answer = body() as {
+      catalogDegraded?: { missing?: string, used?: string, reason?: string, resetAtMs?: number }
+    }
+    expect(answer.catalogDegraded?.missing).toBe('cli')
+    expect(answer.catalogDegraded?.resetAtMs).toBe(Date.parse('2026-11-23T01:22:26Z'))
   })
 
   /** Mount the status routes; return the media-roster handler. */
@@ -1448,7 +1518,7 @@ describe('registerWorkBuddyStatusRoute', () => {
       // `claimDailyCheckin` at zero, so counting only the claim would not notice.
       const calls = { discover: 0, storeResolve: 0, checkinStatus: 0, claimCheckin: 0, probe: 0, tps: 0 }
       const captured = await mountRoutes({
-        discoverModels: async () => { calls.discover += 1; return [] },
+        discoverModels: async () => { calls.discover += 1; return { models: [] } },
         store: (region: WorkBuddyRegion) => {
           const real = deps().store(region)
           return {

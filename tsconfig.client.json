@@ -82,6 +82,7 @@
     "tests/sticky-boundary.spec.tsx",
     "tests/poll-interval.spec.tsx",
     "tests/optin-policy.spec.tsx",
-    "tests/issue261-gate-hint.spec.tsx"
+    "tests/issue261-gate-hint.spec.tsx",
+    "tests/card-catalog-degraded.spec.tsx"
   ]
 }
