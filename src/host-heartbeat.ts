@@ -96,8 +96,82 @@ export function workbuddyHostHeartbeatPath(): string {
  * module did not, and that inconsistency is what the test pins.
  *
  * On POSIX the option is ignored.
+ *
+ * ## The forced C locale
+ *
+ * `ps -o lstart=` formats the start time in the caller's locale. On macOS,
+ * zh_CN can emit 「一 11月/23 …」 and ko_KR can emit 「2026년 11월 23일 …」.
+ * `Date.parse` returns NaN for these forms, so {@link processStartTimeMs}
+ * returns `undefined`.
+ *
+ * `undefined` is NOT a quiet degradation here; it switches a check OFF. Two
+ * places consume it, and both fail silently:
+ *
+ *   1. {@link isHeartbeatProcessAlive} takes its `if (startedAt === undefined)
+ *      return true` branch, which disables PID-REUSE DETECTION — the exact
+ *      hazard issue #174's `hostStartedAt` field was added to close;
+ *   2. {@link writeHostHeartbeat} omits `hostStartedAt`, so every later
+ *      staleness check falls back to the 12-hour legacy tolerance around
+ *      `registeredAt`, i.e. the pre-#174 behaviour.
+ *
+ * So on those machines `status` and `doctor` can call a long-dead host alive.
+ * The tests pin the spawn options so this protection is covered on CI
+ * runners whose default locale already produces parseable output.
+ *
+ * ## Why the options are built per call
+ *
+ * `process.env` is read when the spawn happens, not when this module loads. The
+ * CLI bridge mutates the environment (`src/cli-bridge/`), and a snapshot taken
+ * at import time would pin whichever values happened to exist during boot.
  */
 export const PROCESS_PROBE_OPTIONS = { encoding: 'utf8', windowsHide: true } as const
+
+/**
+ * How long a start-time probe may take before it is abandoned.
+ *
+ * NOT a constant that can be tuned downward casually. Windows answers through
+ * `powershell`, whose COLD START is slow enough that `vitest.config.ts` raises
+ * the whole heartbeat suite's `testTimeout` to 30 s with the note "Windows
+ * runners cold-start PowerShell very slowly". A timeout shorter than that would
+ * make the probe answer `undefined` on a busy Windows machine — and `undefined`
+ * is not a neutral value here, it DISABLES PID-reuse detection (see
+ * {@link PROCESS_PROBE_OPTIONS}). The generous timeout gives a cold
+ * PowerShell time to report the start time.
+ *
+ * The bound matters because the probe runs synchronously on the host thread.
+ * The registry probe in `src/at-rest.ts` uses a 10 s timeout because "a
+ * hung `reg` must not wedge the synchronous discovery path forever" — the same
+ * argument had simply not been carried over here. A wedged `ps` (a security
+ * product intercepting it, a pathological load) would otherwise block the boot
+ * path that registers the providers indefinitely.
+ */
+const PROCESS_PROBE_TIMEOUT_MS = 30_000
+
+/**
+ * The spawn options a probe actually runs with.
+ *
+ * A function rather than a constant for two reasons: the environment must be
+ * sampled at CALL time (see above), and the options are what the regression
+ * tests assert, so building them in one place keeps the Windows branch and the
+ * POSIX branch from drifting apart.
+ */
+export function processProbeOptions(): {
+  encoding: 'utf8'
+  windowsHide: true
+  timeout: number
+  env: NodeJS.ProcessEnv
+} {
+  return {
+    ...PROCESS_PROBE_OPTIONS,
+    timeout: PROCESS_PROBE_TIMEOUT_MS,
+    // Force ONLY the locale. Spreading the parent environment first is what
+    // keeps `PATH` — without it the spawn could not resolve `ps` at all — and
+    // every other variable the child may legitimately need. `LC_ALL` is the
+    // highest-precedence POSIX locale variable, so setting it alone is enough
+    // to override an inherited `LC_TIME` or `LANG`.
+    env: { ...process.env, LC_ALL: 'C' },
+  }
+}
 
 /**
  * The command one start-time probe runs, per platform.
@@ -138,7 +212,7 @@ export function processStartProbe(
 export function processStartTimeMs(pid: number): number | undefined {
   try {
     const probe = processStartProbe(pid)
-    const output = execFileSync(probe.file, probe.args, PROCESS_PROBE_OPTIONS)
+    const output = execFileSync(probe.file, probe.args, processProbeOptions())
     const parsed = Date.parse(output.trim())
     return Number.isFinite(parsed) ? parsed : undefined
   } catch {
