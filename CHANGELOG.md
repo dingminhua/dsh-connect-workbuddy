@@ -1,5 +1,32 @@
 # Changelog
 
+## 5.31.2 (2026-11-23)
+
+> 兼容版：修复中文/韩文 macOS 上宿主 PID 复用检测被静默关掉（PR #290）。
+
+> ⚠️ 本版在 5.31.1 发布之后新增，须单独发布。
+
+- **PR #290**：中文（`zh_CN`）或韩文（`ko_KR`）locale 的 macOS 上，`ps -o lstart=` 按调用者
+  locale 输出启动时间，形如「一 11月/23 …」「2026년 11월 23일 …」，`Date.parse` 一律返回
+  `NaN`，`processStartTimeMs()` 因此给出 `undefined`。
+- **这不是安静的降级，而是把一道检查关掉了**：`isHeartbeatProcessAlive` 拿到 `undefined` 就走
+  「无法判断当存活」分支，等于废掉 issue #174 加的 PID 复用检测；`writeHostHeartbeat` 也会
+  省略 `hostStartedAt`，之后的陈旧判断退回 12 小时容差（#174 之前的行为）。结果 `status` /
+  `doctor` 可能把早已退出的宿主报成仍在运行。
+- **修法**（一份改动三件事）：
+  - 每次探测**按调用**继承当时进程环境并强制 `LC_ALL=C`（`LC_ALL` 是最高优先级的 POSIX
+    区域变量，单独设它就够覆盖继承的 `LC_TIME`/`LANG`；先展开 `process.env` 保住 `PATH`，
+    否则连 `ps` 都找不到）。按调用而非模块加载时采样，是因为 CLI bridge 会改 `process.env`，
+    加载时的快照会把启动那一刻的值钉死。
+  - 同步探测加 30 秒超时——这是全仓唯一的无超时同步 spawn，隔壁 `at-rest.ts` 的注册表探测
+    早有 10 秒超时并写明「卡住的 reg 不能永远堵住同步路径」。超时放到 30 秒是因为 Windows
+    走 PowerShell，冷启动慢，testTimeout 本身就是 30 秒；太紧同样会让探测答 `undefined`、
+    关掉 PID 复用检测。
+  - `tests/card-panels.spec.tsx` 纳入客户端 TypeScript 检查（此前被主配置排除）。
+- 测试：新增 3 条回归（强制 C locale、按调用采样环境、超时下限足够冷启动 PowerShell）。
+  三处变异验证均变红（去掉 `LC_ALL` / 改用模块加载时快照 / 去掉 timeout）。
+  `pnpm run check` 全过（3807 条测试）。Host 侧改动，需重启 DSH 加载。
+
 ## 5.31.1 (2026-11-23)
 
 > 兼容版：修复 DSH 0.2.3 起贴图失败（`maxImageBytes must be a positive integer` / `INVALID_ATTACHMENT_REF`）。
