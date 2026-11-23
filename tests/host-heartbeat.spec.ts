@@ -6,6 +6,7 @@ import {
   HOST_START_REFERENCE_TOLERANCE_MS,
   LEGACY_REFERENCE_TOLERANCE_MS,
   PROCESS_PROBE_OPTIONS,
+  processProbeOptions,
   isHeartbeatProcessAlive,
   processStartProbe,
   processStartTimeMs,
@@ -67,6 +68,81 @@ describe('processStartProbe', () => {
     )
     if (!atRest.includes('windowsHide')) {
       throw new Error('src/at-rest.ts lost its windowsHide: the two spawn sites are meant to agree')
+    }
+  })
+
+  /**
+   * On macOS, `ps -o lstart=` can emit zh_CN or ko_KR timestamps that
+   * `Date.parse` rejects, leaving `processStartTimeMs` without a result.
+   *
+   * Undefined is not a loud failure here: `isHeartbeatProcessAlive` reads it as
+   * "cannot tell, assume alive", which silently disables the PID-reuse fencing
+   * that issue #174's `hostStartedAt` exists to provide. On those machines
+   * `doctor` can call a long-dead host alive.
+   *
+   * Assert the spawn options and use fixed timestamps so the regression can
+   * be checked without installing either locale on the test runner.
+   */
+  it('forces the C locale, so ps emits month names Date.parse understands', () => {
+    const options = processProbeOptions()
+    expect(options.env.LC_ALL).toBe('C')
+    // The rest of the environment must ride through: without PATH the spawn
+    // would not resolve `ps` at all.
+    expect(options.env.PATH).toBe(process.env.PATH)
+
+    // One sample timestamp using the macOS zh_CN, ko_KR, and C formats.
+    expect(Number.isNaN(Date.parse('一 11月/23 14:00:00 2026'))).toBe(true)
+    expect(Number.isNaN(Date.parse('2026년 11월 23일 월요일 14시 00분 00초'))).toBe(true)
+    expect(Number.isFinite(Date.parse('Mon Nov 23 14:00:00 2026'))).toBe(true)
+  })
+
+  /**
+   * The environment is sampled PER CALL, not at import. The CLI bridge mutates
+   * `process.env`, so a snapshot taken when this module loads would pin whatever
+   * happened to exist during boot — and a later change would silently not reach
+   * the child.
+   */
+  it('samples the environment at call time, not at module load', () => {
+    const key = 'WORKBUDDY_PROBE_ENV_PROBE'
+    const previous = process.env[key]
+    try {
+      process.env[key] = 'first'
+      expect(processProbeOptions().env[key]).toBe('first')
+      process.env[key] = 'second'
+      expect(processProbeOptions().env[key]).toBe('second')
+    } finally {
+      if (previous === undefined) delete process.env[key]
+      else process.env[key] = previous
+    }
+  })
+
+  /**
+   * THE HANG GUARD. This is the only synchronous spawn in the repo without a
+   * `timeout`; its sibling in `src/at-rest.ts` sets one with the comment that a
+   * hung child must not wedge the synchronous path. On the host's main thread,
+   * an unbounded `ps` never returns and the boot that registers the providers
+   * never finishes.
+   *
+   * The budget is asserted to be GENEROUS, not merely positive: Windows answers
+   * through `powershell`, whose cold start is slow enough that the suite's own
+   * `testTimeout` is 30 s. A tight timeout would make the probe answer
+   * `undefined` on a busy Windows machine, which disables PID-reuse detection —
+   * the very failure the locale fix above exists to prevent. So this asserts a
+   * floor, not an exact value.
+   */
+  it('bounds the probe with a timeout generous enough for a cold PowerShell', () => {
+    const timeout = processProbeOptions().timeout
+    expect(timeout).toBeGreaterThanOrEqual(10_000)
+
+    // Same discipline the `windowsHide` test uses: the two synchronous spawn
+    // sites are meant to agree, and one of them grew a timeout while this one
+    // did not. Reading the sibling keeps the pair from drifting again.
+    const atRest = readFileSync(
+      fileURLToPath(new URL('../src/at-rest.ts', import.meta.url)),
+      'utf8',
+    )
+    if (!/REGISTRY_PROBE_OPTIONS = \{[^}]*timeout:/s.test(atRest)) {
+      throw new Error('src/at-rest.ts lost its registry-probe timeout: the two spawn sites are meant to agree')
     }
   })
 })
