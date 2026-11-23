@@ -147,6 +147,26 @@ describe('createWorkBuddyAdapter provider profile', () => {
     expect(profile?.provider).toBe(WORKBUDDY_PROVIDER)
     expect(profile?.displayName).toBe('WorkBuddy')
   })
+
+  it.each(['workbuddy', 'workbuddy-global'])('publishes image budgets for both host versions on %s', async provider => {
+    const { createWorkBuddyAdapter } = await import('../src/adapter.ts')
+    const { WorkBuddyCatalog } = await import('../src/catalog.ts')
+    const { adapter } = createWorkBuddyAdapter({
+      shim: shimStub() as never,
+      store: {} as never,
+      catalog: new WorkBuddyCatalog(),
+      provider,
+    })
+
+    // These fields are read from the hand-built profile. DSH 0.2.3 divides
+    // by requestImageBudgetCount, while older hosts read requestImageMaxBytes.
+    const { config } = adapter as unknown as { config: { profiles: () => ReadonlyMap<string, unknown> } }
+    expect(config.profiles().get(provider)).toMatchObject({
+      requestImageBudgetCount: 14,
+      maxImageBytes: 1_048_576,
+      requestImageMaxBytes: 1_048_576,
+    })
+  })
 })
 
 /**

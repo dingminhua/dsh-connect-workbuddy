@@ -167,11 +167,20 @@ export const WORKBUDDY_PROVIDER_DISPLAY_NAMES: Readonly<Record<WorkBuddyRegion, 
 /** Provider idle ceiling while one stream read is outstanding. */
 export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
 
+const REQUEST_IMAGE_MAX_BYTES = 1_048_576
+
 /**
  * Image-request budgets for the route's `ResolvedPiAiProviderProfile`.
  *
- * The three byte/pixel budgets are the dsh-llm-pi-ai defaults (`0.1.1-rc.2`
- * made them required on the resolved profile).
+ * The byte/pixel limits retain the original dsh-llm-pi-ai defaults.
+ *
+ * DSH 0.2.3 divides the request's base64 budget by requestImageBudgetCount.
+ * WorkBuddy builds its resolved profile directly, so it must supply the
+ * divisor to keep the host from passing NaN to the attachment reader (#289).
+ * With 20 MiB of base64, 14 is the largest divisor that leaves room for an
+ * entire 1 MiB image after rounding down to complete base64 groups.
+ * requestImageMaxBytes is read by older hosts. DSH 0.2.3 reads maxImageBytes
+ * on the resolved profile, so publish the same cap under both names.
  *
  * The two COUNT fields arrived with DSH 0.2.2 (`0.2.2-rc.1`), where
  * `dsh-llm-pi-ai` began enforcing a per-request image OCCURRENCE limit
@@ -205,8 +214,10 @@ const REQUEST_IMAGE_BUDGETS = {
   maxRequestImages: 1_000_000,
   imageOffloadCountQuantum: 1_000_000,
   maxRequestImageBytes: 20_971_520,
+  requestImageBudgetCount: 14,
   requestImagePixelBudget: 4_194_304,
-  requestImageMaxBytes: 1_048_576,
+  requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,
+  maxImageBytes: REQUEST_IMAGE_MAX_BYTES,
 } as const
 
 /**
