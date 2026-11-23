@@ -200,13 +200,45 @@ export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
  * number to put in `maxRequestImages` — with a comment saying where it came
  * from. Do not "borrow" the host's 50: it belongs to the host's own pi-ai
  * routes, not to WorkBuddy.
+ *
+ * THE PER-IMAGE CAP HAS TWO SPELLINGS, AND BOTH MUST BE STATED (issue #289).
+ * Up to 0.2.2 the RESOLVED profile carried `requestImageMaxBytes`; from 0.2.3
+ * the host renamed that field to `maxImageBytes` on the resolved profile
+ * (`resolveProfiles` maps the CONFIG spelling `requestImageMaxBytes` to the
+ * RESOLVED spelling `maxImageBytes`). This route hand-builds its resolved
+ * profile — it never goes through `resolveProfiles()` — so neither rename can
+ * happen for it. Stating both is what keeps the 1 MiB cap on both host lines:
+ * 0.2.2 reads `requestImageMaxBytes`, 0.2.3 reads `maxImageBytes`.
+ *
+ * `requestImageBudgetCount` is REQUIRED from 0.2.3, where
+ * `resolveImageRequestBudget()` divides the aggregate byte budget by it:
+ *
+ *   allocated = floor(maxRequestImageBytes / requestImageBudgetCount / 4) * 3
+ *   cap       = min(allocated, maxImageBytes ?? catalogBytes ?? 1 MiB)
+ *
+ * A hand-built profile that omitted it produced `division by undefined` →
+ * `NaN`, which the attachment layer rejected as `INVALID_ATTACHMENT_REF` —
+ * the image never reached the model. 14 is the divisor that keeps the equal
+ * share ABOVE 1 MiB (floor(20971520 / 14 / 4) * 3 = 1_123_473), so the
+ * explicit `maxImageBytes` cap below still decides the exact 1 MiB. Divisor
+ * 15 already yields 1_048_575 — one byte short — and 20 yields 786432, so
+ * any larger divisor would make the SHARE the cap and silently narrow it.
+ *
+ * On 0.2.2 these three fields are simply extra keys on a resolved profile the
+ * adapter reads by name; they are inert there, so this one object serves both
+ * host lines without a version branch.
  */
 const REQUEST_IMAGE_BUDGETS = {
   maxRequestImages: 1_000_000,
   imageOffloadCountQuantum: 1_000_000,
   maxRequestImageBytes: 20_971_520,
   requestImagePixelBudget: 4_194_304,
+  // 0.2.2 and earlier: the resolved profile's per-image cap.
   requestImageMaxBytes: 1_048_576,
+  // 0.2.3 and later: the same cap, under its new resolved-profile name.
+  maxImageBytes: 1_048_576,
+  // 0.2.3 and later: required divisor of the aggregate byte budget.
+  requestImageBudgetCount: 14,
 } as const
 
 /**

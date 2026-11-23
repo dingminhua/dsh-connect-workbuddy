@@ -1,5 +1,30 @@
 # Changelog
 
+## 5.31.1 (2026-11-23)
+
+> 兼容版：修复 DSH 0.2.3 起贴图失败（`maxImageBytes must be a positive integer` / `INVALID_ATTACHMENT_REF`）。
+
+> ⚠️ 本版在 5.31.0 发布之后新增，须单独发布。
+
+- **issue #289**：DSH 0.2.3 + `dsh-llm-pi-ai@0.2.3` 起，粘贴任意图片发送都会失败，
+  纯文字正常，`INVALID_ATTACHMENT_REF`。
+- **根因（已按 0.2.3 实际源码核实）**：从 0.2.3 起 resolved profile 新增必填字段
+  `requestImageBudgetCount`，且把 per-image 上限字段从 `requestImageMaxBytes` 改名成
+  `maxImageBytes`（配置侧仍叫 `requestImageMaxBytes`，`resolveProfiles()` 做映射）。本路由
+  手工拼 resolved profile、不走宿主的 `resolveProfiles()`，两处默认值都不会替它填：
+  - 缺 `requestImageBudgetCount` → `resolveImageRequestBudget()` 里
+    `maxRequestImageBytes / undefined / 4` 得 `NaN`，附件层拒收；
+  - 只写旧字段名 → 0.2.3 读不到 per-image 上限（退回自己的默认），本路由钉的 1 MiB 失效。
+- **修法一份 profile 兼容两代宿主**：`REQUEST_IMAGE_BUDGETS` 同时写 `requestImageMaxBytes`
+  （0.2.2 及以前）与 `maxImageBytes`（0.2.3 起），并补 `requestImageBudgetCount: 14`。
+  14 是刻意选的：`floor(20971520 / 14 / 4) * 3 = 1_123_473 > 1 MiB`，于是显式上限仍是
+  1 MiB；换成宿主默认 20 会让「均摊份额」降到 786432，悄悄把上限压小（15 更是差 1 字节）。
+  新增字段在 0.2.2 上只是resolved profile 上多出的键，按名读取时惰性忽略，两代宿主同一份对象。
+- 测试：新增 `tests/issue289-image-budget.spec.ts`（5 条），从真实 adapter 取 resolved profile，
+  逐字复刻 0.2.3 的预算公式断言得到正的 1 MiB 而非 `NaN`，并钉住两个字段名与 0.2.2 字段仍在。
+  四处变异验证均变红（去掉 divisor / 去掉新上限名 / 把 divisor 改成 20 / 去掉旧上限名）。
+  `pnpm run check` 全过。Host 侧改动，需重启 DSH 加载。
+
 ## 5.31.0 (2026-11-22)
 
 > 修复版：上游限流时，模型目录不再静默缩成一个模型，并且会明说「目录降级」。
