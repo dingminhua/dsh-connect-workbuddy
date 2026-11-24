@@ -456,3 +456,114 @@ describe('issue #152: a tool name one edit away from a declared one', () => {
     expect(JSON.parse(calls[0]?.arguments ?? '{}')).toEqual({ comand: 'ls' })
   })
 })
+
+/**
+ * Bare markup: the model forgot the marker entirely and wrote the call as plain
+ * XML into the answer.
+ *
+ * This is a SECOND, independent defect from the marker cases above, and it is
+ * the one that actually reached users: a client that only recovers marked
+ * markup forwards `<ask_user_question>` byte for byte, so the reader sees the
+ * protocol instead of the question. The shape was captured from a real
+ * response, down to the truncated `<questions` key whose `>` never arrived.
+ *
+ * Every case here is written against a gate with `bareMarkup: true`. With the
+ * flag off the old behaviour is required to be bit-for-bit unchanged — that is
+ * the first test, and it is what keeps this from becoming a silent rewrite of
+ * every answer that happens to contain an angle bracket.
+ */
+describe('bare markup', () => {
+  /** The gate a bare-markup caller passes: the flag plus a real tool schema. */
+  function bareGate(overrides: Partial<RecoveryGate> = {}): RecoveryGate {
+    return {
+      declaredNames: new Set(['ask_user_question']),
+      acceptedParameters: new Map([['ask_user_question', new Set(['questions'])]]),
+      bareMarkup: true,
+      ...overrides,
+    }
+  }
+
+  /** The captured response, verbatim: prose, then the call with a broken key. */
+  const LEAK = '<ask_user_question>\n<questions</arg_key><arg_value>[{"header":"A","question":"B"}]</arg_value></tool_call>'
+  const PROSE = '好的，我列两个选项：\n'
+
+  it('leaves the leak alone when the flag is off', () => {
+    // The default. A client that has not opted in must not have its prose
+    // rewritten, and a bare block must not become a call behind its back.
+    const g = bareGate({ bareMarkup: false })
+    expect(parseToolCalls(LEAK, g)).toHaveLength(0)
+    expect(stripMarkup(LEAK, g)).toBe(LEAK)
+    expect(hasProse(LEAK, g)).toBe(true)
+  })
+
+  it('recovers the captured leak as a call, and the prose survives', () => {
+    const calls = parseToolCalls(LEAK, bareGate())
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.name).toBe('ask_user_question')
+    expect(args(calls)).toEqual([{ questions: '[{"header":"A","question":"B"}]' }])
+    // `stripMarkup` removes TAGS, not the text between them, so the argument
+    // value survives it. Removing a whole block is the buffer's job (below),
+    // and conflating the two is how "clean text" hides a still-visible leak.
+    expect(stripMarkup(PROSE + LEAK, bareGate())).not.toContain('ask_user_question')
+    expect(stripMarkup(PROSE + LEAK, bareGate())).not.toContain('</tool_call>')
+  })
+
+  it('recovers the same leak when it arrives in fragments (gate 1 + hold)', () => {
+    // The shape that actually shipped: `delta.content` never arrives whole. If
+    // the buffer commits the opening tag as text the moment it is complete, the
+    // block can never be assembled and the leak is already out the door.
+    const result = run((PROSE + LEAK).split(''), bareGate())
+    expect(args(result.calls)).toEqual([{ questions: '[{"header":"A","question":"B"}]' }])
+    expect(result.text).toBe(PROSE)
+  })
+
+  it('pairs <arg_key>/<arg_value> into ONE parameter, not two', () => {
+    // Reading the pair as ordinary tags put `arg_key` and `arg_value` into the
+    // arguments alongside the real parameter.
+    const calls = parseToolCalls('<ask_user_question><arg_key>questions</arg_key><arg_value>Q</arg_value></tool_call>', bareGate())
+    expect(args(calls)).toEqual([{ questions: 'Q' }])
+  })
+
+  it('takes the wrapper name as the tool name', () => {
+    const calls = parseToolCalls('<ask_user_question><questions>Q</questions></ask_user_question>', bareGate())
+    expect(calls[0]?.name).toBe('ask_user_question')
+    expect(args(calls)).toEqual([{ questions: 'Q' }])
+  })
+
+  it('refuses a bare wrapper naming a tool the request never declared (gate 2)', () => {
+    const block = '<drop_tables><command>rm -rf /</command></drop_tables>'
+    expect(parseToolCalls(block, bareGate())).toHaveLength(0)
+    // Gate 4: refused means shown, not swallowed.
+    expect(run([block], bareGate()).text).toBe(block)
+  })
+
+  it('refuses a call that is missing a required parameter (gate 4)', () => {
+    const g = bareGate({ requiredParameters: new Map([['ask_user_question', ['questions']]]) })
+    const block = '<ask_user_question><header>only a header</header></ask_user_question>'
+    expect(parseToolCalls(block, g)).toHaveLength(0)
+    expect(run([block], g).text).toBe(block)
+  })
+
+  it('does not take a truncated key the schema does not name', () => {
+    // The truncated-key rule is a narrow permission, not a general repair: the
+    // key must be one the tool accepts, and with a required list it must be the
+    // single one still missing.
+    const g = bareGate({ requiredParameters: new Map([['ask_user_question', ['questions']]]) })
+    expect(parseToolCalls('<ask_user_question><wrong</arg_key><arg_value>v</arg_value></tool_call>', g)).toHaveLength(0)
+  })
+
+  it('leaves ordinary HTML and prose untouched', () => {
+    const text = 'Use <div> and <b>bold</b>. Compare a < b and x < 5.'
+    expect(stripMarkup(text, bareGate())).toBe(text)
+    expect(parseToolCalls(text, bareGate())).toHaveLength(0)
+    expect(run([text], bareGate()).text).toBe(text)
+  })
+
+  it('keeps a marked block working exactly as before', () => {
+    // The bare path must not disturb the marker path it was added beside.
+    const g = gate({ bareMarkup: true, acceptedParameters: new Map([['bash', new Set(['command'])]]) })
+    const result = run([wrapped('bash', { command: 'ls' })], g)
+    expect(args(result.calls)).toEqual([{ command: 'ls' }])
+    expect(result.text).toBe('')
+  })
+})

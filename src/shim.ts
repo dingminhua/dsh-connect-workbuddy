@@ -2349,6 +2349,13 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // (`pwdsh` for `pwsh`) is read as that tool instead of falling back to
       // plain text. Same rule as above — only ever a name already on offer.
       repairNearMissName: true,
+      // A captured leak wrote the whole call with no `｜DSML｜` marker anywhere:
+      // `<ask_user_question>` around `<questions`, closed by `</tool_call>`.
+      // Without this the block was never even a candidate — every tag read as
+      // ordinary prose and the user got the markup as the answer. Only names
+      // the protocol owns, plus this request's own parameter names, are
+      // eligible; every gate below still runs on what is found.
+      bareMarkup: true,
       ...declared.pinnedToolName === undefined ? {} : { pinnedToolName: declared.pinnedToolName },
     }
 

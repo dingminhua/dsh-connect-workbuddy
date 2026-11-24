@@ -397,3 +397,73 @@ to lose」）正相反。用例**意图**保留（不产生第二条调用通道
 
 全量：**2986 passed + 2 skipped**（比 `main` 的 2967 + 2 多 19 条），`typecheck` 干净，
 `pnpm run build` 6 个声明产物齐全。
+
+---
+
+## 十四、补记：完全没有标记的形态（`bareMarkup`）
+
+### 14.1 现象
+
+一次真实响应把整次调用写进了 `delta.content`，**一个 `｜｜DSML｜｜` 标记都没有**：
+
+```text
+好的，我列两个选项：
+<ask_user_question>
+<questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+```
+
+注意这不是「过了闸被拒」，而是**根本没进候选**：`scanTag` 只把带标记的标签当 markup，
+`stripMarkup` 一字不删，`hasProse` 因为前面那句中文而为真——于是整块原样发给了用户。
+这正是 §12.2 那条教训的另一个面：一个按已知关键词判空的检查，对真实泄漏会给出一模一样的
+「没问题」。
+
+### 14.2 为什么不能只把标签名加进 `BLOCK_TAGS`
+
+这个形态同时有四层新东西，缺一层都修不好：
+
+| 层 | 形态 | 单独不修会怎样 |
+|---|---|---|
+| 词汇 | 标签没有标记 | 每个标签都被当散文，块不是候选 |
+| 结构 | wrapper 名**就是工具名**（`<ask_user_question>`） | 只认 `invoke name="…"` 的解析器看不到名字 |
+| 参数 | `<arg_key>k</arg_key><arg_value>v</arg_value>` 成对 | 参数被读成 `arg_key`/`arg_value` 两个参数 |
+| 截断 | `<questions` 没有 `>` | 任何扫描器都看不见这个 key |
+| 闭合 | 用 `</tool_call>` 收 `</ask_user_question>` 的块 | 深度配对失败，块永不闭合 → 整块被扣到流尾 |
+
+### 14.3 落地的边界
+
+- `RecoveryGate.bareMarkup?: boolean`，**默认关**；关闭时逐字节等同旧行为（有测试钉住）。
+- 生效的裸名字集合 `bareNamesFor(gate)` = 协议自有词汇 + 本次声明的工具名 + 这些工具的
+  参数名。**必须是「已经知道的名字」**：`<div>`/`<b>` 不在其中，因此不会被删。
+- `<` 后必须紧贴名字。`<｜DSML｜ invoke>` 的空白容忍是给标记形态的，裸形态沿用会把
+  `a < b and tool_call` 读成标签。
+- 四道闸一条都没动：wrapper 名必须在 `declaredNames` 里（闸 2）、closer 必须同名或属于
+  协议闭包、缺必填参数按原文显示（闸 4）、流中断时整块回到 `flush()` 按原文显示（闸 1 + 4）。
+  没有「推断工具名」这一步——模型把工具名明写在 wrapper 上，这里只做校验。
+- 截断 key 单独一条窄规则：只有当本次 schema 里**恰好还剩这一个必填参数**没给、且拼写就是它
+  时才接受；没有 required 列表的工具只接受 schema 里确实存在的参数名。
+- 流式：`holdFrom` 增加两处扣留——裸名字前缀（`<ask_user_qu` 不再被当正文吐出去）与
+  「裸 opener 已完整、closer 还没到」。两处互相覆盖，因此变异验证里必须**成对**关掉才会红
+  （见 14.5）。
+
+### 14.4 新增测试（`tests/dsml-recovery.spec.ts`，`describe('bare markup')`，10 例）
+
+标记关闭时原样 / 恢复真实泄漏且散文保留 / 逐字符分片恢复 / `arg_key`+`arg_value` 合成一个
+参数 / wrapper 名当工具名 / 未声明工具仍按原文显示 / 缺必填参数仍按原文显示 / 截断 key 不接受
+schema 里没有的名字 / 普通 HTML 不受影响 / 带标记的路径不回归。
+
+### 14.5 变异验证
+
+| 变异 | 结果 |
+|---|---|
+| `scanTag`：裸标签永不识别 | 5 例红 |
+| `stripMarkup`：不再删裸标签 | 1 例红 |
+| `parseBlock`：去掉裸 wrapper 分支 | 4 例红 |
+| `parseParameters`：把参数对标签当参数 | 3 例红 |
+| `looksLikeTagStart`：不扣留裸名字前缀 | 1 例红 |
+| `findFirstOpener`：忽略 `pending` 参数 | 1 例红 |
+| `parseBareWrapper`：跳过截断 key 规则 | 2 例红 |
+| `holdFrom`：不再扣留未闭合的裸 opener | **单独不红**——与上一行「裸名字前缀」互为覆盖，成对关掉才红 |
+
+全量：**3823 passed + 2 skipped**（其中 2 例失败与本改动无关：`tests/issue12-region-hiding.spec.ts`
+与 `tests/pool-e2e.spec.ts` 在负载下的超时，单独运行与在未改动的工作树上均可通过），
+`typecheck` 干净，`check-pii` clean，`build` 通过。

@@ -45,6 +45,29 @@
  * fallback).
  *
  * ============================================================================
+ * The same defect without the marker
+ * ============================================================================
+ *
+ * A later capture dropped the marker entirely:
+ *
+ * ```text
+ * <ask_user_question>
+ * <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+ * ```
+ *
+ * Every rule above is written in terms of the marker, so none of them saw this
+ * as markup at all: it went to the user as the answer, unread. The gates were
+ * not the problem — the vocabulary was. {@link RecoveryGate.bareMarkup} adds
+ * the missing half: a tag whose NAME is protocol vocabulary, or a tool this
+ * request declared, is markup even unmarked. Nothing else changes: the same
+ * four gates run, on the same terms, and a shape that fails them still goes
+ * back to the user verbatim.
+ *
+ * The opt-in is deliberate. A bare `<div>` in somebody's prose is not a call,
+ * and a module that started deleting HTML on sight would be a worse defect than
+ * the leak it fixes.
+ *
+ * ============================================================================
  * Provenance
  * ============================================================================
  *
@@ -125,8 +148,84 @@ const ASCII_PREFIXES: readonly string[] = ['||DSML||', '|DSML|']
  * Deliberately tiny. `parameter` and the model's ad-hoc tag names are NOT here:
  * they only ever appear inside a block, so treating one as a block start would
  * hold a response hostage waiting for a close that naming never promised.
+ *
+ * `tool_call` (SINGULAR) is here because a bare one is how the model opens a
+ * block when it forgets the protocol entirely — see
+ * {@link BARE_BLOCK_TAGS}. It is the same word as the wrapper, written in the
+ * other number, which is exactly why it reads as an opener rather than as a
+ * parameter tag.
  */
-const BLOCK_TAGS: readonly string[] = ['tool_calls', 'invoke']
+const BLOCK_TAGS: readonly string[] = ['tool_calls', 'invoke', 'tool_call']
+
+/**
+ * Names that mean protocol markup even with NO marker in front of them.
+ *
+ * THE DEFECT THIS CLOSES. Everything in this module used to require the
+ * `｜DSML｜` marker before it would treat a tag as markup, on the reasoning that
+ * the marker is the model's own confession. A captured response shows what
+ * happens when the model writes the protocol WITHOUT it:
+ *
+ * ```text
+ * <ask_user_question>
+ * <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+ * ```
+ *
+ * Not one byte carries a marker, so `scanTag` classified every tag as ordinary
+ * prose, `stripMarkup` deleted nothing, and the whole thing was forwarded to
+ * the user as the answer — the block was never even a candidate for recovery.
+ * The shape is also not one this module parses (`<questions` truncated, the
+ * `arg_key`/`arg_value` pair, a SINGULAR `tool_call` closer), so recognising it
+ * would not have been enough on its own; see {@link parseBareWrapper}.
+ *
+ * WHY A LIST AND NOT "ANY NAME". A bare `<div>` or `<b>` is somebody's HTML,
+ * and treating it as markup would delete the text after it. Membership here is
+ * the evidence that replaces the missing marker, and it is deliberately made of
+ * names that are not plausible in prose: `arg_key`/`arg_value` are the
+ * protocol's own vocabulary, and `tool_call`/`tool_calls` are the wrapper. The
+ * schema-derived names (`questions`, `question`) are added to the EFFECTIVE
+ * list per request by {@link bareNamesFor}, because those are ordinary English
+ * words that only the request's own tool declarations can make meaningful.
+ */
+const BARE_PROTOCOL_TAG_NAMES: readonly string[] = [
+  'tool_calls',
+  'tool_call',
+  'invoke',
+  'parameter',
+  'arg_key',
+  'arg_value',
+]
+
+/**
+ * The bare-name set for one request: the protocol's own vocabulary, every tool
+ * this request DECLARES, and every parameter name those tools accept.
+ *
+ * Why declared tool names are included. A bare wrapper is written as the tool's
+ * own name — `<ask_user_question>` — and that name is the only thing that says
+ * which tool was meant. Excluding it would mean the wrapper never becomes a
+ * block, so nothing is ever parsed and gate 2 never even gets to run; the
+ * answer would be the markup, which is the defect.
+ *
+ * This does NOT weaken gate 2, which is checked in {@link parseBareWrapper}:
+ * membership here only decides that the bytes are MARKUP rather than prose. An
+ * undeclared name is not in the set, is therefore prose, and is forwarded
+ * verbatim by gate 4 — the same fate it has always had.
+ *
+ * Parameter names are safe to add because they are only consulted for a
+ * COMPLETE tag that sits inside a block this module has already opened — see
+ * {@link parseArgPairs}. `<questions>…</questions>` in ordinary prose is outside
+ * every block and therefore never looked at.
+ */
+function bareNamesFor(gate: RecoveryGate): ReadonlySet<string> {
+  if (gate.bareNames !== undefined) return gate.bareNames
+  const names = new Set<string>(BARE_PROTOCOL_TAG_NAMES)
+  for (const tool of gate.declaredNames) names.add(tool.toLowerCase())
+  if (gate.acceptedParameters !== undefined) {
+    for (const accepted of gate.acceptedParameters.values()) {
+      for (const parameter of accepted) names.add(parameter.toLowerCase())
+    }
+  }
+  return names
+}
 
 /**
  * Tag names whose content belongs to the markup rather than to the answer.
@@ -139,7 +238,16 @@ const BLOCK_TAGS: readonly string[] = ['tool_calls', 'invoke']
  * `calls` is here because a REAL capture wrote the wrapper's closer that way.
  * See {@link CANONICAL_TAG_NAMES} for the defect that disagreement caused.
  */
-const KEYWORD_TAGS: readonly string[] = ['tool_calls', 'tool-calls', 'toolcalls', 'invoke', 'parameter', 'calls', 'tool']
+const KEYWORD_TAGS: readonly string[] = [
+  'tool_calls',
+  'tool-calls',
+  'toolcalls',
+  'tool_call',
+  'invoke',
+  'parameter',
+  'calls',
+  'tool',
+]
 
 /**
  * Tag names normalised to their canonical spelling.
@@ -166,8 +274,11 @@ const CANONICAL_TAG_NAMES: ReadonlyMap<string, string> = new Map([
   ['tool-calls', 'tool_calls'],
   ['toolcalls', 'tool_calls'],
   ['calls', 'tool_calls'],
+  ['tool_call', 'tool_call'],
   ['invoke', 'invoke'],
   ['parameter', 'parameter'],
+  ['arg_key', 'arg_key'],
+  ['arg_value', 'arg_value'],
 ])
 
 /**
@@ -206,6 +317,16 @@ interface MarkupTag {
   selfClosing: boolean
   /** True when a marker prefix preceded the name. */
   marked: boolean
+  /**
+   * True when the tag is markup only because its name is in the bare set —
+   * no marker, but {@link RecoveryGate.bareMarkup} made the name decisive.
+   *
+   * Kept separate from {@link marked} rather than folded into it: every
+   * existing rule is about the MARKER (a marker fragment at end of stream, a
+   * marked opener arming the closer sweep), and a bare name is a weaker
+   * signal that must not silently acquire those powers.
+   */
+  bare: boolean
   /** Raw attribute text between the name and the closing `>`. */
   attributes: string
 }
@@ -315,6 +436,40 @@ export interface RecoveryGate {
    * a chat request.
    */
   onWithheld?: (reason: 'unnamed-invoke' | 'stray-markup') => void
+  /**
+   * Opt in to recognising markup that carries NO `｜DSML｜` marker at all.
+   *
+   * Off by default, and that default is the old behaviour byte for byte: a bare
+   * `<div>` in a user's own words is not protocol, and a module that started
+   * deleting HTML on sight would be a worse bug than the leak it fixes.
+   *
+   * WHAT IT DOES. A tag whose name is in {@link bareNamesFor} is classified as
+   * markup even unmarked — so {@link stripMarkup} and the stream buffer see it,
+   * and the wrapper shape below becomes recoverable:
+   *
+   * ```text
+   * <ask_user_question>
+   * <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+   * ```
+   *
+   * WHAT IT DOES NOT DO. Every gate still runs, unchanged. A bare block is
+   * parsed by {@link parseBareWrapper}, which refuses unless the WRAPPER names a
+   * declared tool, the close matches, and the required parameters are all
+   * present. Nothing is inferred from a bare block: the model wrote the tool
+   * name in the clear, so there is no name to guess.
+   *
+   * The narrowing that makes this safe to turn on: only names in
+   * {@link BARE_PROTOCOL_TAG_NAMES} plus the request's own parameter names are
+   * eligible, and those are consulted only INSIDE a block this module opened.
+   */
+  bareMarkup?: boolean
+  /**
+   * The bare-name set to use, overriding the one {@link bareNamesFor} derives.
+   *
+   * Only needed by callers that know their own protocol vocabulary; the derived
+   * set is right for every request shaped like a chat-completions body.
+   */
+  bareNames?: ReadonlySet<string>
 }
 
 /**
@@ -609,8 +764,12 @@ function readName(text: string, index: number): { name: string; end: number; mar
  * Any name is accepted (the model invents parameter tags freely); only the ones
  * in {@link CANONICAL_TAG_NAMES} are normalised, and the misspellings are
  * normalised only in a marker form — `<toolcalls>` alone is somebody's HTML.
+ *
+ * `bare` is the ONE piece of request-scoped state this scanner takes. Without
+ * it a bare tag is scanned (so `findTag` can walk past it) but classified as
+ * prose, which is what every rule downstream reads.
  */
-function scanTag(text: string, index: number): MarkupTag | undefined {
+function scanTag(text: string, index: number, bareNames?: ReadonlySet<string>): MarkupTag | undefined {
   if (text.charAt(index) !== '<') return undefined
   let position = index + 1
 
@@ -624,8 +783,21 @@ function scanTag(text: string, index: number): MarkupTag | undefined {
   const read = readName(text, position)
   if (read.name === '') return undefined
 
+  // `<` must be immediately followed by the name for a bare tag to count: the
+  // whitespace skip above exists for the MARKED shape (`<｜DSML｜ invoke>`),
+  // and accepting it bare would read prose like `a < b and tool_call` as a tag.
+  // A closer is protocol markup when it names something the protocol OWNS —
+  // the wrapper vocabulary plus the bare table. It does not need to be a name
+  // this request declared: `</tool_call>` closes `<ask_user_question>`, and a
+  // closer that is not recognised leaves its block unpaired, which is exactly
+  // the failure this change fixes.
+  const bare = !read.marked
+    && bareNames !== undefined
+    && (bareNames.has(read.name) || CLOSER_NAMES.has(read.name))
+    && position === index + (closing ? 2 : 1)
+
   const canonical = CANONICAL_TAG_NAMES.get(read.name)
-  const name = canonical !== undefined && !(MARKER_ONLY_TAG_NAMES.has(read.name) && !read.marked)
+  const name = canonical !== undefined && (!(MARKER_ONLY_TAG_NAMES.has(read.name) && !read.marked) || bare)
     ? canonical
     : read.name
 
@@ -642,6 +814,7 @@ function scanTag(text: string, index: number): MarkupTag | undefined {
         closing,
         selfClosing,
         marked: read.marked,
+        bare,
         attributes: text.slice(attributesStart, cursor).trim(),
       }
     }
@@ -654,6 +827,7 @@ function scanTag(text: string, index: number): MarkupTag | undefined {
         closing,
         selfClosing,
         marked: read.marked,
+        bare,
         attributes: text.slice(attributesStart, cursor).trim(),
       }
     }
@@ -662,8 +836,32 @@ function scanTag(text: string, index: number): MarkupTag | undefined {
   return undefined
 }
 
+/**
+ * Names that count as protocol markup even when bare, whichever side they are
+ * on.
+ *
+ * The bare table covers the vocabulary that opens a block; these are the
+ * closers a block may wear instead of its own name. The captured leak opens
+ * `<ask_user_question>` and closes `</tool_call>`.
+ */
+const CLOSER_NAMES: ReadonlySet<string> = new Set([
+  'tool_call',
+  'tool_calls',
+  'tool-calls',
+  'toolcalls',
+  'calls',
+  'invoke',
+  'parameter',
+  'arg_value',
+])
+
 /** The next markup tag outside every ignored span, at or after `from`. */
-function findTag(text: string, spans: readonly IgnoredSpan[], from: number): MarkupTag | undefined {
+function findTag(
+  text: string,
+  spans: readonly IgnoredSpan[],
+  from: number,
+  bareNames?: ReadonlySet<string>,
+): MarkupTag | undefined {
   const cursor = { at: 0 }
   let index = Math.max(from, 0)
   while (index < text.length) {
@@ -673,7 +871,7 @@ function findTag(text: string, spans: readonly IgnoredSpan[], from: number): Mar
       continue
     }
     if (text.charAt(index) === '<') {
-      const tag = scanTag(text, index)
+      const tag = scanTag(text, index, bareNames)
       if (tag !== undefined) return tag
     }
     index += 1
@@ -687,17 +885,38 @@ function findTag(text: string, spans: readonly IgnoredSpan[], from: number): Mar
  * Depth counting so a nested block of the same name cannot terminate its parent
  * early. This is gate 1's teeth: no close, no call.
  */
-function findMatchingClose(text: string, spans: readonly IgnoredSpan[], open: MarkupTag): MarkupTag | undefined {
+function findMatchingClose(
+  text: string,
+  spans: readonly IgnoredSpan[],
+  open: MarkupTag,
+  bareNames?: ReadonlySet<string>,
+): MarkupTag | undefined {
   let depth = 1
   let index = open.end + 1
   while (index < text.length) {
-    const tag = findTag(text, spans, index)
+    const tag = findTag(text, spans, index, bareNames)
+    // A bare closer of a DIFFERENT name does not count towards this block's
+    // depth. The captured wrapper closes with `</tool_call>` while it opened
+    // with `<ask_user_question>`; pairing is done by the caller (see
+    // {@link parseBareWrapper}), not by name here.
+    //
+    // ONLY a closer that can end a block is considered. `</arg_key>` is a
+    // closer too, and counting it here made it end the wrapper: the block
+    // stopped at the first key, `parseBareWrapper` then read `</arg_key>` as
+    // the block's closer, refused the name, and the call was lost. Keys are
+    // arguments, not elements — see {@link TAGLESS_KEY_NAMES}.
     if (tag === undefined) return undefined
-    if (tag.name === open.name) {
+    const sameName = tag.name === open.name
+    if (sameName || (open.bare && tag.bare && tag.closing && BLOCK_CLOSER_NAMES.has(tag.name))) {
       if (tag.closing) {
         depth -= 1
         if (depth === 0) return tag
-      } else if (!tag.selfClosing) {
+      } else if (!tag.selfClosing && !TAGLESS_KEY_NAMES.has(tag.name)) {
+        // `<questions` is a KEY whose `>` never arrived, not a nested element:
+        // its closer is the `</arg_key>` of the shape {@link parseTruncatedKey}
+        // reads. It is therefore excluded from the opener test above rather
+        // than from the depth count here — a key that DID open properly
+        // (`<arg_key>…</arg_key>`) is a complete element and must balance.
         depth += 1
       }
     }
@@ -714,14 +933,40 @@ function findMatchingClose(text: string, spans: readonly IgnoredSpan[], open: Ma
  * still complete), whereas parsing already-complete text stops rather than
  * correcting a broken block and then trusting what follows it.
  */
-function findFirstOpener(text: string, spans: readonly IgnoredSpan[]): { open: MarkupTag; close?: MarkupTag } | undefined {
+function findFirstOpener(
+  text: string,
+  spans: readonly IgnoredSpan[],
+  bareNames?: ReadonlySet<string>,
+  pending = false,
+): { open: MarkupTag; close?: MarkupTag } | undefined {
   let index = 0
   while (index < text.length) {
-    const tag = findTag(text, spans, index)
+    const tag = findTag(text, spans, index, bareNames)
     if (tag === undefined) return undefined
     if (!tag.closing && BLOCK_TAGS.includes(tag.name)) {
-      const close = findMatchingClose(text, spans, tag)
+      const close = findMatchingClose(text, spans, tag, bareNames)
       return close === undefined ? { open: tag } : { open: tag, close }
+    }
+    // A BARE wrapper whose name is a declared tool: the shape the model writes
+    // when it forgets the protocol entirely (`<ask_user_question>` around
+    // `<questions>`, closed by `</tool_call>`). The bare set already contains
+    // exactly the declared tool names, so membership IS gate 2's first half;
+    // {@link parseBareWrapper} re-checks it against `declaredNames` directly.
+    if (!tag.closing && tag.bare && !BARE_PROTOCOL_TAG_NAMES.includes(tag.name) && !KEYWORD_TAGS.includes(tag.name)) {
+      const close = findMatchingClose(text, spans, tag, bareNames)
+      // A bare wrapper with no close is reported as an unclosed block only when
+      // the caller is the STREAMING buffer, which must hold from the opener so
+      // the rest of the block can still arrive. Parsing already-complete text
+      // has nothing to commit and must NOT treat it as a block: an unpaired
+      // `<div>` in prose would otherwise swallow everything after it.
+      if (close === undefined) {
+        if (!pending) {
+          index = tag.end + 1
+          continue
+        }
+        return { open: tag }
+      }
+      return { open: tag, close }
     }
     index = tag.end + 1
   }
@@ -780,6 +1025,11 @@ type ParameterValue = string | Record<string, unknown>
  *     the explicit form has not already claimed that name — otherwise a nested
  *     tag echoing it would overwrite the real value.
  *
+ * A third shape exists in the bare vocabulary and is handled by
+ * {@link parseArgPairs}, not here: `<arg_key>k</arg_key><arg_value>v</arg_value>`
+ * is one parameter split over two tags, so it cannot be read by a loop that
+ * treats each tag as self-contained.
+ *
  * A `CDATA` body is taken verbatim; everything else is entity-decoded.
  *
  * Every scanner here computes its ignored spans from the string it is about to
@@ -789,22 +1039,30 @@ type ParameterValue = string | Record<string, unknown>
  * markup", which is gate 4's worst failure. Each of these strings is small, so
  * recomputing is cheaper than passing a coordinate system around.
  */
-function parseParameters(body: string): Record<string, ParameterValue> {
+function parseParameters(body: string, bareNames?: ReadonlySet<string>): Record<string, ParameterValue> {
   const parameters: Record<string, ParameterValue> = {}
   const spans = ignoredSpans(body)
   let index = 0
 
   while (index < body.length) {
-    const tag = findTag(body, spans, index)
+    const tag = findTag(body, spans, index, bareNames)
     if (tag === undefined) break
     if (tag.closing || tag.selfClosing) {
       index = tag.end + 1
       continue
     }
 
-    const close = findMatchingClose(body, spans, tag)
+    const close = findMatchingClose(body, spans, tag, bareNames)
     if (close === undefined) {
       index = tag.end + 1
+      continue
+    }
+
+    // An argument pair is one parameter, not two: its tags are syntax, and
+    // {@link parseArgPairs} is what turns them into a name and a value. Read
+    // here they would land in the call as `arg_key` / `arg_value` parameters.
+    if (ARGUMENT_TAG_NAMES.has(tag.name)) {
+      index = close.end + 1
       continue
     }
 
@@ -816,7 +1074,62 @@ function parseParameters(body: string): Record<string, ParameterValue> {
     if (name !== undefined && name !== '' && (explicitName !== undefined || parameters[name] === undefined)) {
       parameters[name] = value.startsWith('<![CDATA[') && value.endsWith(']]>')
         ? value.slice(9, -3)
-        : nestedOrText(value)
+        : nestedOrText(value, bareNames)
+    }
+
+    index = close.end + 1
+  }
+
+  return parameters
+}
+
+/**
+ * Read the `<arg_key>`/`<arg_value>` pairs of a bare block.
+ *
+ * THE SHAPE. `arg_key` names the parameter and the `arg_value` that follows it
+ * is its value, so the pair is one parameter and neither tag is one on its own.
+ * This is the vocabulary of the captured leak:
+ *
+ * ```text
+ * <ask_user_question>
+ * <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+ * ```
+ *
+ * A key with no value after it is dropped rather than read as an empty string:
+ * an empty parameter is indistinguishable from a missing one once it is JSON,
+ * and inventing `""` for a truncated block is the kind of guess gate 4 exists
+ * to refuse.
+ *
+ * Off unless `bareNames` is supplied — a marked block never uses this
+ * vocabulary, and reading `<arg_key>` out of one would invent parameters the
+ * model did not write.
+ */
+function parseArgPairs(body: string, bareNames: ReadonlySet<string>): Record<string, ParameterValue> {
+  const parameters: Record<string, ParameterValue> = {}
+  const spans = ignoredSpans(body)
+  let pendingKey: string | undefined
+  let index = 0
+
+  while (index < body.length) {
+    const tag = findTag(body, spans, index, bareNames)
+    if (tag === undefined) break
+    if (tag.closing || tag.selfClosing || !tag.bare) {
+      index = tag.end + 1
+      continue
+    }
+    const close = findMatchingClose(body, spans, tag, bareNames)
+    if (close === undefined) break
+    const value = body.slice(tag.end + 1, close.start).trim()
+
+    if (tag.name === 'arg_key') {
+      // A key is a NAME, not markup: entity-decode it and nothing else, or a
+      // key that happens to contain `<` would be read as a nested object.
+      pendingKey = decodeEntities(value)
+    } else if (tag.name === 'arg_value' && pendingKey !== undefined) {
+      parameters[pendingKey] = value.startsWith('<![CDATA[') && value.endsWith(']]>')
+        ? value.slice(9, -3)
+        : nestedOrText(value, bareNames)
+      pendingKey = undefined
     }
 
     index = close.end + 1
@@ -826,9 +1139,9 @@ function parseParameters(body: string): Record<string, ParameterValue> {
 }
 
 /** A value that itself contains a complete tag pair is a nested object. */
-function nestedOrText(value: string): ParameterValue {
+function nestedOrText(value: string, bareNames?: ReadonlySet<string>): ParameterValue {
   if (!value.includes('<') || !value.includes('>')) return decodeEntities(value)
-  const nested = parseParameters(value)
+  const nested = parseParameters(value, bareNames)
   return Object.keys(nested).length > 0 ? nested : decodeEntities(value)
 }
 
@@ -859,16 +1172,31 @@ function parseBlock(block: string, gate: RecoveryGate, seen: Withheld): {
 } {
   const calls: RecoveredToolCall[] = []
   let withheld = false
+  const bareNames = gate.bareMarkup === true ? bareNamesFor(gate) : undefined
   const spans = ignoredSpans(block)
   let index = 0
 
+  // The block's own wrapper is not a child of itself. A bare wrapper block
+  // starts with the tag that names the tool (`<ask_user_question>`), and the
+  // child scan below only looks for `invoke` and for OTHER bare wrappers — so
+  // without this the wrapper is read as an unknown tag, the scan advances past
+  // it, and the block's contents are never seen at all.
+  const outer = findTag(block, spans, 0, bareNames)
+  if (outer !== undefined && outer.start === 0 && !outer.closing && bareNames !== undefined && outer.bare && gate.declaredNames.has(outer.name)) {
+    const close = findMatchingClose(block, spans, outer, bareNames)
+    if (close === undefined) return { calls, withheld }
+    const call = parseBareWrapper(outer, close, block, gate, bareNames)
+    if (call !== undefined) calls.push(call)
+    return { calls, withheld }
+  }
+
   while (index < block.length) {
-    const tag = findTag(block, spans, index)
+    const tag = findTag(block, spans, index, bareNames)
     if (tag === undefined) break
     if (!tag.closing && tag.name === 'invoke') {
-      const close = findMatchingClose(block, spans, tag)
+      const close = findMatchingClose(block, spans, tag, bareNames)
       if (close === undefined) break
-      const call = parseInvoke(tag, close, block, gate)
+      const call = parseInvoke(tag, close, block, gate, bareNames)
       if (call !== undefined) calls.push(call)
       // A complete invocation the gates refused AND that names no tool is not
       // something the model intended the user to read. It is either a defect
@@ -892,6 +1220,196 @@ function parseBlock(block: string, gate: RecoveryGate, seen: Withheld): {
   return { calls, withheld }
 }
 
+/**
+ * One bare wrapper element → a call, or nothing when a gate refuses it.
+ *
+ * The shape, captured from a real response and quoted in the module header:
+ *
+ * ```text
+ * <ask_user_question>
+ * <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+ * ```
+ *
+ * WHAT THIS DOES NOT DO, and why it is not "guessing". Gate 2 is satisfied by
+ * the model's own words: the wrapper tag IS the tool name, written in the
+ * clear, so there is no name to infer — only one to CHECK against the request's
+ * declarations, exactly as `name="…"` is checked. A wrapper naming anything
+ * undeclared returns nothing and the block keeps its gate-4 fate.
+ *
+ * The close is accepted when it names the same tool OR when it is one of the
+ * protocol's own closers (`tool_call`, `tool_calls`, `invoke`, `parameter`),
+ * because the captured block opens with `<ask_user_question>` and closes with
+ * `</tool_call>` — the model is not tracking names. A close naming a DIFFERENT
+ * tool is refused: that is a different call's closer, and pairing across it
+ * would silently attach one call's arguments to another's name.
+ */
+function parseBareWrapper(
+  open: MarkupTag,
+  close: MarkupTag,
+  block: string,
+  gate: RecoveryGate,
+  bareNames: ReadonlySet<string>,
+): RecoveredToolCall | undefined {
+  const name = open.name
+  // Gate 2. `findFirstOpener` only offers declared wrappers, but this is the
+  // gate, so it is stated here too rather than trusted from a caller.
+  if (!gate.declaredNames.has(name)) return undefined
+
+  if (close.name !== name && !PROTOCOL_CLOSER_NAMES.has(close.name)) return undefined
+
+  const body = block.slice(open.end + 1, close.start)
+  // Argument pairs FIRST: `parseParameters` would otherwise read the pair's own
+  // tags as parameters (`arg_key: "questions"`, `arg_value: "…"`), and those
+  // must never reach a call.
+  const parameters = { ...parseArgPairs(body, bareNames), ...parseParameters(body, bareNames) }
+  const truncated = parseTruncatedKey(body, bareNames)
+  if (truncated !== undefined) {
+    // The captured leak writes `<questions` with no `>`, so no tag scanner can
+    // see it. A KEY is the one place where that is recoverable without guessing:
+    // the value that follows is still explicit, and it is accepted only when
+    // the schema says this tool has exactly that one parameter still missing.
+    //
+    // A tool with no declared required list cannot say, and then the value is
+    // NOT taken: "no schema" is not permission.
+    const required = gate.requiredParameters?.get(name)
+    if (required === undefined) {
+      // No declared required list: the only thing that can be checked is that
+      // the key is one this tool actually accepts, and that no value was
+      // already given for it.
+      const accepted = gate.acceptedParameters?.get(name)
+      if (accepted === undefined || !accepted.has(truncated.key)) return undefined
+      if (parameters[truncated.key] !== undefined) return undefined
+    } else {
+      const missing = required.filter(parameter => parameters[parameter] === undefined)
+      if (missing.length !== 1 || missing[0] !== truncated.key) return undefined
+    }
+    parameters[truncated.key] = truncated.value
+  }
+
+  // Gate 2, pinned form: the caller asked for one tool by name.
+  const pinned = gate.pinnedToolName
+  if (pinned !== undefined && pinned !== 'auto' && pinned !== 'required' && pinned !== 'none' && pinned !== name) {
+    return undefined
+  }
+
+  // Gate 4: a declared tool missing a required parameter is a truncated call.
+  const required = gate.requiredParameters?.get(name)
+  if (required !== undefined && required.some(parameter => parameters[parameter] === undefined)) {
+    return undefined
+  }
+
+  return {
+    id: `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+    name,
+    arguments: JSON.stringify(parameters),
+  }
+}
+
+/**
+ * Closers a bare wrapper may wear without naming its tool.
+ *
+ * `</tool_call>` is what the captured block used; the others are the same
+ * vocabulary one nesting level up, and a model that stopped tracking names
+ * does not distinguish between them.
+ */
+const PROTOCOL_CLOSER_NAMES: ReadonlySet<string> = new Set(['tool_call', 'tool_calls', 'invoke', 'parameter'])
+
+/**
+ * Names that are KEYS in the argument-pair shape, so a TRUNCATED occurrence of
+ * one (`<questions` with no `>`) is not a nested element.
+ *
+ * `<arg_key>` is the protocol's own spelling; a truncated key is closed by the
+ * `</arg_key>` that {@link parseTruncatedKey} reads. A key that opens properly
+ * is a normal balanced element and is unaffected. Neither name can be a
+ * wrapper: {@link findFirstOpener} only offers protocol vocabulary and declared
+ * tool names, and this set is neither.
+ */
+const TAGLESS_KEY_NAMES: ReadonlySet<string> = new Set(['arg_key'])
+
+/**
+ * Tags that carry an argument PAIR rather than a parameter of their own.
+ *
+ * `parseParameters` skips them; {@link parseArgPairs} is what reads them. Both
+ * spellings of the key are here because the model uses them interchangeably.
+ */
+const ARGUMENT_TAG_NAMES: ReadonlySet<string> = new Set(['arg_key', 'arg_value'])
+
+/**
+ * Closers that may end a block.
+ *
+ * A block is a WRAPPER: `tool_calls`, or a bare tool name. Its closer is either
+ * that same name or one of the protocol's wrapper-level names below. Argument
+ * tags (`arg_key`, `arg_value`, `parameter`) are NOT here — they close an
+ * argument, and treating them as block closers truncates the block at its first
+ * parameter.
+ */
+const BLOCK_CLOSER_NAMES: ReadonlySet<string> = new Set([
+  'tool_call',
+  'tool_calls',
+  'tool-calls',
+  'toolcalls',
+  'calls',
+  'invoke',
+])
+
+/**
+ * The `<key` / `<arg_value>value</arg_value>` pair, when the key's `>` never
+ * arrived.
+ *
+ * THE SHAPE, from the captured response:
+ *
+ * ```text
+ * <ask_user_question>
+ * <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+ * ```
+ *
+ * `<questions` has no `>`, so `scanTag` finds no tag there at all — the
+ * `</arg_key>` that follows closes a key the model never opened properly. No
+ * scanner in this module can see the key, and inventing one would be exactly
+ * the guess gate 4 forbids. What IS explicit is the value: the tag after the
+ * broken key is an `arg_value`, and its own pair is complete.
+ *
+ * So this returns a CANDIDATE and nothing more. The caller accepts it only when
+ * the request's schema says this tool has exactly one required parameter still
+ * missing and the broken key spells it — i.e. the model's own bytes and the
+ * request's own declaration agree, with nothing inferred in between.
+ *
+ * Bounded on purpose: only the FIRST broken key is read, and only when an
+ * `arg_value` follows it immediately. A block with two truncated keys is not
+ * evidence of anything and is refused.
+ */
+function parseTruncatedKey(
+  body: string,
+  bareNames: ReadonlySet<string>,
+): { key: string; value: string } | undefined {
+  const pattern = /<([a-z_][a-z0-9_-]*)(?![^<>]*>)(?=[^<>]*<\/arg_key>)/i
+  const match = pattern.exec(body)
+  if (match === null) return undefined
+  const key = match[1]?.toLowerCase()
+  if (key === undefined || !bareNames.has(key)) return undefined
+
+  const rest = body.slice(match.index + match[0].length)
+  const spans = ignoredSpans(rest)
+  let index = 0
+  let sawKeyCloser = false
+  while (index < rest.length) {
+    const tag = findTag(rest, spans, index, bareNames)
+    if (tag === undefined) return undefined
+    if (tag.closing && tag.name === 'arg_key' && !sawKeyCloser) {
+      sawKeyCloser = true
+      index = tag.end + 1
+      continue
+    }
+    if (!sawKeyCloser) return undefined
+    if (tag.closing || tag.selfClosing || tag.name !== 'arg_value') return undefined
+    const close = findMatchingClose(rest, spans, tag, bareNames)
+    if (close === undefined) return undefined
+    const value = rest.slice(tag.end + 1, close.start).trim()
+    return { key, value: nestedOrText(value, bareNames) as string }
+  }
+  return undefined
+}
+
 /** The first reason anything was withheld anywhere in one outcome. */
 interface Withheld {
   reason?: 'unnamed-invoke' | 'stray-markup'
@@ -903,10 +1421,11 @@ function parseInvoke(
   close: MarkupTag,
   block: string,
   gate: RecoveryGate,
+  bareNames?: ReadonlySet<string>,
 ): RecoveredToolCall | undefined {
   const attributes = parseAttributes(open.attributes)
   const declared = attributes['name']
-  const parameters = parseParameters(block.slice(open.end + 1, close.start))
+  const parameters = parseParameters(block.slice(open.end + 1, close.start), bareNames)
 
   let name: string | undefined
   if (declared !== undefined && declared !== '') {
@@ -1007,11 +1526,12 @@ export function parseToolCalls(text: string, gate: RecoveryGate): RecoveredToolC
 
   const calls: RecoveredToolCall[] = []
   const seen: Withheld = {}
+  const bareNames = gate.bareMarkup === true ? bareNamesFor(gate) : undefined
   let remaining = text
 
   // One response can carry several blocks, and all of them are recovered.
   while (remaining !== '') {
-    const found = findFirstOpener(remaining, ignoredSpans(remaining))
+    const found = findFirstOpener(remaining, ignoredSpans(remaining), bareNames)
     if (found === undefined || found.close === undefined) break
     calls.push(...parseBlock(remaining.slice(found.open.start, found.close.end + 1), gate, seen).calls)
     remaining = remaining.slice(found.close.end + 1)
@@ -1041,7 +1561,8 @@ export function parseToolCalls(text: string, gate: RecoveryGate): RecoveredToolC
  * Ignored spans are KEPT: a fenced or back-ticked quotation of the marker is
  * prose, and the rule is explicitly about a turn that produced nothing usable.
  */
-export function stripMarkup(text: string): string {
+export function stripMarkup(text: string, gate?: RecoveryGate): string {
+  const bareNames = gate?.bareMarkup === true ? bareNamesFor(gate) : undefined
   const spans = ignoredSpans(text)
   const cursor = { at: 0 }
   let result = ''
@@ -1054,14 +1575,18 @@ export function stripMarkup(text: string): string {
       index = skipped
       continue
     }
-    const tag = text.charAt(index) === '<' ? scanTag(text, index) : undefined
-    if (tag === undefined || !tag.marked) {
+    const tag = text.charAt(index) === '<' ? scanTag(text, index, bareNames) : undefined
+    // A BARE CLOSER is debris even when its opener was never recognised as
+    // markup. The captured leak closes with `</tool_call>` after a `<questions`
+    // that could not be paired; leaving the closer behind prints protocol
+    // punctuation in the answer, which is the defect itself.
+    if (tag === undefined || (!tag.marked && !tag.bare && !(tag.closing && bareNames?.has(tag.name)))) {
       result += text.charAt(index)
       index += 1
       continue
     }
     const bracketed = !tag.closing && !tag.selfClosing && KEYWORD_TAGS.includes(tag.name)
-    const close = bracketed ? findMatchingClose(text, spans, tag) : undefined
+    const close = bracketed ? findMatchingClose(text, spans, tag, bareNames) : undefined
     index = close === undefined ? tag.end + 1 : close.end + 1
   }
 
@@ -1085,8 +1610,8 @@ export function stripMarkup(text: string): string {
  * Gate 4's "show it verbatim" applies to BLOCKS (which may be content); a lone
  * marker tag has no content of its own to lose, only the name it wears.
  */
-function stripStray(text: string, seen: Partial<Withheld>): string {
-  const cleaned = stripMarkup(text)
+function stripStray(text: string, seen: Partial<Withheld>, gate?: RecoveryGate): string {
+  const cleaned = stripMarkup(text, gate)
   if (cleaned !== text) seen.reason ??= 'stray-markup'
   return cleaned
 }
@@ -1126,9 +1651,14 @@ function stripStray(text: string, seen: Partial<Withheld>): string {
  * Fences and code spans are still skipped (through `stripMarkup`), because a
  * user asking what this markup means is quoting it on purpose.
  */
-function stripLoneClosers(text: string, seen: Partial<Withheld>, openerSeen: boolean): string {
+function stripLoneClosers(
+  text: string,
+  seen: Partial<Withheld>,
+  openerSeen: boolean,
+  gate?: RecoveryGate,
+): string {
   if (openerSeen) return text
-  const cleaned = stripMarkup(text)
+  const cleaned = stripMarkup(text, gate)
   if (cleaned !== text) seen.reason ??= 'stray-markup'
   return cleaned
 }
@@ -1145,7 +1675,7 @@ function stripLoneClosers(text: string, seen: Partial<Withheld>, openerSeen: boo
  * code block does not set the flag (and therefore does not disable the cleaning
  * of real debris elsewhere in the same response).
  */
-function hasMarkedOpener(text: string): boolean {
+function hasMarkedOpener(text: string, bareNames?: ReadonlySet<string>): boolean {
   const spans = ignoredSpans(text)
   const cursor = { at: 0 }
   let index = 0
@@ -1156,8 +1686,12 @@ function hasMarkedOpener(text: string): boolean {
       continue
     }
     if (text.charAt(index) === '<') {
-      const tag = scanTag(text, index)
-      if (tag !== undefined && tag.marked && !tag.closing) return true
+      const tag = scanTag(text, index, bareNames)
+      // A BARE opener arms the sweep too. It is the same fact — "the model
+      // started writing protocol markup" — and the captured bare block needs
+      // it: its `</tool_call>` closer sits outside the block the sweep removes,
+      // and without this flag it survives as a lone closer in the answer.
+      if (tag !== undefined && (tag.marked || tag.bare) && !tag.closing) return true
     }
     index += 1
   }
@@ -1225,8 +1759,8 @@ function isLateMarkerFragment(tail: string): boolean {
  * and the caller may then consider a single retry. Text inside a fence or code
  * span counts as content — a documented quotation of the marker is prose.
  */
-export function hasProse(text: string): boolean {
-  return stripMarkup(text).trim() !== ''
+export function hasProse(text: string, gate?: RecoveryGate): boolean {
+  return stripMarkup(text, gate).trim() !== ''
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,11 +1782,27 @@ export function hasProse(text: string): boolean {
  * captured — is not held: it is prose as far as this layer is concerned, and
  * holding it would delay every ordinary answer that mentions the markup.
  */
-function holdFrom(text: string, spans: readonly IgnoredSpan[]): number {
+function holdFrom(
+  text: string,
+  spans: readonly IgnoredSpan[],
+  bareNames?: ReadonlySet<string>,
+): number {
   let hold = text.length
 
   const lastLt = text.lastIndexOf('<')
-  if (lastLt !== -1 && looksLikeTagStart(text.slice(lastLt))) hold = Math.min(hold, lastLt)
+  const tail = lastLt === -1 ? '' : text.slice(lastLt)
+  if (lastLt !== -1 && looksLikeTagStart(tail, bareNames)) hold = Math.min(hold, lastLt)
+
+  // A bare OPENING tag of a declared tool that is still waiting for its close.
+  // The check above only ever sees the LAST `<`, so once `<ask_user_question>`
+  // is complete the hold drops to zero and the tag is emitted as text — the
+  // block can then never be assembled, which is exactly what a chunked feed of
+  // the captured leak does. Hold from that opener until its close arrives;
+  // `flush()` releases it if the stream ends first (gate 1 + gate 4).
+  if (bareNames !== undefined && lastLt !== -1) {
+    const opened = findFirstOpener(text, spans, bareNames, true)
+    if (opened !== undefined && opened.close === undefined) hold = Math.min(hold, opened.open.start)
+  }
 
   for (const span of spans) {
     if (span.open) hold = Math.min(hold, span.start)
@@ -1276,7 +1826,7 @@ function holdFrom(text: string, spans: readonly IgnoredSpan[]): number {
  * been split in two — a byte-by-byte feed is how this was found, and the
  * reference implementation has the same hole.
  */
-function looksLikeTagStart(tail: string): boolean {
+function looksLikeTagStart(tail: string, bareNames?: ReadonlySet<string>): boolean {
   if (!tail.startsWith('<')) return false
   if (tail.includes('>')) return false
 
@@ -1294,7 +1844,19 @@ function looksLikeTagStart(tail: string): boolean {
   if (body === '' || isPartialMarker(body)) return true
 
   const openers = ['tool', 'invoke', 'tool_calls', 'tool-calls', 'toolcalls', 'tool_call', 'tool-call']
-  return openers.some(opener => opener.startsWith(body) || body.startsWith(opener))
+  if (openers.some(opener => opener.startsWith(body) || body.startsWith(opener))) return true
+
+  // Bare markup: `<ask_user_qu` is the front half of a declared tool's opening
+  // tag. Without this case that half is emitted as text the moment it arrives
+  // and the block can never be assembled — the same split-tag leak as the
+  // still-arriving marker above, one layer further out. Only names this request
+  // actually declared can hold, so ordinary prose keeps flowing: a sentence
+  // that begins `<the` matches no declared name and fails here.
+  if (bareNames === undefined) return false
+  for (const name of bareNames) {
+    if (name.startsWith(body)) return true
+  }
+  return false
 }
 
 /**
@@ -1384,8 +1946,18 @@ export class DsmlStreamBuffer {
    */
   private openerSeen = false
 
+  /**
+   * The bare-name set for this request, or undefined when
+   * {@link RecoveryGate.bareMarkup} is off.
+   *
+   * Resolved once in the constructor: {@link bareNamesFor} walks every
+   * accepted-parameter set, and `add()` runs per chunk.
+   */
+  private readonly bareNames: ReadonlySet<string> | undefined
+
   constructor(gate: RecoveryGate) {
     this.gate = gate
+    this.bareNames = gate.bareMarkup === true ? bareNamesFor(gate) : undefined
   }
 
   /**
@@ -1420,16 +1992,16 @@ export class DsmlStreamBuffer {
     if (this.gate.declaredNames.size === 0) {
       const text = this.pending
       this.pending = ''
-      return { text, prose: hasProse(text), withheld: false }
+      return { text, prose: hasProse(text, this.gate), withheld: false }
     }
 
     // Any MARKED opening tag counts, not only a block opener: the captured
     // `<｜DSML｜ validate>` wears an invented name, is therefore not a block
     // opener, and is still exactly the tag whose closer a sweep would mutilate.
-    this.openerSeen ||= hasMarkedOpener(this.pending)
+    this.openerSeen ||= hasMarkedOpener(this.pending, this.bareNames)
 
     for (;;) {
-      const found = findFirstOpener(this.pending, ignoredSpans(this.pending))
+      const found = findFirstOpener(this.pending, ignoredSpans(this.pending), this.bareNames, true)
       if (found === undefined) break
       // Recorded BEFORE any parse, so it covers refused and recovered blocks
       // alike: this is "the response spoke the protocol", not "a block was
@@ -1441,10 +2013,10 @@ export class DsmlStreamBuffer {
       // `residueSeen`, and the shim's "the turn was markup only" retry would
       // then re-run a call the upstream already answered.
       if (this.nativeCalls) {
-        const head = stripMarkup(this.pending.slice(0, found.open.start)).trimEnd()
+        const head = stripMarkup(this.pending.slice(0, found.open.start), this.gate).trimEnd()
         if (head !== '') parts.push(head)
         this.pending = this.pending.slice(found.close === undefined ? found.open.start : found.close.end + 1)
-        if (found.close === undefined) return finish(parts, calls, this.takeWithheld())
+        if (found.close === undefined) return finish(parts, calls, this.takeWithheld(), this.gate)
         continue
       }
 
@@ -1456,7 +2028,7 @@ export class DsmlStreamBuffer {
       // the rest finally arrives.
       if (found.close === undefined) {
         this.pending = this.pending.slice(found.open.start)
-        return finish(parts, calls, this.takeWithheld())
+        return finish(parts, calls, this.takeWithheld(), this.gate)
       }
 
       const body = this.pending.slice(found.open.start, found.close.end + 1)
@@ -1482,14 +2054,14 @@ export class DsmlStreamBuffer {
 
     // Nothing committable left: emit everything except a tail that could still
     // turn into a tag, or that sits inside an unclosed code span.
-    const hold = holdFrom(this.pending, ignoredSpans(this.pending))
+    const hold = holdFrom(this.pending, ignoredSpans(this.pending), this.bareNames)
     if (hold > 0) {
       const tail = this.stripDebris(this.pending.slice(0, hold))
       if (tail !== '') parts.push(tail)
     }
     this.pending = this.pending.slice(hold)
 
-    return finish(parts, calls, this.takeWithheld())
+    return finish(parts, calls, this.takeWithheld(), this.gate)
   }
 
   /** End of stream: hand back everything still held — minus the debris. */
@@ -1519,11 +2091,13 @@ export class DsmlStreamBuffer {
     // (issue #207, {@link stripLoneClosers}), which is a separate fact.
     if (this.openerSeen || this.debris()) {
       text = dropUnfinishedMarkerTail(text, this.nativeCalls ? {} : this.withHeld)
-      text = this.nativeCalls ? stripMarkup(text) : stripLoneClosers(text, this.withHeld, this.openerSeen)
+      text = this.nativeCalls
+        ? stripMarkup(text, this.gate)
+        : stripLoneClosers(text, this.withHeld, this.openerSeen, this.gate)
     }
 
     const state = this.takeWithheld()
-    const outcome: BufferOutcome = { text, prose: hasProse(text), withheld: state.withheld }
+    const outcome: BufferOutcome = { text, prose: hasProse(text, this.gate), withheld: state.withheld }
     if (state.withheldReason !== undefined) outcome.withheldReason = state.withheldReason
     return outcome
   }
@@ -1546,9 +2120,9 @@ export class DsmlStreamBuffer {
    * forged-name opener is exactly the shape a name-based sweep would mutilate.
    */
   private stripDebris(text: string): string {
-    if (this.nativeCalls) return stripMarkup(text)
-    if (this.debris()) return stripStray(text, this.withHeld)
-    return stripLoneClosers(text, this.withHeld, this.openerSeen)
+    if (this.nativeCalls) return stripMarkup(text, this.gate)
+    if (this.debris()) return stripStray(text, this.withHeld, this.gate)
+    return stripLoneClosers(text, this.withHeld, this.openerSeen, this.gate)
   }
 
   /** Has anything been withheld from this response, yet or already? */
@@ -1594,9 +2168,10 @@ function finish(
   parts: readonly string[],
   calls: readonly RecoveredToolCall[],
   state: { withheld: boolean; withheldReason?: 'unnamed-invoke' | 'stray-markup' },
+  gate?: RecoveryGate,
 ): BufferOutcome {
   const text = parts.join('')
-  const outcome: BufferOutcome = { text, prose: hasProse(text), withheld: state.withheld }
+  const outcome: BufferOutcome = { text, prose: hasProse(text, gate), withheld: state.withheld }
   if (state.withheldReason !== undefined) outcome.withheldReason = state.withheldReason
   if (calls.length > 0) outcome.calls = [...calls]
   return outcome
