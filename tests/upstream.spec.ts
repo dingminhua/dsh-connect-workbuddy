@@ -185,8 +185,14 @@ describe('prepareChatBody', () => {
       ],
     }))) as { messages: { content: string }[] }
     expect(prepared.messages[0]?.content).toBe('the real prompt')
-    expect(prepared.messages[1]?.content)
-      .toBe(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\nYou are Claude Code, Anthropic's official CLI for Claude.`)
+    // The second system message is NEUTRALISED, not merely head-prepended. This
+    // used to assert the Claude Code fingerprint survived verbatim behind the
+    // neutral head — issue #293 proved the gate matches that phrase as a
+    // substring ANYWHERE, so moving it off offset 0 cannot help. The
+    // official-CLI shape row now rewrites it. The assertion's point (the second
+    // message is not skipped) still holds either way.
+    expect(prepared.messages[1]?.content).toContain('You are an autonomous coding agent')
+    expect(prepared.messages[1]?.content).not.toContain("Anthropic's official CLI for Claude")
   })
 })
 

@@ -85,11 +85,19 @@ export const FALLBACK_WORKBUDDY_MODELS_GLOBAL: readonly WorkBuddyModelInfo[] = [
   { id: 'balanced-model', name: 'Balanced', contextWindow: 256_000, maxTokens: 32_000 },
   { id: 'primary-model', name: 'Primary', contextWindow: 272_000, maxTokens: 72_000 },
   { id: 'deep-model', name: 'Deep', contextWindow: 176_000, maxTokens: 24_000 },
-  // The desktop channel's free-flagged `deepseek-v4.1-flash` is the reason the
-  // global roster is read from that channel at all — the CLI channel omits it.
+  // `deepseek-v4.1-flash` is a CLI-channel row: the 2026-11-06 two-document
+  // measurement (see `mergeModelRosters` in `src/upstream.ts`) lists it under
+  // CLI-only, while the app channel publishes the same DISPLAY NAME under the
+  // separate id `deepseek-v4.1-flash-sg`. An earlier version of this comment
+  // said the opposite and cited the free flag as the reason to read the app
+  // channel — that is backwards: the app channel is read for its own-only rows
+  // (`hy4free` / `hy4std` / `max-model`), and the plugin chats as the CLI agent,
+  // so the CLI document is the one whose prices settle (issue #292).
+  //
   // Its rate is NOT pinned here: the reporter measured it billing real credits
-  // while the channel still advertised x0.00, so a captured "free" is the most
-  // expensive thing this table could claim.
+  // while the channel still advertised x0.00 (issue #214), so a captured
+  // "free" is the most expensive thing this table could claim. The card's
+  // `x0.00` is the CLI document's CURRENT answer, not a value from this table.
   { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, maxTokens: 128_000 },
   { id: 'gpt-6-astra', name: 'GPT-6-Astra', contextWindow: 1_000_000, maxTokens: 128_000 },
   { id: 'hy4-preview', name: 'Hy4 preview', contextWindow: 1_000_000, maxTokens: 64_000 },

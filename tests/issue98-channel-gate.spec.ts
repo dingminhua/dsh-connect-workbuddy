@@ -143,7 +143,15 @@ describe('array-shaped system content: every text part is scanned (measured fact
     const content = body.messages[0]?.content as { type: string; text: string }[]
     expect(content).toHaveLength(2)
     expect(content[0]?.text).toBe('A perfectly ordinary opening.')
-    expect(content[1]?.text).toBe(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n${CLAUDE_FINGERPRINT}`)
+    // PART TWO IS NEUTRALISED, NOT MERELY HEAD-PREPENDED. This used to assert
+    // `${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n${CLAUDE_FINGERPRINT}` — i.e. the
+    // banned "Claude Code, Anthropic's official CLI for Claude" span survived
+    // verbatim behind a neutral head. Issue #293 proved that is insufficient:
+    // the upstream matches the phrase as a substring ANYWHERE, so moving it
+    // off offset 0 does nothing. The official-CLI shape row now REWRITES it.
+    // The assertion's point (part two is not skipped) still holds either way.
+    expect(content[1]?.text).toContain('You are an autonomous coding agent')
+    expect(content[1]?.text).not.toContain("Anthropic's official CLI for Claude")
   })
 
   it('leaves a non-matching part and a non-text part byte-identical', () => {
