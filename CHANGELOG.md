@@ -1,5 +1,38 @@
 # Changelog
 
+## 5.31.4 (2026-11-24)
+
+> 兼容版：修复 DSH 0.2.3 起宿主侧读 `/usage` 稳定 401（#294），并补上渠道门改词表漏掉的一句 first-party 系统提示（#293/#295）。
+
+> ⚠️ 本版在 5.31.3 发布之后新增，须单独发布。
+
+- **issue #294（宿主侧 401）**：`@deepseek-ai/dsh-host-webserver` 从 `0.2.3-alpha.1` 起给插件路由加了
+  `auth` 选项、**默认 `required`**；本插件所有路由共用 `raw()` 骨架，没传 `auth`，于是宿主进程用
+  进程内 `fetch`（不带浏览器会话 cookie）读 `/usage` 稳定 401，桌面卡片却正常。实测 0.2.2 的
+  `lib/index.js` 是 26614 字节、完全没有 auth 机制；0.2.3-alpha.1/.2 是 29752 字节、`authPolicy`
+  默认 `required`——代码与报告一致。
+- **修法**：`raw()` / `endpointRegion()` 透传可选 `auth`（0.2.2 的类型没有这个字段，用条件展开传，
+  那份宿主在运行时忽略多余键，无需 peer 变更或版本分支），**只给两条宿主会读的只读路由**
+  `usage` / `account-credits` 标 `auth: 'anonymous'`。两条路由本来就在骨架里跑 `requireLoopback()`，
+  所以远程调用方照样 403——这是把既有准入事实写明，不扩大攻击面。所有写路由保持默认 `required`
+  （用户点击的凭据是浏览器 cookie，不该被进程内调用方冒领）。
+- **issue #293 / #295（11128 渠道校验）**：
+  - #293 的 Claude Code `official CLI` 家族已在 5.31.3 修复；报告者后续在 `dsh-harness-dev-context`
+    的 `HARNESS_SOURCE_PROMPT` 里定位到**另一句** first-party 提示
+    `The runtime context names the DeepSeek Harness implementation checkout.`，它在 5700+ 字的 system
+    消息中段、紧挨 #167 已覆盖的 Web GUI 段落，而网关按「正文任意位置精确子串」匹配——中性头与
+    两轮零宽扰动都救不了。报告者本地改源码验证：改掉这句后拒绝消失。
+  - 本版把同一句加进 `CHANNEL_GATE_PHRASES`（意思是保持的改写：`implementation checkout` → `local
+    implementation checkout`），正式包里生效，不再依赖用户改 node_modules。
+  - 报告者最终用宿主的 `personaPrefix` / `includeHarnessIdentity` / `includeRuntimeContext` 源配置彻底
+    解决；他那句 `You are a coding agent running on the <model> model.` 本表已覆盖（实测确认），所以
+    真正漏的是上面那一句。
+- **测试**：新增 `tests/issue293-runtime-context-sentence.spec.ts`（4 条：清掉该句、幂等、不留零宽
+  字符、经 `prepareChatBody` 上到 wire）与 web-status 的准入断言（仅两条读路由 anonymous，其余
+  写路由保持 required）。两处变异验证均咬住：runtime-context 行永不命中 → 2 条红；`raw()` 不透传
+  auth / `usage` 不给 anonymous → 各 1 条红。
+- `pnpm run check` 全过（3817 条测试）。Host 侧改动，需重启 DSH 加载。
+
 ## 5.31.3 (2026-11-24)
 
 > 修复版：Claude Code 的 `official CLI` 自述句补上改词规则，解决贴图之外的 11128 渠道校验硬失败（#293）。

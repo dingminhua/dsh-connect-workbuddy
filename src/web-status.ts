@@ -1903,12 +1903,35 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * 这项能力」的 503，再谈区域；反过来会让一个缺区域参数的请求先拿到 400。
      */
     function raw(
-      spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
+      spec: {
+        path: string,
+        method: 'GET' | 'POST',
+        ready?: (res: ServerResponse) => boolean,
+        /**
+         * Route admission, introduced by `@deepseek-ai/dsh-host-webserver`
+         * 0.2.3-alpha.1 and defaulted to `required` there.
+         *
+         * ISSUE #294. Before 0.2.3 the host had NO admission layer at all, so
+         * every loopback route was reachable by the host's in-process `fetch`
+         * (which carries no browser session cookie). From 0.2.3 the same
+         * in-process read is 401 unless the route declares `auth: 'anonymous'`.
+         * The two read routes the host consumes (`usage`, `account-credits`)
+         * still do their OWN loopback check in this skeleton, so declaring
+         * anonymous there states an existing fact rather than widening access.
+         *
+         * OPTIONAL and untyped here on purpose: our installed peer can be 0.2.2
+         * (whose `WebRoute` has no `auth`), and a 0.2.2 host ignores the extra
+         * key at runtime. Passing it through one place keeps every call site
+         * version-neutral — no cast, no conditional, no peer bump.
+         */
+        auth?: 'anonymous',
+      },
       run: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void,
     ): void {
       route({
         kind: 'exact',
         path: spec.path,
+        ...spec.auth === undefined ? {} : { auth: spec.auth },
         handler: async (req: IncomingMessage, res: ServerResponse) => {
           if (req.method !== spec.method) return json(res, 405, { error: 'method not allowed' })
           if (!requireLoopback(req, res, deps)) return
@@ -1928,7 +1951,12 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      * 合法读答成 400（`cli-live` 就是这种）。
      */
     function endpointRegion(
-      spec: { path: string, method: 'GET' | 'POST', ready?: (res: ServerResponse) => boolean },
+      spec: {
+        path: string,
+        method: 'GET' | 'POST',
+        ready?: (res: ServerResponse) => boolean,
+        auth?: 'anonymous',
+      },
       handle: (req: IncomingMessage, res: ServerResponse, region: WorkBuddyRegion) => Promise<void> | void,
     ): void {
       raw(spec, (req, res) => {
@@ -1937,13 +1965,21 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         return handle(req, res, region)
       })
     }
-    endpointRegion({ path: WORKBUDDY_USAGE_PATH, method: 'GET' }, async (req, res, region) => {
+    endpointRegion({ path: WORKBUDDY_USAGE_PATH, method: 'GET', auth: 'anonymous' }, async (req, res, region) => {
       // `detail=fast` is the card's first paint: local state only, so the account
       // list appears in one round trip no matter how slowly billing answers.
+      //
+      // `auth: 'anonymous'` is for the HOST-SIDE consumer (issue #294): from
+      // 0.2.3 the host reads this route with an in-process `fetch` that carries
+      // no session cookie, so the host's default `required` would 401 it. The
+      // skeleton's `requireLoopback()` still runs, so a remote caller is still
+      // refused — this only admits the loopback caller without a browser Peer.
       const detail = fastDetailOf(req.url ?? '') ? 'fast' : 'full'
       json(res, 200, await workBuddyWebStatus(deps, region, { detail }))
     })
-    endpointRegion({ path: WORKBUDDY_ACCOUNT_CREDITS_PATH, method: 'GET' }, async (_req, res, region) => {
+    endpointRegion({ path: WORKBUDDY_ACCOUNT_CREDITS_PATH, method: 'GET', auth: 'anonymous' }, async (_req, res, region) => {
+      // Same host-side consumer as `usage` (issue #294); loopback check still
+      // applies. A WRITE route never opts in here — those keep `required`.
       json(res, 200, { accounts: await workBuddyAccountCredits(deps, region) })
     })
     endpointRegion({ path: WORKBUDDY_ACCOUNTS_REFRESH_PATH, method: 'POST' }, async (_req, res, region) => {

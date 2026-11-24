@@ -5,6 +5,7 @@ import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
 import { readFileSync } from 'node:fs'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
+  WORKBUDDY_ACCOUNT_CREDITS_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MEDIA_MODELS_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
@@ -600,10 +601,12 @@ describe('workBuddyWebStatus region routing', () => {
 })
 
 describe('registerWorkBuddyStatusRoute', () => {
-  /** A captured route entry: the path plus its HTTP handler. */
+  /** A captured route entry: the path, its HTTP handler, and its admission rule. */
   interface CapturedEntry {
     path: string
     handler: (req: unknown, res: unknown) => Promise<void> | void
+    /** Present from host-webserver 0.2.3; absent on the 0.2.2 peer. */
+    auth?: 'anonymous' | 'required'
   }
 
   /** Mount the status routes against a fake webServer; return the captures. */
@@ -666,6 +669,27 @@ describe('registerWorkBuddyStatusRoute', () => {
       // 本机安装的桌面端 SDK 的连接状态与真实取值（P3）。GET 只有掩码；完整值要 POST。
       '/plugins/dsh-connect-workbuddy/device-sdk',
     ])
+  })
+
+  it('admits the host-side caller on the two read routes, and nowhere else (issue #294)', async () => {
+    // From host-webserver 0.2.3 a route with no `auth` defaults to `required`,
+    // so the host's in-process `fetch` — which carries no browser session
+    // cookie — gets 401 on every route. Before 0.2.3 there was no admission
+    // layer at all, so this is a compatibility regression.
+    //
+    // Only the two routes the host consumes are declared anonymous. Both still
+    // run `requireLoopback()` inside the skeleton, so a remote caller is still
+    // refused; this only states the existing loopback-only fact to the new
+    // host. EVERY write route keeps the default `required` — a browser cookie
+    // is the proof of a user's click, and no in-process caller may claim it.
+    const captured = await mountRoutes()
+    const byPath = new Map(captured.map(entry => [entry.path, entry.auth]))
+    expect(byPath.get(WORKBUDDY_USAGE_PATH)).toBe('anonymous')
+    expect(byPath.get(WORKBUDDY_ACCOUNT_CREDITS_PATH)).toBe('anonymous')
+    for (const entry of captured) {
+      if (entry.path === WORKBUDDY_USAGE_PATH || entry.path === WORKBUDDY_ACCOUNT_CREDITS_PATH) continue
+      expect(entry.auth, `write/mutation route must keep 'required': ${entry.path}`).toBeUndefined()
+    }
   })
 
   /** Mount the status routes; return the accounts/refresh handler. */
