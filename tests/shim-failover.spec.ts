@@ -138,6 +138,57 @@ describe('pool failover: retrying a failed chat on another account', () => {
     expect(attemptsOf()).toEqual([SELECTED_ID, workbuddyAccountId(other)])
   })
 
+  it('runs the channel-gate rescue on a channel_reject that only appears AFTER failover (#302/#307)', async () => {
+    // The ladder runs on the FIRST account's answer, but channel_reject is not
+    // failover-worthy — so the loop can END on one: account A answers 429, we
+    // switch to B, and B answers 11128 for the same prompt body. That final
+    // refusal is the one the user reads, and it used to reach them with an
+    // EMPTY retryNote because the ladder had already run (or been skipped)
+    // before the loop. Regression for #302 / #307.
+    const other = credentialFor('other')
+    const seen: string[] = []
+    let calls = 0
+    const CHANNEL_REJECT: WorkBuddyChatResult = {
+      ok: false,
+      status: 400,
+      kind: 'channel_reject',
+      message: '被网关的渠道校验拦截（code 11128）',
+    }
+    shim = mount({
+      others: [other],
+      // A plain system message: prepareChatBody leaves its text alone, so the
+      // ladder's forceNeutralHead has a real change to make on it (the gate in
+      // this fixture refuses every body until that head is prepended).
+      chatStream: async (credential, body) => {
+        calls += 1
+        seen.push(credential.uin ?? '')
+        if (calls === 1) return RATE_LIMITED // selected: switchable
+        // B refuses each ladder attempt until the neutral head is prepended.
+        void body
+        return CHANNEL_REJECT
+      },
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const response = await chat(shim, JSON.stringify({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: 'hi' }, { role: 'system', content: 'An ordinary instruction that stays on the wire unheaded.' }],
+    }))
+    expect(response.status).toBe(400)
+    // The ladder must have spent at least one rescue request on the FINAL
+    // refusal, not just the first account's 429.
+    expect(calls).toBeGreaterThan(2)
+    const parsed = JSON.parse(response.body) as { error?: { message?: string }, message?: string }
+    const text = parsed.error?.message ?? parsed.message ?? ''
+    expect(text).toContain('并已用')
+    expect(text).toContain('强制中性头')
+    // Both accounts really received a request (the selected one's 429, then B's
+    // refusal + ladder). Counting only accounts that were "left" hid this note
+    // in the two-account case because B ended the loop on a channel_reject.
+    expect(text).toContain('已尝试 2 个账号')
+  })
+
   it('does NOT retry a failure the request itself caused', async () => {
     // A 400 means the BODY was rejected. Every account answers the same way, so
     // walking the pool would burn N round trips to reach the same error.

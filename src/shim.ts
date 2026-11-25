@@ -1729,7 +1729,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     })
     if (controller.signal.aborted) return
 
-    let credential
+    let credential: WorkBuddyCredential
     try {
       credential = await store.resolve()
     } catch (error: unknown) {
@@ -1835,44 +1835,82 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     let retriedWithForcedHead = false
     let retriedWithPerturbation = false
     let retriedWithDensePerturbation = false
-    if (!result.ok && result.kind === 'channel_reject' && !controller.signal.aborted) {
+    /**
+     * The channel-gate rescue ladder, as a reusable step.
+     *
+     * ISSUE #302 / #307. This used to be an inline block that ran ONCE, on the
+     * first account's first answer only. But `channel_reject` is not failover-
+     * worthy (`isFailoverWorthy` excludes it), so the failover loop can still
+     * END on one: an account that answers 429/402/5xx is swapped for another,
+     * and THAT account's answer to the same body is a 11128. The ladder had
+     * already run (or been skipped) before the loop, so the final refusal —
+     * the one the user actually reads — never saw a rescue, and `retryNote`
+     * came back EMPTY even though the request was refused for a prompt reason.
+     *
+     * Making it a function lets the SAME ladder run again after failover, once,
+     * on the result the user will actually see. The `retried*` flags are shared
+     * so the second call is a no-op when the first already spent all three
+     * rungs — no extra request is sent for a body the ladder already tried.
+     */
+    const rescueChannelReject = async (
+      initial: WorkBuddyChatResult,
+    ): Promise<WorkBuddyChatResult> => {
+      if (initial.ok || initial.kind !== 'channel_reject' || controller.signal.aborted) return initial
+      let current: WorkBuddyChatResult = initial
       const forced = forceNeutralHead(prepared)
       if (forced !== undefined) {
         logger?.warn('dsh-connect-workbuddy: the channel gate refused the body; retrying once with the neutral head forced in front of every opening')
-        result = await client.chatStream(credential, forced, controller.signal, sessionConversationId)
+        current = await client.chatStream(credential, forced, controller.signal, sessionConversationId)
         retriedWithForcedHead = true
       }
-      if (!result.ok && result.kind === 'channel_reject' && !controller.signal.aborted) {
+      if (!current.ok && current.kind === 'channel_reject' && !controller.signal.aborted) {
         const rescued = perturbChannelFingerprints(forced ?? prepared)
         if (rescued !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the channel gate refused the body again; retrying once with an invisible perturbation of the scanned text')
-          result = await client.chatStream(credential, rescued, controller.signal, sessionConversationId)
+          current = await client.chatStream(credential, rescued, controller.signal, sessionConversationId)
           retriedWithPerturbation = true
           // THE PERTURBATION IS WHAT WORKED, so remember it: the next request
           // in this process starts perturbed and skips both doomed attempts.
           // Only set on SUCCESS — a perturbation that is also refused teaches
           // nothing about what the gateway wants.
-          if (result.ok) channelNeedsPerturbation = true
+          if (current.ok) channelNeedsPerturbation = true
         }
       }
       // The dense rescue is deliberately last: it is the least byte-conservative
       // form, and the gateway's own wording gives no hint that it would be needed.
       // It exists because both measured rungs are punctuation-dependent and a
       // fingerprinted prose span can contain no punctuation at all.
-      if (!result.ok && result.kind === 'channel_reject' && !controller.signal.aborted) {
+      if (!current.ok && current.kind === 'channel_reject' && !controller.signal.aborted) {
         const dense = perturbChannelFingerprints(forced ?? prepared, true)
         if (dense !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the channel gate refused the sparse perturbation too; retrying once with a dense word-boundary perturbation')
-          result = await client.chatStream(credential, dense, controller.signal, sessionConversationId)
+          current = await client.chatStream(credential, dense, controller.signal, sessionConversationId)
           retriedWithDensePerturbation = true
           // Dense is the strongest form; remembering it is safe only for the
           // `failure` policy, which exists to learn from a successful rescue.
-          if (result.ok && channelPerturbation === 'failure') channelNeedsPerturbation = true
+          if (current.ok && channelPerturbation === 'failure') channelNeedsPerturbation = true
         }
       }
+      // #302: a ladder that entered the `channel_reject` branch but had nothing
+      // it could change used to be silent. Say so — "no rescue was possible"
+      // and "the rescue was skipped" are different facts to the reader.
+      if (!current.ok && current.kind === 'channel_reject'
+        && !retriedWithForcedHead && !retriedWithPerturbation && !retriedWithDensePerturbation) {
+        logger?.warn('dsh-connect-workbuddy: the channel gate refused the body, but no rescue transform could change it (every scanned opening already neutral); no retry was spent')
+      }
+      return current
     }
+    result = await rescueChannelReject(result)
 
     const triedAccountIds: string[] = []
+    /**
+     * How many accounts actually RECEIVED a chat request, including the final
+     * one. `triedAccountIds` alone UNDERCOUNTS by one when the loop ends on a
+     * channel_reject: the loop pushes an id before asking for the NEXT account,
+     * and a channel_reject is not failover-worthy, so the account that produced
+     * the final 11128 was never pushed. #302 / #307.
+     */
+    let attemptCount = 1
     /**
      * The account the request STARTED on, and the reason it was abandoned.
      *
@@ -1975,7 +2013,21 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       switchedFrom ??= describeAccount(credential)
       switchedBecause ??= failoverReasonText(result)
       credential = next
-      result = await client.chatStream(credential, prepared, controller.signal, sessionConversationId)
+      // #302 / #307: reuse the PREFERRED body, not the raw `prepared`. If the
+      // learned perturbation (or `always`) was in force, the first account's
+      // attempt already used it; re-sending the unperturbed bytes here would
+      // knowingly walk into the gate the plugin already knows is closed.
+      result = await client.chatStream(credential, preferred, controller.signal, sessionConversationId)
+      attemptCount += 1
+    }
+    // ISSUE #302 / #307: failover can END on a channel_reject even though it
+    // never STARTS from one (channel_reject is not failover-worthy). The ladder
+    // above ran on the FIRST account's answer, so this final answer had none.
+    // Run it once more on exactly the result the user will read. The shared
+    // retried* flags make this a no-op when the ladder already spent its rungs,
+    // so a single-account 11128 sends no extra request here.
+    if (!retriedWithForcedHead && !retriedWithPerturbation && !retriedWithDensePerturbation) {
+      result = await rescueChannelReject(result)
     }
     // The final attempt's failure — recorded only if the loop did not already
     // record it (it does not: the loop records each attempt as it starts the
@@ -1991,11 +2043,13 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // account the user selected failing, and the user cannot tell whether the
       // fallbacks were even attempted.
       //
-      // `triedAccountIds` already holds every account that SERVED an attempt —
-      // the loop pushes each one before asking for the next — so its length IS
-      // the attempt count. Adding one here reported a phantom extra account.
-      const attempts = triedAccountIds.length
-      const note = attempts > 1 ? `（已尝试 ${attempts} 个账号）` : ''
+      // `attemptCount` counts every account that actually received a request.
+      // It starts at 1 (the selected account) and grows on each failover, so a
+      // final `channel_reject` — which ends the loop before the last account is
+      // pushed to `triedAccountIds` — is still counted. Using
+      // `triedAccountIds.length` here UNDERCOUNTED and hid the note entirely in
+      // the two-account 429→11128 case (#302 / #307).
+      const note = attemptCount > 1 ? `（已尝试 ${attemptCount} 个账号）` : ''
       // WHY THERE WAS NOWHERE ELSE TO GO. Asked only when the request actually
       // failed, so the success path never pays for it, and only when a POOL
       // SEARCH really ran — which is a different question from whether the host

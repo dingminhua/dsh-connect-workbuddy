@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+> 修复版：渠道网关在**账号切换之后**才拒 body 时，三级救援阶梯此前从未作用于那一次结果（#302/#307），以及企业账号读模型目录被答成个人名册（#303）。
+
+### 11128 的「缺 retryNote」家族（#302 / #307）
+
+- 报错文案里缺少「，并已用强制中性头重试过」，报告者据此推断「三级救援一步都没跑」。报告者的 **aborted 归因不成立**——本 shim 的 `signal` 只有 `res.on('close')` 一个来源，abort 后错误体根本写不回客户端，而用户确实收到了带 `requestId` 的 400 正文（#159 已实测定论）。真正的成因是**错位**：救援阶梯跑在 failover **之前**、只作用于首选账号的第一击；而 `channel_reject` 不可 failover，却可能成为 failover 之后的结果——首选账号先答 429/402/5xx 被换掉，新账号对同一份 body 答 11128，这时循环因 `channel_reject` 退出，阶梯早已跑完，最终用户读到的那次拒绝**从未经过救援**，`retryNote` 于是为空。
+- **修法**：把阶梯抽成可重入的 `rescueChannelReject()`，在 failover 循环**之后**、对用户实际读到的那个 `result` 再跑一次；三个 `retried*` 标志共享，单账号 11128 或阶梯已跑过时是 no-op，不多花请求。另把 failover 重试的 body 从 `prepared` 改为 `preferred`（沿用已学到的扰动，不再明知会被拒还重发原始字节），并给「阶梯进了分支但无可改」补一条 warn（此前静默）。
+- **顺带修计数**：「（已尝试 N 个账号）」此前用 `triedAccountIds.length`，而循环只在**离开**账号时压入 id，最后一次 `channel_reject` 结束时那个账号从未入列——两账号 429→11128 场景实际发 2 个请求，文案却一个都不显示。改为显式 `attemptCount`（首选 1 + 每次换号 +1）。
+- **测试**：新增 `tests/shim-failover.spec.ts` 一条端到端回归（先 429 再 11128，断言阶梯跑过、`retryNote` 含「强制中性头」、且显示「已尝试 2 个账号」）。**变异验证**：去掉 failover 后的二次救援 → 红；计数退回 `triedAccountIds.length` → 红。`pnpm run check` 全过（3822 passed + 2 skipped）。Host 侧改动，需重启 DSH。
+
+### 企业账号目录身份头（#303，PR #304）
+
 - **企业账号读模型目录被答成个人名册，`cli` 名册缺行**：`/v3/config` 是**按账号作答**的，官方客户端的 REST 层给每个出站请求（配置读也在内）盖 `X-User-Id` / `X-Enterprise-Id` / `X-Tenant-Id`（有 `domain` 时再加 `X-Domain`）。本插件三处目录读取（国内模型、国际两通道、媒体）此前**未带企业身份头**（国际两通道已带 `X-User-Id` / `X-Domain`，国内与媒体则只带 bearer token），企业成员账号因此被网关答成个人名册。实测 2026-11-25，国内区、`ultimate` 企业账号：`cli` 名册缺 5 行（`glm-5.4`、`glm-5.3-flashx`、`minimax-m3-pay`、`kimi-k3.1-pro-highspeed`、`kimi-k3-2`、`kimi-k2.5` 中的 5 个），而 app 的选择器在同一账号上当时就有它们。
 - **修法**：新增 `catalogIdentityHeaders()`，三处目录读取（含国内区回落到旧目录 `/v2` 的那一次）统一带齐账号身份头；UA、`X-Product`、`Origin` / `Referer` 等一律不变，归属头（`X-Device-Token` 一类）照旧不加——账号身份头回答「问的是哪个账号的名册」，归属头回答「谁在问」，`docs/DESIGN.md` 的「元数据读字节保持 5.16.0」同步改成这一例外。
 - **这套头要么齐发、要么都不发**：实测同一账号只发 `X-Enterprise-Id` 不发 `X-User-Id`，网关答的文档 `cli` 名册为空，读取解析成空名单、区域降级到旧目录——比不加更糟。因此做成一个整体的 helper，企业头整块以 `uid` 非空为前提（`uid === ''` 是可达状态，此时连企业头一起不发），而不是两处各加一行。
