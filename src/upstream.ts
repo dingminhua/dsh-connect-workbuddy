@@ -2401,6 +2401,54 @@ async function resolveWireIdentity(identity: WorkBuddyWireIdentity): Promise<Wor
   return { ...identity, deviceSalt: readout.salt }
 }
 
+/**
+ * Account identity headers for the catalog reads (`fetchModels` / `fetchMediaModels`).
+ *
+ * `/v3/config` answers PER ACCOUNT, and the account is named by the request:
+ * the official app's REST layer stamps `X-User-Id` + `X-Enterprise-Id` +
+ * `X-Tenant-Id` (+ `X-Domain`) on EVERY outgoing request, the config read
+ * included, so the app is always answered as the signed-in member. This plugin
+ * read the directory with a bearer token alone, and on an enterprise account
+ * that is a DIFFERENT question: the gateway fell back to the personal roster,
+ * which listed none of the enterprise-only rows (measured 2026-11-25, CN
+ * gateway, an `ultimate` account — five `cli`-agent rows were missing,
+ * including a GA model the app offered in its own selector on the same
+ * account minutes earlier).
+ *
+ * The headers travel TOGETHER or not at all. Sending `X-Enterprise-Id` without
+ * `X-User-Id` is worse than sending neither: measured on the same account, the
+ * gateway then answered a document whose `cli` agent had NO models, so the
+ * read resolved to an empty roster and the region degraded to the legacy
+ * directory. Hence one helper for the whole set, and hence `X-Tenant-Id` is
+ * included even though nothing observed required it — it is what the official
+ * client sends, and a partial imitation of a working request is how the empty
+ * roster above was produced.
+ *
+ * `uid`/`enterpriseId` are `undefined` when the credential carries neither and
+ * `''` only when the app wrote an empty value; both mean "absent", and absent
+ * means the header is simply omitted (`chatHeaders` sends the `X-No-*` form
+ * instead, but those are the CLI's chat conventions and were never observed on
+ * the config read).
+ *
+ * THE ENTERPRISE BLOCK IS GATED ON `uid` TOO. `uid === ''` is a reachable
+ * state (`auth.ts` writes `uid: identity['uid'] ?? ''`), so an enterprise
+ * credential with an empty uid would otherwise send `X-Enterprise-Id` /
+ * `X-Tenant-Id` WITHOUT `X-User-Id` — exactly the partial shape that the
+ * measurement above proved yields an empty `cli` roster. The "together or not
+ * at all" rule therefore lives in the CONDITION, not just in this comment:
+ * no uid means no enterprise block either.
+ */
+function catalogIdentityHeaders(credential: WorkBuddyCredential): Record<string, string> {
+  const hasUser = credential.uid !== ''
+  return {
+    ...hasUser ? { 'X-User-Id': credential.uid } : {},
+    ...hasUser && credential.enterpriseId !== undefined && credential.enterpriseId !== ''
+      ? { 'X-Enterprise-Id': credential.enterpriseId, 'X-Tenant-Id': credential.enterpriseId }
+      : {},
+    ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
+  }
+}
+
 /** Chat request headers, including the X-No-* conventions the official CLI uses. */
 function chatHeaders(
   credential: WorkBuddyCredential,
@@ -5613,13 +5661,15 @@ export class WorkBuddyUpstreamClient {
           headers: {
             'Authorization': `Bearer ${credential.accessToken}`,
             'Accept': 'application/json',
-            ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
-            ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
-            // 这一处**刻意不统一**。`/v3/config` 不是"客户端在替用户做事"，而是
-            // 读一份产品配置：它的字节是逐条实测过的（UA 选通道，
-            // 其余头固定），而 P0.5 的收益是在 chat 上量的。给一次元数据读加上
-            // 归属头，只会多几个能被比对的落点，换不来任何东西——与
-            // `fetchModelBusy` 同一条规则。
+            // 账号身份头（不是归属头，见下）：`/v3/config` 按账号作答，少了它
+            // 企业账号会被答成个人名册。见 `catalogIdentityHeaders`。
+            ...catalogIdentityHeaders(credential),
+            // 这一处**刻意不加的是归属头**（`X-Device-Token` 那一类）。`/v3/config`
+            // 不是"客户端在替用户做事"，而是读一份产品配置：它的字节是逐条实测过的
+            // （UA 选通道，其余头固定），而 P0.5 的收益是在 chat 上量的。给一次元数据读
+            // 加上归属头，只会多几个能被比对的落点，换不来任何东西——与
+            // `fetchModelBusy` 同一条规则。账号身份头不在此列：它改变的是**答什么**，
+            // 不是**谁在问**。
             'X-Product': 'SaaS',
             'X-Requested-With': 'XMLHttpRequest',
             'Connection': 'close',
@@ -5688,6 +5738,9 @@ export class WorkBuddyUpstreamClient {
           'Origin': originReferer(credential),
           'Referer': `${originReferer(credential)}/`,
           'User-Agent': PRODUCT_UA,
+          // 企业成员账号不带这套头会被答成个人名册（`cli` 名册缺行）——见
+          // `catalogIdentityHeaders`。回落到旧目录的两次读取同样要带。
+          ...catalogIdentityHeaders(credential),
         },
         signal: timeout,
       })
@@ -5741,8 +5794,10 @@ export class WorkBuddyUpstreamClient {
         method: 'POST',
         headers: {
           // 元数据读，**保持 5.16.0**：`legacyCommonHeaders` 而不是
-          // `commonHeaders`。理由与 `/v3/config` 同一条（见 `:4147` 的注释）——
-          // 这类调用不替用户做事，加身份头只增加落点、不带来收益。
+          // `commonHeaders`。这类调用不替用户做事，加归属头只增加落点、不带来收益。
+          // 与 `/v3/config` 的分别：那边也必须带**账号身份头**（`catalogIdentityHeaders`），
+          // 因为 `/v3/config` 按账号作答、缺了会答成个人名册（#303）；`MODEL_BUSY_PATH`
+          // 回答的是每个模型的忙闲、不按账号裁剪名册，所以没有同一条例外。
           ...legacyCommonHeaders(credential),
           'Authorization': `Bearer ${credential.accessToken}`,
           'Content-Type': 'application/json',
@@ -5805,6 +5860,8 @@ export class WorkBuddyUpstreamClient {
           'Origin': originReferer(credential),
           'Referer': `${originReferer(credential)}/`,
           'User-Agent': mediaChannelUA,
+          // 与 `fetchModels` 同一条理由：目录按账号作答，见 `catalogIdentityHeaders`。
+          ...catalogIdentityHeaders(credential),
         },
         signal: signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS),
       })

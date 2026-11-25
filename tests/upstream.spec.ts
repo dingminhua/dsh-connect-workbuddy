@@ -1265,6 +1265,196 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     expect(uas[0]).toBe('WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0')
   })
 
+  it('names the account when reading the catalog, or an enterprise member is answered as a personal one', async () => {
+    // Regression: `/v3/config` answers PER ACCOUNT, and the account is named by
+    // `X-User-Id` + `X-Enterprise-Id` (+ `X-Tenant-Id`). The official app's REST
+    // layer stamps them on every request, the config read included. This plugin
+    // sent a bearer token alone, so on an enterprise account the gateway answered
+    // the PERSONAL roster: every enterprise-only row was missing from the card
+    // while the app offered them on the same account (measured 2026-11-25, CN).
+    //
+    // The stub is the gateway's observed rule, so the test fails for the right
+    // reason: with both headers it answers the enterprise roster, and otherwise
+    // it answers a document that lists only the personal rows.
+    const enterprise: WorkBuddyCredential = {
+      ...credential('www.codebuddy.cn'),
+      uid: '100000000001',
+      enterpriseId: '<enterprise-id>',
+    }
+    const personalRow = { id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }
+    const enterpriseRow = { id: 'glm-5.4', name: 'GLM-5.4', maxInputTokens: 1_000_000, maxOutputTokens: 32_000 }
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      const rows = init.headers['X-Enterprise-Id'] === '<enterprise-id>'
+        && init.headers['X-User-Id'] === '100000000001'
+        ? [personalRow, enterpriseRow]
+        : [personalRow]
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: { models: rows, agents: [{ name: 'cli', models: rows.map(row => row.id) }] },
+        }),
+      } as unknown as Response
+    })
+    const { models } = await new WorkBuddyUpstreamClient().fetchModels(enterprise)
+    expect(models.map(model => model.id)).toEqual(['glm-5.3', 'glm-5.4'])
+    expect(seen).toHaveLength(1)
+    // The whole set, exactly as the official client sends it. A partial set is
+    // not a lesser version of the fix — the next case pins the empty-uid
+    // boundary, where sending only the enterprise headers answers an empty
+    // roster (so the whole block is withheld instead).
+    expect(seen[0]).toMatchObject({
+      'X-User-Id': '100000000001',
+      'X-Enterprise-Id': '<enterprise-id>',
+      'X-Tenant-Id': '<enterprise-id>',
+      'X-Domain': 'www.codebuddy.cn',
+    })
+  })
+
+  it('sends the same account identity on the legacy catalog fallback', async () => {
+    // The legacy `/v2` directory is read by the SAME account. Dropping the
+    // headers there would make a degraded region answer as a different account
+    // than the healthy one — a fallback must not change who is asking.
+    const enterprise: WorkBuddyCredential = { ...credential('www.codebuddy.cn'), uid: '100000000001', enterpriseId: '<enterprise-id>' }
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      // The modern read fails on transport, so the region takes the legacy path.
+      if (url.endsWith('/v3/config')) throw new Error('socket hang up')
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }],
+            agents: [{ name: 'cli', models: ['glm-5.3'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    await new WorkBuddyUpstreamClient().fetchModels(enterprise)
+    expect(seen.map(headers => headers['X-Enterprise-Id'])).toEqual(['<enterprise-id>', '<enterprise-id>'])
+    expect(seen.map(headers => headers['X-User-Id'])).toEqual(['100000000001', '100000000001'])
+  })
+
+  it('reads the MEDIA catalog as the same account too', async () => {
+    // `fetchMediaModels` reads the same document as `fetchModels`; an account
+    // identity that is right on one read and missing on the other makes the
+    // image tool's roster disagree with the chat roster for no visible reason.
+    const enterprise: WorkBuddyCredential = { ...credential('www.codebuddy.cn'), uid: '100000000001', enterpriseId: '<enterprise-id>' }
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ code: 0, msg: 'OK', data: { models: [], agents: [] } }),
+      } as unknown as Response
+    })
+    await new WorkBuddyUpstreamClient().fetchMediaModels(enterprise)
+    expect(seen[0]).toMatchObject({
+      'X-User-Id': '100000000001',
+      'X-Enterprise-Id': '<enterprise-id>',
+      'X-Tenant-Id': '<enterprise-id>',
+    })
+  })
+
+  it('carries the account identity on both global channels', async () => {
+    // The global read goes out once per client channel and differs ONLY in
+    // User-Agent; the account must be the same on both, or the merged roster is
+    // two different accounts' answers stitched together.
+    const enterprise: WorkBuddyCredential = { ...credential('www.workbuddy.ai'), uid: '100000000001', enterpriseId: '<enterprise-id>' }
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'hy4free', name: 'Hy4', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }],
+            agents: [{ name: 'cli', models: ['hy4free'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    await new WorkBuddyUpstreamClient().fetchModels(enterprise)
+    expect(seen).toHaveLength(2)
+    for (const headers of seen) {
+      expect(headers['X-User-Id']).toBe('100000000001')
+      expect(headers['X-Enterprise-Id']).toBe('<enterprise-id>')
+      expect(headers['X-Tenant-Id']).toBe('<enterprise-id>')
+    }
+  })
+
+  it('omits the enterprise headers for a personal account', async () => {
+    // A personal credential has no `enterpriseId`. Nothing may be invented in
+    // its place: the `X-No-Enterprise-Id` form is the CLI's CHAT convention and
+    // was never observed on the config read, so the header is simply absent.
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }],
+            agents: [{ name: 'cli', models: ['glm-5.3'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    await new WorkBuddyUpstreamClient().fetchModels(credential('www.codebuddy.cn'))
+    expect(seen[0]?.['X-User-Id']).toBe('u')
+    expect(seen[0]).not.toHaveProperty('X-Enterprise-Id')
+    expect(seen[0]).not.toHaveProperty('X-Tenant-Id')
+    expect(seen[0]).not.toHaveProperty('X-No-Enterprise-Id')
+  })
+
+  it('withholds the whole enterprise block when uid is empty (empty-roster trap)', async () => {
+    // `uid === ''` is reachable (`auth.ts` writes `uid: identity['uid'] ?? ''`).
+    // Sending ONLY the enterprise headers in that state is worse than sending
+    // none: measured on a real account, the gateway answered a document whose
+    // `cli` roster was EMPTY, so the read degraded to the legacy directory.
+    // "All or nothing" must hold in the CONDITION, not just in a comment.
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }],
+            agents: [{ name: 'cli', models: ['glm-5.3'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    const uidless: WorkBuddyCredential = {
+      ...credential('www.codebuddy.cn'),
+      uid: '',
+      enterpriseId: '<enterprise-id>',
+    }
+    await new WorkBuddyUpstreamClient().fetchModels(uidless)
+    expect(seen[0]).not.toHaveProperty('X-User-Id')
+    expect(seen[0]).not.toHaveProperty('X-Enterprise-Id')
+    expect(seen[0]).not.toHaveProperty('X-Tenant-Id')
+  })
+
   it('does not degrade the media catalog on the international region', async () => {
     // The global branch has no legacy fallback at all — it must not be handed a
     // CN-shaped document.

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **企业账号读模型目录被答成个人名册，`cli` 名册缺行**：`/v3/config` 是**按账号作答**的，官方客户端的 REST 层给每个出站请求（配置读也在内）盖 `X-User-Id` / `X-Enterprise-Id` / `X-Tenant-Id`（有 `domain` 时再加 `X-Domain`）。本插件三处目录读取（国内模型、国际两通道、媒体）此前**未带企业身份头**（国际两通道已带 `X-User-Id` / `X-Domain`，国内与媒体则只带 bearer token），企业成员账号因此被网关答成个人名册。实测 2026-11-25，国内区、`ultimate` 企业账号：`cli` 名册缺 5 行（`glm-5.4`、`glm-5.3-flashx`、`minimax-m3-pay`、`kimi-k3.1-pro-highspeed`、`kimi-k3-2`、`kimi-k2.5` 中的 5 个），而 app 的选择器在同一账号上当时就有它们。
+- **修法**：新增 `catalogIdentityHeaders()`，三处目录读取（含国内区回落到旧目录 `/v2` 的那一次）统一带齐账号身份头；UA、`X-Product`、`Origin` / `Referer` 等一律不变，归属头（`X-Device-Token` 一类）照旧不加——账号身份头回答「问的是哪个账号的名册」，归属头回答「谁在问」，`docs/DESIGN.md` 的「元数据读字节保持 5.16.0」同步改成这一例外。
+- **这套头要么齐发、要么都不发**：实测同一账号只发 `X-Enterprise-Id` 不发 `X-User-Id`，网关答的文档 `cli` 名册为空，读取解析成空名单、区域降级到旧目录——比不加更糟。因此做成一个整体的 helper，企业头整块以 `uid` 非空为前提（`uid === ''` 是可达状态，此时连企业头一起不发），而不是两处各加一行。
+- 个人账号（无 `enterpriseId`）：不发明 `X-No-Enterprise-Id`（那是 chat 的 CLI 约定，配置读上从未观察到），企业头直接不发；国内与媒体路径现在会补上 `X-User-Id` / `X-Domain`（此前未带）。
+- **测试**：新增 6 条回归（企业账号名册与四头齐全 / 旧目录回落同样带头 / 媒体目录带头 / 国际两通道都带 / 个人账号不带企业头 / `uid` 为空时整块企业头不发），变异验证见 PR。`pnpm run check` 全过。Host 侧改动，需重启 DSH 加载。
+
 ## 5.31.4 (2026-11-24)
 
 > 兼容版：修复 DSH 0.2.3 起宿主侧读 `/usage` 稳定 401（#294），并补上渠道门改词表漏掉的一句 first-party 系统提示（#293/#295）。
