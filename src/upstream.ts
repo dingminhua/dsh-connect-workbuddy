@@ -2429,13 +2429,22 @@ async function resolveWireIdentity(identity: WorkBuddyWireIdentity): Promise<Wor
  * means the header is simply omitted (`chatHeaders` sends the `X-No-*` form
  * instead, but those are the CLI's chat conventions and were never observed on
  * the config read).
+ *
+ * THE ENTERPRISE BLOCK IS GATED ON `uid` TOO. `uid === ''` is a reachable
+ * state (`auth.ts` writes `uid: identity['uid'] ?? ''`), so an enterprise
+ * credential with an empty uid would otherwise send `X-Enterprise-Id` /
+ * `X-Tenant-Id` WITHOUT `X-User-Id` — exactly the partial shape that the
+ * measurement above proved yields an empty `cli` roster. The "together or not
+ * at all" rule therefore lives in the CONDITION, not just in this comment:
+ * no uid means no enterprise block either.
  */
 function catalogIdentityHeaders(credential: WorkBuddyCredential): Record<string, string> {
+  const hasUser = credential.uid !== ''
   return {
-    ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
-    ...credential.enterpriseId === undefined || credential.enterpriseId === ''
-      ? {}
-      : { 'X-Enterprise-Id': credential.enterpriseId, 'X-Tenant-Id': credential.enterpriseId },
+    ...hasUser ? { 'X-User-Id': credential.uid } : {},
+    ...hasUser && credential.enterpriseId !== undefined && credential.enterpriseId !== ''
+      ? { 'X-Enterprise-Id': credential.enterpriseId, 'X-Tenant-Id': credential.enterpriseId }
+      : {},
     ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
   }
 }
@@ -5785,8 +5794,10 @@ export class WorkBuddyUpstreamClient {
         method: 'POST',
         headers: {
           // 元数据读，**保持 5.16.0**：`legacyCommonHeaders` 而不是
-          // `commonHeaders`。理由与 `/v3/config` 同一条（见 `:4147` 的注释）——
-          // 这类调用不替用户做事，加身份头只增加落点、不带来收益。
+          // `commonHeaders`。这类调用不替用户做事，加归属头只增加落点、不带来收益。
+          // 与 `/v3/config` 的分别：那边也必须带**账号身份头**（`catalogIdentityHeaders`），
+          // 因为 `/v3/config` 按账号作答、缺了会答成个人名册（#303）；`MODEL_BUSY_PATH`
+          // 回答的是每个模型的忙闲、不按账号裁剪名册，所以没有同一条例外。
           ...legacyCommonHeaders(credential),
           'Authorization': `Bearer ${credential.accessToken}`,
           'Content-Type': 'application/json',

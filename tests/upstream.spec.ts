@@ -1304,7 +1304,9 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     expect(models.map(model => model.id)).toEqual(['glm-5.3', 'glm-5.4'])
     expect(seen).toHaveLength(1)
     // The whole set, exactly as the official client sends it. A partial set is
-    // not a lesser version of the fix — see the `X-Enterprise-Id`-alone test.
+    // not a lesser version of the fix — the next case pins the empty-uid
+    // boundary, where sending only the enterprise headers answers an empty
+    // roster (so the whole block is withheld instead).
     expect(seen[0]).toMatchObject({
       'X-User-Id': '100000000001',
       'X-Enterprise-Id': '<enterprise-id>',
@@ -1418,6 +1420,39 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     expect(seen[0]).not.toHaveProperty('X-Enterprise-Id')
     expect(seen[0]).not.toHaveProperty('X-Tenant-Id')
     expect(seen[0]).not.toHaveProperty('X-No-Enterprise-Id')
+  })
+
+  it('withholds the whole enterprise block when uid is empty (empty-roster trap)', async () => {
+    // `uid === ''` is reachable (`auth.ts` writes `uid: identity['uid'] ?? ''`).
+    // Sending ONLY the enterprise headers in that state is worse than sending
+    // none: measured on a real account, the gateway answered a document whose
+    // `cli` roster was EMPTY, so the read degraded to the legacy directory.
+    // "All or nothing" must hold in the CONDITION, not just in a comment.
+    const seen: Record<string, string>[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000 }],
+            agents: [{ name: 'cli', models: ['glm-5.3'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    const uidless: WorkBuddyCredential = {
+      ...credential('www.codebuddy.cn'),
+      uid: '',
+      enterpriseId: '<enterprise-id>',
+    }
+    await new WorkBuddyUpstreamClient().fetchModels(uidless)
+    expect(seen[0]).not.toHaveProperty('X-User-Id')
+    expect(seen[0]).not.toHaveProperty('X-Enterprise-Id')
+    expect(seen[0]).not.toHaveProperty('X-Tenant-Id')
   })
 
   it('does not degrade the media catalog on the international region', async () => {
