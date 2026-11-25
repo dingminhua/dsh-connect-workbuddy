@@ -45,6 +45,7 @@ import {
   CONTEXT_OVERFLOW_MARKER,
   isFirstMessageGateBody,
   openingEvidenceOfBody,
+  channelFingerprintTrace,
   perturbChannelFingerprints,
   requestEvidenceOf,
   rewriteSessionTitleModel,
@@ -1268,6 +1269,32 @@ function channelEvidenceText(bodyJson: string): string {
   return `请求里被网关扫描的消息开头：${rendered}${hidden > 0 ? `……另有 ${hidden} 条未列出。` : '。'}`
 }
 
+/**
+ * ISSUE #311 — render the zero-privacy fingerprint trace as an APPENDED line.
+ *
+ * Counts and line numbers only, never message text. A reader can open their own
+ * transcript at the reported line and bisect the suspect sentence; a maintainer
+ * can see whether a known rewrite silently missed. Kept as a separate APPEND so
+ * every existing evidence assertion (which matches the prefix) still holds.
+ */
+function fingerprintTraceText(raw: string, prepared: string): string {
+  const trace = channelFingerprintTrace(raw, prepared)
+  const parts: string[] = []
+  for (const [index, perWord] of trace.occurrences) {
+    const words = [...perWord].map(([word, lines]) => `${word} ${lines.length} 处（行 ${lines.join('/')}${lines.length >= TRACE_LINE_CAP_HINT ? '…' : ''}）`)
+    parts.push(`消息 ${index}: ${words.join('，')}`)
+  }
+  if (trace.unrewrittenRows.length > 0) {
+    parts.push(`改词自检：${trace.unrewrittenRows.length} 条已知指纹仍留在发出的 body 里（改写表第 ${trace.unrewrittenRows.join('/')} 条）`)
+  } else {
+    parts.push('改词自检：全部已知指纹已从发出的 body 清除')
+  }
+  return `零正文指纹线索（仅计数与行号，不含正文）：${parts.join('；')}。`
+}
+
+/** Mirrors the trace's per-word line cap, for the "…" hint only. */
+const TRACE_LINE_CAP_HINT = 6
+
 /** How many message openings the channel-gate reply lists. */
 const CHANNEL_EVIDENCE_LIMIT = 4
 
@@ -2223,7 +2250,10 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         if (detail?.upstreamCode !== undefined) meta.push(`code ${detail.upstreamCode}`)
         if (detail?.requestId !== undefined) meta.push(`requestId ${detail.requestId}`)
         const stamp = meta.length === 0 ? '' : `（${meta.join('，')}）`
-        const evidence = channelEvidenceText(raw)
+        // ISSUE #311: append a zero-privacy fingerprint trace (counts + line
+        // numbers + rewrite self-check) so a middle-of-prompt match in a huge
+        // system can be bisected by the reader, without leaking any text.
+        const evidence = channelEvidenceText(raw) + fingerprintTraceText(raw, prepared)
         const retries: string[] = []
         if (retriedWithForcedHead) retries.push('强制中性头')
         if (retriedWithPerturbation) retries.push('一次不可见扰动')

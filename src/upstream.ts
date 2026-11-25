@@ -3635,6 +3635,94 @@ export function openingEvidenceOfBody(bodyJson: string): OpeningEvidence[] {
 }
 
 /**
+ * ISSUE #311 — zero-privacy diagnostic for a middle-of-prompt channel gate.
+ *
+ * When the gateway matches a fixed span ANYWHERE inside a large system prompt,
+ * "first line + byte count" tells the reader nothing: a 259k prompt has tens of
+ * thousands of candidate lines and the plugin cannot see which one matched.
+ * This trace reports ONLY COUNTS AND LINE NUMBERS of a small set of identity /
+ * brand words — never a byte of message text — so a user can locate a suspect
+ * line in their OWN transcript (which they already have) and bisect it, and a
+ * maintainer can tell at a glance whether an unrewritten brand sentence is
+ * present on the wire.
+ *
+ * TWO HALVES:
+ *  1. brand/identity word occurrences with line numbers, per scanned message;
+ *  2. a rewrite self-check: how many known `CHANNEL_GATE_PHRASES` `from` strings
+ *     are STILL present in the prepared body (a rewrite that silently missed
+ *     would otherwise be indistinguishable from a new upstream fingerprint).
+ *
+ * No text is ever returned — only the words themselves (a fixed vocabulary),
+ * counts, and line numbers. Safe to paste into a public issue.
+ */
+const TRACE_WORDS: readonly string[] = [
+  'DeepSeek Harness',
+  'codebuddy',
+  'You are',
+  'powered by',
+  'coding agent',
+]
+const TRACE_MAX_LINES_PER_WORD = 6
+
+export interface FingerprintTrace {
+  /** Per scanned message index: word -> 1-based line numbers (capped). */
+  readonly occurrences: ReadonlyMap<number, ReadonlyMap<string, number[]>>
+  /** 1-based indices into CHANNEL_GATE_PHRASES whose `from` is still present. */
+  readonly unrewrittenRows: readonly number[]
+}
+
+export function channelFingerprintTrace(rawJson: string, preparedJson: string): FingerprintTrace {
+  const occurrences = new Map<number, Map<string, number[]>>()
+  const parse = (json: string): unknown => {
+    try { return JSON.parse(json) } catch { return undefined }
+  }
+  const raw = parse(rawJson)
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    const messages = (raw as Record<string, unknown>)['messages']
+    if (Array.isArray(messages)) {
+      for (let index = 0; index < messages.length; index++) {
+        const value = messages[index]
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+        const message = value as Record<string, unknown>
+        const role = typeof message['role'] === 'string' ? message['role'].trim().toLowerCase() : ''
+        if (role !== 'system' && role !== 'assistant' && role !== 'developer') continue
+        const texts: string[] = []
+        if (typeof message['content'] === 'string') texts.push(message['content'])
+        else if (Array.isArray(message['content'])) {
+          for (const part of message['content']) {
+            if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
+            const record = part as Record<string, unknown>
+            if ((record['type'] === 'text' || record['type'] === undefined) && typeof record['text'] === 'string') {
+              texts.push(record['text'])
+            }
+          }
+        }
+        const combined = texts.join('\n')
+        if (combined === '') continue
+        const lines = combined.split('\n')
+        const perWord = new Map<string, number[]>()
+        for (const word of TRACE_WORDS) {
+          const found: number[] = []
+          for (let line = 0; line < lines.length && found.length < TRACE_MAX_LINES_PER_WORD; line++) {
+            if (lines[line]?.toLowerCase().includes(word.toLowerCase())) found.push(line + 1)
+          }
+          if (found.length > 0) perWord.set(word, found)
+        }
+        if (perWord.size > 0) occurrences.set(index, perWord)
+      }
+    }
+  }
+  // Rewrite self-check: does the prepared body still carry any known `from`?
+  const unrewrittenRows: number[] = []
+  if (typeof preparedJson === 'string') {
+    for (let row = 0; row < CHANNEL_GATE_PHRASES.length; row++) {
+      if (preparedJson.includes(CHANNEL_GATE_PHRASES[row]?.[0] ?? '\u0000')) unrewrittenRows.push(row + 1)
+    }
+  }
+  return { occurrences, unrewrittenRows }
+}
+
+/**
  * How many openings the failure path reports.
  *
  * Eight is generous: the gate scans every system message and every text part
@@ -3880,6 +3968,73 @@ function stripLeadingAcpTag(content: unknown): { value: unknown, changed: boolea
   return { value: content, changed: false }
 }
 
+/**
+ * ISSUE #297 — strip the plugin's OWN neutral head from assistant history on
+ * the outbound copy, so a poisoned session stops reinforcing itself.
+ *
+ * When the gateway refuses a body, `neutralizeScannedText` / `forceNeutralHead`
+ * prepend `You are a helpful assistant.\n\n` to EVERY scanned message — including
+ * past assistant turns. The model sees its own whole history opening with that
+ * persona line and starts copying it into NEW answers, which the host persists
+ * as ordinary model output (restart/upgrade cannot clear it). The reporter
+ * proved the mechanism by swapping the line for a meaningless `Message begins.`
+ * and watching the model copy THAT instead: it is shape mimicry, not a write-
+ * back into the transcript.
+ *
+ * SCOPE — deliberately narrow, because this deletes bytes from the wire:
+ *
+ * - ONLY assistant messages. `system` keeps its head (the gateway wants it, and
+ *   it is not the model's own history). `user`/`tool` are never scanned, and
+ *   rewriting a user's words has no upstream basis.
+ * - ONLY the exact injected SHAPE: the head followed by a blank line. A user
+ *   who genuinely asks for an answer starting with that sentence does not add
+ *   the blank line, so their words survive. A bare `Message begins.`-style
+ *   string is NOT in the strip table — the plugin never injected it.
+ * - Up to eight layers, so a model that repeated the head cannot make this an
+ *   unbounded loop. A part stripped to empty keeps its original text: an empty
+ *   assistant text part means nothing on the wire.
+ *
+ * Called AFTER the phrase rewrite (so a newly exposed banned opening can still
+ * be neutralised) and BEFORE `neutralizeChannelFingerprints` (which would
+ * otherwise re-add a head to a just-exposed opening).
+ */
+const INJECTED_HEAD = `${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`
+const MAX_INJECTED_HEAD_LAYERS = 8
+
+function stripInjectedAssistantHead(text: string): string {
+  let out = text
+  for (let layer = 0; layer < MAX_INJECTED_HEAD_LAYERS && out.startsWith(INJECTED_HEAD); layer++) {
+    const rest = out.slice(INJECTED_HEAD.length)
+    if (rest.trim() === '') break // never strip a part to empty
+    out = rest
+  }
+  return out
+}
+
+function stripInjectedAssistantHeads(obj: Record<string, unknown>): void {
+  const messages = obj['messages']
+  if (!Array.isArray(messages)) return
+  for (const value of messages) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const message = value as Record<string, unknown>
+    if (message['role'] !== 'assistant') continue
+    const content = message['content']
+    if (typeof content === 'string') {
+      const next = stripInjectedAssistantHead(content)
+      if (next !== content) message['content'] = next
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    for (const part of content) {
+      if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
+      const record = part as Record<string, unknown>
+      if (record['type'] !== 'text' || typeof record['text'] !== 'string') continue
+      const next = stripInjectedAssistantHead(record['text'])
+      if (next !== record['text']) record['text'] = next
+    }
+  }
+}
+
 /** Whether this message is one of the harness's injected context blocks. */
 function isInjectedUserMessage(message: Record<string, unknown>, pattern: RegExp): boolean {
   if (message['role'] !== 'user') return false
@@ -3976,6 +4131,11 @@ export function prepareChatBody(source: string, options?: PrepareChatBodyOptions
   // wording, and `neutralizeChannelFingerprints` would insert U+200B inside a
   // phrase first, making the `replaceAll` miss it (issue #163, owner's order).
   rewriteChannelFingerprintPhrasesInBody(obj)
+  // ISSUE #297: strip the neutral heads the plugin itself injected into PAST
+  // assistant turns, so a poisoned session stops teaching the model to open
+  // every answer with that persona line. BETWEEN rewrite and neutralise on
+  // purpose — see `stripInjectedAssistantHeads` for the ordering requirement.
+  stripInjectedAssistantHeads(obj)
   neutralizeChannelFingerprints(obj)
   normalizeToolChoice(obj)
   // AFTER normalizeToolChoice: a `tool_choice: 'none'` body has already had its
