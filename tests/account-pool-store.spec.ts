@@ -41,11 +41,34 @@ describe('reconcilePoolCredits', () => {
     expect((await readPoolProbes('global'))['alpha']?.outcome).toBe('out-of-credit')
   })
 
-  it('does not clear rate limits, rejected credentials or account restrictions when credits arrive', async () => {
-    for (const outcome of ['rate-limited', 'credential-rejected', 'account-restricted'] as const) {
+  it('does not clear rate limits or account restrictions when credits arrive', async () => {
+    // A positive balance says nothing about a cooldown or a server-side account
+    // restriction — those need their own test/upstream decision.
+    for (const outcome of ['rate-limited', 'account-restricted'] as const) {
       await writePoolProbes('cn', { alpha: { outcome, atMs: 100 } })
       await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 101, total: 20 }])
       expect((await readPoolProbes('cn'))['alpha']?.outcome).toBe(outcome)
+    }
+  })
+
+  it('clears a credential-rejected record after a LIVE positive balance read (#305)', async () => {
+    // `creditReadings` come from an actual fetchCredits on THIS credential. A
+    // token that was revoked cannot return a positive balance, so a live read
+    // disproves a previous credential-rejected verdict — which issue #305 showed
+    // could come from a gateway HTML 401 on a single route while the same token
+    // was perfectly valid on billing. Without this the account stayed benched
+    // forever (credential-rejected has no cooldown).
+    await writePoolProbes('cn', { alpha: { outcome: 'credential-rejected', atMs: 100 } })
+    await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 101, total: 20 }])
+    expect((await readPoolProbes('cn'))['alpha']).toBeUndefined()
+  })
+
+  it('keeps a credential-rejected record when the balance read fails or is zero', async () => {
+    // No positive balance means no disproof — the rejection stands.
+    for (const total of [0, -1, Number.NaN]) {
+      await writePoolProbes('cn', { alpha: { outcome: 'credential-rejected', atMs: 100 } })
+      await reconcilePoolCredits('cn', [{ accountId: 'alpha', startedAtMs: 101, total }])
+      expect((await readPoolProbes('cn'))['alpha']?.outcome).toBe('credential-rejected')
     }
   })
 })

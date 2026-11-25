@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-> 修复版：渠道网关在**账号切换之后**才拒 body 时，三级救援阶梯此前从未作用于那一次结果（#302/#307），以及企业账号读模型目录被答成个人名册（#303）。
+> 修复版：渠道网关在**账号切换之后**才拒 body 时，三级救援阶梯此前从未作用于那一次结果（#302/#307）；企业账号读模型目录被答成个人名册（#303）；网关 HTML 401 被误判成「token 吊销」并永久排除账号（#305）。
 
 ### 11128 的「缺 retryNote」家族（#302 / #307）
 
@@ -10,6 +10,14 @@
 - **修法**：把阶梯抽成可重入的 `rescueChannelReject()`，在 failover 循环**之后**、对用户实际读到的那个 `result` 再跑一次；三个 `retried*` 标志共享，单账号 11128 或阶梯已跑过时是 no-op，不多花请求。另把 failover 重试的 body 从 `prepared` 改为 `preferred`（沿用已学到的扰动，不再明知会被拒还重发原始字节），并给「阶梯进了分支但无可改」补一条 warn（此前静默）。
 - **顺带修计数**：「（已尝试 N 个账号）」此前用 `triedAccountIds.length`，而循环只在**离开**账号时压入 id，最后一次 `channel_reject` 结束时那个账号从未入列——两账号 429→11128 场景实际发 2 个请求，文案却一个都不显示。改为显式 `attemptCount`（首选 1 + 每次换号 +1）。
 - **测试**：新增 `tests/shim-failover.spec.ts` 一条端到端回归（先 429 再 11128，断言阶梯跑过、`retryNote` 含「强制中性头」、且显示「已尝试 2 个账号」）。**变异验证**：去掉 failover 后的二次救援 → 红；计数退回 `triedAccountIds.length` → 红。`pnpm run check` 全过（3822 passed + 2 skipped）。Host 侧改动，需重启 DSH。
+
+### 网关 HTML 401 不再被误判成 token 吊销（#305）
+
+- **现象**：同一 token 在 `/v2/plugin/account` 与 billing `get-user-resource` 都 200，但探活拿到 APISIX 的 HTML 401，插件把它一律归成 `credential-rejected`、永久排除账号（无冷却、无自动复测），且文案断言「token 已不被上游接受、请重新登录」——换号只会换成另一个被标。
+- **根因**：`outcomeOfFailure`（`src/probe.ts`）把所有 401/403 折叠成 `credential-rejected`，而 `classifyUpstreamError` 对同一份 HTML 401 给出的其实是 `client`——探活与真实聊天请求对同一应答给出了不同判断。网关边缘 HTML 401 只能证明「这条路由在网关层被拒」，不能证明「token 被吊销」：仓库记录过同一张 HTML 页的三种成因（未带 token / 选到失效备份凭据 / token 发错品牌域）。唯一确凿的吊销信号是业务 JSON 的 `12153` / `Offline user session not found`，或 **refresh 跳**的 401/403。
+- **修法**：`outcomeOfFailure` 把含 openresty / APISIX / authorization-required 标记的 HTML 401/403 归为可冷却的 `failed`（账号在 cooldown 后自动恢复候选），`session_dead` 与无标记的 401 仍保持 `credential-rejected`。`isGatewayAuthRejection` 导出供 probe 使用，注释更正了此前「几乎总是吊销 token」的错误假设。
+- **自愈**：`reconcilePoolCredits` 现在也清除 `credential-rejected` 记录——一次**实时** `fetchCredits` 读回正余额，直接证伪「token 被拒」（有余额说明上游认了这把 token）。此前该记录 sticky 且被一条测试钉住「余额不清 credential-rejected」，那条测试把「余额到账不能证明模型可用」（对）错误地推广到了「也不能证明 token 有效」（错），已修正并拆分。
+- **测试**：probe 分类新增网关 401 / 无标记 401 / 真吊销 JSON 三种断言；pool store 新增「credential-rejected 遇实时正余额被清 / 零或失败余额保留」。两处变异验证均咬住。`pnpm run check` 全过（3825 passed + 2 skipped）。
 
 ### 企业账号目录身份头（#303，PR #304）
 

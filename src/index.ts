@@ -4305,7 +4305,12 @@ export function apply(ctx: Context, config: Config): void {
       }
     }))
     // 签到或充值后的正余额可以提前解除旧的月度等待记录；查询失败或仍为零时保留。
-    const probes = creditReadings.some(reading => recordedProbes[reading.accountId]?.outcome === 'out-of-credit')
+    // #305：正余额同样证伪了「token 被拒」——有余额就说明这次请求上游认了这把
+    // token，那条 credential-rejected 应被清掉，不再 sticky。
+    const probes = creditReadings.some(reading => {
+      const outcome = recordedProbes[reading.accountId]?.outcome
+      return outcome === 'out-of-credit' || outcome === 'credential-rejected'
+    })
       ? await reconcilePoolCredits(region, creditReadings)
       : recordedProbes
     // Remember the balances for the REQUEST path, which cannot afford to fetch

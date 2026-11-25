@@ -4738,15 +4738,23 @@ interface Envelope {
 }
 
 /**
- * Gateway (openresty/APISIX) rejection of a token it no longer accepts.
+ * Gateway (openresty/APISIX) edge rejection, detected from its HTML error page.
  *
- * The business APIs answer JSON; an edge rejection answers an HTML error page
- * instead. A 401 that is not JSON therefore means the credential was refused
- * before routing — almost always a revoked/expired token rather than a bug in
- * the request. Detected from the body so a proxy's own error page (which would
- * also be HTML) is still described accurately.
+ * The business APIs answer JSON; the gateway answers an HTML error page before
+ * the request is routed. WHAT that rejection means is NOT decidable from the
+ * body alone — issue #305 measured the same APISIX 401 on a chat probe while
+ * the SAME token answered 200 on `/v2/plugin/account` and billing, so the gate
+ * refused that ROUTE, not the token. (An earlier comment here claimed such a
+ * page was "almost always a revoked/expired token"; #305 disproved it.) The
+ * only conclusive revocation signal is a business JSON body carrying
+ * `12153`/`Offline user session not found`, or a 401/403 on the REFRESH hop.
+ *
+ * Kept as a body-shape test so a caller can tell "the gateway refused at the
+ * edge" from "the business API refused the credential" — but callers MUST NOT
+ * turn the former into a permanent credential rejection on body shape alone.
+ * Exported for `outcomeOfFailure` (`src/probe.ts`), which needs the same split.
  */
-function isGatewayAuthRejection(status: number, text: string): boolean {
+export function isGatewayAuthRejection(status: number, text: string): boolean {
   if (status !== 401 && status !== 403) return false
   const lower = text.toLowerCase()
   return lower.includes('openresty') || lower.includes('apisix') || lower.includes('authorization required')

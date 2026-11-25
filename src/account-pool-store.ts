@@ -310,9 +310,11 @@ export async function writePoolProbes(
 }
 
 /**
- * 只有失败记录写入之后发起的余额查询，才能解除积分耗尽状态。
+ * 只有失败记录写入之后发起的余额查询，才能解除积分耗尽状态与 credential-rejected
+ * （#305：一次**实时** fetchCredits 拿到正余额，证明这把 token 被上游接受，
+ * 直接证伪之前的「token 被拒」结论；而网关 HTML 401 可能只是某条路由被拒）。
  * 持锁重读可避免较早的查询结果覆盖并发请求刚记录的新失败；其他异常保持原样。
- * 删除失败记录只表示余额恢复，不会伪造一次成功的模型测试。
+ * 删除失败记录只表示余额恢复/凭据可用，不会伪造一次成功的模型测试。
  * 恢复后界面会显示“未测试”：这里删除的是最近失败记录，存储结构没有保留此前
  * 成功测试的历史，余额到账也不能证明某个模型可用；再次测试才会产生新的结论。
  */
@@ -327,7 +329,13 @@ export async function reconcilePoolCredits(
       let changed = false
       for (const reading of readings) {
         const probe = probes[reading.accountId]
-        if (probe?.outcome !== 'out-of-credit' || probe.atMs >= reading.startedAtMs) continue
+        // ISSUE #305: a positive balance proves the token was ACCEPTED by the
+        // upstream on this very request, which disproves a previous
+        // `credential-rejected` verdict just as it disproves `out-of-credit`.
+        // The probe's own timestamp guard still applies: a rejection recorded
+        // AFTER this reading is not cleared by an older balance.
+        if (probe?.outcome !== 'out-of-credit' && probe?.outcome !== 'credential-rejected') continue
+        if (probe.atMs >= reading.startedAtMs) continue
         if (!Number.isFinite(reading.total) || reading.total <= 0) continue
         delete probes[reading.accountId]
         changed = true

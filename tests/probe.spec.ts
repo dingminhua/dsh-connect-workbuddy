@@ -399,6 +399,21 @@ describe('outcomeOfFailure', () => {
     expect(outcomeOfFailure(403, '<html>blocked</html>')).toBe('credential-rejected')
   })
 
+  it('files a gateway HTML 401 as a transient failure, not a revoked token (issue #305)', () => {
+    // The SAME token can answer 200 on /v2/plugin/account and billing while a
+    // chat probe gets this APISIX page — the gateway refused the ROUTE, not the
+    // credential. Filing it as credential-rejected bench-tested the account
+    // permanently (no cooldown) and mis-told the user to re-sign-in.
+    const APISIX = '<html><head><title>401 Authorization Required</title></head><body><center><h1>401 Authorization Required</h1></center><hr><center>openresty</center></body></html>'
+    expect(outcomeOfFailure(401, APISIX)).toBe('failed')
+    expect(outcomeOfFailure(403, '<em>Powered by <a href="https://apisix.apache.org/">APISIX</a>.</em>')).toBe('failed')
+    // A bare HTML 401 without a gateway marker is still an opaque auth refusal.
+    expect(outcomeOfFailure(401, '<html>blocked</html>')).toBe('credential-rejected')
+    // A real revocation (business JSON with the session-dead code) stays a
+    // credential rejection and keeps its no-cooldown semantics.
+    expect(outcomeOfFailure(401, '{"code":12153,"msg":"Offline user session not found"}')).toBe('credential-rejected')
+  })
+
   it('classifies a transport failure (status 0) as unavailable', () => {
     expect(outcomeOfFailure(0, 'transport error: ECONNREFUSED')).toBe('unavailable')
   })

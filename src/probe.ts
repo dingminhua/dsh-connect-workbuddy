@@ -28,7 +28,7 @@
  */
 
 import type { WorkBuddyCredential } from './auth.ts'
-import { classifyUpstreamError } from './upstream.ts'
+import { classifyUpstreamError, isGatewayAuthRejection } from './upstream.ts'
 
 /**
  * How long to bench a MODEL that answered 14003 with no stated time.
@@ -441,6 +441,16 @@ export function outcomeOfFailure(status: number, body: string): WorkBuddyProbeOu
     const kind = classifyUpstreamError(status, body)
     if (kind === 'policy_reject') return 'policy-rejected'
     if (kind === 'account_restricted') return 'account-restricted'
+    // ISSUE #305: `session_dead` (business JSON carrying 12153 /
+    // "Offline user session not found") IS a conclusive revocation. But a bare
+    // APISIX/openresty HTML 401 only says the gateway refused at the EDGE —
+    // the same token can answer 200 on /v2/plugin/account and billing — so it
+    // must NOT be filed as a permanent credential rejection. Treat it as a
+    // transient failure with a cooldown instead; the account self-heals on the
+    // next successful probe. A 401/403 WITHOUT a gateway marker keeps the old
+    // verdict (an opaque auth refusal is still an auth refusal).
+    if (kind === 'session_dead') return 'credential-rejected'
+    if (isGatewayAuthRejection(status, body)) return 'failed'
     return 'credential-rejected'
   }
   switch (classifyUpstreamError(status, body)) {
