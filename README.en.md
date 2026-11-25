@@ -210,6 +210,19 @@ One class of state in the pool **does not go through a draft**: probe results, c
 
 > ⚠️ **For the CN 「channel verification」 400 (`code 11128`), make sure the plugin is ≥ 5.14.1.** From 5.13.1 the plugin rewrites the known fixed fingerprints **before the request is sent**, and 5.14.0 adds the Web-GUI paragraph's SECOND sentence (#167, the branch still reproducing on 5.13.1); 5.12.x and earlier only had the neutral-head + zero-width ladder, which measured **400 on every rung** for the same body (matrix in [#164](https://github.com/dingminhua/dsh-connect-workbuddy/issues/164)). Anyone left on an older build keeps hitting a 400 that is already fixed, and it looks like "fails every single time, restarting does nothing".
 >
+> **Still refused after upgrading? Stop the host from injecting its identity lines at the source.** The gateway matches an exact substring **anywhere in the middle** of the prompt, and the first-party identity lines that are fixed for every session (`You are an AI agent powered by DeepSeek Harness.`, the Web-GUI paragraph, the model persona line) are re-sent byte-for-byte every turn — the plugin's rewrite table can only cover known fingerprints. The host's `dsh-system-prompt` service lets you switch all three off in your profile (the #293 reporter verified: with all three off, a host restart and a fresh session, 11128 disappeared):
+>
+> ```yaml
+> - id: system-prompt
+>   name: "@deepseek-ai/dsh-system-prompt"
+>   config:
+>     includeHarnessIdentity: false
+>     includeRuntimeContext: false
+>     personaPrefix: "You are a helpful assistant."
+> ```
+>
+> These three are the host service's config, not this plugin's behaviour, and live in your own profile; with them off the lines never enter the system message. If you cannot change the config, **starting a fresh session** is an effective workaround — poisoned assistant history is a common carrier of these middle-of-prompt matches, and it is written into the session file so restarts do not clear it.
+>
 > ⚠️ **Do not treat the marketplace's "latest" as the schedule — it reads an index that lags.** The community marketplace serves a periodically built snapshot, collected per package: at the 2026-10-30 15:00 observation this plugin still listed only 5.13.1 while npm `latest` was already 5.14.1, and a desktop host separately flags any release under 24 hours old as "waiting". Trust `npm view dsh-connect-workbuddy version` and [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases), and follow [Update](#update) below (pin the **exact version**); or hand [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 to an AI and let it run.
 >
 > The other thing that stops people from upgrading: **pnpm's 24-hour release-age window** (`minimumReleaseAge`) **silently resolves a floating range back to the previous version**. When you need this fixed right now, pin the **exact version**: `dsh-connect-workbuddy@5.20.2`.

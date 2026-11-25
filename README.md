@@ -227,6 +227,19 @@ DSH PiAiAdapter（每个 provider 一套）
 
 > ⚠️ **国内区的「渠道校验」400（`code 11128`）请确保插件 ≥ 5.14.0。** 5.13.1 起会在**发出请求之前**按句改写已知的固定指纹，5.14.0 又补上了 Web GUI 段落的第二句（#167，5.13.1 上仍然必现的那一支）；5.12.x 及更早只有「中性头 + 零宽扰动」三级救援，在同一份 body 上实测**全部 400**（对照矩阵见 [#164](https://github.com/dingminhua/dsh-connect-workbuddy/issues/164)）。停在旧版的人会反复撞上这个已经修好的 400，而表现是「每次必现、重启也没用」。
 >
+> **升级后若仍被拒：从源头关掉宿主注入的身份句。** 网关按提示词**中段任意位置的精确子串**匹配，而固定在每个会话里的 first-party 身份句（`You are an AI agent powered by DeepSeek Harness.`、Web GUI 段落、模型 persona 行）会被逐轮原样重发，插件的改词表只能覆盖已知指纹。宿主 `dsh-system-prompt` 服务支持在 profile 里关掉这三类注入（#293 的报告者验证：三项全关、重启宿主、开新会话后 11128 消失）：
+>
+> ```yaml
+> - id: system-prompt
+>   name: "@deepseek-ai/dsh-system-prompt"
+>   config:
+>     includeHarnessIdentity: false
+>     includeRuntimeContext: false
+>     personaPrefix: "You are a helpful assistant."
+> ```
+>
+> 这三项属于宿主服务的配置、不是本插件的行为，写在你自己的 profile 里；关掉后这些句子不再进入 system 消息。改不了配置时，**开一个全新会话**是有效临时规避——被污染的 assistant 历史是这类中段命中的常见载体，而它会被写进会话文件、重启也不消失。
+>
 > ⚠️ **别把插件市场里那个「最新」当日程表——它读的是一份会落后的索引。** 社区市场走定期构建的快照（按包各自收录），2026-10-30 15:00 那次观测里本插件还停在 5.13.1，而当时 npm `latest` 已是 5.14.1；桌面宿主另有「24 小时内发布的版本先标成「新版等待中」」这条规则。以 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 为准，按下方[「更新」](#更新)一节做（写**精确版本号**），或者把 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 那段话丢给 AI 让它替你跑。
 >
 > 另一个会让人升级不到的原因：**pnpm 的 24 小时新版本等待期**（`minimumReleaseAge`）会把浮动范围**静默压回上一个版本**。需要立刻修复时请写**精确版本号**：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2`（原因见下方「刚发布的版本请写精确版本号」那条）。
