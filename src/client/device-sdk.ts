@@ -17,6 +17,7 @@
  */
 
 import type { TuringSdkInfo, TuringTokenReadout, WorkBuddyDeviceSdkReport } from '../turing-sdk.ts'
+import { resolveRequestUrl } from './request-url.ts'
 
 /** `GET /device-sdk` 的答案：Host 快照 + 总开关的当前值。 */
 export type DeviceSdkReport = WorkBuddyDeviceSdkReport & {
@@ -68,14 +69,14 @@ function normalize(body: unknown): DeviceSdkReport | undefined {
 
 /** 读状态。`undefined` = 这个 Host 没有这条路由（404/503），面板该整块隐藏。 */
 export async function fetchDeviceSdk(path: string): Promise<DeviceSdkReport | undefined> {
-  const response = await fetch(path, { headers: { accept: 'application/json' }, credentials: 'same-origin' })
+  const response = await fetch(resolveRequestUrl(path), { headers: { accept: 'application/json' }, credentials: 'same-origin' })
   if (response.status === 404 || response.status === 503) return undefined
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return normalize(await response.json())
 }
 
 async function post(path: string, action: 'refresh' | 'reveal'): Promise<unknown> {
-  const response = await fetch(`${path}?action=${action}`, {
+  const response = await fetch(resolveRequestUrl(`${path}?action=${action}`), {
     method: 'POST',
     headers: { accept: 'application/json' },
     credentials: 'same-origin',
@@ -98,7 +99,7 @@ export async function refreshDeviceSdk(path: string): Promise<DeviceSdkReport | 
  * 而那需要知道"做不到"，不是"做失败了"。
  */
 export async function setDeviceSdkEnabled(path: string, enabled: boolean): Promise<void> {
-  const response = await fetch(`${path}?action=${enabled ? 'enable' : 'disable'}`, {
+  const response = await fetch(resolveRequestUrl(`${path}?action=${enabled ? 'enable' : 'disable'}`), {
     method: 'POST',
     headers: { accept: 'application/json' },
     credentials: 'same-origin',

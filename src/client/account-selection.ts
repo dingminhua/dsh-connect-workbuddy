@@ -19,6 +19,7 @@
 
 import { nextRegionModels, nextRegionPool, regionsMapOf, unwrapVolatileDeep, WORKBUDDY_POLL_INTERVALS_MS, WORKBUDDY_DEFAULT_POLL_INTERVAL_MS } from '../status-paths.ts'
 import type { WorkBuddyWebRegion, WorkBuddyCreditPosition } from '../status-paths.ts'
+import { resolveRequestUrl } from './request-url.ts'
 
 /**
  * The slice of the bound settings scope this module writes through.
@@ -157,7 +158,7 @@ async function saveViaHostEndpoint(
 ): Promise<Record<string, unknown> | undefined> {
   let response: Response
   try {
-    response = await fetch('/plugins/dsh-connect-workbuddy/__save', {
+    response = await fetch(resolveRequestUrl('/plugins/dsh-connect-workbuddy/__save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // A region field posts `{ <region>: value }`; the global `cliBridge` block

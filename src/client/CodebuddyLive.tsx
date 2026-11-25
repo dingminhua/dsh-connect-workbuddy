@@ -47,6 +47,7 @@
  *
  * @module dsh-connect-workbuddy/client/CodebuddyLive
  */
+import { resolveRequestUrl } from './request-url.ts'
 import { useEffect, useRef, useState } from 'react'
 import { WORKBUDDY_CLI_LIVE_PATH } from '../status-paths.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -169,7 +170,7 @@ export async function readLive(
   if (inflight !== undefined) return inflight
   inflight = (async (): Promise<LiveSnapshot | undefined> => {
     try {
-      const response = await fetchImpl(WORKBUDDY_CLI_LIVE_PATH, { headers: { accept: 'application/json' } })
+      const response = await fetchImpl(resolveRequestUrl(WORKBUDDY_CLI_LIVE_PATH), { headers: { accept: 'application/json' } })
       if (!response.ok) return undefined
       const document = acceptDocument(await response.json())
       if (document === undefined) return undefined

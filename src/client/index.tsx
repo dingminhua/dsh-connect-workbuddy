@@ -22,6 +22,7 @@
  * @module dsh-connect-workbuddy/client
  */
 
+import { resolveRequestUrl } from './request-url.ts'
 import { WORKBUDDY_SETTINGS_NAMESPACE_CANDIDATES, WORKBUDDY_SETTINGS_NS, WORKBUDDY_SETTINGS_SECTION_ID, WORKBUDDY_SETTINGS_SECTION_ORDER, WORKBUDDY_USAGE_PATH, withWorkBuddyRegion } from '../status-paths.ts'
 import { createElement as h } from 'react'
 import type { JSX } from 'react'
@@ -1157,7 +1158,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
     )
     void (async () => {
       try {
-        const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, 'cn'), {
+        const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, 'cn')), {
           headers: { accept: 'application/json' },
         })
         if (!response.ok) return

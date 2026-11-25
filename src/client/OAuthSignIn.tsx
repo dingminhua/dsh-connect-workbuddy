@@ -19,6 +19,7 @@
  * @module dsh-connect-workbuddy/client/OAuthSignIn
  */
 
+import { resolveRequestUrl } from './request-url.ts'
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { OAUTH_POLL_INTERVAL_MS, WORKBUDDY_OAUTH_PATH, withWorkBuddyRouteAction } from '../status-paths.ts'
@@ -174,7 +175,7 @@ export function OAuthSignIn({ t, region, onAdded }: OAuthSignInProps): ReactElem
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, region, 'poll'), {
+          const response = await fetch(resolveRequestUrl(withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, region, 'poll')), {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
             credentials: 'same-origin',
@@ -314,7 +315,7 @@ export function OAuthSignIn({ t, region, onAdded }: OAuthSignInProps): ReactElem
     setPhase({ kind: 'opening' })
     setCopied(false)
     try {
-      const response = await fetch(withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, region, 'start'), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRouteAction(WORKBUDDY_OAUTH_PATH, region, 'start')), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',

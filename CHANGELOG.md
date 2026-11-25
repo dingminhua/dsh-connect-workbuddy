@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+> 修复版：插件前端在反向代理子路径（如飞牛 NAS 的 `/app/dsh/`）下不再丢前缀，登录/刷新不再报 `Unexpected token '<'`（#314）。
+
+### 子路径部署下的请求 URL（#314）
+
+- **现象**：通过飞牛 NAS 的统一网关用 `/app/dsh/` 访问 DSH 时，点扫码登录立刻报 `Unexpected token '<', "<!doctype "... is not valid JSON`。原因是插件前端把路由写死成 `fetch('/plugins/dsh-connect-workbuddy/...')`，浏览器解析成站点根，丢了 `/app/dsh` 前缀，请求被网关当成未知路径返回 HTML，`response.json()` 于是解析 `<!doctype html>` 失败。直连 `28000` 端口正常。
+- **根因与依据**：DSH 自己就是按 `document.baseURI` 拼 API 路径的（宿主的 `stream-client.ts` / `socket.ts` 用 `new URL(path.slice(1), document.baseURI)`）——所以聊天在子路径下能通、唯独插件路由不通。报告者的判断正确，这不是权宜之计而是宿主既有约定。
+- **修法**：新增 `src/client/request-url.ts` 的 `resolveRequestUrl(logical, base = document.baseURI)`，只返回 origin-relative 的 `pathname + search`（不换 origin，`credentials: 'same-origin'` 语义不变；解析失败/无 document 时原样返回），把 11 个文件、28 处插件路由 fetch 全部包一层。根路径（`127.0.0.1:28000`）与桌面 `dsh-app://app/` 部署下结果与旧行为逐字节相同；只有子路径部署会补上挂载前缀。
+- **服务端不需改**：Host webserver 路由注册的是绝对路径 shim 也走回环，网关剥掉前缀后正好命中；本问题纯粹在前端。
+- **测试**：新增 `tests/request-url.spec.ts`（6 条：根路径/桌面不变、子路径补前缀、query 保留且不换 origin、带 query/hash 的 base 与非法输入安全、源码守卫禁止新路由裸写 `/plugins/`/`fetch(path)`、`__save` 内联字面量也走 helper）。两处变异验证均咬住（裸 fetch → 守卫红；子路径逻辑去掉 → 3 条红）。`pnpm run check` 全过（3841 passed + 2 skipped）。
+- **已知边界（如实登记）**：修好 URL 后，若网关把 `Host` 头原样转发（`nas:5666`），插件的 `requireLoopback()` 仍可能回 403 `host-not-trusted`——这属于 #261 的 `trustedHosts` 配置范畴，需在飞牛侧或插件配置里加该域名，本版不覆盖。具体取决于网关是否重写 Host。
+
 ## 5.31.6 (2026-11-25)
 
 > 修复版：assistant 历史不再被插件注入的中性头持续污染（#297）；11128 报错附上零隐私的指纹定位线索（#311）。

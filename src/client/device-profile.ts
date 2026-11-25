@@ -1,3 +1,4 @@
+import { resolveRequestUrl } from './request-url.ts'
 /**
  * 设备头设置在浏览器侧的读写（「虚拟值 / 真实值」+ 每账号覆盖参数）。
  *
@@ -131,7 +132,7 @@ function normalizeRealTier(value: unknown): RealTierAvailability | undefined {
  * `EMPTY_DEVICE_SETTINGS` is only the initial value before the first read.
  */
 export async function fetchDeviceSettings(path: string): Promise<WorkBuddyDeviceSettings | undefined> {
-  const response = await fetch(path, { headers: { accept: 'application/json' }, credentials: 'same-origin' })
+  const response = await fetch(resolveRequestUrl(path), { headers: { accept: 'application/json' }, credentials: 'same-origin' })
   if (response.status === 404 || response.status === 503) return undefined
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return normalizeSettings(await response.json() as Partial<WorkBuddyDeviceSettings>)
@@ -139,7 +140,7 @@ export async function fetchDeviceSettings(path: string): Promise<WorkBuddyDevice
 
 /** POST one mutation and return the settings the Host now holds. */
 async function post(path: string, body: unknown): Promise<WorkBuddyDeviceSettings> {
-  const response = await fetch(path, {
+  const response = await fetch(resolveRequestUrl(path), {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     credentials: 'same-origin',

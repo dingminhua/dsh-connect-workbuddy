@@ -29,6 +29,7 @@
  *    omits the field in that case precisely so this component cannot render a
  *    wrong claim about the account.
  */
+import { resolveRequestUrl } from './request-url.ts'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useAnchoredPosition, useDismissOnOutsidePointer } from './popover.ts'
@@ -429,7 +430,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     }
     const task = (async (): Promise<void> => {
       try {
-        const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, activeRegion), {
+        const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, activeRegion)), {
           headers: { accept: 'application/json' },
           credentials: 'same-origin',
           ...signal === undefined ? {} : { signal },
@@ -482,7 +483,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     const generation = ++accountsReadGeneration.current
     accountsInFlight.current += 1
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_ACCOUNT_CREDITS_PATH, activeRegion), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_ACCOUNT_CREDITS_PATH, activeRegion)), {
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
         ...signal === undefined ? {} : { signal },
@@ -661,7 +662,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       setFailed(false)
     }
     try {
-      const response = await fetch(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, activeRegion, 'test'), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, activeRegion, 'test')), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',

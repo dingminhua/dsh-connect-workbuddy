@@ -20,6 +20,7 @@
  * @module dsh-connect-workbuddy/client/AccountPool
  */
 
+import { resolveRequestUrl } from './request-url.ts'
 import { applyManualOrder } from './manual-order'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
@@ -834,7 +835,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       }), outcomeOk(outcome) ? 'ok' : 'warn')
     }
     try {
-      const response = await fetch(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, action), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, action)), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
@@ -1004,7 +1005,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     const url = withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, 'test')
       + '&' + WORKBUDDY_POOL_ACCOUNT_PARAM + '=' + encodeURIComponent(accountId)
     try {
-      const response = await fetch(url, {
+      const response = await fetch(resolveRequestUrl(url), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
@@ -1146,7 +1147,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
       + '&' + WORKBUDDY_POOL_ACCOUNT_PARAM + '=' + encodeURIComponent(accountId)
       + '&kind=' + encodeURIComponent(kind)
     try {
-      const response = await fetch(url, {
+      const response = await fetch(resolveRequestUrl(url), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
@@ -1207,7 +1208,7 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
     const url = withWorkBuddyRegionAndAction(WORKBUDDY_POOL_PATH, region, 'remove')
       + '&' + WORKBUDDY_POOL_ACCOUNT_PARAM + '=' + encodeURIComponent(accountId)
     try {
-      const response = await fetch(url, {
+      const response = await fetch(resolveRequestUrl(url), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',

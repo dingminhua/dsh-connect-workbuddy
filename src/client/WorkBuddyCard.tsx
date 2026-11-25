@@ -23,6 +23,7 @@
  * @module dsh-connect-workbuddy/client/WorkBuddyCard
  */
 
+import { resolveRequestUrl } from './request-url.ts'
 import { Component, useCallback, useEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
 import type { ErrorInfo, ReactElement, ReactNode } from 'react'
@@ -989,7 +990,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     // clear) a card-level flag that a newer request owns.
     let gateCause: GateRefusal | undefined
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region)), {
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
         ...signal === undefined ? {} : { signal },
@@ -1079,7 +1080,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   ): Promise<void> => {
     const stale = usageGuard.current.begin(region)
     try {
-      const response = await fetch(withWorkBuddyRegionFastDetail(WORKBUDDY_USAGE_PATH, region), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegionFastDetail(WORKBUDDY_USAGE_PATH, region)), {
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
         ...signal === undefined ? {} : { signal },
@@ -1287,7 +1288,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     setBusy(true)
     setAccountError(undefined)
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_ACCOUNTS_REFRESH_PATH, activeRegion), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_ACCOUNTS_REFRESH_PATH, activeRegion)), {
         method: 'POST', headers: { accept: 'application/json' }, credentials: 'same-origin',
       })
       const body = await response.json() as { accounts?: { id: string }[]; dismissalsCleared?: boolean }
@@ -2044,7 +2045,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       const url = refresh
         ? `${withWorkBuddyRegion(WORKBUDDY_MEDIA_MODELS_PATH, region)}&refresh=1`
         : withWorkBuddyRegion(WORKBUDDY_MEDIA_MODELS_PATH, region)
-      const response = await fetch(url, {
+      const response = await fetch(resolveRequestUrl(url), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
@@ -2091,7 +2092,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   const refreshModels = async (): Promise<void> => {
     setBusy(true)
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_MODELS_REFRESH_PATH, activeRegion), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_MODELS_REFRESH_PATH, activeRegion)), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
@@ -2406,7 +2407,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       return next
     })
     try {
-      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_PROBE_PATH, activeRegion), {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_PROBE_PATH, activeRegion)), {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         credentials: 'same-origin',
@@ -2536,7 +2537,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       for (const [index, modelId] of modelIds.entries()) {
         if (!mounted.current) return
         try {
-          const response = await fetch(withWorkBuddyRegion(WORKBUDDY_TPS_PATH, activeRegion), {
+          const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_TPS_PATH, activeRegion)), {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
             credentials: 'same-origin',

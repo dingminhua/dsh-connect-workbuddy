@@ -59,6 +59,7 @@
  * rendered, and the output does not change based on which plugins are installed.
  * See `HostBadgeChip` and `docs/MODEL-LABEL-SPEC.md`.
  */
+import { resolveRequestUrl } from './request-url.ts'
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { busyIcon } from './busy-icon.tsx'
@@ -141,7 +142,7 @@ async function statusNow(region: WorkBuddyWebRegion): Promise<StatusSnapshot | u
     // The answer is per REGION: the two gateways are separate catalogs with
     // separate load and separate promotions, so asking without the region
     // would show one region's facts on the other's models.
-    const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region), {
+    const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region)), {
       headers: { accept: 'application/json' },
       credentials: 'same-origin',
     })
