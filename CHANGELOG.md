@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+> 修复版（#297 重开）：渠道救援的第一级只给 system 加中性头，assistant 历史不再被插件注入人格句、被模型模仿进回复并落盘；全消息盲加头降为末级兜底。
+
+### 救援第一级只补 system 头（#297 重开）
+
+- **背景**：5.31.6 的出站剥离（`stripInjectedAssistantHeads`）只作用于普通请求；一旦触发 11128 救援，`forceNeutralHead` 会在已准备好的 body 上给**每条 assistant 消息重新加回人格头**，与出站剥离精确互逆——于是救援那一刻的污染是「每次必发」。报告者在 #297 关闭后明确反对结案："目前 5.31.7 仍不能防止 `You are a helpful assistant.` 的出现……仍需关注而非列入已解决"，已重开该 issue。
+- **定性**：报告者的 `Message begins.` 实验（换成无意义句子模型照抄）证明这是**模型模仿历史形状**，不是插件回写 transcript。核实网关 offset-0 门是**黑名单**不是白名单（实测 Kimi / Cursor / Gemini 开头全 200），assistant 只需要「开头不是被禁指纹」、不需要中性句开头——正常会话的 assistant 历史全是散文开头也全 200。给 assistant 加头是「用唯一通用手段换来的过宽实现」，不是网关要求。
+- **修法**：拆出 `forceSystemHead()`（只补 system，system 不是模型自己的历史、不会被模仿）作为救援**第一级**，保留 #98「不知道指纹也能救」的能力；`forceNeutralHead()`（全角色）降为**末级兜底**，只在 system-only 头 + 两级扰动全失败后才用。失败模式是「多花一发请求」而非死局。5.31.6 的出站剥离保留作已污染会话的止血带。
+- **明确否决两案**：①assistant 强制头改纯换行（`"\n<banned>"` 靠网关今天不 trim，是可收回的礼物，且 assistant 角色从未真机测过）；②随机化中性头（模仿的是形状不是语义，换句子治不了病，还打断 `startsWithNeutralHead` 幂等、`neutralized` 判定、出站剥离与提示词缓存，净负收益）。
+- **文案同步**：retryNote 区分「system 中性头」与末级的「全消息中性头」；「每一条被扫描消息都已经加了中性头」只在盲兜底真跑过时才说；`docs/DESIGN.md` 相关注释同步更新。
+- **测试**：新增 `tests/issue297-rescue-no-assistant-head.spec.ts`（4 条：`forceSystemHead` 只动 system + 幂等 + 全角色头仍可用、端到端确认救援重试里 assistant 无人格头而 system 有）；更新 `issue98-shim.spec.ts`（救援重试断言 assistant 不带头）、`shim-failover.spec.ts` 与相关文案断言。变异验证（第一级改回 `forceNeutralHead`）→ 端到端红。`pnpm run check` 全过（3845 passed + 2 skipped）。
+
 ## 5.31.7 (2026-11-26)
 
 > 修复版：插件前端在反向代理子路径（如飞牛 NAS 的 `/app/dsh/`）下不再丢前缀，登录/刷新不再报 `Unexpected token '<'`（#314）；账号池删掉两行表头，不再看起来像错行（#313）。

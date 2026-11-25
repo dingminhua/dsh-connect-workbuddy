@@ -182,7 +182,7 @@ describe('pool failover: retrying a failed chat on another account', () => {
     const parsed = JSON.parse(response.body) as { error?: { message?: string }, message?: string }
     const text = parsed.error?.message ?? parsed.message ?? ''
     expect(text).toContain('并已用')
-    expect(text).toContain('强制中性头')
+    expect(text).toContain('system 中性头')
     // Both accounts really received a request (the selected one's 429, then B's
     // refusal + ladder). Counting only accounts that were "left" hid this note
     // in the two-account case because B ended the loop on a channel_reject.

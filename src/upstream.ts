@@ -3234,7 +3234,7 @@ function neutralizeScannedText(text: string): string | undefined {
  * Never throws. A body it cannot read is the upstream's to reject, and a
  * parse error must not turn a retry into a crash.
  */
-export function forceNeutralHead(bodyJson: string): string | undefined {
+function forceHeadInBody(bodyJson: string, mode: 'all' | 'system'): string | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(bodyJson)
@@ -3250,6 +3250,13 @@ export function forceNeutralHead(bodyJson: string): string | undefined {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
     const message = value as Record<string, unknown>
     if (!scansOpening(message['role'])) continue
+    // ISSUE #297: the `system` head is what the gateway's offset-0 gate wants,
+    // and system is NOT the model's own history — it cannot be imitated into a
+    // future answer. An `assistant` head, by contrast, is copied by the model
+    // into its next reply and persisted (measured with the `Message begins.`
+    // experiment). So the normal rescue moves only system; the blind all-role
+    // head is reserved for the last rung. `mode` decides which roles qualify.
+    if (mode === 'system' && message['role'] !== 'system' && message['role'] !== 'developer') continue
     const content = message['content']
     if (typeof content === 'string') {
       if (content.trim() === '' || startsWithNeutralHead(content)) continue
@@ -3273,6 +3280,35 @@ export function forceNeutralHead(bodyJson: string): string | undefined {
   // Re-serialized from the PARSED object, so the key order of the original
   // body is preserved — the retry is the same request, not a reshuffled one.
   return JSON.stringify(obj)
+}
+
+/**
+ * ISSUE #297 — the FIRST rescue rung: prepend the neutral head to SYSTEM only.
+ *
+ * The gateway's offset-0 gate is a blacklist (measured: Kimi / Cursor / Gemini
+ * openings all answer 200), so system needs only a non-banned opening, and a
+ * system message is not part of the model's own chat history — the model never
+ * imitates it into a future assistant reply. This is enough to rescue the
+ * measured #98 / #189 shapes (system prompt opening refused) WITHOUT planting
+ * the persona line in assistant history, which is what caused #297.
+ *
+ * `undefined` means "nothing changed" — same contract as {@link forceNeutralHead}.
+ */
+export function forceSystemHead(bodyJson: string): string | undefined {
+  return forceHeadInBody(bodyJson, 'system')
+}
+
+/**
+ * The LAST rescue rung: prepend the neutral head to EVERY scanned message,
+ * system and assistant. Kept for the unmeasured case of an assistant opening
+ * that is neither in the prefix blacklist nor covered by the phrase rewrites —
+ * moving it off offset 0 is the only known general rescue. It is deliberately
+ * the LAST rung because it is the one that plants the persona line in assistant
+ * history (issue #297): a model sees its own past answers opening with that
+ * line and copies it into new replies, which the host persists.
+ */
+export function forceNeutralHead(bodyJson: string): string | undefined {
+  return forceHeadInBody(bodyJson, 'all')
 }
 
 /**

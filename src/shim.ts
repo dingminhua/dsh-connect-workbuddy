@@ -35,6 +35,7 @@ import {
   prepareChatBody,
   modelIdOfBody,
   forceNeutralHead,
+  forceSystemHead,
   channelGateMemberOf,
   isConversationIdGateBody,
   isContextTooLongBody,
@@ -1237,14 +1238,14 @@ function clippedUpstreamText(text: string, limit: number): string {
  * WHAT THAT MARKER MAY NOT SAY (issue #213). It used to read 「网关可能新增了
  * 词条」, and a reporter read it as "this opening went out verbatim" — then
  * reported that the three `assistant` openings the gate had named were never
- * neutralised at all. They were: `forceNeutralHead` puts the head in front of
- * every scanned opening regardless of the list (since 4.15.1), so the request
- * that was refused for the third time had heads on all of them. The marker
- * describes the FIRST attempt and only the opening's FIRST LINE; the gateway
- * matches an exact substring anywhere in the text, so a first line that is
- * absent from the snapshot says nothing about the message as a whole. Both of
- * those are stated in the reply's closing sentence, which is the part a
- * reporter actually quotes back at us.
+ * neutralised at all. The marker describes the FIRST attempt and only the
+ * opening's FIRST LINE; the gateway matches an exact substring anywhere in
+ * the text, so a first line absent from the snapshot says nothing about the
+ * message as a whole. (Since #297 the common rescue adds the head to SYSTEM
+ * only, so a later refused attempt need not have heads on assistant openings
+ * at all — the blind all-role head is now the last rung.) Both facts are
+ * stated in the reply's closing sentence, which is the part a reporter
+ * actually quotes back at us.
  *
  * Capped at {@link CHANNEL_EVIDENCE_LIMIT} entries: a session can carry dozens
  * of system/assistant messages, and a wall of them would bury the one that
@@ -1838,17 +1839,24 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
      * sends the same bytes, so without a rescue the only outcome is a dead end
      * the reader cannot get out of.
      *
-     * Two rungs, both on the SAME credential (the gate reads the request, not
+     * Four rungs, all on the SAME credential (the gate reads the request, not
      * the account, which is why `channel_reject` is not failover-worthy):
      *
-     *   1. `forceNeutralHead` — move every scanned opening behind the neutral
-     *      head. Measured: whatever the banned opening is, moving it off the
-     *      start of the content answers 200.
+     *   1. `forceSystemHead` — move the SYSTEM opening behind the neutral head.
+     *      Measured: whatever the banned opening is, moving it off the start of
+     *      the content answers 200. Only system is touched (issue #297): an
+     *      assistant head is copied by the model into future replies, so the
+     *      common rescue must not plant it in assistant history.
      *   2. `perturbChannelFingerprints` — insert zero-width spaces at the
      *      sentence boundaries of the scanned messages, which breaks an
      *      exact-substring fingerprint without changing a word the model reads.
      *      This is the rung that rescues the inside-the-prompt fingerprints,
      *      where rung 1 is a no-op.
+     *   3. dense `perturbChannelFingerprints` — same, at every word boundary,
+     *      for a fingerprinted prose span with no punctuation.
+     *   4. `forceNeutralHead` — the LAST resort: the blind, all-role head. Only
+     *      when 1–3 failed. This is the one that plants the persona line in
+     *      assistant history, so it is reserved for the unmeasured case.
      *
      * Both return `undefined` when they would change nothing; that is the
      * signal not to spend a request on a body that would be refused identically.
@@ -1859,9 +1867,10 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
      * as an account failure: it was the request that was refused, not the
      * credential.
      */
-    let retriedWithForcedHead = false
+    let retriedWithSystemHead = false
     let retriedWithPerturbation = false
     let retriedWithDensePerturbation = false
+    let retriedWithBlindHead = false
     /**
      * The channel-gate rescue ladder, as a reusable step.
      *
@@ -1884,11 +1893,16 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     ): Promise<WorkBuddyChatResult> => {
       if (initial.ok || initial.kind !== 'channel_reject' || controller.signal.aborted) return initial
       let current: WorkBuddyChatResult = initial
-      const forced = forceNeutralHead(prepared)
+      // ISSUE #297: the first rung moves ONLY the system opening behind the
+      // neutral head. system is what the gateway's offset-0 gate reads and is
+      // not the model's own history, so this rescues the measured #98/#189
+      // shapes WITHOUT planting the persona line in assistant turns (which the
+      // model copies into future replies and the host persists).
+      const forced = forceSystemHead(prepared)
       if (forced !== undefined) {
-        logger?.warn('dsh-connect-workbuddy: the channel gate refused the body; retrying once with the neutral head forced in front of every opening')
+        logger?.warn('dsh-connect-workbuddy: the channel gate refused the body; retrying once with the neutral head on the system opening only')
         current = await client.chatStream(credential, forced, controller.signal, sessionConversationId)
-        retriedWithForcedHead = true
+        retriedWithSystemHead = true
       }
       if (!current.ok && current.kind === 'channel_reject' && !controller.signal.aborted) {
         const rescued = perturbChannelFingerprints(forced ?? prepared)
@@ -1918,11 +1932,26 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
           if (current.ok && channelPerturbation === 'failure') channelNeedsPerturbation = true
         }
       }
+      // ISSUE #297 — LAST rung: the blind, all-role neutral head. Reserved for
+      // the unmeasured case of an assistant opening that is neither in the
+      // prefix blacklist nor covered by the phrase rewrites. It is deliberately
+      // last because it is the one that plants the persona line in assistant
+      // history (#297): the model imitates its own past answers. If system-only
+      // and both perturbations already worked, this rung never runs, so a
+      // normal rescue leaves assistant history clean.
+      if (!current.ok && current.kind === 'channel_reject' && !controller.signal.aborted) {
+        const blind = forceNeutralHead(forced ?? prepared)
+        if (blind !== undefined) {
+          logger?.warn('dsh-connect-workbuddy: the system-only head and both perturbations were refused; retrying once with the neutral head forced in front of every opening (including assistant history)')
+          current = await client.chatStream(credential, blind, controller.signal, sessionConversationId)
+          retriedWithBlindHead = true
+        }
+      }
       // #302: a ladder that entered the `channel_reject` branch but had nothing
       // it could change used to be silent. Say so — "no rescue was possible"
       // and "the rescue was skipped" are different facts to the reader.
       if (!current.ok && current.kind === 'channel_reject'
-        && !retriedWithForcedHead && !retriedWithPerturbation && !retriedWithDensePerturbation) {
+        && !retriedWithSystemHead && !retriedWithPerturbation && !retriedWithDensePerturbation && !retriedWithBlindHead) {
         logger?.warn('dsh-connect-workbuddy: the channel gate refused the body, but no rescue transform could change it (every scanned opening already neutral); no retry was spent')
       }
       return current
@@ -2053,7 +2082,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // Run it once more on exactly the result the user will read. The shared
     // retried* flags make this a no-op when the ladder already spent its rungs,
     // so a single-account 11128 sends no extra request here.
-    if (!retriedWithForcedHead && !retriedWithPerturbation && !retriedWithDensePerturbation) {
+    if (!retriedWithSystemHead && !retriedWithPerturbation && !retriedWithDensePerturbation && !retriedWithBlindHead) {
       result = await rescueChannelReject(result)
     }
     // The final attempt's failure — recorded only if the loop did not already
@@ -2255,9 +2284,10 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         // system can be bisected by the reader, without leaking any text.
         const evidence = channelEvidenceText(raw) + fingerprintTraceText(raw, prepared)
         const retries: string[] = []
-        if (retriedWithForcedHead) retries.push('强制中性头')
+        if (retriedWithSystemHead) retries.push('system 中性头')
         if (retriedWithPerturbation) retries.push('一次不可见扰动')
         if (retriedWithDensePerturbation) retries.push('一次密集不可见扰动')
+        if (retriedWithBlindHead) retries.push('全消息中性头')
         const retryNote = retries.length === 0 ? '' : `，并已用${retries.join('与')}重试过`
         // ISSUE #113: WHICH MEMBER of the `11128` family this is, decided by the
         // plugin's OWN evidence rather than by the upstream's `msg` — which
@@ -2300,9 +2330,11 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
           '该请求被 WorkBuddy 网关的渠道校验拦截，上游把它描述成「不是官方客户端发出的」，但那是误导性文案：' +
           '网关扫描每一条 system 与 assistant 消息（开头做前缀匹配，正文做精确子串匹配），与账号、积分、额度、网络都无关，换账号或换区域也不会改变结果。' +
           '插件已对已知的第三方 agent 指纹做归一化' + retryNote +
-          (retriedWithForcedHead
+          (retriedWithBlindHead
             ? '；这次重试里每一条被扫描消息都已经加了中性头，仍然被拒，说明卡点不在这些开头本身'
-            : '') +
+            : retriedWithSystemHead
+              ? '；这次重试只给 system 开头加了中性头（assistant 历史保持原样，避免模型模仿），仍然被拒'
+              : '') +
           '。上面标着「不在插件已知名单里」的，只说明该消息的首行不是已知指纹，既不表示这条消息没被处理，也不表示它一定有问题；' +
           '如果这些消息确实有问题，命中的更可能是中段的某一句。请把这条报错整段反馈到 issue 里——首行之外的线索只能从完整请求里找'
         writeOpenAIError(res, KIND_STATUS[result.kind], result.kind, message, hostErrorCode(result.kind))

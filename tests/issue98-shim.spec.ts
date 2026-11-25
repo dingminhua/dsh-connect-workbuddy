@@ -196,7 +196,7 @@ async function chat(instance: WorkBuddyShim, messages: Array<Record<string, unkn
 }
 
 describe('the self-healing retry (issue #98)', () => {
-  it('retries once with the neutral head forced in front of every opening, and lets the request succeed', async () => {
+  it('retries with the neutral head on SYSTEM only, leaving assistant history clean (#297)', async () => {
     const mounted = mount({
       results: (_body, call) => call === 1 ? failure(400, CHANNEL_REJECT_BODY) : { ok: true, response: answer('2') },
     })
@@ -211,16 +211,18 @@ describe('the self-healing retry (issue #98)', () => {
 
     expect(status).toBe(200)
     expect(text).toContain('2')
-    // The retry really was a SECOND request, and it differs from the first only
-    // by where the neutral head sits.
+    // The retry really was a SECOND request.
     expect(mounted.bodies).toHaveLength(2)
     const retried = JSON.parse(mounted.bodies[1] ?? '{}') as { messages: Array<{ role: string, content: string }> }
     const system = retried.messages.find(message => message.role === 'system')
     const assistant = retried.messages.find(message => message.role === 'assistant')
+    // ISSUE #297: the first rung moves only the SYSTEM opening — that is what the
+    // gateway's offset-0 gate reads, and system cannot be imitated into a future
+    // answer. The assistant fingerprint is handled by the phrase rewrite, NOT by
+    // a persona head the model would copy into its next reply and persist.
     expect(system?.content.startsWith(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`)).toBe(true)
-    // The assistant message is the one that poisons a session — it must be moved
-    // too, or the retry would be refused for the same reason.
-    expect(assistant?.content.startsWith(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`)).toBe(true)
+    expect(assistant?.content.startsWith(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`)).toBe(false)
+    expect(assistant?.content).toContain('sure, it is 1+1.')
   })
 
   it('never spends a second account on the retry, and never books the first attempt', async () => {
@@ -272,8 +274,12 @@ describe('the self-healing retry (issue #98)', () => {
     // The sparse rung still ADDS breaks on top of the ones the request path put
     // there — that is what makes spending this request worth it at all.
     expect(breaksIn(second)).toBeGreaterThan(breaksIn(first))
+    // This body already opens with the neutral head, so forceSystemHead is a
+    // no-op (idempotent) and only the two perturbation rungs spend requests.
     expect(reply.message).toContain('并已用一次不可见扰动与一次密集不可见扰动重试过')
-    expect(reply.message).not.toContain('并已用强制中性头')
+    // #297: the blind all-role head is the LAST rung and must NOT run when the
+    // earlier rungs already spent their requests.
+    expect(reply.message).not.toContain('全消息中性头')
   })
 })
 
@@ -302,7 +308,7 @@ describe('the reply reads the HOST body, per role (issue #98)', () => {
     // The retry really happened, and the reply says so.
     // The ladder spent both rungs (the head retry could not help by itself),
     // and the reply says so.
-    expect(reply.message).toContain('并已用强制中性头与一次不可见扰动与一次密集不可见扰动重试过')
+    expect(reply.message).toContain('并已用system 中性头与一次不可见扰动与一次密集不可见扰动与全消息中性头重试过')
     // The old, misleading claim is gone: the plugin cannot know which line the
     // gateway matched, and pretending otherwise is what misdirected the reports.
     expect(reply.message).not.toContain('命中的 system 提示开头')
