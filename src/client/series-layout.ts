@@ -81,7 +81,6 @@ ${u} ${p}-pool-actions-end{margin-left:auto}
 ${u} ${members} ${p}-pool-action-note{margin:0;padding:0 14px 12px;font-size:12px;line-height:18px}
 ${u} ${members} ${p}-pool-table{border:0;border-top:1px solid var(--dsw-alias-border-l1,#777);border-radius:0}
 ${u} ${p}-pool-row{padding:10px 14px;align-items:start;font-size:13px;line-height:18px}
-${u} ${p}-pool-row-head{padding:8px 14px;font-size:11px;line-height:16px;align-items:center}
 ${u} ${p}-pool-row-current{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#cf795b) 5%,var(--dsw-alias-bg-layer-2,#24262c));box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary,#cf795b)}
 ${u} ${p}-pool-row-actions .dsm-btn{min-height:26px;padding:2px 10px;font-size:12px;line-height:20px}
 ${u} ${p}-pool-settings-wrap{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#777);padding-top:14px}

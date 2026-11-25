@@ -906,26 +906,8 @@ export const WORKBUDDY_CARD_CSS = `
     "probe   probe   actions";
 }
 .dsm-workbuddy-pool-row:first-child{border-top:0}
-.dsm-workbuddy-pool-row-head{padding:8px 14px;row-gap:1px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
-/* THE HEADER SPEAKS THE SAME TEMPLATE AS THE ROWS.
- *
- * It used to be a five-span row against a five-track template, and the narrow
- * form hid it because its labels pointed at tracks that no longer existed.
- * Both templates now name the same AREAS, so the labels line up in both
- * directions — and a label cannot drift away from the value it names, because
- * there is no second column definition to keep in step.
- *
- * The cells are emitted in reading order (line one, then line two) and the
- * areas decide where each lands, exactly as in the rows.
- *
- * The check-in label is ABSENT where the region has none, exactly as its cell
- * is: an empty area stays empty, and a label over nothing is worse than none.
- * The actions cell has no text — the buttons speak — but it still has to exist,
- * or the area named in the template would have no box to fill. */
-.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-credits{grid-area:credits;justify-self:end;text-align:right}
-.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-probe{grid-area:probe}
-.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-checkin{grid-area:checkin;justify-self:end}
-.dsm-workbuddy-pool-row-head .dsm-workbuddy-pool-col-actions{grid-area:actions}
+/* No column header (#313): the values are self-describing, so the table goes
+   straight to rows. The grid areas below are the rows' own cell placement. */
 /* WHERE THE LABELED COLUMN ACTUALLY STARTS (learned from dsh-connect-trae, which
    carries the same rule for the same reason).
  *
@@ -1421,7 +1403,6 @@ export const WORKBUDDY_CARD_CSS = `
  * Chinese table in the same state fits (262px for a 260px verdict). */
 @container (max-width:700px){
   .dsm-workbuddy-pool-row{column-gap:8px;row-gap:3px;padding:9px 12px}
-  .dsm-workbuddy-pool-row-head{padding:7px 12px}
   .dsm-workbuddy-pool-probe-sep,.dsm-workbuddy-pool-tested-at{display:none}
 }
 

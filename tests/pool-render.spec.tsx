@@ -1770,9 +1770,8 @@ describe('a rate-limited account says so ONCE', () => {
         ],
       }),
     }))
-    // NOT `querySelector`: the FIRST `.dsm-workbuddy-pool-row` is the header row,
-    // which carries only column labels.
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    // No header row any more (#313), so index 0 is the first data row.
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     // Count the RENDERED words, not the source: the duplication was visible on
     // screen while every text assertion on either field passed on its own.
     // The double count came from TWO different keys, so each is counted
@@ -1804,7 +1803,7 @@ describe('a rate-limited account says so ONCE', () => {
         ],
       }),
     }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     const text = row?.textContent ?? ''
     const label = text.split('row.poolExcludedModelBusy').length - 1
     const verdict = text.split('row.probeModelBusyAt').length - 1
@@ -1830,7 +1829,7 @@ describe('a rate-limited account says so ONCE', () => {
         ],
       }),
     }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     // The suppression above must be narrow: an out-of-credit account is healthy
     // per the probe, so dropping this label would hide the ONLY reason it is
     // not serving.
@@ -1872,7 +1871,7 @@ describe('the row groups its cells into the three intended lines', () => {
         ],
       }),
     }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     const order = Array.from(row?.children ?? []).map(el => el.className)
     const at = (needle: string): number => order.findIndex(c => c.includes(needle))
     // Line one: the identity, then its price.
@@ -1907,7 +1906,7 @@ describe('the row groups its cells into the three intended lines', () => {
         ],
       }),
     }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     const line = row?.querySelector('.dsm-workbuddy-pool-probe-line')
     expect(line, 'the verdict line wrapper is missing').not.toBeNull()
     // ONE wrapper holds both, and neither is a sibling of it: the "two lines"
@@ -1952,7 +1951,7 @@ describe('the credits cell prints the amount, not an expiry date', () => {
         ],
       }),
     }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     const text = row?.textContent ?? ''
     expect(text, 'the credits figure must still print').toContain('1,648')
     expect(text, 'the expiry date must be gone').not.toContain('row.poolCreditNearest')
@@ -1977,7 +1976,7 @@ describe('the credits cell prints the amount, not an expiry date', () => {
         ],
       }),
     }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     expect(row?.textContent ?? '', 'the lapse warning must survive')
       .toContain('row.poolCreditSoon')
     await m.unmount()
@@ -2033,22 +2032,20 @@ describe('the international pool (no check-in column) renders the same two lines
     // silently pulls each cell one slot along — which is how the check-in used
     // to appear under the credits column. The browser will not warn.
     const m = await mount(AccountPool, international())
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     const cells = Array.from(row?.children ?? []).map(el => el.className)
     // account, credits, probe, actions — the check-in is absent by design.
     expect(cells, 'the international row must carry four cells').toHaveLength(4)
     expect(cells.some(c => c.includes('dsm-workbuddy-pool-checkin')), 'no check-in cell').toBe(false)
-    // …and the header row names three of them, plus the silent actions slot.
-    const head = m.container.querySelectorAll('.dsm-workbuddy-pool-row-head')[0]
-    const labels = Array.from(head?.children ?? []).map(el => el.textContent ?? '')
-    expect(labels.join(' '), 'the header must not label a column that is not there')
-      .not.toContain('row.poolColumnCheckin')
+    // No column header any more (#313): a header would reintroduce the two-line
+    // rows that read as a broken alignment. Index 0 is the first data row.
+    expect(m.container.querySelectorAll('.dsm-workbuddy-pool-row-head')).toHaveLength(0)
     await m.unmount()
   })
 
   it('still renders the credits, the verdict and the actions', async () => {
     const m = await mount(AccountPool, international())
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     const text = row?.textContent ?? ''
     // The three cells that survive must all still be there — the layout change
     // moves them, it must not drop them.
@@ -2113,7 +2110,7 @@ describe('an elapsed cooldown re-tests that one account by itself', () => {
     // true and still answer "how old is this reading".
     stubFetch(() => ({ body: {} }))
     const m = await mount(AccountPool, baseProps({ pool: poolWith([expiredAccount('limited-2')], ['limited-2']) }))
-    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[1]
+    const row = m.container.querySelectorAll('.dsm-workbuddy-pool-row')[0]
     expect(row?.querySelector('.dsm-workbuddy-pool-probe-main'), 'no verdict span on an elapsed cooldown').toBeNull()
     expect(m.text(), 'and no wording that claims a re-check is pending').not.toContain('row.poolNeverTested')
     // The still-true half stays, which is what keeps the row at three lines.

@@ -1872,29 +1872,9 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
           ),
 
       h('div', { className: `dsm-workbuddy-pool-table${pool.checkinSupported ? ' dsm-workbuddy-pool-table-checkin' : ''}` },
-        // ONE TEMPLATE, TWO READERS: the header and the rows place their cells
-        // by the same AREA NAMES (see the grid in styles.ts), so a label cannot
-        // end up over a different cell than the one it names.
-        //
-        // The cells are emitted in READING ORDER — line one left to right, then
-        // line two — and the areas, not the order, decide where each one lands.
-        // That is also why the check-in is absent rather than empty where the
-        // region has none: an empty cell still claims its area.
-        h('div', { className: 'dsm-workbuddy-pool-row dsm-workbuddy-pool-row-head' },
-          // The first area is labelled 账号, but the account cell begins with a
-          // checkbox, so the NAME starts 38px into it (measured at 1120px). A
-          // header flush with the cell edge therefore hangs in the margin and
-          // labels nothing — the reader has to guess where the column starts.
-          h('span', { className: 'dsm-workbuddy-pool-col-account' }, t('row.poolColumnAccount')),
-          h('span', { className: 'dsm-workbuddy-pool-col-credits' }, t('row.poolColumnCredits')),
-          h('span', { className: 'dsm-workbuddy-pool-col-probe' }, t('row.poolColumnProbe')),
-          pool.checkinSupported
-            ? h('span', { className: 'dsm-workbuddy-pool-col-checkin' }, t('row.poolColumnCheckin'))
-            : null,
-          // The actions area: no header text, the buttons speak. It still needs
-          // its cell, or the area named in the template would have no box.
-          h('span', { className: 'dsm-workbuddy-pool-col-actions' }),
-        ),
+        // No column header (#313): the two-line grid read as a broken header in
+        // the card. The values are self-describing (checkbox + name, credits
+        // figure, verdict line, buttons), so the table goes straight to rows.
         ...(() => {
           const ordered = sortAccountsByOrder(pool.accounts, orderIds)
           // `memberSeen` counts how many member rows we've emitted so far, 0-based
