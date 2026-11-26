@@ -1638,6 +1638,20 @@ export type WorkBuddyWebUsage =
   }
   | {
     status: 'signed-in'
+    /**
+     * What this region's answered turns have cost (issue #320).
+     *
+     * `turns` counts only turns whose stream carried a figure; `unknownTurns`
+     * counts the rest, so `total` is never read as complete when it is not.
+     * Absent for a Host built before the feature — the card then shows nothing
+     * rather than a misleading zero.
+     */
+    turnCredits?: {
+      readonly total: number
+      readonly turns: number
+      readonly unknownTurns: number
+      readonly last?: number
+    }
     accountId: string
     /**
      * The account's human name, or `''` when the desktop app recorded none.

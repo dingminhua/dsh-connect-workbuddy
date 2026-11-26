@@ -786,6 +786,8 @@ export const WORKBUDDY_CARD_CSS = `
    earliest instant (the "when"). Two lines rather than one wrapped sentence —
    at the card's width a single line would break the amount away from its own
    sentence on a long date, and the amount is what must stay scannable. */
+.dsm-workbuddy-turn-credits{padding-left:19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}
+.dsm-workbuddy-turn-credits-last,.dsm-workbuddy-turn-credits-unknown{margin-left:6px;color:var(--dsw-alias-label-quaternary,#7c828a)}
 .dsm-workbuddy-expiry{
   display:flex;flex-direction:column;gap:2px;margin:0;
   padding:9px 11px;border-radius:9px;

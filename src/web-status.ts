@@ -143,6 +143,19 @@ export interface WorkBuddyStatusRouteOptions {
    * with only that option.
    */
   defaultThinkingEfforts?(region: WorkBuddyRegion): Readonly<Record<string, string | undefined>>
+  /**
+   * Credits spent by turns served through this region (issue #320).
+   *
+   * Optional so a Host built before the feature keeps serving: the card then
+   * renders nothing rather than a zero, because "no data" and "cost nothing"
+   * must not look the same.
+   */
+  turnCredits?(region: WorkBuddyRegion): {
+    readonly total: number
+    readonly turns: number
+    readonly unknownTurns: number
+    readonly last?: number
+  } | undefined
   /** Re-read the live catalog of one region from the upstream. */
   discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<WorkBuddyCatalogRead>
   /**
@@ -1556,8 +1569,13 @@ export async function workBuddyWebStatus(
   // matter how often the card or pill polls it. Absent for a Host that predates
   // the feature, which renders no segment at all.
   const rosterSeen = deps.rosterSeen === undefined ? undefined : await deps.rosterSeen(region)
+  // ISSUE #320: what this region's turns have cost so far. Read per call so the
+  // card reflects the turn the user just ran, and omitted entirely for a Host
+  // that predates the feature — a zero would read as "this cost nothing".
+  const turnCredits = deps.turnCredits?.(region)
   return {
     status: 'signed-in',
+    ...turnCredits === undefined ? {} : { turnCredits },
     // The persisted per-region budgets, read straight from the Host config.
     // The browser settings mirror can be stale — a write made through the Host
     // save endpoint never updates it — so the card renders these instead of

@@ -3951,6 +3951,33 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                         </p>}
                     {status.refreshError === undefined ? null
                       : <p className="dsm-workbuddy-usage-error" role="alert">{t('row.requestFailedHint', { message: status.refreshError })}</p>}
+                    {/* ISSUE #320: what THIS region's turns have cost. Users
+                        asked to see the spend per turn instead of only the
+                        account's running balance, which moves for reasons the
+                        card cannot attribute (other devices, check-ins).
+                        Rendered only when the Host reports it, so an older Host
+                        shows an unmodified card. A turn the upstream did not
+                        price is COUNTED separately rather than folded into the
+                        average — a total that silently skipped them would look
+                        exact and be wrong. */}
+                    {status.turnCredits === undefined || status.turnCredits.turns === 0
+                      ? null
+                      : <p className="dsm-workbuddy-turn-credits" role="status">
+                          {t('row.turnCredits', {
+                            total: formatNumber(status.turnCredits.total),
+                            turns: status.turnCredits.turns,
+                          })}
+                          {status.turnCredits.last === undefined
+                            ? null
+                            : <span className="dsm-workbuddy-turn-credits-last">
+                                {t('row.turnCreditsLast', { last: formatNumber(status.turnCredits.last) })}
+                              </span>}
+                          {status.turnCredits.unknownTurns === 0
+                            ? null
+                            : <span className="dsm-workbuddy-turn-credits-unknown">
+                                {t('row.turnCreditsUnknown', { count: status.turnCredits.unknownTurns })}
+                              </span>}
+                        </p>}
                     {/* The account pool. Rendered only when the Host reports
                         pool state, so an older Host shows an unmodified card.
                         It owns the rotation-vs-manual conflict: while rotation

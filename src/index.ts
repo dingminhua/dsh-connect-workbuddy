@@ -1860,6 +1860,13 @@ export function apply(ctx: Context, config: Config): void {
   const settingsNs = settingsNamespaceOf(ctx)
 
   const stacks = {} as Record<WorkBuddyRegion, WorkBuddyRegionStack>
+  /**
+   * Per-region credit accumulators (issue #320), HOISTED out of the loop below
+   * so the usage route — built once, after the loop — can read every region's
+   * figures. Declared here rather than inside the loop because the card asks by
+   * region long after the shim was constructed.
+   */
+  const turnCreditsByRegion: Record<string, { total: number, turns: number, unknownTurns: number, last?: number }> = {}
   for (const region of REGION_KEYS) {
     // `authFile` is volatile on the 0.1.7 line: the raw config value is a live
     // cosmokit reference, and passing it through would hand the store a
@@ -1887,6 +1894,26 @@ export function apply(ctx: Context, config: Config): void {
      * reporting is on.
      */
     let pendingUsage: (usage: WorkBuddyUsageCounts | undefined) => void = () => {}
+    /**
+     * Credits spent by turns that went through this region (issue #320).
+     *
+     * WHY THIS LIVES OUTSIDE THE BODY REPORT. The report is a diagnostic that is
+     * OFF unless `WORKBUDDY_BODY_REPORT` is set, but a user asking "how much did
+     * this turn cost" is asking about EVERY turn, not about a debugging session.
+     * So the accumulator is independent: `onUpstreamUsage` fires on every
+     * answered stream, and this counts the ones that carried a figure.
+     *
+     * `turns` counts ANSWERED TURNS THAT REPORTED A FIGURE, not turns in
+     * general: the upstream does not always say, and dividing a total by a
+     * larger denominator would understate every turn. `unknownTurns` keeps the
+     * remainder visible so a total is never read as complete when it is not.
+     *
+     * In memory on purpose — this is a "what is happening right now" readout,
+     * not accounting. Persisting it would create a second ledger that can
+     * disagree with the account's own credit balance, which is the number that
+     * actually matters for spending decisions.
+     */
+    const turnCredits = (turnCreditsByRegion[region] ??= { total: 0, turns: 0, unknownTurns: 0 })
     const shim = createWorkBuddyShim({
       store,
       client,
@@ -1929,7 +1956,20 @@ export function apply(ctx: Context, config: Config): void {
           .then(attach => { pendingUsage = attach })
           .catch((error: unknown) => ctx.logger.warn('dsh-connect-workbuddy: body report failed', error))
       },
-      onUpstreamUsage: usage => { pendingUsage?.(usage) },
+      onUpstreamUsage: usage => {
+        // Issue #320: count the turn's credits before handing the counts to the
+        // body report, so the readout works whether or not reporting is on.
+        if (usage !== undefined) {
+          if (usage.credit !== undefined) {
+            turnCredits.total += usage.credit
+            turnCredits.turns += 1
+            turnCredits.last = usage.credit
+          } else {
+            turnCredits.unknownTurns += 1
+          }
+        }
+        pendingUsage?.(usage)
+      },
       // Remember a tier refusal so the model card can name it (issue #83). The
       // reply text is not enough: compaction reads the failure as a boolean and
       // renders "could not produce a useful summary", so this is the only route
@@ -3100,6 +3140,8 @@ export function apply(ctx: Context, config: Config): void {
       return out
     },
     displayModels: region => displayModels(current(), region),
+    // Issue #320: the running per-turn credit total for this region.
+    turnCredits: region => turnCreditsByRegion[region],
     /**
      * The LIVE load levels, read beside the saved roster the card lists.
      *

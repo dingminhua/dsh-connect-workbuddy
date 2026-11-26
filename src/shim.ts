@@ -26,6 +26,7 @@ import { preferredAccountName, workbuddyAccountId } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyRefusalReport } from './off-thinking.ts'
 import { usageOfChunk } from './body-report.ts'
+import type { WorkBuddyUsageCounts } from './body-report.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { DsmlStreamBuffer } from './dsml-recovery.ts'
 import type { RecoveredToolCall, RecoveryGate } from './dsml-recovery.ts'
@@ -266,11 +267,7 @@ export interface WorkBuddyShimOptions {
    *
    * Fired without awaiting, and never allowed to fail the request.
    */
-  onUpstreamUsage?: (usage: {
-    promptTokens?: number
-    completionTokens?: number
-    cachedTokens?: number
-  }) => void
+  onUpstreamUsage?: (usage: WorkBuddyUsageCounts) => void
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -613,12 +610,15 @@ class RecoveryStream {
     gate: RecoveryGate | undefined,
     private readonly logger: ShimLogger | undefined,
     notice?: string,
-    /** Called once, with the upstream's token counts, when the stream reports them. */
-    private readonly onUsage?: (usage: {
-      promptTokens?: number
-      completionTokens?: number
-      cachedTokens?: number
-    }) => void,
+    /**
+     * Called once, with the upstream's token counts AND the credits this turn
+     * was billed (issue #320), when the stream reports them.
+     *
+     * The type is the shared {@link WorkBuddyUsageCounts} rather than an inline
+     * copy: the copy used to omit `credit`, which is how the field could exist
+     * on the wire and be unreadable to every consumer at once.
+     */
+    private readonly onUsage?: (usage: WorkBuddyUsageCounts) => void,
   ) {
     this.buffer = gate === undefined ? undefined : new DsmlStreamBuffer(gate)
     this.notice = notice

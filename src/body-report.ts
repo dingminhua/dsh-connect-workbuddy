@@ -341,6 +341,16 @@ export interface WorkBuddyUsageCounts {
   promptTokens?: number
   completionTokens?: number
   cachedTokens?: number
+  /**
+   * Credits this turn consumed, as the upstream billed it (issue #320).
+   *
+   * The figure is the upstream's own — `creditOfStream` already reads it for
+   * the probe path, and a user asked to see it per turn instead of only in the
+   * account's running total. Absent means "the stream did not say", which is
+   * reported as nothing rather than as zero: a turn whose cost is unknown must
+   * not look free.
+   */
+  credit?: number
 }
 
 /** A finite, non-negative token count, or undefined for anything else. */
@@ -370,12 +380,29 @@ export function usageOfChunk(chunk: Record<string, unknown>): WorkBuddyUsageCoun
     ? tokenCount((details as Record<string, unknown>)['cached_tokens'])
     : undefined
   const cachedTokens = fromDetails ?? tokenCount(record['prompt_cache_hit_tokens'])
-  if (promptTokens === undefined && completionTokens === undefined && cachedTokens === undefined) return undefined
+  // The credit figure is emitted OUTSIDE `usage` on at least one shape — the
+  // probe path reads it with a whole-stream regex, which cannot say where it
+  // sat. Both spellings are therefore accepted, `usage.credit` first.
+  const credit = creditCount(record['credit']) ?? creditCount(chunk['credit'])
+  if (promptTokens === undefined && completionTokens === undefined && cachedTokens === undefined
+    && credit === undefined) return undefined
   return {
     ...promptTokens === undefined ? {} : { promptTokens },
     ...completionTokens === undefined ? {} : { completionTokens },
     ...cachedTokens === undefined ? {} : { cachedTokens },
+    ...credit === undefined ? {} : { credit },
   }
+}
+
+/**
+ * A finite credit figure, or undefined.
+ *
+ * Non-negative is required because a credit cannot be spent backwards; a
+ * negative value would be a refund or a parse artifact, and either way reporting
+ * it as this turn's cost would be wrong.
+ */
+function creditCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 /**
