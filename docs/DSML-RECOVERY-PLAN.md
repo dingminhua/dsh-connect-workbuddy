@@ -397,3 +397,69 @@ to lose」）正相反。用例**意图**保留（不产生第二条调用通道
 
 全量：**2986 passed + 2 skipped**（比 `main` 的 2967 + 2 多 19 条），`typecheck` 干净，
 `pnpm run build` 6 个声明产物齐全。
+
+## 十四、2026-11-26 补记：issue #298（完全没有标记的裸调用）
+
+### 14.1 现象
+
+一次真实响应把整次工具调用写进 `delta.content`，**全程没有一个标记**：
+
+```text
+好的，我列两个选项：
+<ask_user_question>
+<questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+```
+
+用户看到的就是这段原文。它**不是「过了闸被拒」**，而是根本没进候选：`scanTag` 只认带标记的标签，
+`stripMarkup` 一字不删，`hasProse` 又因为前面那句中文为真——整块原样发出。
+
+这是 §12.2 那条教训的另一个面：**按已知关键词判空的检查，对真实泄漏会给出和「检查通过」一样的结论。**
+
+### 14.2 为什么不能只把标签名加进 BLOCK_TAGS
+
+贡献者（PR #298）已实测：把 `tool_call` 加进 `BLOCK_TAGS`、让 `scanTag` 不要求 marker、让
+`stripMarkup` 删所有标签，**三种变异在现有 41 例上全部 STILL GREEN**——现有测试没有钉住裸标签行为。
+
+这个形态同时有五层新东西：词汇（无标记）、结构（wrapper 名就是工具名）、参数（`arg_key`/`arg_value`
+成对）、截断（`<questions` 没有 `>`）、闭合（用 `</tool_call>` 收 `<ask_user_question>` 的块）。
+
+### 14.3 本仓库的取舍：触发条件必须是「协议自有词汇」
+
+**这是与 PR #298 的关键分歧。** 该 PR 的生效名字集合是「协议词汇 + 本次声明的工具名 + 参数名」，
+本仓库实现收窄为：**必须出现 `PROTOCOL_VOCABULARY` 中的一个词**（`tool_call` / `invoke` /
+`parameter` / `arg_key` / `arg_value` / `arguments`）。
+
+理由是可复现的反例。按名字判断会把下面两句**真实散文**恢复成工具调用或删掉内容：
+
+```text
+You can write <bash>ls -la</bash> to list files.   ← bash 是声明过的工具名
+Set <command> now and later.                        ← command 是声明过的参数名
+```
+
+这两种形态在 PR #298 的 review 里被复现过。删掉用户写的一句话，比显示协议原文更糟——
+原文至少可见、可复制，删掉的内容找不回来。因此本实现把「协议词汇」定为唯一触发器，
+并把这两句写成**永久的反向测试**（`issue298-bare-markup.spec.ts` 的
+`the two shapes a name-based rule deletes stay prose`）。
+
+### 14.4 落地边界
+
+- `RecoveryGate.bareMarkup`，**默认关**；关闭时 `scanTag` 仍要求 marker，行为逐字节同旧（有测试钉住）。
+- 生效时仍受原有四道闸约束：wrapper 名必须落在 `declaredNames`（闸 2）、缺必填参数拒绝（闸 4）、
+  流中断整块按原文显示（闸 1 + 4）。**没有「推断工具名」这一步**——模型把工具名明写在 wrapper 上，
+  这里只做**校验**。
+- 截断 key 单独一条窄规则：只有 schema 里恰好还剩这一个必填参数、且拼写就是它时才接受。
+- 流式：一个裸块能被识别的前提是**协议词汇已经出现**。分块到达时 wrapper 可能先被吐出——
+  这是刻意的取舍（可见的残片 vs 被删的句子），已写进测试注释。
+
+### 14.5 新增测试与变异验证
+
+`tests/issue298-bare-markup.spec.ts` 12 例：关闭时原样 / 恢复真实泄漏且散文保留 / 流式恢复 /
+两句散文不误伤 / 普通 HTML 不受影响 / 未声明工具拒绝 / 缺必填拒绝 / 未知 key 拒绝 / pin 生效 /
+带标记路径不回归。
+
+| 变异 | 结果 |
+|---|---|
+| 裸标签不再要求协议词汇（退回按名字判断） | 2 例红——**正是两个 false positive** |
+| 关掉裸标记恢复路径 | 1 例红（主恢复用例） |
+
+全量：**3857 passed + 2 skipped**（`pnpm run check`），PII clean。

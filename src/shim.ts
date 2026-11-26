@@ -2465,6 +2465,11 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       // (`pwdsh` for `pwsh`) is read as that tool instead of falling back to
       // plain text. Same rule as above — only ever a name already on offer.
       repairNearMissName: true,
+      // Issue #298: recover a call written with NO marker at all. The trigger is
+      // the protocol's own vocabulary (`tool_call` / `arg_key` / `arg_value` /
+      // `parameter`), never a tool or parameter name alone — `<bash>ls</bash>`
+      // in a user's sentence must never become a call. See `PROTOCOL_VOCABULARY`.
+      bareMarkup: true,
       ...declared.pinnedToolName === undefined ? {} : { pinnedToolName: declared.pinnedToolName },
     }
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+> 修复版：恢复**完全没有标记**的工具调用（#298）。此前这种泄漏不进候选，整块协议原文直接发给用户。
+
+### 无标记裸调用的恢复（#298）
+
+- **现象**：一次真实响应的 `delta.content` 里是整次工具调用，**全程没有一个标记**——`<ask_user_question>` 做 wrapper、`<arg_key>`/`<arg_value>` 成对、末个 key 被截断（`<questions` 没有 `>`）、用 `</tool_call>` 收 `<ask_user_question>` 的块。`scanTag` 只认带标记的标签，`stripMarkup` 一字不删，`hasProse` 又因为前面那句中文为真——整块原样发给用户。
+- **取舍（与 PR #298 的关键分歧）**：贡献者的方案按「协议词汇 + 声明过的工具名 + 参数名」判断，本仓库收窄为**必须出现协议自有词汇**（`tool_call` / `invoke` / `parameter` / `arg_key` / `arg_value` / `arguments`）。理由是可复现的反例：按名字判断会把 `You can write <bash>ls -la</bash> to list files.` 恢复成调用、把 `Set <command> now and later.` 删掉内容——删用户写的一句话比显示协议原文更糟。这两句现在是**永久反向测试**。
+- **实现**：新增 `RecoveryGate.bareMarkup`（默认关，关闭时逐字节同旧行为）；四道闸一条没动（未声明工具拒绝、缺必填参数拒绝、pin 生效、流中断按原文显示），**没有「推断工具名」**——工具名由模型明写在 wrapper 上，这里只校验。截断 key 只接受 schema 里恰好剩下那一个必填参数。
+- **已知限制（如实登记）**：裸块没有标记，只能靠内容识别，所以流式分块到达时 wrapper 可能先被吐出（协议词汇尚未出现）。这是刻意取舍——可见的残片优于被删的句子。真实泄漏是单个 `delta.content` 到达，该情形已覆盖。
+- **测试**：新增 `tests/issue298-bare-markup.spec.ts` 12 例。变异验证：退回按名字判断 → 2 例红（正是两个 false positive）；关掉恢复路径 → 主用例红。`pnpm run check` 全过（3857 passed + 2 skipped）。文档补 `docs/DSML-RECOVERY-PLAN.md` 第十四节。
+
 ## 5.31.8 (2026-11-26)
 
 > 修复版（#297 重开）：渠道救援的第一级只给 system 加中性头，assistant 历史不再被插件注入人格句、被模型模仿进回复并落盘；全消息盲加头降为末级兜底。

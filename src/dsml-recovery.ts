@@ -183,6 +183,33 @@ const CANONICAL_TAG_NAMES: ReadonlyMap<string, string> = new Map([
  */
 const MARKER_ONLY_TAG_NAMES: ReadonlySet<string> = new Set(['tool-calls', 'toolcalls', 'calls'])
 
+/**
+ * The protocol's OWN vocabulary — names the model never writes in prose.
+ *
+ * This is the trigger for bare-markup recovery (issue #298) and the reason it
+ * is safe. A response whose `delta.content` carries tool calls with the marker
+ * stripped still keeps the protocol's skeleton: the `tool_call` wrapper, the
+ * `arg_key`/`arg_value` pair, a `parameter` element. Those words exist only
+ * because the model was speaking the wire protocol.
+ *
+ * A TOOL NAME ALONE IS NOT ENOUGH, and that distinction is the whole design.
+ * The two shapes below are ordinary prose about a tool, and both were
+ * reproduced against the first version of this feature:
+ *
+ *     You can write <bash>ls -la</bash> to list files.
+ *     Set <command> now and later.
+ *
+ * The first names a declared tool and brackets a plausible argument; the second
+ * names a declared parameter. Recovering either would delete a sentence the
+ * user wrote about the tool and replace it with a tool call they never asked
+ * for — strictly worse than showing markup. Neither carries one of these words,
+ * so neither is ever a candidate.
+ */
+const PROTOCOL_VOCABULARY: readonly string[] = [
+  'tool_call', 'tool_calls', 'tool-call', 'tool-calls', 'toolcalls',
+  'invoke', 'parameter', 'arg_key', 'arg_value', 'arguments',
+]
+
 /** Fence markers at the start of a line. */
 const FENCE_MARKERS: readonly string[] = ['```', '~~~']
 
@@ -305,6 +332,27 @@ export interface RecoveryGate {
    * Off unless the caller turns it on, so the default stays fail-closed.
    */
   repairNearMissName?: boolean
+  /**
+   * Opt in to recovering a block written with NO marker at all (issue #298).
+   *
+   * Captured in the wild: `delta.content` carried the whole call with not one
+   * `｜｜DSML｜｜` in it, so `scanTag` classified every tag as prose, `stripMarkup`
+   * deleted nothing, and `hasProse` answered true because a Chinese sentence
+   * preceded the block — the user was handed the raw protocol as the answer.
+   *
+   *     <ask_user_question>
+   *     <questions</arg_key><arg_value>[{"header":"…"}]</arg_value></tool_call>
+   *
+   * THE TRIGGER IS THE PROTOCOL'S OWN VOCABULARY, never a tool or parameter
+   * name. See {@link PROTOCOL_VOCABULARY} for the two prose shapes that a
+   * name-based rule deletes and this one cannot: a user explaining
+   * `<bash>ls -la</bash>` produces a recoverable call under that rule, which is
+   * a worse defect than the markup it fixes.
+   *
+   * OFF BY DEFAULT and byte-identical when off: `scanTag` still requires the
+   * marker, so nothing about the existing path changes.
+   */
+  bareMarkup?: boolean
   /**
    * Called once per withheld block, when the stream declined to recover AND
    * declined to show what it found.
@@ -989,6 +1037,367 @@ function inferNameFromSchema(
   return fit
 }
 
+// ---------------------------------------------------------------------------
+// Bare markup (issue #298)
+// ---------------------------------------------------------------------------
+
+/**
+ * Is `name` one of the protocol's own words, in any spelling the model uses?
+ *
+ * Compared after lowercasing and with `-` folded to `_`, because the model
+ * mixes `tool_call` / `tool-call` / `toolcall` freely.
+ */
+function isProtocolWord(name: string): boolean {
+  const folded = name.toLowerCase().replace(/-/gu, '_')
+  return PROTOCOL_VOCABULARY.some(word => word.replace(/-/gu, '_') === folded)
+}
+
+/**
+ * A bare (unmarked) OPENING tag at `index`, or nothing.
+ *
+ * STRICTER THAN {@link scanTag} IN TWO WAYS, both load-bearing:
+ *
+ *   - the `<` must be followed IMMEDIATELY by `/`, a letter, or `_`. `scanTag`
+ *     tolerates whitespace after `<` because the marker form needs it
+ *     (`<｜DSML｜ invoke>` writes the tool name where `name="…"` belongs);
+ *     tolerating it here would read `a < b and tool_call` as a tag.
+ *   - the name must be a declared tool, a declared parameter, or protocol
+ *     vocabulary — the caller decides, but a name outside all three is ordinary
+ *     text and must never enter the recovery path.
+ *
+ * Closing tags are returned too: the truncated-key rule below needs `</arg_value>`
+ * while its opener never arrived with a `>`.
+ */
+function scanBareTag(text: string, index: number): MarkupTag | undefined {
+  if (text.charAt(index) !== '<') return undefined
+  let position = index + 1
+  let closing = false
+  if (text.charAt(position) === '/') {
+    closing = true
+    position += 1
+  }
+  // The no-whitespace rule: `< tool_call>` is prose about the word.
+  if (position >= text.length || !/[\p{L}_]/u.test(text.charAt(position))) return undefined
+
+  const start = position
+  while (position < text.length && isNameCharacter(text, position)) position += 1
+  const name = text.slice(start, position).toLowerCase()
+  if (name === '') return undefined
+
+  const attributesStart = position
+  let selfClosing = false
+  let cursor = position
+  while (cursor < text.length) {
+    const character = text.charAt(cursor)
+    if (character === '>') {
+      return { start: index, end: cursor, name, closing, selfClosing, marked: false, attributes: text.slice(attributesStart, cursor).trim() }
+    }
+    if (character === '/' && text.charAt(cursor + 1) === '>') {
+      return { start: index, end: cursor + 1, name, closing, selfClosing: true, marked: false, attributes: text.slice(attributesStart, cursor).trim() }
+    }
+    // A `<` before the `>` means this was never a tag: `a < b and c > d`.
+    if (character === '<') return undefined
+    cursor += 1
+  }
+  return undefined
+}
+
+/**
+ * Is this bare name something the request itself put on offer?
+ *
+ * Three sources, all the caller's own data: a declared TOOL name (the wrapper
+ * may be named after the tool), a declared PARAMETER name (argument tags), and
+ * protocol vocabulary. Absent schemas refuse rather than permit.
+ */
+function isBareCandidate(name: string, gate: RecoveryGate): boolean {
+  if (isProtocolWord(name)) return true
+  if (gate.declaredNames.has(name)) return true
+  for (const accepted of gate.acceptedParameters?.values() ?? []) {
+    if (accepted.has(name)) return true
+  }
+  return false
+}
+
+/**
+ * Does `text` carry protocol vocabulary in a BARE form?
+ *
+ * The gate for the whole feature. A response that merely mentions a tool name
+ * in angle brackets — `<bash>ls</bash>`, `<command>` — carries none of these
+ * words and is never considered. The vocabulary check is what separates "the
+ * model spoke the protocol without the marker" from "the user wrote about a
+ * tool", and it is deliberately about the protocol's own skeleton rather than
+ * about anything the request declared.
+ */
+function hasBareProtocolWord(text: string): boolean {
+  for (let index = 0; index < text.length; index++) {
+    if (text.charAt(index) !== '<') continue
+    const tag = scanBareTag(text, index)
+    if (tag !== undefined && isProtocolWord(tag.name)) return true
+  }
+  return false
+}
+
+/**
+ * One bare block → a call, or nothing when any gate refuses it.
+ *
+ * THE WRAPPER NAMES THE TOOL when it is not protocol vocabulary: the captured
+ * shape is `<ask_user_question>` — the tool name written where `<invoke
+ * name="…">` belongs. Parameter evidence is `<arg_key>k</arg_key><arg_value>v</arg_value>`
+ * pairs, which are the protocol's own spelling and are read here rather than
+ * by {@link parseParameters} (that one expects `<parameter name="k">`).
+ *
+ * Gate 2 still runs on whatever name this resolves to, and gate 4 still
+ * refuses a declared tool whose required parameter is missing — this function
+ * INSPECTS a name, it never invents one.
+ */
+function parseBareBlock(block: string, gate: RecoveryGate): RecoveredToolCall | undefined {
+  const spans = ignoredSpans(block)
+  const first = findBareOpener(block, spans)
+  if (first === undefined) return undefined
+
+  // The name: protocol wrapper means "read the attributes / infer", a tool or
+  // parameter name IS the tool.
+  let name: string | undefined
+  const attributes = parseAttributes(first.attributes)
+  const declared = attributes['name']
+  if (first.name === 'tool_call' || first.name === 'tool_calls' || first.name === 'tool-call'
+    || first.name === 'tool-calls' || first.name === 'toolcalls' || first.name === 'invoke') {
+    if (declared !== undefined && declared !== '') name = declared
+  } else if (!isProtocolWord(first.name)) {
+    name = first.name
+  }
+  if (name === undefined) return undefined
+  // Gate 2: only a name this request offered.
+  if (!gate.declaredNames.has(name)) return undefined
+  const pinned = gate.pinnedToolName
+  if (pinned !== undefined && pinned !== 'auto' && pinned !== 'required' && pinned !== 'none' && pinned !== name) {
+    return undefined
+  }
+
+  const parameters = parseBareParameters(block, spans, name, gate)
+  if (parameters === undefined) return undefined
+
+  const required = gate.requiredParameters?.get(name)
+  if (required !== undefined && required.some(parameter => parameters[parameter] === undefined)) return undefined
+
+  return {
+    id: `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+    name,
+    arguments: JSON.stringify(parameters),
+  }
+}
+
+/** The first bare opening tag that is a candidate for this request. */
+function findBareOpener(text: string, spans: readonly IgnoredSpan[]): MarkupTag | undefined {
+  const cursor = { at: 0 }
+  let index = 0
+  while (index < text.length) {
+    const skipped = skipIgnored(spans, index, cursor)
+    if (skipped !== index) { index = skipped; continue }
+    if (text.charAt(index) === '<') {
+      const tag = scanBareTag(text, index)
+      if (tag !== undefined && !tag.closing) return tag
+    }
+    index += 1
+  }
+  return undefined
+}
+
+/**
+ * Read `<arg_key>k</arg_key><arg_value>v</arg_value>` pairs, or `<k>v</k>`.
+ *
+ * THE TRUNCATED-KEY RULE (the fifth layer of #298): the captured shape ends
+ * `<questions</arg_key><arg_value>[…]</arg_value></tool_call>` — the opener of
+ * the LAST key never got its `>`, so no scanner can see the name. That key is
+ * accepted ONLY when the tool's schema has exactly one required parameter still
+ * missing and this pair is the last thing before the wrapper closes. With no
+ * required list, or with more than one gap, the pair is refused and the block
+ * keeps its verbatim fate: a guess here writes an argument the model never
+ * named, which is worse than showing markup.
+ */
+function parseBareParameters(
+  block: string,
+  spans: readonly IgnoredSpan[],
+  toolDisplay: string,
+  gate: RecoveryGate,
+): Record<string, ParameterValue> | undefined {
+  const parameters: Record<string, ParameterValue> = {}
+  const accepted = gate.acceptedParameters?.get(toolDisplay)
+  const required = gate.requiredParameters?.get(toolDisplay) ?? []
+  let truncatedKey: string | undefined
+  let index = 0
+
+  while (index < block.length) {
+    const skipped = skipIgnored(spans, index, { at: 0 })
+    if (skipped !== index) { index = skipped; continue }
+    if (block.charAt(index) !== '<') { index += 1; continue }
+    const tag = scanBareTag(block, index)
+    if (tag === undefined) { index += 1; continue }
+    if (tag.name === 'arg_key' && !tag.closing) {
+      const close = findBareClose(block, spans, 'arg_key', tag.end + 1)
+      if (close === undefined) {
+        // The opener itself may be truncated (`<questions` with no `>`), which
+        // scanBareTag rejects — handled by the regex probe below.
+        index += 1
+        continue
+      }
+      const key = block.slice(tag.end + 1, close.start).trim()
+      // The value tag that must follow immediately.
+      const valueTag = scanBareTag(block, skipWhitespace(block, close.end + 1))
+      if (valueTag !== undefined && valueTag.name === 'arg_value' && !valueTag.closing) {
+        const valueClose = findBareClose(block, spans, 'arg_value', valueTag.end + 1)
+        if (valueClose !== undefined && key !== '') {
+          parameters[key] = block.slice(valueTag.end + 1, valueClose.start).trim()
+          index = valueClose.end + 1
+          continue
+        }
+      }
+      index = close.end + 1
+      continue
+    }
+    if (tag.closing) { index = tag.end + 1; continue }
+    // `<k>v</k>` form: only for names this request accepts for this tool.
+    if (isProtocolWord(tag.name) || accepted === undefined || !accepted.has(tag.name)) {
+      index = tag.end + 1
+      continue
+    }
+    const close = findBareClose(block, spans, tag.name, tag.end + 1)
+    if (close === undefined) { index = tag.end + 1; continue }
+    parameters[tag.name] = block.slice(tag.end + 1, close.start).trim()
+    index = close.end + 1
+  }
+
+  // Truncated key: `<name` with no `>` immediately before an arg_value pair.
+  const truncated = /<([\p{L}\p{N}_-]+)(?=\s*<\/arg_key>)/u.exec(block)
+  if (truncated?.[1] !== undefined) {
+    const key = truncated[1].toLowerCase()
+    // Only a name the schema accepts, and only when it is the sole gap.
+    const known = accepted?.has(key) === true
+    const gaps = required.filter(parameter => parameters[parameter] === undefined)
+    if (known && gaps.length === 1 && gaps[0] === key) {
+      const valueTag = afterTruncatedKeyValue(block, truncated.index + truncated[0].length)
+      if (valueTag !== undefined) {
+        parameters[key] = valueTag
+        truncatedKey = key
+      }
+    }
+  }
+  void truncatedKey
+
+  if (Object.keys(parameters).length === 0) return undefined
+  return parameters
+}
+
+/** Skip whitespace forward, returning the next non-space index. */
+function skipWhitespace(text: string, from: number): number {
+  let index = from
+  while (index < text.length && /\s/u.test(text.charAt(index))) index += 1
+  return index
+}
+
+/** The bare close tag for `name` at or after `from`. */
+function findBareClose(text: string, spans: readonly IgnoredSpan[], name: string, from: number): MarkupTag | undefined {
+  const cursor = { at: 0 }
+  let index = from
+  while (index < text.length) {
+    const skipped = skipIgnored(spans, index, cursor)
+    if (skipped !== index) { index = skipped; continue }
+    if (text.charAt(index) === '<') {
+      const tag = scanBareTag(text, index)
+      if (tag !== undefined && tag.closing && tag.name === name) return tag
+    }
+    index += 1
+  }
+  return undefined
+}
+
+/**
+ * The `arg_value` payload that follows a truncated `</arg_key>`.
+ *
+ * Split out because the truncated opener has no tag to scan: the text runs
+ * `<questions</arg_key><arg_value>…</arg_value>`, so the value is found by
+ * looking for the NEXT `<arg_value>` element after that point.
+ */
+function afterTruncatedKeyValue(text: string, from: number): string | undefined {
+  const open = text.indexOf('<arg_value>', from)
+  if (open === -1) return undefined
+  const close = text.indexOf('</arg_value>', open)
+  if (close === -1) return undefined
+  return text.slice(open + '<arg_value>'.length, close).trim()
+}
+
+/**
+ * Everything in `text` up to the first bare protocol tag — the prose the user
+ * should still read once a bare block has been recovered.
+ *
+ * The block's own bytes carry no information for the reader (the call has been
+ * delivered through the structured channel instead), and the captured shape is
+ * inconsistent — `<ask_user_question>` closed by `</tool_call>` — so there is no
+ * reliable end to cut at. Cutting at the START and dropping the remainder is
+ * the only rule that cannot leave half a block on screen.
+ */
+function stripBareBlock(text: string, gate: RecoveryGate): string {
+  const start = findBareBlockStart(text, gate)
+  return start === -1 ? text : text.slice(0, start)
+}
+
+/**
+ * Where the first bare CANDIDATE tag sits in `text`, or `-1`.
+ *
+ * Used only to decide how much to HOLD while a bare block may still be
+ * arriving. Narrow on purpose: a candidate is a name this request put on offer
+ * (declared tool, accepted parameter) or protocol vocabulary — the same three
+ * sources {@link isBareCandidate} consults. A response that never names one
+ * hands `-1` and is emitted immediately, so ordinary prose is not delayed.
+ */
+function firstBareCandidateAt(text: string, gate: RecoveryGate): number {
+  const spans = ignoredSpans(text)
+  const cursor = { at: 0 }
+  let index = 0
+  while (index < text.length) {
+    const skipped = skipIgnored(spans, index, cursor)
+    if (skipped !== index) { index = skipped; continue }
+    if (text.charAt(index) === '<') {
+      const tag = scanBareTag(text, index)
+      if (tag !== undefined && !tag.closing && isBareCandidate(tag.name, gate)) return index
+    }
+    index += 1
+  }
+  return -1
+}
+
+/**
+ * Where a BARE protocol block starts in `text`, or `-1`.
+ *
+ * Only protocol vocabulary opens a bare block — that is what keeps the call
+ * path and the hold path in agreement about what they are looking at. A tool
+ * name in angle brackets is deliberately NOT a start: `<bash>ls</bash>` is a
+ * sentence, and holding it would starve the rest of the response for a block
+ * that will never parse.
+ */
+function findBareBlockStart(text: string, gate: RecoveryGate): number {
+  // Two conditions, both required, and their ORDER is what makes this safe:
+  //   1. the response carries protocol vocabulary SOMEWHERE — that is the whole
+  //      discriminator against `<bash>ls -la</bash>` in a sentence;
+  //   2. the block starts at the first bare CANDIDATE tag, which for the
+  //      captured shape is the tool-named wrapper `<ask_user_question>` — the
+  //      protocol word (`arg_key`) appears INSIDE it, never before.
+  if (!hasBareProtocolWord(text)) return -1
+  const spans = ignoredSpans(text)
+  const cursor = { at: 0 }
+  let index = 0
+  while (index < text.length) {
+    const skipped = skipIgnored(spans, index, cursor)
+    if (skipped !== index) { index = skipped; continue }
+    if (text.charAt(index) === '<') {
+      const tag = scanBareTag(text, index)
+      if (tag !== undefined && !tag.closing && isBareCandidate(tag.name, gate)) return index
+    }
+    index += 1
+  }
+  return -1
+}
+
 /**
  * Every call declared by `text`, or an empty list when nothing passes the gates.
  *
@@ -1015,6 +1424,14 @@ export function parseToolCalls(text: string, gate: RecoveryGate): RecoveredToolC
     if (found === undefined || found.close === undefined) break
     calls.push(...parseBlock(remaining.slice(found.open.start, found.close.end + 1), gate, seen).calls)
     remaining = remaining.slice(found.close.end + 1)
+  }
+
+  // ISSUE #298: a block written with no marker at all. Gated on the request
+  // opting in AND on the protocol's own vocabulary appearing here — a sentence
+  // that merely mentions a tool name never reaches the parser.
+  if (gate.bareMarkup === true && hasBareProtocolWord(text)) {
+    const call = parseBareBlock(text, gate)
+    if (call !== undefined) calls.push(call)
   }
 
   if (seen.reason !== undefined) gate.onWithheld?.(seen.reason)
@@ -1248,17 +1665,54 @@ export function hasProse(text: string): boolean {
  * captured — is not held: it is prose as far as this layer is concerned, and
  * holding it would delay every ordinary answer that mentions the markup.
  */
-function holdFrom(text: string, spans: readonly IgnoredSpan[]): number {
+function holdFrom(text: string, spans: readonly IgnoredSpan[], gate?: RecoveryGate): number {
   let hold = text.length
 
   const lastLt = text.lastIndexOf('<')
   if (lastLt !== -1 && looksLikeTagStart(text.slice(lastLt))) hold = Math.min(hold, lastLt)
+  // ISSUE #298, the byte-by-byte case. A bare wrapper (`<ask_user_question>`)
+  // arrives before the `arg_key` that proves it was protocol, so the marked
+  // rule above cannot see it. Holding an UNTERMINATED `<` whose partial name
+  // is a prefix of a candidate keeps the block recoverable when the rest
+  // arrives, and costs nothing for prose: `a < b` and `<50%` both fail the
+  // prefix test, and a COMPLETE `<bash>` tag is a finished tag, not a fragment
+  // — it is emitted immediately, which is what keeps `You can write
+  // <bash>ls -la</bash>` intact.
+  if (gate?.bareMarkup === true && lastLt !== -1) {
+    const tail = text.slice(lastLt)
+    if (!tail.includes('>') && couldStartBareCandidate(tail, gate)) hold = Math.min(hold, lastLt)
+  }
 
   for (const span of spans) {
     if (span.open) hold = Math.min(hold, span.start)
   }
 
   return hold
+}
+
+/**
+ * Could this unterminated `<…` fragment still become a bare candidate tag?
+ *
+ * Requires the `<` to be followed immediately by a name character (the bare
+ * rule — no whitespace), and the partial name to be a prefix of, or extend, a
+ * name this request put on offer. `<ask` and `<ask_user_question` hold;
+ * `< b` and `<50` do not.
+ */
+function couldStartBareCandidate(tail: string, gate: RecoveryGate): boolean {
+  if (!tail.startsWith('<')) return false
+  let body = tail.slice(1)
+  if (body === '') return true
+  if (body.startsWith('/')) return false
+  if (!/[\p{L}_]/u.test(body.charAt(0))) return false
+  const match = /^[\p{L}\p{N}_-]*/u.exec(body)
+  const partial = (match?.[0] ?? '').toLowerCase()
+  if (partial === '') return true
+  const candidates = [...PROTOCOL_VOCABULARY, ...gate.declaredNames]
+  for (const accepted of gate.acceptedParameters?.values() ?? []) candidates.push(...accepted)
+  return candidates.some(candidate => {
+    const name = candidate.toLowerCase()
+    return name.startsWith(partial) || partial.startsWith(name)
+  })
 }
 
 /**
@@ -1480,9 +1934,50 @@ export class DsmlStreamBuffer {
       this.pending = this.pending.slice(found.close.end + 1)
     }
 
+    // ISSUE #298: a block written with no marker. Only when the request opted
+    // in AND the protocol's own vocabulary is present — a sentence about a tool
+    // never gets here. The block is held to the end of the pending text and
+    // resolved at flush: an unmarked block has no depth-paired closer we can
+    // trust (the captured shape closes `<ask_user_question>` with
+    // `</tool_call>`), so committing any part of it early would print its own
+    // bytes back to the user.
+    if (this.gate.bareMarkup === true && !this.nativeCalls) {
+      const start = findBareBlockStart(this.pending, this.gate)
+      if (start !== -1) {
+        this.bareSeen = true
+        const head = this.stripDebris(this.pending.slice(0, start))
+        if (head !== '') parts.push(head)
+        this.pending = this.pending.slice(start)
+        return finish(parts, calls, this.takeWithheld())
+      }
+      // NOT YET DECIDABLE: hold ONLY once the protocol's own vocabulary is
+      // present. Holding on a candidate NAME alone (a declared tool or
+      // parameter in angle brackets) swallowed ordinary sentences —
+      // `You can write <bash>ls -la</bash> to list files.` came back as
+      // `You can write ` — which is the exact defect this feature exists to
+      // avoid, in mirror image.
+      //
+      // A bare-wrapped block is therefore allowed to be emitted while it is
+      // still only a wrapper: nothing yet says it is protocol rather than a
+      // sentence. What must NOT be lost is the block itself once the protocol
+      // word appears, so the outstanding wrapper is re-found from the head of
+      // the pending text (the tail hold below never commits an unterminated
+      // `<`). See `holdFrom`'s bare branch.
+      if (hasBareProtocolWord(this.pending)) {
+        const holdAt = firstBareCandidateAt(this.pending, this.gate)
+        if (holdAt !== -1) {
+          const head = this.stripDebris(this.pending.slice(0, holdAt))
+          if (head !== '') parts.push(head)
+          this.pending = this.pending.slice(holdAt)
+          this.bareSeen = true
+          return finish(parts, calls, this.takeWithheld())
+        }
+      }
+    }
+
     // Nothing committable left: emit everything except a tail that could still
     // turn into a tag, or that sits inside an unclosed code span.
-    const hold = holdFrom(this.pending, ignoredSpans(this.pending))
+    const hold = holdFrom(this.pending, ignoredSpans(this.pending), this.gate)
     if (hold > 0) {
       const tail = this.stripDebris(this.pending.slice(0, hold))
       if (tail !== '') parts.push(tail)
@@ -1492,10 +1987,36 @@ export class DsmlStreamBuffer {
     return finish(parts, calls, this.takeWithheld())
   }
 
+  /**
+   * Whether a bare (unmarked) protocol block was held in this response.
+   *
+   * Separate from {@link openerSeen} because that flag is about MARKED tags and
+   * gates the debris sweep; this one is only about the #298 shape.
+   */
+  private bareSeen = false
+
   /** End of stream: hand back everything still held — minus the debris. */
   flush(): BufferOutcome {
     let text = this.pending
     this.pending = ''
+
+    // ISSUE #298: a bare block that was held at `add` is resolved HERE, where
+    // the whole thing finally exists. Two outcomes, both fail-closed:
+    //   - it parses under gates 2/4 → the call is produced and its bytes are
+    //     swallowed, so the user never reads the protocol;
+    //   - it does not → the bytes are shown verbatim, because gate 4's promise
+    //     covers unmarked blocks too: markup the reader can see is better than
+    //     an answer silently deleted.
+    const bareCalls: RecoveredToolCall[] = []
+    if (this.bareSeen && this.gate.bareMarkup === true && !this.nativeCalls) {
+      const call = parseBareBlock(text, this.gate)
+      if (call !== undefined) {
+        // Only the PROSE before the block survives; the block itself goes.
+        const start = findBareBlockStart(text, this.gate)
+        text = start === -1 ? text : stripBareBlock(text, this.gate)
+        bareCalls.push(call)
+      }
+    }
 
     // Gate 2, last chance: a block whose close never arrived is still a block
     // attempt, and when its opener is the unnamed invocation it is the same
@@ -1525,6 +2046,7 @@ export class DsmlStreamBuffer {
     const state = this.takeWithheld()
     const outcome: BufferOutcome = { text, prose: hasProse(text), withheld: state.withheld }
     if (state.withheldReason !== undefined) outcome.withheldReason = state.withheldReason
+    if (bareCalls.length > 0) outcome.calls = bareCalls
     return outcome
   }
 
