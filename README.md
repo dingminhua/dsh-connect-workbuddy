@@ -240,6 +240,8 @@ DSH PiAiAdapter（每个 provider 一套）
 >
 > 这三项属于宿主服务的配置、不是本插件的行为，写在你自己的 profile 里；关掉后这些句子不再进入 system 消息。改不了配置时，**开一个全新会话**是有效临时规避——被污染的 assistant 历史是这类中段命中的常见载体，而它会被写进会话文件、重启也不消失。
 >
+> 若前三项关掉仍被拒，还有第三个面：**回放的 thinking**。网关扫整份请求文本，而多轮会话会把上一轮的 `reasoning_content` 原样重发；本插件设置项 `dropAllThinking` 打开后不再回放这部分（代价是模型看不到自己之前的思考过程，需要连续推理的任务会受影响）。报错里的「零正文指纹线索」现在也会标出 `reasoning_content` 里的命中（带字段后缀），可据此判断是否需要开它。
+>
 > ⚠️ **别把插件市场里那个「最新」当日程表——它读的是一份会落后的索引。** 社区市场走定期构建的快照（按包各自收录），2026-10-30 15:00 那次观测里本插件还停在 5.13.1，而当时 npm `latest` 已是 5.14.1；桌面宿主另有「24 小时内发布的版本先标成「新版等待中」」这条规则。以 `npm view dsh-connect-workbuddy version` 与 [Releases](https://github.com/dingminhua/dsh-connect-workbuddy/releases) 为准，按下方[「更新」](#更新)一节做（写**精确版本号**），或者把 [`docs/PINNED-UPGRADE-LAG.md`](docs/PINNED-UPGRADE-LAG.md) §3 那段话丢给 AI 让它替你跑。
 >
 > 另一个会让人升级不到的原因：**pnpm 的 24 小时新版本等待期**（`minimumReleaseAge`）会把浮动范围**静默压回上一个版本**。需要立刻修复时请写**精确版本号**：`dsh plugin --profile desktop add dsh-connect-workbuddy@5.20.2`（原因见下方「刚发布的版本请写精确版本号」那条）。
