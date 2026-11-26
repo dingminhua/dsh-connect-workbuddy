@@ -140,13 +140,17 @@ describe('prepareChatBody breaks the clause on every request, before any rescue'
     expect(spanSurvives(wire, SPANS[2] as string)).toBe(false)
   })
 
-  it('rewrites a PREFIX-listed opening before any head is added', () => {
-    // Since issue #163 the request path rewrites the measured identity, so the
-    // prefix head is no longer needed for this one: the gateway sees a
-    // different first sentence instead of a head in front of the old one.
+  it('rewrites a PREFIX-listed opening AND breaks the replacement internally (#321)', () => {
+    // ISSUE #321 found the real defect here: the rewrite runs before
+    // neutralisation, and `IDENTITY_CLAUSE` used to match only the ORIGINAL
+    // wording — so the replacement lost its clause break and went out intact.
+    // The fix is the CLAUSE, not the prefix list: a head would be wrong (the
+    // replacement is not refused at offset 0, and a head on assistant history is
+    // the persona line the model copies — #297), while an internal break defeats
+    // the anywhere-substring gate without adding a line anyone can imitate.
     const wire = preparedSystem(SPANS[0] as string)
     expect(wire.startsWith(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`)).toBe(false)
-    expect(wire).toContain('You are an AI agent running inside the harness.')
+    expect(wire, 'the replacement must be broken internally').toContain('\u200b')
     expect(spanSurvives(wire, SPANS[0] as string)).toBe(false)
   })
 

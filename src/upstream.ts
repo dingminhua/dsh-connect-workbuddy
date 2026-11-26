@@ -2713,6 +2713,24 @@ export const WORKBUDDY_FALLBACK_SYSTEM_PROMPT = 'You are a helpful assistant.'
 const UNAPPROVED_CHANNEL_OPENINGS: readonly string[] = [
   'you are an ai agent powered by deepseek harness',
   "you are claude code, anthropic's official cli for claude",
+  // THE PLUGIN'S OWN REPLACEMENT WORDINGS ARE DELIBERATELY NOT LISTED HERE
+  // (issue #321 considered it and it is the wrong lever).
+  //
+  // This list means "this opening IS refused at offset 0", and the remedy it
+  // triggers is a neutral HEAD. Adding the replacement would declare the
+  // plugin's own output banned, which is circular: the rewrite exists to produce
+  // a sentence the gateway accepts, so re-marking it as refused can only be
+  // self-fulfilling. And the practical cost is known — a head on an ASSISTANT
+  // message is exactly the persona line the model copies into its next reply
+  // and the host persists (issue #297, measured with the `Message begins.`
+  // experiment).
+  //
+  // The protection the replacement actually needs is the ANYWHERE substring
+  // gate, and that is {@link IDENTITY_CLAUSE}'s job: it breaks the clause
+  // internally with zero-width characters, which defeats a substring match
+  // without adding a line the model can imitate. So the replacement wordings
+  // are clause-matched (see below) and NOT prefix-listed, which is why a
+  // rewritten assistant turn stays clean.
 ]
 
 /**
@@ -2748,7 +2766,7 @@ const UNAPPROVED_CHANNEL_OPENINGS: readonly string[] = [
  * to the break rule itself.
  */
 const IDENTITY_CLAUSE =
-  /(you)(\s+are\s+(?:(?:an?\s+)?[\w-]*\s*agent\s+powered\s+by|interacting\s+with\s+the\s+user\s+through\s+the\s+deepseek\s+harness))/giu
+  /(you)(\s+are\s+(?:(?:an?\s+)?[\w-]*\s*agent\s+(?:powered\s+by|running\s+inside\s+the\s+harness)|(?:interacting\s+with\s+the\s+user\s+through|working\s+with\s+the\s+user\s+inside)\s+the\s+(?:deepseek\s+)?harness))/giu
 
 /**
  * Break an identity clause at EVERY word boundary inside it.

@@ -133,6 +133,11 @@ describe('prepareChatBody', () => {
       ],
     }))) as { messages: { role: string; content: unknown }[] }
     expect(prepared.messages).toHaveLength(2)
+    // ISSUE #321: the replacement now gets an INTERNAL clause break, not a head.
+    // A head would have been wrong on two counts — the rewrite exists to produce
+    // an accepted sentence, so re-marking it refused is circular, and a head on
+    // assistant history is the persona line the model copies (#297). The break
+    // defeats the anywhere-substring gate without adding a line to imitate.
     expect(prepared.messages[0]?.content).not.toContain(WORKBUDDY_FALLBACK_SYSTEM_PROMPT)
     expect(visible(prepared.messages[0]?.content as string))
       .toBe('You are an AI agent running inside the harness.\n\nSecond line.')

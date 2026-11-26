@@ -99,7 +99,9 @@ describe('issue #189: subagent assistant messages and the channel gate', () => {
     //
     //    钉住"改成了什么"而不只是"原文不在"，才能区分「改写」与「整段删除」——
     //    后者会丢掉模型的输出，是绝不能接受的。
-    expect(withoutHead).toContain('You are an AI agent running inside the harness.')
+    // ISSUE #321: the clause is now broken INSIDE the rewritten sentence too, so
+    // compare the text the model reads rather than the raw bytes.
+    expect(withoutHead.replace(/\u200b/gu, '')).toContain('You are an AI agent running inside the harness.')
     // 4. 而原句必须一字不剩。
     expect(withoutHead).not.toContain('powered by DeepSeek Harness')
   })

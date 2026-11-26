@@ -1906,7 +1906,24 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
      */
     const disposers: (() => void)[] = []
     const route = (entry: Parameters<typeof ctx.webServer.register>[0]): void => {
-      disposers.push(ctx.webServer.register(entry))
+      // ISSUE #323 — EACH ROUTE IS ITS OWN EFFECT, not a bare disposer collected
+      // in an array.
+      //
+      // The array alone (issue #86's fix) stopped "a new route forgot its
+      // disposer", but not a throw MIDWAY: the body registers 16 routes and only
+      // returns the disposer on its LAST line, so if route k throws — a
+      // duplicate path during hot reload is the reported case — the body never
+      // reaches the `return`, Cordis gets no cleanup function, the array is
+      // lost with the frame, and routes 1..k-1 keep answering from an unloaded
+      // instance. Re-enabling then collides with the plugin's OWN leftovers and
+      // only a host restart recovers.
+      //
+      // `ctx.effect` inside the body is collected as a CHILD of the outer
+      // effect: when the body throws, Cordis disposes the children already
+      // registered, so the partial mount is rolled back exactly as intended.
+      // The returned disposer is idempotent, so the trailing loop below is
+      // unchanged and harmless.
+      disposers.push(ctx.effect(() => ctx.webServer.register(entry)))
     }
 
     /**

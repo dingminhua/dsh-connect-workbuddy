@@ -43,6 +43,19 @@ function messagesOf(bodyJson: string): { role: string, content: unknown }[] {
   return (JSON.parse(bodyJson) as { messages: { role: string, content: unknown }[] }).messages
 }
 
+/**
+ * Text with every zero-width break removed.
+ *
+ * The replacement wordings are now ALSO in the prefix list and the identity
+ * clause (issue #321), so `prepareChatBody` gives them a neutral head and breaks
+ * their identity clause at every word boundary — `You \u200bare \u200ban \u200bagent …`.
+ * That IS the behaviour these tests want, so they compare the text the MODEL
+ * reads rather than the exact bytes on the wire. Asserting the raw string here
+ * would pin the pre-#321 defect: a rewritten sentence that got neither
+ * protection.
+ */
+const plain = (text: string): string => text.replace(/\u200b/gu, '')
+
 describe('the sentence-level rewrite table (issue #163)', () => {
   it('removes every measured fingerprint from a DSH-shaped prompt', () => {
     const rewritten = rewriteChannelFingerprintPhrases(DSH_SYSTEM)
@@ -90,7 +103,7 @@ describe('the rewrite is wired into prepareChatBody in the required order', () =
     const messages = messagesOf(body)
     expect(messages[0]?.content).toContain('Paths that begin with @')
     expect(messages[0]?.content).not.toContain('Tokens prefixed with @')
-    expect(messages[2]?.content).toContain('running inside the harness')
+    expect(plain(String(messages[2]?.content))).toContain('running inside the harness')
     // The user's own words and a tool result are not the gate's business.
     expect(messages[1]?.content).toBe(TOKENS)
     expect(messages[3]?.content).toBe(TOKENS)
@@ -110,7 +123,7 @@ describe('the rewrite is wired into prepareChatBody in the required order', () =
       ],
     }))
     const content = messagesOf(body)[0]?.content as { type: string, text: string }[]
-    expect(content[0]?.text).toContain('working with the user inside')
+    expect(plain(content[0]?.text ?? '')).toContain('working with the user inside')
     expect(content[1]?.text).toContain('Paths that begin with @')
     expect(content[1]?.text).not.toContain('Tokens prefixed with @')
   })
@@ -189,8 +202,8 @@ describe('issue #319: no product name survives the rewrite', () => {
     const system = (JSON.parse(prepareChatBody(raw)) as { messages: { content: string }[] }).messages[0]?.content ?? ''
     expect(system, 'the brand must not survive the rewrite').not.toContain('DeepSeek Harness')
     // The sentences are still there, and still say the same thing.
-    expect(system).toContain('running inside the harness')
-    expect(system).toContain('inside the harness Web GUI')
+    expect(plain(system)).toContain('running inside the harness')
+    expect(plain(system)).toContain('inside the harness Web GUI')
   })
 
   it('clears the brand in BOTH the identity row and the Web GUI row', () => {

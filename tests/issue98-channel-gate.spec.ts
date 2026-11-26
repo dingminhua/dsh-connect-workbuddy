@@ -108,6 +108,21 @@ function visible(text: string): string {
   return text.replace(/\u200b/gu, '')
 }
 
+/**
+ * The text with BOTH the neutral head and the zero-width breaks removed.
+ *
+ * ISSUE #321 moved the replacement wordings into the prefix list and the
+ * identity clause, so a rewritten sentence now also gets a neutral head and
+ * internal breaks — the protection it used to lose the moment it was rewritten.
+ * These assertions are about the SENTENCE the model ends up reading, so they
+ * compare this stripped form; asserting the raw string would re-pin the defect.
+ */
+function bare(text: string): string {
+  const stripped = visible(text)
+  const head = `${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`
+  return stripped.startsWith(head) ? stripped.slice(head.length) : stripped
+}
+
 describe('array-shaped system content: every text part is scanned (measured fact 2)', () => {
   it('neutralises a fingerprint in the FIRST part', () => {
     const body = prepared({
@@ -121,7 +136,7 @@ describe('array-shaped system content: every text part is scanned (measured fact
     expect(Array.isArray(content)).toBe(true)
     expect(content).toHaveLength(1)
     expect(content[0]?.type).toBe('text')
-    expect(visible(content[0]?.text ?? '')).toBe(`${DSH_FINGERPRINT_REWRITTEN}\n\nAnd the rest of the prompt.`)
+    expect(bare(content[0]?.text ?? '')).toBe(`${DSH_FINGERPRINT_REWRITTEN}\n\nAnd the rest of the prompt.`)
   })
 
   it('neutralises a fingerprint in the SECOND part too', () => {
@@ -195,7 +210,7 @@ describe('array-shaped system content: every text part is scanned (measured fact
     const content = body.messages[0]?.content as { type: string; text: string }[]
     expect(content[0]?.text).toBe('A perfectly ordinary opening.')
     expect(content[1]?.text).toBeDefined()
-    expect(visible(content[1]?.text ?? '')).toBe(`${DSH_FINGERPRINT_REWRITTEN}\n\nAnd the rest of the prompt.`)
+    expect(bare(content[1]?.text ?? '')).toBe(`${DSH_FINGERPRINT_REWRITTEN}\n\nAnd the rest of the prompt.`)
   })
 
   it('survives a malformed part without throwing', () => {
@@ -220,7 +235,7 @@ describe('string-shaped system content keeps behaving exactly as before', () => 
     const body = prepared({
       messages: [{ role: 'system', content: DSH_FINGERPRINT }, { role: 'user', content: 'hi' }],
     })
-    expect(visible(body.messages[0]?.content as string)).toBe(DSH_FINGERPRINT_REWRITTEN)
+    expect(bare(body.messages[0]?.content as string)).toBe(DSH_FINGERPRINT_REWRITTEN)
     expect(body.messages[1]?.content).toBe('hi')
   })
 
@@ -231,7 +246,7 @@ describe('string-shaped system content keeps behaving exactly as before', () => 
     // position-independent (issue #163).
     const prompt = 'Rules: be nice.\n\nYou are an AI agent powered by DeepSeek Harness.'
     const body = prepared({ messages: [{ role: 'system', content: prompt }] })
-    expect(visible(body.messages[0]?.content as string))
+    expect(bare(body.messages[0]?.content as string))
       .toBe(`Rules: be nice.\n\n${DSH_FINGERPRINT_REWRITTEN}`)
     expect(body.messages[0]?.content as string).not.toContain(WORKBUDDY_FALLBACK_SYSTEM_PROMPT)
   })
