@@ -2882,9 +2882,22 @@ function scansOpening(role: unknown): boolean {
  * `tests/issue163-sentence-rewrite.spec.ts`.
  */
 const CHANNEL_GATE_PHRASES: readonly (readonly [string, string])[] = [
+  // ISSUE #319: the `to` strings below carry NO brand name. Two rows used to
+  // keep it ("running inside DeepSeek Harness", "working with the user inside
+  // the DeepSeek Harness Web GUI"), and a real 5.31.8 sample proved that
+  // mattered: after rewriting, a 10,761-char system still carried two
+  // `DeepSeek Harness` tokens — exactly these two rows — and the gateway
+  // refused the body anyway while the trace reported "all known fingerprints
+  // cleared". A rewrite that leaves the fingerprint's distinctive token on the
+  // wire is a rewrite of the verb, not of the fingerprint, and neither
+  // `IDENTITY_CLAUSE` nor the prefix list covers the REPLACED wording.
+  //
+  // The brand is not load-bearing here: these sentences tell the model which
+  // interface it is in and that a checkout exists — "the harness" carries the
+  // same meaning without naming the product.
   [
     'You are an AI agent powered by DeepSeek Harness',
-    'You are an AI agent running inside DeepSeek Harness',
+    'You are an AI agent running inside the harness',
   ],
   [
     'You are a coding agent powered by the ',
@@ -2892,7 +2905,7 @@ const CHANNEL_GATE_PHRASES: readonly (readonly [string, string])[] = [
   ],
   [
     'You are interacting with the user through the DeepSeek Harness Web GUI',
-    'You are working with the user inside the DeepSeek Harness Web GUI',
+    'You are working with the user inside the harness Web GUI',
   ],
   // Reported by liyixin21 and found in appulsexi-maker's real system prompt
   // (issue #163, 19:12). Same-meaning rewrite; the table is meant to grow.
@@ -3734,8 +3747,7 @@ export function channelFingerprintTrace(rawJson: string, preparedJson: string): 
           }
         }
         const combined = texts.join('\n')
-        if (combined === '') continue
-        const lines = combined.split('\n')
+        const lines = combined === '' ? [] : combined.split('\n')
         const perWord = new Map<string, number[]>()
         for (const word of TRACE_WORDS) {
           const found: number[] = []
@@ -3743,6 +3755,27 @@ export function channelFingerprintTrace(rawJson: string, preparedJson: string): 
             if (lines[line]?.toLowerCase().includes(word.toLowerCase())) found.push(line + 1)
           }
           if (found.length > 0) perWord.set(word, found)
+        }
+        // ISSUE #319: `reasoning_content` is scanned by the gateway but was
+        // invisible to this trace, so a refusal caused entirely by replayed
+        // thinking looked identical to one caused by nothing at all. Counted
+        // the same way — occurrence counts and line numbers, never text — with
+        // its own pseudo-line so a hit there cannot be mistaken for a content
+        // hit. The key is read directly because it is a STRING FIELD on the
+        // assistant message, not a content part (see `body-report.ts`).
+        for (const field of ['reasoning_content', 'reasoning', 'reasoning_text'] as const) {
+          const value = message[field]
+          if (typeof value !== 'string' || value === '') continue
+          const reasoningLines = value.split('\n')
+          for (const word of TRACE_WORDS) {
+            const found: number[] = []
+            for (let line = 0; line < reasoningLines.length && found.length < TRACE_MAX_LINES_PER_WORD; line++) {
+              if (reasoningLines[line]?.toLowerCase().includes(word.toLowerCase())) found.push(line + 1)
+            }
+            if (found.length === 0) continue
+            const key = `${word}（${field}）`
+            perWord.set(key, found)
+          }
         }
         if (perWord.size > 0) occurrences.set(index, perWord)
       }

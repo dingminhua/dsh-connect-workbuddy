@@ -65,7 +65,7 @@ const DSH_FINGERPRINT = 'You are an AI agent powered by DeepSeek Harness.'
  * before the prefix head would be needed, so the neutral head is NOT prepended
  * for this one anymore.
  */
-const DSH_FINGERPRINT_REWRITTEN = 'You are an AI agent running inside DeepSeek Harness.'
+const DSH_FINGERPRINT_REWRITTEN = 'You are an AI agent running inside the harness.'
 
 /** The other fingerprint in the measured snapshot: Claude Code's own head. */
 const CLAUDE_FINGERPRINT = "You are Claude Code, Anthropic's official CLI for Claude."

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-> 修复版：恢复**完全没有标记**的工具调用（#298）。此前这种泄漏不进候选，整块协议原文直接发给用户。
+> 修复版：恢复**完全没有标记**的工具调用（#298）；改词值去掉品牌 token、零隐私 trace 纳入 reasoning（#319）。
 
 ### 无标记裸调用的恢复（#298）
 
@@ -11,6 +11,13 @@
 - **实现**：新增 `RecoveryGate.bareMarkup`（默认关，关闭时逐字节同旧行为）；四道闸一条没动（未声明工具拒绝、缺必填参数拒绝、pin 生效、流中断按原文显示），**没有「推断工具名」**——工具名由模型明写在 wrapper 上，这里只校验。截断 key 只接受 schema 里恰好剩下那一个必填参数。
 - **已知限制（如实登记）**：裸块没有标记，只能靠内容识别，所以流式分块到达时 wrapper 可能先被吐出（协议词汇尚未出现）。这是刻意取舍——可见的残片优于被删的句子。真实泄漏是单个 `delta.content` 到达，该情形已覆盖。
 - **测试**：新增 `tests/issue298-bare-markup.spec.ts` 12 例。变异验证：退回按名字判断 → 2 例红（正是两个 false positive）；关掉恢复路径 → 主用例红。`pnpm run check` 全过（3857 passed + 2 skipped）。文档补 `docs/DSML-RECOVERY-PLAN.md` 第十四节。
+
+### 改词去品牌 + reasoning 纳入指纹线索（#319）
+
+- **改词值去品牌**：报告者从真实 5.31.8 失败请求提取 system 原文，离线复跑证明改词后仍剩 2 处 `DeepSeek Harness`——正是两条「只换动词、保留品牌」的替换值（`running inside DeepSeek Harness` / `working with the user inside the DeepSeek Harness Web GUI`）。这两句替换后既不在前缀名单、也不再被 `IDENTITY_CLAUSE` 命中，是 wire 上防护最薄的字符串。现在替换值改为 `running inside the harness` / `inside the harness Web GUI`，品牌对 wire 归属不承重（那句话只告诉模型「你在哪个界面」）。
+- **零隐私 trace 纳入 `reasoning_content`**：网关扫整份请求文本，而 #311 的 trace 只统计 `content`，多轮带 thinking 的会话里这部分是否含被禁串无从判断（#213 同类盲区）。现在按同样规则（只报固定词表的次数与行号、永不输出正文）统计 `reasoning_content` / `reasoning` / `reasoning_text`，并用「（reasoning_content）」后缀与内容命中区分开。
+- **未改动的部分（如实登记）**：报告者怀疑「救援只跑到第 1 级」是 #302 回归。我按他的场景（账号 A 429 → 账号 B 每次 11128，含工具轮消息）复现，阶梯实际跑满四级（6 次上游调用，retryNote 为「system 中性头与一次不可见扰动与一次密集不可见扰动与全消息中性头」）。各级变换在有 tool_calls、已有中性头、已扰动等形状下都能改动，逻辑未发现跳过点，因此本次不改救援代码；若他的现场能提供 `WORKBUDDY_LOG` 捕获的 rung 日志，可再定位。
+- **测试**：`issue163-sentence-rewrite` 新增 2 例（钉「wire 上不剩品牌」这一可验证结果，而非某个措辞——沿用 #167 的降级做法）；`issue311-fingerprint-trace` 新增 1 例（reasoning 字段被统计且带字段标记）。变异验证：把品牌放回替换值 → 4 例红（含 2 例新增）。`pnpm run check` 全过（3860 passed + 2 skipped）。
 
 ## 5.31.8 (2026-11-26)
 

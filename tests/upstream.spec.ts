@@ -135,7 +135,7 @@ describe('prepareChatBody', () => {
     expect(prepared.messages).toHaveLength(2)
     expect(prepared.messages[0]?.content).not.toContain(WORKBUDDY_FALLBACK_SYSTEM_PROMPT)
     expect(visible(prepared.messages[0]?.content as string))
-      .toBe('You are an AI agent running inside DeepSeek Harness.\n\nSecond line.')
+      .toBe('You are an AI agent running inside the harness.\n\nSecond line.')
     expect(prepared.messages[1]?.content).toBe('hello')
   })
 
@@ -171,7 +171,7 @@ describe('prepareChatBody', () => {
     expect(prepared.messages[0]?.content).not.toContain(WORKBUDDY_FALLBACK_SYSTEM_PROMPT)
     // The sentence rewrite still removes the mid-text phrase (issue #163).
     expect(visible(prepared.messages[0]?.content ?? ''))
-      .toBe('Rules: be nice.\n\nYou are an AI agent running inside DeepSeek Harness.')
+      .toBe('Rules: be nice.\n\nYou are an AI agent running inside the harness.')
   })
 
   it('neutralizes every system message, not just the head', () => {

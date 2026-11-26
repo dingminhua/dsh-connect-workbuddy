@@ -146,7 +146,7 @@ describe('prepareChatBody breaks the clause on every request, before any rescue'
     // different first sentence instead of a head in front of the old one.
     const wire = preparedSystem(SPANS[0] as string)
     expect(wire.startsWith(`${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`)).toBe(false)
-    expect(wire).toContain('You are an AI agent running inside DeepSeek Harness.')
+    expect(wire).toContain('You are an AI agent running inside the harness.')
     expect(spanSurvives(wire, SPANS[0] as string)).toBe(false)
   })
 

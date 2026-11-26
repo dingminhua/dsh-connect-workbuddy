@@ -100,3 +100,27 @@ describe('issue #311: the trace reaches the refusal text, with no message body',
     expect(text).not.toContain(SECRET)
   })
 })
+
+describe('issue #319: reasoning_content is part of the trace', () => {
+  it('counts brand words in reasoning_content and marks them as such', () => {
+    // The gateway scans the whole request text, and replayed thinking is a
+    // STRING FIELD on the assistant message (not a content part). It used to be
+    // invisible to this trace, so a refusal caused by thinking looked the same
+    // as one caused by nothing.
+    const raw = JSON.stringify({
+      messages: [
+        { role: 'system', content: 'A clean system prompt.' },
+        { role: 'assistant', content: 'A clean answer.', reasoning_content: 'first line\nI am DeepSeek Harness here' },
+      ],
+    })
+    const trace = channelFingerprintTrace(raw, raw)
+    const assistant = trace.occurrences.get(1)
+    expect(assistant, 'the reasoning field must be traced').toBeDefined()
+    // Marked with its field name, so a hit there cannot be read as a content hit.
+    expect(assistant?.get('DeepSeek Harness（reasoning_content）')).toEqual([2])
+    // …and no plain content entry was invented.
+    expect(assistant?.get('DeepSeek Harness')).toBeUndefined()
+    // Still no text anywhere in the structure.
+    expect(JSON.stringify(trace)).not.toContain('I am')
+  })
+})
