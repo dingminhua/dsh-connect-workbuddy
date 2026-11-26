@@ -35,6 +35,8 @@
 - **#323（路由泄漏，已修）**：`registerWorkBuddyStatusRoute` 在一个 `ctx.effect` 体内逐条 `disposers.push(ctx.webServer.register(entry))`，只在最后一行 `return` 清理函数。第 k 条登记失败（热重载重复路径）时效应体中途抛出，`return` 永不执行，前 k−1 条路由无人撤销：插件停用后仍由旧实例应答，再启用撞在自己留下的路由上，只能重启宿主恢复。改成 `disposers.push(ctx.effect(() => ctx.webServer.register(entry)))`——子效应在父效应体抛错时被自动撤销，部分挂载得以回滚；返回的 disposer 幂等，末尾循环不变。
 - **测试**：#321 新增 `issue321-rewrite-keeps-break.spec.ts`（3 例：替换值被零宽打断、Web GUI 句同样、**且不加中性头**——钉住 #297 约束），变异验证还原旧 `IDENTITY_CLAUSE` → 3 例全红；#323 新增 `issue323-route-leak.spec.ts`（3 例源码守卫），变异验证还原裸 disposer → 2 例红。既有 6 条钉死「改词后不加头」的断言同步更新为新不变量（去掉头与零宽后比对，沿用 #167 的降级做法）。`pnpm run check` 全过（3871 passed + 2 skipped）。
 
+- **零隐私 trace 覆盖 `tool_calls[].function.arguments`（#322）**：报告者统计出一次失败请求里 **45 处** brand 全在这个字段，而 trace 与救援都不覆盖它，于是报错一边说「全部已知指纹已从发出的 body 清除」、一边在同一个 body 里留着 45 处。**只统计、不改写**是刻意的：改写这个字段会改变工具调用的含义（一次 `write` 调用写进文件的 content 会被静默改掉），那比被拒更糟——`docs/WB400-FIX-PLUGIN-RESEARCH.md` §3.1 记录的正是另一个插件这么做而被否掉。trace 现在按同样规则（固定词表、次数、行号、带字段后缀）报出事实，人去决定要不要改会话。测试：`issue311-fingerprint-trace` 新增 2 例。
+
 ## 5.31.8 (2026-11-26)
 
 > 修复版（#297 重开）：渠道救援的第一级只给 system 加中性头，assistant 历史不再被插件注入人格句、被模型模仿进回复并落盘；全消息盲加头降为末级兜底。

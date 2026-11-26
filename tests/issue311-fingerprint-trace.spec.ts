@@ -124,3 +124,43 @@ describe('issue #319: reasoning_content is part of the trace', () => {
     expect(JSON.stringify(trace)).not.toContain('I am')
   })
 })
+
+describe('issue #322: tool_calls arguments are counted too', () => {
+  it('reports brand hits inside tool_calls arguments, marked with the field', () => {
+    // Agentic sessions carry the brand mostly in TOOL PARAMETERS — one reported
+    // sample had 45 hits there and none in content. Counting them is what makes
+    // the trace honest about a body the plugin deliberately does not rewrite:
+    // altering `arguments` would change what the call MEANS (a write call's file
+    // content), so the fix is to report, not to edit.
+    const raw = JSON.stringify({
+      messages: [
+        { role: 'system', content: 'An ordinary prompt.' },
+        {
+          role: 'assistant',
+          content: 'I will read it.',
+          tool_calls: [{
+            id: 'c1',
+            type: 'function',
+            function: { name: 'read', arguments: '{"path":"/work/DeepSeek Harness/src/a.ts"}' },
+          }],
+        },
+      ],
+    })
+    const trace = channelFingerprintTrace(raw, raw)
+    const assistant = trace.occurrences.get(1)
+    expect(assistant?.get('DeepSeek Harness（tool_calls[0].arguments）')).toEqual([1])
+    // No text leaks into the structure — counts and line numbers only.
+    expect(JSON.stringify(trace)).not.toContain('/work/')
+  })
+
+  it('does not flag an ordinary tool call', () => {
+    const raw = JSON.stringify({
+      messages: [{
+        role: 'assistant',
+        content: 'ok',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{"path":"/tmp/a.ts"}' } }],
+      }],
+    })
+    expect(channelFingerprintTrace(raw, raw).occurrences.has(0)).toBe(false)
+  })
+})

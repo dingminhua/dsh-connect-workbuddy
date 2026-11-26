@@ -3781,6 +3781,36 @@ export function channelFingerprintTrace(rawJson: string, preparedJson: string): 
         // its own pseudo-line so a hit there cannot be mistaken for a content
         // hit. The key is read directly because it is a STRING FIELD on the
         // assistant message, not a content part (see `body-report.ts`).
+        // ISSUE #322: `tool_calls[].function.arguments` is a MAJOR carrier in
+        // agentic sessions — 45 hits in one reported sample, all of them
+        // workspace paths containing the brand — and it was invisible here.
+        //
+        // COUNTED, NOT REWRITTEN, and that distinction is deliberate. Rewriting
+        // this field changes what a tool call MEANS: a `write` call's file
+        // content would be silently altered, which is far worse than a refusal
+        // (see docs/WB400-FIX-PLUGIN-RESEARCH.md §3.1, where a competing plugin
+        // does exactly that and is rejected for it). So the trace reports the
+        // fact and leaves the bytes alone — the reader then decides whether to
+        // edit the session, which is a decision only they can make.
+        const toolCalls = message['tool_calls']
+        if (Array.isArray(toolCalls)) {
+          toolCalls.forEach((call, callIndex) => {
+            if (typeof call !== 'object' || call === null || Array.isArray(call)) return
+            const fn = (call as Record<string, unknown>)['function']
+            if (typeof fn !== 'object' || fn === null || Array.isArray(fn)) return
+            const args = (fn as Record<string, unknown>)['arguments']
+            if (typeof args !== 'string' || args === '') return
+            const argLines = args.split('\n')
+            for (const word of TRACE_WORDS) {
+              const found: number[] = []
+              for (let line = 0; line < argLines.length && found.length < TRACE_MAX_LINES_PER_WORD; line++) {
+                if (argLines[line]?.toLowerCase().includes(word.toLowerCase())) found.push(line + 1)
+              }
+              if (found.length === 0) continue
+              perWord.set(`${word}（tool_calls[${callIndex}].arguments）`, found)
+            }
+          })
+        }
         for (const field of ['reasoning_content', 'reasoning', 'reasoning_text'] as const) {
           const value = message[field]
           if (typeof value !== 'string' || value === '') continue
