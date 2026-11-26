@@ -33,3 +33,38 @@
 export function formatCredits(value: number): string {
   return Math.floor(value).toLocaleString('en-US')
 }
+
+/**
+ * Format a credit AMOUNT SPENT — a different job from a balance, so a different
+ * rule (issue #320, raised in review).
+ *
+ * A balance is a quantity you either have or do not, so it is floored (see
+ * above). A per-turn COST is a measurement, and flooring it would erase the
+ * most ordinary case there is: a chat turn billed `0.72` would print `0`, and
+ * `0.03` (the measured cost of an image generation) would also print `0` — i.e.
+ * the display would claim a turn was free when it was not. That is the exact
+ * confusion the surrounding card code goes out of its way to avoid ("no data"
+ * and "cost nothing" must not look alike).
+ *
+ * So: up to two decimals, trailing zeros dropped, and a small non-zero amount is
+ * never rounded down to `0` — it keeps enough digits to stay non-zero. Never
+ * rounds UP either; a cost is not a permission, but inflating it would make the
+ * running total disagree with the account's own balance.
+ *
+ * Separator is `en-US` grouping like the rest of the card, and the decimal point
+ * is always `.` so a pasted figure matches what the upstream reported.
+ */
+export function formatSpent(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  if (value === 0) return '0'
+  if (Math.abs(value) >= 1000) return Math.floor(value).toLocaleString('en-US')
+  // NEVER ROUND UP: `toFixed` rounds, so 12.005 would print `12.01` and the
+  // running total would drift above what the account was actually charged. Truncate
+  // first, then format.
+  // Keep more digits for small amounts so 0.003 does not print as "0" — the rule
+  // above is "never show free when it was not".
+  const digits = Math.abs(value) < 0.01 ? 3 : 2
+  const scale = 10 ** digits
+  const truncated = Math.trunc(value * scale) / scale
+  return truncated.toFixed(digits).replace(/\.?0+$/u, '')
+}

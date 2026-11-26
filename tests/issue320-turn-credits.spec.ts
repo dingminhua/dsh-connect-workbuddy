@@ -24,16 +24,16 @@ describe('issue #320: the credit figure is read from the stream', () => {
     expect(usage?.credit).toBe(0.72)
   })
 
-  it('reads credit from the chunk top level, the other spelling the probe regex allows', () => {
-    // `creditOfStream` matches `"credit"` anywhere in the stream and therefore
-    // cannot say where it sat; both placements must be accepted or the figure
-    // disappears on whichever shape puts it outside `usage`.
-    const usage = usageOfChunk({ credit: 1.5, usage: { prompt_tokens: 3 } })
-    expect(usage?.credit).toBe(1.5)
-  })
-
-  it('prefers the usage block when both are present', () => {
-    expect(usageOfChunk({ credit: 9, usage: { credit: 1 } })?.credit).toBe(1)
+  it('IGNORES a top-level credit — that key means "credits already used" elsewhere', () => {
+    // Review: the first version also accepted `chunk['credit']`, calling it
+    // "the other spelling the probe regex allows". No measurement supported it
+    // (every sample in this repo puts the figure inside `usage`), the bare key
+    // means credits-ALREADY-USED on the enterprise billing endpoint, and the
+    // fallback was unreachable besides — this function returns early without a
+    // `usage` object. Removing it is the safe direction: a wrong figure is worse
+    // than a missing one, because the missing one shows as "not priced".
+    expect(usageOfChunk({ credit: 1.5 })).toBeUndefined()
+    expect(usageOfChunk({ credit: 1.5, usage: { prompt_tokens: 3 } })).toEqual({ promptTokens: 3 })
   })
 
   it('refuses a negative or non-finite figure rather than reporting it as cost', () => {

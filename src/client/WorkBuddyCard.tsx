@@ -24,6 +24,7 @@
  */
 
 import { resolveRequestUrl } from './request-url.ts'
+import { formatSpent } from './credit-format.ts'
 import { Component, useCallback, useEffect, useRef, useState } from 'react'
 import { createElement as h } from 'react'
 import type { ErrorInfo, ReactElement, ReactNode } from 'react'
@@ -3960,22 +3961,36 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                         price is COUNTED separately rather than folded into the
                         average — a total that silently skipped them would look
                         exact and be wrong. */}
-                    {status.turnCredits === undefined || status.turnCredits.turns === 0
+                    {status.turnCredits === undefined
+                      || (status.turnCredits.turns === 0 && status.turnCredits.unknownTurns === 0)
                       ? null
                       : <p className="dsm-workbuddy-turn-credits" role="status">
-                          {t('row.turnCredits', {
-                            total: formatNumber(status.turnCredits.total),
-                            turns: status.turnCredits.turns,
-                          })}
+                          {/* HIDDEN only when there is genuinely nothing to say.
+                              Review caught the first version hiding this whole
+                              row whenever `turns === 0` — which is exactly the
+                              case `unknownTurns` exists for: a region where the
+                              upstream never prices a turn. The user then saw no
+                              row at all and concluded the feature did not exist,
+                              instead of learning that N turns went unpriced. */}
+                          {status.turnCredits.turns === 0
+                            ? null
+                            : t('row.turnCredits', {
+                                total: formatSpent(status.turnCredits.total),
+                                turns: status.turnCredits.turns,
+                              })}
+                          {/* NOT "本轮". `last` is the most recent turn that WAS
+                              priced, so after an unpriced turn it is older than
+                              the current one — saying "this turn" would be a
+                              factual error about money. Review caught this. */}
                           {status.turnCredits.last === undefined
                             ? null
                             : <span className="dsm-workbuddy-turn-credits-last">
-                                {t('row.turnCreditsLast', { last: formatNumber(status.turnCredits.last) })}
+                                {t('row.turnCreditsLast', { last: formatSpent(status.turnCredits.last) })}
                               </span>}
                           {status.turnCredits.unknownTurns === 0
                             ? null
                             : <span className="dsm-workbuddy-turn-credits-unknown">
-                                {t('row.turnCreditsUnknown', { count: status.turnCredits.unknownTurns })}
+                                {t('row.turnCreditsUnknown', { count: formatNumber(status.turnCredits.unknownTurns) })}
                               </span>}
                         </p>}
                     {/* The account pool. Rendered only when the Host reports

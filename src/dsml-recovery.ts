@@ -1129,7 +1129,26 @@ function isBareCandidate(name: string, gate: RecoveryGate): boolean {
  * about anything the request declared.
  */
 function hasBareProtocolWord(text: string): boolean {
+  // QUOTED PROTOCOL VOCABULARY IS NOT EVIDENCE (review, safety). Every other
+  // scanner in this file skips fences, code spans and quoted spans; this one did
+  // not, and that asymmetry was exploitable:
+  //
+  //     You can write <ask_user_question><questions>hi</questions></ask_user_question> to ask.
+  //     (The format uses `<arg_key>`.)
+  //
+  // `<arg_key>` inside backticks made this return true, the tool-named wrapper in
+  // the FIRST sentence became the block start, and `stripBareBlock` cut the rest
+  // of the paragraph — the output was `"You can write "`. A model explaining the
+  // protocol is an ordinary thing to do, and deleting what it wrote is the one
+  // outcome the module refuses on principle: visible debris beats lost content.
+  //
+  // Sharing `ignoredSpans` with the other scanners is what makes the trigger and
+  // the block locator agree about which bytes count.
+  const spans = ignoredSpans(text)
+  const cursor = { at: 0 }
   for (let index = 0; index < text.length; index++) {
+    index = skipIgnored(spans, index, cursor)
+    if (index >= text.length) break
     if (text.charAt(index) !== '<') continue
     const tag = scanBareTag(text, index)
     if (tag !== undefined && isProtocolWord(tag.name)) return true
@@ -1174,7 +1193,36 @@ function parseBareBlock(block: string, gate: RecoveryGate): RecoveredToolCall | 
     return undefined
   }
 
-  const parameters = parseBareParameters(block, spans, name, gate)
+  // GATE 1, ENFORCED HERE (review): a bare block must be PROVEN COMPLETE before
+  // its call is committed. Without this the truncated shape
+  //
+  //     <ask_user_question>\n<arg_key>questions</arg_key><arg_value>x</arg_value>
+  //
+  // — no closer anywhere, the stream simply ran out — produced a real call whose
+  // arguments were a half-written JSON string. That is the accident gate 1 exists
+  // for: executing a call the model never finished writing. Docs §14.4 and the
+  // commit message both claimed "a cut-off block is shown as text", which was
+  // only true for blocks that failed to PARSE, not for ones that parsed from a
+  // partial stream.
+  //
+  // The closer may be the wrapper's own (`</ask_user_question>`), the protocol's
+  // (`</tool_call>` / `</invoke>`, alternated freely by real responses), or — for
+  // the truncated-key shape — nothing else is needed once a complete
+  // `arg_value` pair closed. Accepting all three keeps the captured shapes
+  // recoverable while refusing a stream that stopped mid-block.
+  // ONE closer, computed once and reused as the parameter scope's upper bound.
+  //
+  // REVIEW: `parseBareParameters` used to scan to the END of the pending text,
+  // not to the end of the block. Two bare blocks in one response were therefore
+  // MERGED into a single call (`{"a":"1","b":"2"}`, the second call lost), and
+  // prose after a block was absorbed as a parameter of it (`…</tool_call>` then
+  // `To run it, use <b>2</b>.` became `{"a":"1","b":"2"}`). A wrong argument list
+  // is the worst failure mode here: it deletes nothing visible, it EXECUTES the
+  // wrong thing — for `bash`, a command the model never asked for.
+  const closer = bareBlockClose(block, spans, first)
+  if (closer === undefined) return undefined
+
+  const parameters = parseBareParameters(block.slice(0, closer), spans, name, gate)
   if (parameters === undefined) return undefined
 
   const required = gate.requiredParameters?.get(name)
@@ -1185,6 +1233,32 @@ function parseBareBlock(block: string, gate: RecoveryGate): RecoveredToolCall | 
     name,
     arguments: JSON.stringify(parameters),
   }
+}
+
+/**
+ * Index just past the tag that CLOSES the block opened by `opener`, or
+ * `undefined` when no closer exists.
+ *
+ * The closer's name is NOT required to match the wrapper: real responses write
+ * `<ask_user_question>` and close it with `</tool_call>`, which is the captured
+ * shape itself. Any protocol wrapper name is accepted, and the EARLIEST match
+ * wins so a following block is never swallowed.
+ */
+function bareBlockClose(
+  text: string,
+  spans: readonly IgnoredSpan[],
+  opener: MarkupTag,
+): number | undefined {
+  const names = [opener.name, 'tool_call', 'tool_calls', 'tool-call', 'tool-calls', 'toolcalls', 'invoke']
+  let best: number | undefined
+  for (const name of names) {
+    const close = findBareClose(text, spans, name, opener.end)
+    if (close === undefined) continue
+    // `MarkupTag.end` is the index OF the `>`, so the cursor past it is +1.
+    const after = close.end + 1
+    if (best === undefined || after < best) best = after
+  }
+  return best
 }
 
 /** The first bare opening tag that is a candidate for this request. */
@@ -1327,18 +1401,53 @@ function afterTruncatedKeyValue(text: string, from: number): string | undefined 
 }
 
 /**
- * Everything in `text` up to the first bare protocol tag — the prose the user
- * should still read once a bare block has been recovered.
+ * `text` with the first bare block REMOVED and everything around it kept.
  *
- * The block's own bytes carry no information for the reader (the call has been
- * delivered through the structured channel instead), and the captured shape is
- * inconsistent — `<ask_user_question>` closed by `</tool_call>` — so there is no
- * reliable end to cut at. Cutting at the START and dropping the remainder is
- * the only rule that cannot leave half a block on screen.
+ * The block's own bytes carry no information for the reader — the call has been
+ * delivered through the structured channel — so they go. What must NOT go is the
+ * prose that follows the block.
+ *
+ * The first version cut at the block's START and dropped the remainder, on the
+ * argument that the captured shape has no reliable end (`<ask_user_question>`
+ * closed by `</tool_call>`). Review measured what that costs: a reply of
+ *
+ *     <ask_user_question>…</tool_call>\n结尾：以上是选项。
+ *
+ * lost 「结尾：以上是选项。」 — the model's own closing sentence, silently. Not
+ * deleting the reader's content is the stronger rule here, so once gate 1
+ * (a proven closer) holds, the END is known and only the span goes.
  */
 function stripBareBlock(text: string, gate: RecoveryGate): string {
   const start = findBareBlockStart(text, gate)
-  return start === -1 ? text : text.slice(0, start)
+  if (start === -1) return text
+  const end = bareBlockEnd(text, start, gate)
+  // No provable end: fall back to the old rule rather than guess a boundary and
+  // splice unrelated prose into the answer.
+  return end === -1 ? text.slice(0, start) : text.slice(0, start) + text.slice(end)
+}
+
+/**
+ * Where the bare block starting at `start` ends (exclusive), or `-1`.
+ *
+ * A closer is accepted under the block's own name or any protocol wrapper name,
+ * because real responses alternate the two — `<ask_user_question>` closed by
+ * `</tool_call>` is the CAPTURED shape, not an anomaly.
+ */
+function bareBlockEnd(text: string, start: number, gate: RecoveryGate): number {
+  const spans = ignoredSpans(text)
+  const opener = findBareOpener(text.slice(start), ignoredSpans(text.slice(start)))
+  if (opener === undefined) return -1
+  const from = start + opener.end
+  const names = [opener.name, 'tool_call', 'tool_calls', 'tool-call', 'tool-calls', 'toolcalls', 'invoke']
+  let best = -1
+  for (const name of names) {
+    const close = findBareClose(text, spans, name, from)
+    if (close === undefined) continue
+    // `MarkupTag.end` is the index OF the `>`, so the cursor past the tag is +1.
+    const after = close.end + 1
+    if (best === -1 || after < best) best = after
+  }
+  return best
 }
 
 /**

@@ -101,3 +101,38 @@ describe('issue #321: the widened clause does not swallow ordinary prose', () =>
     expect(system).toContain(ZWSP)
   })
 })
+
+/**
+ * TABLE-DRIVEN, so a future row cannot be half-covered the way row 2 was.
+ *
+ * The first version of this fix covered two of the three identity rows and
+ * missed `You are a coding agent running on the …` — so the very failure mode
+ * #321 describes (a rewrite that removes the protection it should work with)
+ * survived on the row that `kimi-k3.1-pro` requests produce. Hard-coding the
+ * rows covered would let that happen again, so this walks the table itself:
+ * every `to` value that names an agent must carry a break.
+ *
+ * Rows whose replacement names no identity at all (the @-path paragraphs, the
+ * `Agent Teams` line) are skipped BY SHAPE, not by index, so adding rows does
+ * not silently weaken this test.
+ */
+describe('issue #321: every identity replacement carries a break', () => {
+  it('breaks the row-2 replacement (the one a gemini/kimi request produces)', () => {
+    // The specific miss: row 3's wording was covered, row 2's was not.
+    const system = systemOf([{ role: 'system', content: 'You are a coding agent powered by the kimi-k3.1-pro model.' }])
+    expect(system, 'row 2 must be broken like the others').toContain(ZWSP)
+    expect(system.replace(/\u200b/gu, '')).toContain('running on the kimi-k3.1-pro model')
+  })
+
+  it.each([
+    ['row 1 (identity)', 'You are an AI agent powered by DeepSeek Harness.'],
+    ['row 2 (coding agent)', 'You are a coding agent powered by the qmodel_38max model.'],
+    ['row 3 (Web GUI)', 'You are interacting with the user through the DeepSeek Harness Web GUI whose URL is x.'],
+  ])('%s is rewritten AND broken', (_label, original) => {
+    const system = systemOf([{ role: 'system', content: original }])
+    expect(system, 'the original must be gone').not.toContain(original)
+    expect(system, 'the replacement must be broken').toContain(ZWSP)
+    // And no head — the invariant #297 depends on.
+    expect(system.startsWith(HEAD)).toBe(false)
+  })
+})

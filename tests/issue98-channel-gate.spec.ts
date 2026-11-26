@@ -109,18 +109,19 @@ function visible(text: string): string {
 }
 
 /**
- * The text with BOTH the neutral head and the zero-width breaks removed.
+ * The text with the zero-width breaks removed — and NOTHING else.
  *
- * ISSUE #321 moved the replacement wordings into the prefix list and the
- * identity clause, so a rewritten sentence now also gets a neutral head and
- * internal breaks — the protection it used to lose the moment it was rewritten.
- * These assertions are about the SENTENCE the model ends up reading, so they
- * compare this stripped form; asserting the raw string would re-pin the defect.
+ * Review caught the first version of this helper stripping the neutral head as
+ * well, on a comment that claimed the replacement wordings had been added to
+ * the prefix list. They deliberately were NOT (see `UNAPPROVED_CHANNEL_OPENINGS`
+ * and the third test in `issue321-rewrite-keeps-break.spec.ts`): a head on
+ * assistant history is the persona line the model imitates, which is #297.
+ * Stripping a head here made six assertions in this file blind to exactly that
+ * regression — injecting the replacement into the prefix list left all 38 cases
+ * green. A helper must not do the assertion's work for it.
  */
 function bare(text: string): string {
-  const stripped = visible(text)
-  const head = `${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n`
-  return stripped.startsWith(head) ? stripped.slice(head.length) : stripped
+  return visible(text)
 }
 
 describe('array-shaped system content: every text part is scanned (measured fact 2)', () => {

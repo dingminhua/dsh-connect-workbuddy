@@ -152,3 +152,151 @@ describe('issue #298: the marked path does not regress', () => {
     expect(calls[0]?.name).toBe('ask_user_question')
   })
 })
+
+/**
+ * REVIEW FINDING — quoted protocol vocabulary must not license a deletion.
+ *
+ * The trigger used to be answered by a scanner that did NOT skip fences and code
+ * spans, while the BLOCK LOCATOR did. A response whose only `<arg_key>` lived in
+ * backticks therefore satisfied "this response speaks the protocol", and the
+ * tool-named wrapper in the sentence beside it became the block start — so the
+ * rest of the paragraph was cut:
+ *
+ *     in : You can write <ask_user_question><questions>hi</questions></ask_user_question> to ask.
+ *          (The format uses `<arg_key>`.)
+ *     out: "You can write "
+ *
+ * Deleting a model's own explanation is the one outcome this module refuses;
+ * showing protocol debris is bad, silently losing content is worse. These stay
+ * as permanent negatives, next to the `<bash>` / `<command>` pair that guards the
+ * same principle from the other direction.
+ */
+describe('issue #298: quoted protocol words do not license a deletion', () => {
+  /** Feed as one chunk and flush, so a hold cannot hide the outcome. */
+  function whole(text: string): { text: string, calls: number } {
+    const buffer = new DsmlStreamBuffer(gate())
+    const added = buffer.add(text)
+    const flushed = buffer.flush()
+    return {
+      text: added.text + flushed.text,
+      calls: (added.calls?.length ?? 0) + (flushed.calls?.length ?? 0),
+    }
+  }
+
+  it('keeps a sentence whose ONLY protocol word is inside backticks', () => {
+    const input = 'You can write <ask_user_question><questions>hi</questions></ask_user_question> to ask.\n(The format uses `<arg_key>`.)'
+    const result = whole(input)
+    expect(result.text, 'the prose must survive intact').toBe(input)
+    expect(result.calls).toBe(0)
+  })
+
+  it('keeps a sentence whose only protocol word is inside a fenced block', () => {
+    const input = 'The wrapper looks like this:\n```text\n<arg_key>k</arg_key><arg_value>v</arg_value>\n```\nYou can write <ask_user_question> to ask.'
+    const result = whole(input)
+    expect(result.text, 'the prose must survive intact').toBe(input)
+    expect(result.calls).toBe(0)
+  })
+
+  it('keeps a sentence whose only protocol word is in a quoted span', () => {
+    const input = 'Use `<invoke>` as the wrapper. Then <ask_user_question> is how you ask.'
+    const result = whole(input)
+    expect(result.text).toBe(input)
+    expect(result.calls).toBe(0)
+  })
+
+  it('still recovers when the protocol word is REAL, not quoted', () => {
+    // The other side: fixing the false positive must not disable the feature.
+    const input = '前言\n<ask_user_question><questions>hi</questions>\n<questions</arg_key><arg_value>v</arg_value></tool_call>'
+    const result = whole(input)
+    expect(result.calls, 'a real bare block must still be recovered').toBe(1)
+    expect(result.text).toBe('前言\n')
+  })
+})
+
+/**
+ * REVIEW FINDING — a block that never closed must not become a call.
+ *
+ * Gate 1 ("a block must close before it is committed") was documented as covering
+ * the bare path but was not implemented there: `parseBareBlock` found an opener,
+ * parsed whatever `arg_key`/`arg_value` pairs existed, and returned a call. So a
+ * stream that was CUT MID-BLOCK — token limit, dropped connection — committed a
+ * call whose arguments were a half-written string, and the tool ran on them.
+ *
+ * Refusing means the bytes are SHOWN. That is the right trade here: a call the
+ * model never finished is worse than protocol debris the user can read, because
+ * the debris is diagnosable and the wrong execution is not.
+ */
+describe('issue #298: an unclosed bare block is shown, not committed', () => {
+  function whole(text: string): { text: string, calls: readonly { name: string, arguments: string }[] } {
+    const buffer = new DsmlStreamBuffer(gate())
+    const added = buffer.add(text)
+    const flushed = buffer.flush()
+    return { text: added.text + flushed.text, calls: [...added.calls ?? [], ...flushed.calls ?? []] }
+  }
+
+  it('refuses a block with no closer at all', () => {
+    const input = '<ask_user_question>\n<arg_key>questions</arg_key><arg_value>x</arg_value>'
+    const result = whole(input)
+    expect(result.calls).toHaveLength(0)
+    expect(result.text, 'the bytes must be shown instead of executed').toBe(input)
+  })
+
+  it('refuses a block whose arg_value closed but whose wrapper did not', () => {
+    const input = '<ask_user_question><arg_key>questions</arg_key><arg_value>[{"a":1}]</arg_value>'
+    expect(whole(input).calls).toHaveLength(0)
+  })
+
+  it('accepts the protocol closer even when it does not match the wrapper name', () => {
+    // Real responses alternate: `<ask_user_question>` … `</tool_call>`. Requiring a
+    // name-matched closer would reject the captured shape itself.
+    const input = '<ask_user_question><arg_key>questions</arg_key><arg_value>v</arg_value></tool_call>'
+    expect(whole(input).calls).toHaveLength(1)
+  })
+})
+
+/**
+ * REVIEW FINDING — a parameter must come from ITS OWN block.
+ *
+ * `parseBareParameters` scanned to the end of the pending text instead of the
+ * end of the block, so:
+ *
+ *     <t>…a=1…</tool_call>\nTo run it, use <b>2</b>.
+ *     → {"a":"1","b":"2"}
+ *
+ * The prose after the block became a parameter of it. This is the worst kind of
+ * defect in this file: nothing looks broken — no deletion, no debris — the tool
+ * simply receives arguments the model never wrote. For `bash` that is a command
+ * nobody asked for.
+ */
+describe('issue #298: parameters are scoped to their own block', () => {
+  function two(name: string, extra: Partial<RecoveryGate> = {}): RecoveryGate {
+    return gate({
+      declaredNames: new Set([name]),
+      acceptedParameters: new Map([[name, new Set(['a', 'b'])]]),
+      requiredParameters: new Map([[name, []]]),
+      ...extra,
+    })
+  }
+
+  it('does not absorb prose after the block as a parameter', () => {
+    const input = '<t><arg_key>a</arg_key><arg_value>1</arg_value></tool_call>\nTo run it, use <b>2</b>.'
+    const buffer = new DsmlStreamBuffer(two('t'))
+    const added = buffer.add(input)
+    const calls = [...added.calls ?? [], ...buffer.flush().calls ?? []]
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.arguments, 'the prose must not become an argument').toBe('{"a":"1"}')
+  })
+
+  it('does not merge a second block into the first call', () => {
+    const input = '<t><arg_key>a</arg_key><arg_value>1</arg_value></tool_call><t><arg_key>b</arg_key><arg_value>2</arg_value></tool_call>'
+    const buffer = new DsmlStreamBuffer(two('t'))
+    const added = buffer.add(input)
+    const calls = [...added.calls ?? [], ...buffer.flush().calls ?? []]
+    // LIMITATION, asserted honestly rather than hidden: `flush()` resolves at
+    // most ONE bare block per attempt, so the second block is not recovered here
+    // (its bytes are shown instead of being merged into the first call). What
+    // must never happen — and did before this fix — is `{"a":"1","b":"2"}`.
+    expect(calls.length).toBeLessThanOrEqual(1)
+    expect(calls[0]?.arguments).toBe('{"a":"1"}')
+  })
+})

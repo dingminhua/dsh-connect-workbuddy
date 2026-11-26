@@ -1911,18 +1911,32 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       //
       // The array alone (issue #86's fix) stopped "a new route forgot its
       // disposer", but not a throw MIDWAY: the body registers 16 routes and only
-      // returns the disposer on its LAST line, so if route k throws — a
-      // duplicate path during hot reload is the reported case — the body never
-      // reaches the `return`, Cordis gets no cleanup function, the array is
-      // lost with the frame, and routes 1..k-1 keep answering from an unloaded
-      // instance. Re-enabling then collides with the plugin's OWN leftovers and
-      // only a host restart recovers.
+      // returns the disposer on its LAST line, so if route k throws — a duplicate
+      // path during hot reload is the reported case — the body never reaches the
+      // `return`, no cleanup function is produced, the array is lost with the
+      // frame, and routes 1..k-1 keep answering from an unloaded instance.
       //
-      // `ctx.effect` inside the body is collected as a CHILD of the outer
-      // effect: when the body throws, Cordis disposes the children already
-      // registered, so the partial mount is rolled back exactly as intended.
-      // The returned disposer is idempotent, so the trailing loop below is
-      // unchanged and harmless.
+      // HOW THE ROLLBACK ACTUALLY HAPPENS (corrected after review measured it —
+      // the first version of this comment was wrong). `ctx.effect` registers each
+      // wrapper on the FIBER's disposable list (`fiber._disposables`), NOT on the
+      // outer effect's local array; that array is only filled from the body's
+      // RETURN VALUE. So when the body throws, nothing is disposed at that
+      // instant — the earlier routes stay mounted until the fiber itself unloads,
+      // and the unload is what clears them (`_reload` catches, `_unload`,
+      // `clearing()`).
+      //
+      // THE PRECONDITION THAT MAKES THIS WORK: the exception must reach `apply`.
+      // Do NOT wrap this registration in a `try/catch` to "keep the plugin
+      // loading despite a duplicate path" — if the fiber does not unload, the
+      // first k-1 routes stay mounted for ever and #323 is exactly what returns.
+      // If that robustness is ever wanted, do it HERE and explicitly dispose on
+      // the way out (`try { … } catch (error) { for (const d of disposers) d();
+      // throw error }`), which is behaviour this comment previously claimed to
+      // have already.
+      //
+      // The returned disposer is idempotent (Cordis guards with `disposing` and
+      // `runner.epoch`), so the trailing loop below is still correct and merely
+      // redundant — it is kept because it is what a reader expects to see.
       disposers.push(ctx.effect(() => ctx.webServer.register(entry)))
     }
 

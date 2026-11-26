@@ -29,7 +29,7 @@ import { usageOfChunk } from './body-report.ts'
 import type { WorkBuddyUsageCounts } from './body-report.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { DsmlStreamBuffer } from './dsml-recovery.ts'
-import type { RecoveredToolCall, RecoveryGate } from './dsml-recovery.ts'
+import type { BufferOutcome, RecoveredToolCall, RecoveryGate } from './dsml-recovery.ts'
 import { parseQueueAnswer, queueNoticeText } from './queue.ts'
 import {
   declaredTools,
@@ -589,6 +589,20 @@ class RecoveryStream {
    * client two answers to the same question.
    */
   private nativeCallsSeen = false
+  /**
+   * The last chunk/choice this stream saw, kept so a call recovered at FLUSH
+   * time can still be framed.
+   *
+   * ISSUE #298 follow-up: a bare block has no marker, so it can only be
+   * recognised once the whole thing has arrived — `flush()` is the only place
+   * that produces these calls. The first version of that feature returned them
+   * from `flush()` without teaching the two flush CONSUMERS to read them, so the
+   * call was dropped while its bytes were stripped: the user got a truncated or
+   * empty answer, with no notice and no retry. Keeping the frame template is
+   * what lets the flush path emit the same `tool_calls` frame `add()` does.
+   */
+  private lastChunk: Record<string, unknown> | undefined
+  private lastChoice: Record<string, unknown> | undefined
 
   private readonly buffer: DsmlStreamBuffer | undefined
 
@@ -742,9 +756,14 @@ class RecoveryStream {
    */
   finish(): void {
     const flushed = this.buffer?.flush()
-    if (flushed !== undefined && flushed.text !== '') {
-      this.noteResidue(!flushed.prose)
-      this.emitContent(flushed.text)
+    if (flushed !== undefined) {
+      // Same rule as `drainBuffer`: a bare block is only ever resolved here, so
+      // its call must be sent before the text it was stripped out of.
+      this.emitFlushedCalls(flushed)
+      if (flushed.text !== '') {
+        this.noteResidue(!flushed.prose)
+        this.emitContent(flushed.text)
+      }
     }
     this.closeWindow()
     if (!this.sawDone && this.res.writable) this.emitFrame('data: [DONE]\n\n')
@@ -905,6 +924,10 @@ class RecoveryStream {
     // the answer is proven real, frames are queued rather than forwarded.
     this.windowOpened = true
 
+    // Remember the frame template: a bare block is only resolved at flush time,
+    // and the flush consumers need something to build a `tool_calls` frame from.
+    this.lastChunk = chunk
+    this.lastChoice = choiceRecord
     const outcome = this.buffer.add(content)
     if (outcome.calls !== undefined && outcome.calls.length > 0) {
       // Queued through `send` first so it lands ahead of any `finish_reason`
@@ -945,9 +968,39 @@ class RecoveryStream {
    */
   private drainBuffer(): void {
     const flushed = this.buffer?.flush()
-    if (flushed === undefined || flushed.text === '') return
+    if (flushed === undefined) return
+    // A bare block is resolved EXACTLY HERE (issue #298): it has no marker, so
+    // it cannot be recognised until the whole thing has arrived. Emitting the
+    // call is not optional — `flush()` already swallowed the block's bytes, so
+    // a dropped call means the user sees a truncated answer with no tool
+    // execution, no notice and no retry. The call goes first, mirroring `add()`.
+    this.emitFlushedCalls(flushed)
+    if (flushed.text === '') return
     this.noteResidue(!flushed.prose)
     this.emitContent(flushed.text)
+  }
+
+  /**
+   * Emit calls that `flush()` recovered, if any.
+   *
+   * Shares `callsFrame` with the `add()` path so a flushed call is byte-shaped
+   * like any other; only the framing template differs (the last frame seen).
+   */
+  private emitFlushedCalls(flushed: BufferOutcome): void {
+    if (flushed.calls === undefined || flushed.calls.length === 0) return
+    const chunk = this.lastChunk
+    const choice = this.lastChoice
+    if (chunk === undefined || choice === undefined) {
+      // No frame was ever seen, so there is nothing to build a delta from. That
+      // cannot happen for a bare block (it needs content to exist at all), and
+      // inventing a frame here would be worse than reporting nothing.
+      this.logger?.warn('dsh-connect-workbuddy: recovered a call with no frame template to send it in')
+      return
+    }
+    this.flushNotice()
+    this.send(callsFrame(chunk, choice, flushed.calls), false)
+    this.wroteContent = true
+    this.closeWindow()
   }
 
   /**

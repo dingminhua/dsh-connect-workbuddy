@@ -2727,10 +2727,24 @@ const UNAPPROVED_CHANNEL_OPENINGS: readonly string[] = [
   //
   // The protection the replacement actually needs is the ANYWHERE substring
   // gate, and that is {@link IDENTITY_CLAUSE}'s job: it breaks the clause
-  // internally with zero-width characters, which defeats a substring match
-  // without adding a line the model can imitate. So the replacement wordings
-  // are clause-matched (see below) and NOT prefix-listed, which is why a
-  // rewritten assistant turn stays clean.
+  // internally with zero-width characters, without adding a line the model can
+  // imitate. So the replacement wordings are clause-matched (see below) and NOT
+  // prefix-listed, which is why a rewritten assistant turn stays clean.
+  //
+  // HOW MUCH THIS IS WORTH DEPENDS ON THE GATEWAY, and the two measurements in
+  // this file must not be read as contradicting each other:
+  //
+  //   - on the CN gateway, two probes measured that invisible characters are
+  //     NORMALISED away before matching (2026-10-29, see the note above
+  //     `breakIdentityClauses`) — there this break adds nothing, and the phrase
+  //     REWRITE is the only path to a 200. That is why #319 removed the brand
+  //     from these very `to` values: making the sentence acceptable at the
+  //     source is what works on that gateway.
+  //   - on a gateway that matches the raw bytes (the workbuddy2api-hub #533
+  //     bisection), the break does defeat the substring match.
+  //
+  // So this layer is a second line for the byte-matching case, not a substitute
+  // for the rewrite. Do not delete the rewrite on the strength of it.
 ]
 
 /**
@@ -2766,7 +2780,7 @@ const UNAPPROVED_CHANNEL_OPENINGS: readonly string[] = [
  * to the break rule itself.
  */
 const IDENTITY_CLAUSE =
-  /(you)(\s+are\s+(?:(?:an?\s+)?[\w-]*\s*agent\s+(?:powered\s+by|running\s+inside\s+the\s+harness(?=\s*(?:[.。!?]|$)))|(?:interacting\s+with\s+the\s+user\s+through\s+the\s+deepseek\s+harness|working\s+with\s+the\s+user\s+inside\s+the\s+harness\s+web\s+gui)))/giu
+  /(you)(\s+are\s+(?:(?:an?\s+)?[\w-]*\s*agent\s+(?:powered\s+by|running\s+on\s+the|running\s+inside\s+the\s+harness(?=\s*(?:[.。!?]|$)))|(?:interacting\s+with\s+the\s+user\s+through\s+the\s+deepseek\s+harness|working\s+with\s+the\s+user\s+inside\s+the\s+harness\s+web\s+gui)))/giu
 
 /**
  * Break an identity clause at EVERY word boundary inside it.
@@ -2862,6 +2876,28 @@ function scansOpening(role: unknown): boolean {
   if (typeof role !== 'string') return false
   const name = role.trim().toLowerCase()
   return name === 'system' || name === 'assistant'
+}
+
+/**
+ * Whether a content part is TEXT — the ONE definition every pass shares.
+ *
+ * ISSUE #315 + review: several passes read a part's `type` and each carried its
+ * own copy of the test, and they drifted. Worse, the first fix updated some of
+ * them and left others on the old STRICT rule, which kept the #297 re-poisoning
+ * channel open: an assistant part shaped `{ text: '…' }` with no `type` kept the
+ * injected persona head, the model imitates it on the next turn, and the host
+ * writes it into the session file — so a rescue poisoned the history it was
+ * meant to repair.
+ *
+ * A part that carries `text` and no `type` has exactly one sensible reading,
+ * and the alternative is leaving it unprotected on the wire. An EXPLICIT other
+ * type (an image part, say) is still skipped: the `text` check alone would not
+ * be enough there, so both conditions are kept.
+ */
+function isTextPart(record: Record<string, unknown>): boolean {
+  const type = record['type']
+  if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) return false
+  return typeof record['text'] === 'string'
 }
 
 /**
@@ -3144,10 +3180,8 @@ function rewriteChannelFingerprintPhrasesInBody(obj: Record<string, unknown>): v
       // Accepting the unspecified type everywhere is the safe direction: a part
       // that carries `text` and no `type` has exactly one sensible reading, and
       // the alternative leaves it unprotected on the wire.
-      const type = record['type']
-      if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) continue
-      const text = record['text']
-      if (typeof text !== 'string') continue
+      if (!isTextPart(record)) continue
+      const text = record['text'] as string
       const next = rewriteChannelFingerprintPhrases(text)
       if (next !== text) record['text'] = next
     }
@@ -3209,10 +3243,8 @@ function neutralizeChannelFingerprints(obj: Record<string, unknown>): void {
       // Accepting the unspecified type everywhere is the safe direction: a part
       // that carries `text` and no `type` has exactly one sensible reading, and
       // the alternative leaves it unprotected on the wire.
-      const type = record['type']
-      if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) continue
-      const text = record['text']
-      if (typeof text !== 'string') continue
+      if (!isTextPart(record)) continue
+      const text = record['text'] as string
       const next = neutralizeScannedText(text)
       if (next !== undefined) record['text'] = next
     }
@@ -3325,10 +3357,12 @@ function forceHeadInBody(bodyJson: string, mode: 'all' | 'system'): string | und
     for (const part of content) {
       if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
       const record = part as Record<string, unknown>
-      const type = record['type']
-      if (typeof type !== 'string' || type.trim().toLowerCase() !== 'text') continue
-      const text = record['text']
-      if (typeof text !== 'string' || text.trim() === '' || startsWithNeutralHead(text)) continue
+      // Same predicate as every other pass. A typeless text part is still text,
+      // and this is the RESCUE path: skipping it would leave exactly the part
+      // that escaped the rewrite without the head this rung exists to add.
+      if (!isTextPart(record)) continue
+      const text = record['text'] as string
+      if (text.trim() === '' || startsWithNeutralHead(text)) continue
       record['text'] = `${WORKBUDDY_FALLBACK_SYSTEM_PROMPT}\n\n${text}`
       changed = true
     }
@@ -3612,10 +3646,8 @@ export function perturbChannelFingerprints(
       // Accepting the unspecified type everywhere is the safe direction: a part
       // that carries `text` and no `type` has exactly one sensible reading, and
       // the alternative leaves it unprotected on the wire.
-      const type = record['type']
-      if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) continue
-      const text = record['text']
-      if (typeof text !== 'string') continue
+      if (!isTextPart(record)) continue
+      const text = record['text'] as string
       const next = perturb(text)
       if (next !== undefined) {
         record['text'] = next
@@ -3716,8 +3748,7 @@ export function openingEvidenceOfBody(bodyJson: string): OpeningEvidence[] {
       for (const part of content) {
         if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
         const record = part as Record<string, unknown>
-        const type = record['type']
-        if (typeof type !== 'string' || type.trim().toLowerCase() !== 'text') continue
+        if (!isTextPart(record)) continue
         const text = record['text']
         if (typeof text === 'string') texts.push(text)
       }
@@ -3798,8 +3829,8 @@ export function channelFingerprintTrace(rawJson: string, preparedJson: string): 
           for (const part of message['content']) {
             if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
             const record = part as Record<string, unknown>
-            if ((record['type'] === 'text' || record['type'] === undefined) && typeof record['text'] === 'string') {
-              texts.push(record['text'])
+            if (isTextPart(record)) {
+              texts.push(record['text'] as string)
             }
           }
         }
@@ -4116,9 +4147,10 @@ function stripLeadingAcpTag(content: unknown): { value: unknown, changed: boolea
   for (const part of content) {
     if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
     const record = part as Record<string, unknown>
-    if (record['type'] !== 'text' || typeof record['text'] !== 'string') continue
-    if (!ACP_LEADING_TAG.test(record['text'])) continue
-    record['text'] = record['text'].replace(ACP_LEADING_TAG, '')
+    if (!isTextPart(record)) continue
+    const partText = record['text'] as string
+    if (!ACP_LEADING_TAG.test(partText)) continue
+    record['text'] = partText.replace(ACP_LEADING_TAG, '')
     return { value: content, changed: true }
   }
   return { value: content, changed: false }
@@ -4184,9 +4216,10 @@ function stripInjectedAssistantHeads(obj: Record<string, unknown>): void {
     for (const part of content) {
       if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
       const record = part as Record<string, unknown>
-      if (record['type'] !== 'text' || typeof record['text'] !== 'string') continue
-      const next = stripInjectedAssistantHead(record['text'])
-      if (next !== record['text']) record['text'] = next
+      if (!isTextPart(record)) continue
+      const headText = record['text'] as string
+      const next = stripInjectedAssistantHead(headText)
+      if (next !== headText) record['text'] = next
     }
   }
 }

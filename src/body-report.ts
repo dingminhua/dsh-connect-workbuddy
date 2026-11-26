@@ -380,10 +380,23 @@ export function usageOfChunk(chunk: Record<string, unknown>): WorkBuddyUsageCoun
     ? tokenCount((details as Record<string, unknown>)['cached_tokens'])
     : undefined
   const cachedTokens = fromDetails ?? tokenCount(record['prompt_cache_hit_tokens'])
-  // The credit figure is emitted OUTSIDE `usage` on at least one shape — the
-  // probe path reads it with a whole-stream regex, which cannot say where it
-  // sat. Both spellings are therefore accepted, `usage.credit` first.
-  const credit = creditCount(record['credit']) ?? creditCount(chunk['credit'])
+  // ONLY `usage.credit`. Review found the first version also read a top-level
+  // `chunk['credit']`, on a guess ("the probe uses a whole-stream regex, so it
+  // cannot say where the figure sat"). Two things kill that guess:
+  //
+  //   1. Every measurement this repo has puts it INSIDE `usage` —
+  //      `docs/IMAGE_GEN.md` reads `data.usage.credit` for the real charge, and
+  //      `tests/probe.spec.ts` asserts `{"usage":{"credit":0}}`. There is no
+  //      sample of a top-level one.
+  //   2. The bare key `credit` means something ELSE on the same upstream: the
+  //      enterprise billing endpoint reports `{credit, limitNum}` where `credit`
+  //      is credits ALREADY USED. Accumulating that as "what this turn cost"
+  //      would produce a number that grows every turn for no reason.
+  //
+  // The fallback was also dead code besides: this function returns early when
+  // there is no `usage` object, so `chunk['credit']` was only ever read on a
+  // chunk that already had a `usage` block — where `usage.credit` wins anyway.
+  const credit = creditCount(record['credit'])
   if (promptTokens === undefined && completionTokens === undefined && cachedTokens === undefined
     && credit === undefined) return undefined
   return {

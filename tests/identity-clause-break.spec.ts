@@ -233,8 +233,11 @@ describe('the perturbation rules stay idempotent WITHOUT the coarse ZWS guard', 
     const sysOf = (b: string): string =>
       (JSON.parse(b) as { messages: { content: string }[] }).messages[0]!.content
     expect(spanSurvives(sysOf(prepared), SPANS[1] as string)).toBe(false)
-    // The rewrite removed the phrase, so the request path added no ZWS here.
-    expect((sysOf(prepared).match(/\u200b/gu) ?? []).length).toBe(0)
+    // ISSUE #321 turned this around: the request path now DOES break the coding
+    // agent clause, because the rewrite's own replacement (`running on the …`)
+    // is clause-matched too. That is the fix, not a regression — before it, the
+    // rewrite produced a sentence that matched no predicate at all.
+    expect((sysOf(prepared).match(/\u200b/gu) ?? []).length).toBeGreaterThan(0)
 
     const dense = perturbChannelFingerprints(prepared, true) as string
     // Dense adds breaks between the remaining rune pairs, but never TWO at one
