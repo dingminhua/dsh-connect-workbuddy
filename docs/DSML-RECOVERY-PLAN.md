@@ -432,8 +432,15 @@ to lose」）正相反。用例**意图**保留（不产生第二条调用通道
 ### 14.3 落地的边界
 
 - `RecoveryGate.bareMarkup?: boolean`，**默认关**；关闭时逐字节等同旧行为（有测试钉住）。
-- 生效的裸名字集合 `bareNamesFor(gate)` = 协议自有词汇 + 本次声明的工具名 + 这些工具的
-  参数名。**必须是「已经知道的名字」**：`<div>`/`<b>` 不在其中，因此不会被删。
+- 生效的裸名字集合 `bareNamesFor(gate)` = 协议自有词汇 + 本次声明的工具名。
+  **参数名刻意不进这个集合**：`command`/`questions`/`path` 都是普通英文词，
+  放进全局集会删掉 `Set <command> now and later.` 的 `<command>`，还会让
+  `<question …` 被 `findFirstOpener(..., true)` 扣到流尾。参数名只在块内的
+  schema 校验（`parseArgPairs`/`parseParameters`）和截断 key（`parseTruncatedKey`）
+  里按本次请求自己的 schema 判定，不靠全局标签成员身份。
+- **必须是「已经知道的名字」**：`<div>`/`<b>` 不在其中，因此不会被删。
+  但「知道名字」只挡住已声明/已列出的形态——拼错的、未声明的裸 wrapper
+  仍会被当正文，诊断不会报（见 14.6）。
 - `<` 后必须紧贴名字。`<｜DSML｜ invoke>` 的空白容忍是给标记形态的，裸形态沿用会把
   `a < b and tool_call` 读成标签。
 - 四道闸一条都没动：wrapper 名必须在 `declaredNames` 里（闸 2）、closer 必须同名或属于
@@ -441,15 +448,28 @@ to lose」）正相反。用例**意图**保留（不产生第二条调用通道
   没有「推断工具名」这一步——模型把工具名明写在 wrapper 上，这里只做校验。
 - 截断 key 单独一条窄规则：只有当本次 schema 里**恰好还剩这一个必填参数**没给、且拼写就是它
   时才接受；没有 required 列表的工具只接受 schema 里确实存在的参数名。
-- 流式：`holdFrom` 增加两处扣留——裸名字前缀（`<ask_user_qu` 不再被当正文吐出去）与
-  「裸 opener 已完整、closer 还没到」。两处互相覆盖，因此变异验证里必须**成对**关掉才会红
-  （见 14.5）。
+- 流式：扣住未闭合的裸块有**两处代码**，但它们**不是互为覆盖**，而是一处承重、一处冗余：
+  `add()` 的 `findFirstOpener(..., true)` 在拼装块前就先扣住并 `return`，这才是真正挡住
+  分片泄漏的那一行；`holdFrom` 里那段「裸 opener 已完整、closer 还没到」的扣留多数情况
+  走不到。变异验证实测：单独拿掉 `holdFrom` 那段仍全绿（分支不可达），单独让
+  `findFirstOpener` 忽略 `pending` 才红（见 14.5）。裸名字前缀（`<ask_user_qu`）
+  的扣留是 `looksLikeTagStart` 那条，与这两者无关，仍保留。
 
-### 14.4 新增测试（`tests/dsml-recovery.spec.ts`，`describe('bare markup')`，10 例）
+### 14.4 新增测试（`tests/dsml-recovery.spec.ts`，`describe('bare markup')`，12 例）
 
 标记关闭时原样 / 恢复真实泄漏且散文保留 / 逐字符分片恢复 / `arg_key`+`arg_value` 合成一个
-参数 / wrapper 名当工具名 / 未声明工具仍按原文显示 / 缺必填参数仍按原文显示 / 截断 key 不接受
-schema 里没有的名字 / 普通 HTML 不受影响 / 带标记的路径不回归。
+参数 / **正文中引用已声明工具名不得恢复**（同名闭合、块内无协议词汇，`<ask_user_question>…
+</ask_user_question>` 逐字节保留）/ **有协议形状但工具未声明仍不得恢复**（`drop_tables` +
+`arg_key`/`arg_value`，确保闸 2 不是靠「未知名字当正文」蒙混）/ 缺必填参数仍按原文显示 /
+截断 key 不接受 schema 里没有的名字 / **普通 HTML 与散文不受影响（含与声明名/参数名的碰撞：
+`<bash>`、`<questions>` 出现在正文里既不删字也不成调用）** / **参数名只像标签前缀时不得扣留流式正文**
+（`<question` 出现在句中要立刻透传，不能等一个永远不会来的 closer）/ 带标记的路径不回归 /
+**flag off 下带标记的 `tool_call` 块按当前行为钉住**（`true`/`false` 两态 strip 均为 `''`；
+PR 把 `tool_call` 加进 `KEYWORD_TAGS`/`BLOCK_TAGS` 且不受 flag 控制，pre-PR 输出 `hello world`
+是有意变更，非回归）。
+
+后六条是为回应维护者意见补的「测试必须能咬」用例：最初那批只挑了**不在已知集合里**的名字
+（`div`/`b`/`drop_tables`），恰好绕开了真正危险的碰撞，等于 §12.2 那个坑的重演。
 
 ### 14.5 变异验证
 
@@ -462,8 +482,38 @@ schema 里没有的名字 / 普通 HTML 不受影响 / 带标记的路径不回�
 | `looksLikeTagStart`：不扣留裸名字前缀 | 1 例红 |
 | `findFirstOpener`：忽略 `pending` 参数 | 1 例红 |
 | `parseBareWrapper`：跳过截断 key 规则 | 2 例红 |
-| `holdFrom`：不再扣留未闭合的裸 opener | **单独不红**——与上一行「裸名字前缀」互为覆盖，成对关掉才红 |
+| `parseBareWrapper`：去掉协议形状证据（同名闭合也当调用） | 引用已声明工具名的用例红 |
+| `bareNamesFor`：把参数名重新并入全局集合 | 「参数名只像标签前缀时不得扣留」用例红（`<question` 被扣到流尾）；碰撞名正文用例仍绿——整块已在集合外，只有**分片前缀**才暴露差异 |
+| `stripMarkup`：不再保留非协议形状的同名裸块 | `<bash>ls -la</bash>` 逐字节保留用例红 |
+| `holdFrom`：不再扣留未闭合的裸 opener | **单独不红**——该分支不可达；真正承重的是 `add()` 里的 `findFirstOpener(..., true)` |
+| `findFirstOpener`：忽略 `pending` 参数（让 `add()` 不再扣留未闭合块） | 逐字符分片恢复用例红 |
 
-全量：**3823 passed + 2 skipped**（其中 2 例失败与本改动无关：`tests/issue12-region-hiding.spec.ts`
-与 `tests/pool-e2e.spec.ts` 在负载下的超时，单独运行与在未改动的工作树上均可通过），
-`typecheck` 干净，`check-pii` clean，`build` 通过。
+上表两行「扣留」的实测关系修正了初版文档里「互为覆盖、必须成对关掉才红」的说法：
+单独去掉 `holdFrom` 那段仍全绿（说明它多数时候走不到，`add()` 已先扣留并 return），
+单独让 `findFirstOpener` 忽略 `pending` 才红。真实关系是 **holdFrom 冗余、findFirstOpener 承重**，
+不是互为覆盖。
+
+全量（干净一次）：**3829 passed（227 个测试文件全绿）**，`typecheck` 干净（两份 tsconfig），
+`build` 通过（`tsdown` + `verify-entry-artifacts`，6/6 入口产物齐全），`check-pii` clean。
+另有一次全量跑到 `tests/pool-e2e.spec.ts` 的 `#191/#232` 用例因负载超时失败
+（`expected { done: 0 } to match { done: 1 }`），单独运行与重跑全量均通过——与本次改动无关的
+既有 flake，不写入「通过」口径。
+
+### 14.6 残余风险：按「已知名字」判泄漏的天然盲区
+
+这一节记一个**不修但必须写明**的边界。裸形态的识别（以及 `hasProse` 的判空）都建立在
+「已经知道的名字」上：`bareNamesFor` 只装协议自有词汇加本次声明的工具名，
+`parseBareWrapper` 的闸 2 要求 wrapper 名在 `declaredNames` 里。这意味着：
+
+- **拼错的、未声明的裸 wrapper**（例如工具叫 `ask_user_question`，模型写成
+  `<ask_user_questionn>…</ask_user_questionn>`，或写一个请求根本没声明的工具名）
+  不会被当调用，也不会被当协议残留删掉；`stripMarkup` 原样保留，`hasProse` 判为真，
+  诊断不报任何东西。整块原样出现在用户回答里，看起来和一段普通的 HTML 引述没有区别。
+- 这与 §12.2 是同一个根因的两个面：那次是「按已知关键词判空导致关键词名单外的真实泄漏
+  不触发重发」，这次是「按已知名字判裸调用导致名单外的裸泄漏不触发恢复」。两次都是
+  **检查永远不命中，看起来和检查通过一模一样**。
+- 为什么接受：靠「任何 `<tag>` 都怀疑」来堵这个盲区，代价就是把所有解释性正文里的尖括号
+  都变成误触发候选——维护者明确拒绝用一次罕见可见泄漏去换一个静默执行工具调用的通道。
+  当前形态选择宁可漏报（原样显示，用户看得见），不可误报（静默执行，用户看不见）。
+- 所以 `bareMarkup` 保持**默认关**：只有明确 opt-in 的客户端才承担这份权衡；未 opt-in 的
+  客户端逐字节等同旧行为。影响面收窄到「谁开了开关」，而不是所有用户。

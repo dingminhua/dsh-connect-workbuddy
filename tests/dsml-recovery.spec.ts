@@ -524,14 +524,20 @@ describe('bare markup', () => {
     expect(args(calls)).toEqual([{ questions: 'Q' }])
   })
 
-  it('takes the wrapper name as the tool name', () => {
-    const calls = parseToolCalls('<ask_user_question><questions>Q</questions></ask_user_question>', bareGate())
-    expect(calls[0]?.name).toBe('ask_user_question')
-    expect(args(calls)).toEqual([{ questions: 'Q' }])
+  it('does not turn a declared tool name quoted in prose into a call', () => {
+    // A wrapper that only REPEATS its tool name, with no protocol vocabulary
+    // inside, is the user quoting the tool — not the model calling it. The
+    // captured leak is shaped (`<ask_user_question>…` closed by `</tool_call>`,
+    // with `arg_key`/`arg_value` inside); this is not.
+    const block = '<ask_user_question><questions>Q</questions></ask_user_question>'
+    expect(parseToolCalls(block, bareGate())).toHaveLength(0)
+    expect(run([block], bareGate()).text).toBe(block)
   })
 
-  it('refuses a bare wrapper naming a tool the request never declared (gate 2)', () => {
-    const block = '<drop_tables><command>rm -rf /</command></drop_tables>'
+  it('refuses a protocol-shaped block whose tool name the request never declared (gate 2)', () => {
+    // The block HAS protocol evidence, so this is not a vacuous "unknown name
+    // is prose" case: only the missing declaration can refuse it.
+    const block = '<drop_tables><arg_key>command</arg_key><arg_value>rm -rf /</arg_value></drop_tables>'
     expect(parseToolCalls(block, bareGate())).toHaveLength(0)
     // Gate 4: refused means shown, not swallowed.
     expect(run([block], bareGate()).text).toBe(block)
@@ -552,11 +558,29 @@ describe('bare markup', () => {
     expect(parseToolCalls('<ask_user_question><wrong</arg_key><arg_value>v</arg_value></tool_call>', g)).toHaveLength(0)
   })
 
-  it('leaves ordinary HTML and prose untouched', () => {
-    const text = 'Use <div> and <b>bold</b>. Compare a < b and x < 5.'
-    expect(stripMarkup(text, bareGate())).toBe(text)
-    expect(parseToolCalls(text, bareGate())).toHaveLength(0)
-    expect(run([text], bareGate()).text).toBe(text)
+  it('leaves ordinary HTML and prose untouched — including declared names', () => {
+    // The names here COLLIDE with the gate's vocabulary on purpose: choosing
+    // only names outside the set would prove nothing (§12.2 of the plan).
+    const plain = 'Use <div> and <b>bold</b>. Compare a < b and x < 5.'
+    const collisions = 'You can write <ask_user_question>foo</ask_user_question> or <bash>ls -la</bash> to list files. Set <questions> below.'
+    for (const text of [plain, collisions]) {
+      expect(stripMarkup(text, bareGate())).toBe(text)
+      expect(parseToolCalls(text, bareGate())).toHaveLength(0)
+      expect(run([text], bareGate()).text).toBe(text)
+    }
+  })
+
+  it('does not hold a parameter name that merely looks like a tag prefix', () => {
+    // `questions` is a PARAMETER of the declared tool, not a tag name. If it
+    // leaks into the global bare-name set, `looksLikeTagStart` holds `<question`
+    // mid-sentence until the stream ends (or flushes) — delaying ordinary prose.
+    // Parameter names belong only to in-block schema checks, not this set.
+    const g = bareGate()
+    const buffer = new DsmlStreamBuffer(g)
+    expect(buffer.add('You can write <question')).toEqual({
+      text: 'You can write <question', prose: true, withheld: false,
+    })
+    expect(buffer.add('s> below.').text).toBe('s> below.')
   })
 
   it('keeps a marked block working exactly as before', () => {
@@ -565,5 +589,20 @@ describe('bare markup', () => {
     const result = run([wrapped('bash', { command: 'ls' })], g)
     expect(args(result.calls)).toEqual([{ command: 'ls' }])
     expect(result.text).toBe('')
+  })
+
+  it('strips a marked tool_call block the same way regardless of the flag', () => {
+    // `tool_call` was added to KEYWORD_TAGS/BLOCK_TAGS by this PR and those
+    // tables are NOT behind bareMarkup. So a flag-off client strips a marked
+    // `<｜DSML｜ tool_call>hello world</…>` block to EMPTY — pre-PR it kept the
+    // inner text. That is a deliberate behaviour change, pinned here so it is
+    // never reintroduced silently: a marked, well-formed tool_call block is
+    // protocol content, not an answer, and nothing the flag controls changes it.
+    const text = `<${MARK} tool_call>hello world</${MARK} tool_call>`
+    for (const flag of [true, false]) {
+      const g = gate({ bareMarkup: flag })
+      expect(parseToolCalls(text, g)).toHaveLength(0)
+      expect(stripMarkup(text, g)).toBe('')
+    }
   })
 })

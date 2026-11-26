@@ -2351,11 +2351,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       repairNearMissName: true,
       // A captured leak wrote the whole call with no `｜DSML｜` marker anywhere:
       // `<ask_user_question>` around `<questions`, closed by `</tool_call>`.
-      // Without this the block was never even a candidate — every tag read as
-      // ordinary prose and the user got the markup as the answer. Only names
-      // the protocol owns, plus this request's own parameter names, are
-      // eligible; every gate below still runs on what is found.
-      bareMarkup: true,
+      // The recovery path for it exists and is tested (bareNamesFor + the
+      // protocol-shape check in parseBareWrapper), but it stays OFF by default:
+      // a bare wrapper that only REPEATS its tool name (`<bash>ls</bash>` in a
+      // sentence that quotes a command) must not become a silent tool call,
+      // and a misfire there is worse than the rare visible leak. Only names the
+      // protocol owns plus this request's declared tool names are ever eligible
+      // when it is enabled; parameter names are NOT in that set. Every gate
+      // below still runs on what is found.
+      bareMarkup: false,
       ...declared.pinnedToolName === undefined ? {} : { pinnedToolName: declared.pinnedToolName },
     }
 

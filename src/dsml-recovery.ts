@@ -196,8 +196,8 @@ const BARE_PROTOCOL_TAG_NAMES: readonly string[] = [
 ]
 
 /**
- * The bare-name set for one request: the protocol's own vocabulary, every tool
- * this request DECLARES, and every parameter name those tools accept.
+ * The bare-name set for one request: the protocol's own vocabulary plus every
+ * tool this request DECLARES.
  *
  * Why declared tool names are included. A bare wrapper is written as the tool's
  * own name — `<ask_user_question>` — and that name is the only thing that says
@@ -210,20 +210,19 @@ const BARE_PROTOCOL_TAG_NAMES: readonly string[] = [
  * undeclared name is not in the set, is therefore prose, and is forwarded
  * verbatim by gate 4 — the same fate it has always had.
  *
- * Parameter names are safe to add because they are only consulted for a
- * COMPLETE tag that sits inside a block this module has already opened — see
- * {@link parseArgPairs}. `<questions>…</questions>` in ordinary prose is outside
- * every block and therefore never looked at.
+ * PARAMETER NAMES ARE DELIBERATELY NOT HERE. They are ordinary English words
+ * (`command`, `questions`, `path`): promoting them to the GLOBAL bare set made
+ * `Set <command> now and later.` lose its `<command>`, and made the streaming
+ * buffer hold prose like `<question …` to end of stream waiting for a closer
+ * that was only ever a sentence. A parameter key is only meaningful INSIDE a
+ * block this module has already opened; there it is checked against the
+ * request's schema by {@link parseArgPairs}, {@link parseParameters} and
+ * {@link parseTruncatedKey} — none of which need the name in this set.
  */
 function bareNamesFor(gate: RecoveryGate): ReadonlySet<string> {
   if (gate.bareNames !== undefined) return gate.bareNames
   const names = new Set<string>(BARE_PROTOCOL_TAG_NAMES)
   for (const tool of gate.declaredNames) names.add(tool.toLowerCase())
-  if (gate.acceptedParameters !== undefined) {
-    for (const accepted of gate.acceptedParameters.values()) {
-      for (const parameter of accepted) names.add(parameter.toLowerCase())
-    }
-  }
   return names
 }
 
@@ -1221,6 +1220,25 @@ function parseBlock(block: string, gate: RecoveryGate, seen: Withheld): {
 }
 
 /**
+ * Does a paired bare wrapper carry the protocol's OWN shape?
+ *
+ * A bare block is the model's markup only when the bytes prove it: either the
+ * closer wears one of the protocol's wrapper names (`</tool_call>` where the
+ * opener was `<ask_user_question>`), or the body uses the protocol's own
+ * vocabulary (`arg_key`, `arg_value`, `parameter`). A closer that merely
+ * REPEATS the opener (`<bash>ls -la</bash>`) with plain prose inside is the
+ * user's own text, not a call — recovering it would execute a tool the model
+ * never invoked, and stripping it would delete the answer.
+ *
+ * `body` is passed in by the caller so both the parser and any other consumer
+ * judge the exact same slice; `open`/`close` carry the pairing evidence.
+ */
+function hasBareProtocolShape(open: MarkupTag, close: MarkupTag, body: string): boolean {
+  if (open.name !== close.name && PROTOCOL_CLOSER_NAMES.has(close.name)) return true
+  return /\b(arg_key|arg_value|parameter)\b/i.test(body)
+}
+
+/**
  * One bare wrapper element → a call, or nothing when a gate refuses it.
  *
  * The shape, captured from a real response and quoted in the module header:
@@ -1257,7 +1275,16 @@ function parseBareWrapper(
 
   if (close.name !== name && !PROTOCOL_CLOSER_NAMES.has(close.name)) return undefined
 
+  // PROTOCOL SHAPE EVIDENCE. A bare wrapper is only the model's markup when the
+  // bytes carry the protocol's OWN vocabulary — an `arg_key`/`arg_value` pair
+  // or a `parameter` tag inside the block, or a closer wearing one of the
+  // protocol's wrapper names (`</tool_call>` etc. rather than `</bash>`).
+  // `<bash>ls -la</bash>` in a sentence explaining a command has NONE of that:
+  // its closer merely repeats its own name. Without this check a declared tool
+  // with no required argument would be recovered as an empty call and its text
+  // deleted — a rare visible leak traded for a silent tool execution.
   const body = block.slice(open.end + 1, close.start)
+  if (!hasBareProtocolShape(open, close, body)) return undefined
   // Argument pairs FIRST: `parseParameters` would otherwise read the pair's own
   // tags as parameters (`arg_key: "questions"`, `arg_value: "…"`), and those
   // must never reach a call.
@@ -1386,7 +1413,10 @@ function parseTruncatedKey(
   const match = pattern.exec(body)
   if (match === null) return undefined
   const key = match[1]?.toLowerCase()
-  if (key === undefined || !bareNames.has(key)) return undefined
+  // The key is a PARAMETER name, and parameter names are deliberately not in
+  // `bareNames` (see bareNamesFor). Its legitimacy is decided by the caller,
+  // against the request's own schema — not by global tag membership.
+  if (key === undefined) return undefined
 
   const rest = body.slice(match.index + match[0].length)
   const spans = ignoredSpans(rest)
@@ -1587,6 +1617,23 @@ export function stripMarkup(text: string, gate?: RecoveryGate): string {
     }
     const bracketed = !tag.closing && !tag.selfClosing && KEYWORD_TAGS.includes(tag.name)
     const close = bracketed ? findMatchingClose(text, spans, tag, bareNames) : undefined
+    // A declared TOOL name used as a same-name wrapper with no protocol
+    // vocabulary inside is the user QUOTING that tool (`You can write
+    // <bash>ls -la</bash>`), not a call. The parser refuses it by the same
+    // shape evidence (see hasBareProtocolShape); if the stripper still deleted
+    // its tags it would rewrite the answer when nothing was recovered. Keep it
+    // byte-for-byte. Protocol vocabulary is exempt: the captured leak opens
+    // with a tool name and closes with `</tool_call>`, which IS shaped.
+    if (tag.bare && !tag.marked && !tag.closing
+      && bareNames !== undefined && bareNames.has(tag.name)
+      && !BARE_PROTOCOL_TAG_NAMES.includes(tag.name)) {
+      const paired = close ?? findMatchingClose(text, spans, tag, bareNames)
+      if (paired === undefined || !hasBareProtocolShape(tag, paired, text.slice(tag.end + 1, paired.start))) {
+        result += text.slice(index, (paired ?? tag).end + 1)
+        index = (paired ?? tag).end + 1
+        continue
+      }
+    }
     index = close === undefined ? tag.end + 1 : close.end + 1
   }
 
