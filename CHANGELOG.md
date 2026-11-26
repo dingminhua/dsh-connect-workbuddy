@@ -1,5 +1,22 @@
 # Changelog
 
+### 网关 401 单独归类，并把凭据来源带到聊天报错里（#316）
+
+5.32.1 的 provenance 只在 `WorkBuddyCredentialRejectedError` 上，而报告者装好后触发的 401 **不是**那个类——网关返回的是 APISIX 的 HTML 页，它走 `classifyUpstreamError` 落到 `client`。两个后果他都说中了：
+
+- **文案指向错方向**：`client` 的语义是「请求参数有问题、与账号无关」，于是回复说「该请求被上游按参数拒绝……换账号也不会改变结果」，而他实测同一枚 token 直连 200 + SSE、3 主机 × 2 账号共 6 组全 200。
+- **定位信息拿不到**：provenance 挂在那个类上，这条路径永远不打印。
+
+修法按他的建议加了中间一档：
+
+- **新增 `UpstreamErrorKind.gateway_auth`**：401/403 + 网关 HTML（`isGatewayAuthRejection`，与分类共用同一判据，不会漂移）。**不归 `session_dead`**——#305 已证伪「HTML 页 = token 被吊销」；**也不归 `client`**——边缘页对参数一无所知。它只说一件事：拒绝发生在边缘，插件无法归因。
+- **不换号**：6 组实测全 200 说明不是账号级问题，换号只会白耗额度并给无辜凭据记一笔失败（与 `channel_reject` 同理）。
+- **provenance 落到 `WorkBuddyChatResult`**：这是失败真正到达用户的路径（`chatStream` 返回 result、shim 渲染 `message`），此前只在 Error 类上。聊天报错现在带「凭据来源：file …（domain …，expires …，source …）」，仅对 `gateway_auth` / `session_dead` 输出，避免淹没真正重要的那句。
+- **没有来源时不指向不存在的文本**：新增测试发现，无 provenance 时文案仍说「请把上面「凭据来源」那行连同本段一起反馈」，会让用户去找一行不存在的字——已改为不带这句。
+- 测试：新增 `issue316-gateway-auth.spec.ts` 7 例（分类、业务 JSON 401 不误归、不归罪参数、来源四项、零 token/uin 泄漏、无来源时不提「凭据来源」）。变异：去掉分类 → 1 例红；不输出来源 → 1 例红。`pnpm run check` 3909 passed + 2 skipped。
+
+> **仍未修**：同一 issue 里的 `doctor` 在 Windows 卡死（`.lock` EPERM）。已确认该路径上没有任何超时，降级方案要重新设计，不在补丁范围内。
+
 ## 5.32.1 (2026-11-26)
 
 > 这一版只有一处改动：**401 报错会说明用的是哪一份凭据**，并删掉了一句它无权下的结论。

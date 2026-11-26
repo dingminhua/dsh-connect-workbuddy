@@ -165,6 +165,30 @@ export type UpstreamErrorKind =
   | 'model_queue'
   | 'not_found'
   | 'server'
+  /**
+   * A 401/403 that came from the GATEWAY EDGE rather than the business API
+   * (issue #316).
+   *
+   * WHY IT IS NOT `client`. `client` is documented as "the upstream refused the
+   * request's PARAMETERS: retrying cannot help, and the account is not at
+   * fault". A gateway HTML page says no such thing — it is produced before the
+   * request reaches the business layer, so it cannot be evidence about a
+   * parameter. A reporter measured exactly that mismatch: an APISIX
+   * `401 Authorization Required` page was rendered as 「该请求被上游按参数拒绝…
+   * 与网络、账号、额度都无关」 while the same token answered 200 + SSE when used
+   * directly, on all six host×account combinations he tried.
+   *
+   * WHY IT IS NOT `session_dead` EITHER. Issue #305 disproved the opposite
+   * error: a gateway 401 page is NOT proof the credential was revoked. The only
+   * conclusive revocation signals are a business JSON body carrying
+   * `12153` / `Offline user session not found`, or a 401/403 on the REFRESH hop.
+   *
+   * So this kind states the one thing that IS known — the refusal happened at
+   * the edge, where the plugin cannot attribute it — and it exists so the error
+   * can carry the credential provenance (#316) instead of guessing a cause.
+   */
+  | 'gateway_auth'
+  | 'server'
   | 'client'
 
 /** Reasoning capability as the upstream catalog declares it. */
@@ -447,6 +471,17 @@ export type WorkBuddyChatResult =
       message: string
       /** Structured fields lifted from a JSON failure body, when there were any. */
       detail?: UpstreamErrorDetail | undefined
+      /**
+       * Which credential this failed request used (issue #316).
+       *
+       * On the RESULT rather than only on an Error class, because this is how a
+       * failure actually reaches the user: `chatStream` returns a result object
+       * and the shim renders `message` into the reply. The first attempt at
+       * #316 attached provenance to `WorkBuddyCredentialRejectedError` only,
+       * and a gateway 401 — which becomes `gateway_auth`, never that class —
+       * came out with no provenance at all. The reporter measured it.
+       */
+      provenance?: WorkBuddyCredentialProvenance | undefined
     }
 
 /**
@@ -1616,6 +1651,11 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   if (parseQueueAnswer(body) !== undefined) return 'model_queue'
   if (status === 429) return 'soft_rate'
   if (status === 404) return 'not_found'
+  // BEFORE the generic 4xx branch (issue #316): a gateway HTML page must not be
+  // reported as "your request parameters are wrong". `isGatewayAuthRejection`
+  // is already the shared body-shape test for "refused at the edge", so the
+  // classification and that predicate cannot drift apart.
+  if (isGatewayAuthRejection(status, body)) return 'gateway_auth'
   if (status >= 500) return 'server'
   if (status >= 400) return 'client'
   return 'client'
@@ -5195,8 +5235,13 @@ export function provenanceOf(credential: {
   }
 }
 
-/** `file <path> (domain …，expires …，source …)`, for an error message. */
-function describeProvenance(provenance: WorkBuddyCredentialProvenance): string {
+/**
+ * `file <path> (domain …, expires …, source …)` — the one-line form used both in
+ * the credential-rejected message and in the chat failure text (issue #316).
+ *
+ * Exported so the two surfaces cannot describe the same credential differently.
+ */
+export function describeProvenance(provenance: WorkBuddyCredentialProvenance): string {
   const parts: string[] = []
   if (provenance.domain !== undefined && provenance.domain !== '') parts.push(`domain ${provenance.domain}`)
   if (provenance.expiresAtMs !== undefined) {
@@ -5279,12 +5324,28 @@ export class WorkBuddyUpstreamError extends Error {
   readonly status: number
   /** The upstream's own words, untruncated. */
   readonly body: string
+  /**
+   * Which credential the request used (issue #316).
+   *
+   * Carried on this class too, not only on the credential-rejected one: a
+   * GATEWAY edge refusal reaches the user through this path (kind
+   * `gateway_auth`), and the reporter who needed the provenance got a plain
+   * `client` error instead — the diagnostic existed but only on a class that
+   * path never constructs.
+   */
+  readonly provenance: WorkBuddyCredentialProvenance | undefined
 
-  constructor(status: number, body: string, summary: string) {
+  constructor(
+    status: number,
+    body: string,
+    summary: string,
+    provenance?: WorkBuddyCredentialProvenance,
+  ) {
     super(summary)
     this.name = 'WorkBuddyUpstreamError'
     this.status = status
     this.body = body
+    this.provenance = provenance
   }
 }
 
@@ -5331,6 +5392,7 @@ function envelopeError(
     status,
     envelope.msg,
     `workbuddy upstream ${kind} (http ${status}): ${envelope.msg.slice(0, 160)}`,
+    provenance,
   )
 }
 
@@ -5938,6 +6000,7 @@ export class WorkBuddyUpstreamClient {
       kind,
       message: text,
       detail: parseUpstreamErrorDetail(text),
+      provenance: provenanceOf(credential),
     }
   }
 

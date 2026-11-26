@@ -55,6 +55,8 @@ import {
   WorkBuddyUpstreamClient,
   type UpstreamErrorKind,
   type WorkBuddyChatResult,
+  /* Issue #316: one line describing WHICH credential a refused request used. */
+  describeProvenance as describeCredential,
 } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
@@ -313,6 +315,11 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   model_queue: 429,
   not_found: 502,
   server: 502,
+  // 401, because that IS what the gateway answered (issue #316). Kept separate
+  // from `session_dead`, which also surfaces as 401: the status is a fact about
+  // the wire, the KIND is what the plugin believes, and `isFailoverWorthy`
+  // decides what happens next.
+  gateway_auth: 401,
   client: 400,
 }
 
@@ -1228,6 +1235,13 @@ function failoverReasonText(failure: WorkBuddyChatResult): string {
     // is at fault. Neither is — the same body will be refused by every account.
     case 'client':
       return '请求被上游拒绝'
+    // A 401/403 from the GATEWAY EDGE (issue #316). The wording avoids every
+    // cause the plugin cannot see: it is neither "your parameters are wrong"
+    // (which is what `client` said, and a reporter measured that to be false —
+    // the same token worked directly) nor "your sign-in died" (#305 disproved
+    // that from an HTML page alone).
+    case 'gateway_auth':
+      return '被网关在边缘拒绝（无法归因到账号或参数）'
     default:
       // No status code here. The caller already renders `（http N）` for every
       // failure, so embedding it again produced "（http 400）（http 400）" — the
@@ -1779,8 +1793,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // Before it was its own kind a queue fell through to `server`/`soft_rate`
     // (the status it rides on), both of which fail over — so one queued request
     // walked the whole pool before the user was told their position.
+    //
+    // `gateway_auth` joins them too, on MEASURED evidence (issue #316): the
+    // reporter probed 3 hosts × 2 accounts and all SIX answered 200 + SSE with
+    // the credentials the plugin was refusing, so the edge refusal is not
+    // account-scoped. Rotating would spend one real request per account to
+    // learn nothing — the same waste `channel_reject` was excluded for — and it
+    // would record a failure against a credential that was never at fault.
     return kind !== 'client' && kind !== 'model_busy' && kind !== 'channel_reject'
-      && kind !== 'model_queue'
+      && kind !== 'model_queue' && kind !== 'gateway_auth'
   }
 
   async function chatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -2449,7 +2470,19 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
           ? '按上面列出的写法检查工具定义；换模型只是绕开，不会修好它'
           : result.kind === 'client'
             ? '该请求被上游按参数拒绝：与网络、账号、额度都无关，换账号也不会改变结果，请按上面的提示调整后重试'
-            : shortfall === undefined
+            : result.kind === 'gateway_auth'
+              // NOT "参数问题" (a reporter measured the same token answering 200
+              // directly, so parameters were not at fault) and NOT "登录失效"
+              // (#305 disproved that from an HTML page). What is true: the edge
+              // refused, the plugin cannot attribute it, and here is WHICH
+              // credential was sent — the one fact that localises it (issue #316).
+              ? (result.provenance === undefined
+                // Without provenance there is no 「凭据来源」 line to point at, and
+                // telling the reader to include it would send them looking for
+                // text that does not exist (caught by this file's own test).
+                ? '这是一次边缘拒绝，插件无法据此判定账号或参数有问题'
+                : '这是一次边缘拒绝，插件无法据此判定账号或参数有问题；请把上面「凭据来源」那行连同本段一起反馈')
+              : shortfall === undefined
               ? ''
               : '建议换一个模型继续，或稍后等待该账号的额度恢复'
       // `displayTips` and most `msg` bodies already end in a full stop, so gluing
@@ -2486,11 +2519,19 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
           ? `${BODY_OVERSIZE_MARKER}。`
           : ''
       const body = `${overflow}${advice === '' ? receipt : `${receipt.replace(/[。.]$/u, '')}。${advice}`}`
+      // ISSUE #316: which credential this request used. Only for kinds where the
+      // question "was it this file or another copy of the same account" is live —
+      // a `gateway_auth` edge refusal, and a credential rejection. Adding it to
+      // every failure would bury the sentence that actually matters.
+      const provenance = (result.kind === 'gateway_auth' || result.kind === 'session_dead')
+        && result.provenance !== undefined
+        ? ` 凭据来源：${describeCredential(result.provenance)}。`
+        : ''
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],
         result.kind,
-        `workbuddy 上游失败：${failoverReasonText(result)}（http ${result.status}）${note}${why}${stamp}。${body}`,
+        `workbuddy 上游失败：${failoverReasonText(result)}（http ${result.status}）${note}${why}${stamp}。${body}${provenance}`,
         hostErrorCode(result.kind),
       )
       return
