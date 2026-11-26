@@ -2766,7 +2766,7 @@ const UNAPPROVED_CHANNEL_OPENINGS: readonly string[] = [
  * to the break rule itself.
  */
 const IDENTITY_CLAUSE =
-  /(you)(\s+are\s+(?:(?:an?\s+)?[\w-]*\s*agent\s+(?:powered\s+by|running\s+inside\s+the\s+harness)|(?:interacting\s+with\s+the\s+user\s+through|working\s+with\s+the\s+user\s+inside)\s+the\s+(?:deepseek\s+)?harness))/giu
+  /(you)(\s+are\s+(?:(?:an?\s+)?[\w-]*\s*agent\s+(?:powered\s+by|running\s+inside\s+the\s+harness(?=\s*(?:[.。!?]|$)))|(?:interacting\s+with\s+the\s+user\s+through\s+the\s+deepseek\s+harness|working\s+with\s+the\s+user\s+inside\s+the\s+harness\s+web\s+gui)))/giu
 
 /**
  * Break an identity clause at EVERY word boundary inside it.

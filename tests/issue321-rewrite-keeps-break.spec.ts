@@ -70,3 +70,34 @@ describe('issue #321: a rewritten identity clause keeps its internal break', () 
     expect(assistant).toContain('my answer')
   })
 })
+
+/**
+ * The clause must match the sentences this plugin WRITES, and nothing else.
+ *
+ * Widening it to "any sentence containing `the harness`" was the first attempt
+ * and it was wrong: `the harness` is ordinary English, so a model writing
+ * "You are an agent running inside the harness of the test suite." would have
+ * had its own words broken with zero-width characters. These are the measured
+ * false positives from that attempt, kept as permanent negatives.
+ */
+describe('issue #321: the widened clause does not swallow ordinary prose', () => {
+  const PROSE = [
+    'You are an agent running inside the harness of the test suite.',
+    'You are an agent running inside the harness directory.',
+    'You are interacting with the user through the harness API.',
+    'You are working with the user inside the harness room.',
+    'The harness is documented in the README.',
+  ]
+
+  it.each(PROSE)('leaves %s untouched', (prose) => {
+    const system = systemOf([{ role: 'system', content: prose }])
+    expect(system, 'ordinary prose must not be broken').not.toContain(ZWSP)
+    expect(system).toBe(prose)
+  })
+
+  it('still breaks the exact sentence the plugin writes', () => {
+    // The other side of the same coin: tightening must not have disabled the fix.
+    const system = systemOf([{ role: 'system', content: 'You are an AI agent powered by DeepSeek Harness.' }])
+    expect(system).toContain(ZWSP)
+  })
+})

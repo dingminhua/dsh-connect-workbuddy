@@ -31,6 +31,7 @@
 
 - **#321（机制定位，已修）**：报告者用 npm 包真实导出离线复现了一个结构性缺陷——`prepareChatBody` 先改词、后中和，而 `IDENTITY_CLAUSE` 只认**原始措辞**。于是改词把一句「会被打断」的话换成了一句「不被任何判据命中」的话：**一次改词同时废掉了它本该配合的那层防护**。
   - **修法只动从句、不动前缀名单**。把替换值加进 `UNAPPROVED_CHANNEL_OPENINGS` 是错的：那份名单的语义是「这个开头在 offset 0 被拒」、补救手段是加中性头，而改词的目的是造出一句网关会接受的话——把自己声明为被拒是循环论证；更要紧的是，加到 assistant 上正是 #297 里模型会模仿、宿主会落盘的那句人格头。`IDENTITY_CLAUSE` 改为同时匹配替换值，逐词插零宽打断任意位置子串门，不加任何可被模仿的句子。#297 的约束与 #321 的修复同时成立。
+  - **匹配面收紧**：第一版把从句放宽成「任何含 `the harness` 的句子」，自查发现它会把正常散文（`You are an agent running inside the harness of the test suite.`、`… the harness directory.`、`… the harness API.`、`… the harness room.`）也插零宽——`the harness` 是普通英文，模型正常写作会用到。现在只匹配本插件**实际写出的**那两句（`running inside the harness` 后须为句末、Web GUI 句须完整到 `harness Web GUI`），4 条散文反向测试钉住，变异放宽 → 4 例红。
   - 连带修正：报错里的「（插件已加中性头）」标签此前与实际发出的 body 不一致（标签按原始 body 算，而真实 system 没有头），本轮修好后标签成为真话。
 - **#323（路由泄漏，已修）**：`registerWorkBuddyStatusRoute` 在一个 `ctx.effect` 体内逐条 `disposers.push(ctx.webServer.register(entry))`，只在最后一行 `return` 清理函数。第 k 条登记失败（热重载重复路径）时效应体中途抛出，`return` 永不执行，前 k−1 条路由无人撤销：插件停用后仍由旧实例应答，再启用撞在自己留下的路由上，只能重启宿主恢复。改成 `disposers.push(ctx.effect(() => ctx.webServer.register(entry)))`——子效应在父效应体抛错时被自动撤销，部分挂载得以回滚；返回的 disposer 幂等，末尾循环不变。
 - **测试**：#321 新增 `issue321-rewrite-keeps-break.spec.ts`（3 例：替换值被零宽打断、Web GUI 句同样、**且不加中性头**——钉住 #297 约束），变异验证还原旧 `IDENTITY_CLAUSE` → 3 例全红；#323 新增 `issue323-route-leak.spec.ts`（3 例源码守卫），变异验证还原裸 disposer → 2 例红。既有 6 条钉死「改词后不加头」的断言同步更新为新不变量（去掉头与零宽后比对，沿用 #167 的降级做法）。`pnpm run check` 全过（3871 passed + 2 skipped）。
