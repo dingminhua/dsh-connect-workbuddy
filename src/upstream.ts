@@ -3131,8 +3131,21 @@ function rewriteChannelFingerprintPhrasesInBody(obj: Record<string, unknown>): v
     for (const part of content) {
       if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
       const record = part as Record<string, unknown>
+      // ISSUE #315 — a text part with NO `type` is still text.
+      //
+      // Three passes read this same field (rewrite, strip, neutralise) and they
+      // used to disagree: all three required `type === 'text'`, while the
+      // fingerprint TRACE accepted `type === undefined` as well. So a part
+      // shaped `{ text: "…" }` escaped the rewrite AND neutralisation while
+      // still being counted by the trace — the self-check then reported
+      // "known fingerprints remain in the body", which is literally true and
+      // looked like a broken rewrite table.
+      //
+      // Accepting the unspecified type everywhere is the safe direction: a part
+      // that carries `text` and no `type` has exactly one sensible reading, and
+      // the alternative leaves it unprotected on the wire.
       const type = record['type']
-      if (typeof type !== 'string' || type.trim().toLowerCase() !== 'text') continue
+      if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) continue
       const text = record['text']
       if (typeof text !== 'string') continue
       const next = rewriteChannelFingerprintPhrases(text)
@@ -3183,8 +3196,21 @@ function neutralizeChannelFingerprints(obj: Record<string, unknown>): void {
       // about to go on the wire, and a throw here would cost the whole request.
       if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
       const record = part as Record<string, unknown>
+      // ISSUE #315 — a text part with NO `type` is still text.
+      //
+      // Three passes read this same field (rewrite, strip, neutralise) and they
+      // used to disagree: all three required `type === 'text'`, while the
+      // fingerprint TRACE accepted `type === undefined` as well. So a part
+      // shaped `{ text: "…" }` escaped the rewrite AND neutralisation while
+      // still being counted by the trace — the self-check then reported
+      // "known fingerprints remain in the body", which is literally true and
+      // looked like a broken rewrite table.
+      //
+      // Accepting the unspecified type everywhere is the safe direction: a part
+      // that carries `text` and no `type` has exactly one sensible reading, and
+      // the alternative leaves it unprotected on the wire.
       const type = record['type']
-      if (typeof type !== 'string' || type.trim().toLowerCase() !== 'text') continue
+      if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) continue
       const text = record['text']
       if (typeof text !== 'string') continue
       const next = neutralizeScannedText(text)
@@ -3573,8 +3599,21 @@ export function perturbChannelFingerprints(
     for (const part of content) {
       if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
       const record = part as Record<string, unknown>
+      // ISSUE #315 — a text part with NO `type` is still text.
+      //
+      // Three passes read this same field (rewrite, strip, neutralise) and they
+      // used to disagree: all three required `type === 'text'`, while the
+      // fingerprint TRACE accepted `type === undefined` as well. So a part
+      // shaped `{ text: "…" }` escaped the rewrite AND neutralisation while
+      // still being counted by the trace — the self-check then reported
+      // "known fingerprints remain in the body", which is literally true and
+      // looked like a broken rewrite table.
+      //
+      // Accepting the unspecified type everywhere is the safe direction: a part
+      // that carries `text` and no `type` has exactly one sensible reading, and
+      // the alternative leaves it unprotected on the wire.
       const type = record['type']
-      if (typeof type !== 'string' || type.trim().toLowerCase() !== 'text') continue
+      if (type !== undefined && (typeof type !== 'string' || type.trim().toLowerCase() !== 'text')) continue
       const text = record['text']
       if (typeof text !== 'string') continue
       const next = perturb(text)
