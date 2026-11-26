@@ -5128,17 +5128,85 @@ export class WorkBuddyCredentialRejectedError extends Error {
   readonly code = CREDENTIAL_REJECTED_CODE
   /** HTTP status the upstream answered with (401 or 403). */
   readonly status: number
+  /**
+   * Where the credential that got refused came from (issue #316).
+   *
+   * Deliberately NOT the token. A reporter spent a long session unable to
+   * answer "which of my six auth files did this request use", because the error
+   * said only that a token was rejected; the same account can have several auth
+   * files on disk with different `domain`/`expiresAtMs`, and the one the plugin
+   * picked may not be the one the user was looking at. These four fields are
+   * what tell those files apart.
+   */
+  readonly provenance: WorkBuddyCredentialProvenance | undefined
 
-  constructor(status: number) {
+  constructor(status: number, provenance?: WorkBuddyCredentialProvenance) {
+    // THE CAUSE IS NOT WRITTEN IN ANY MORE. The old text asserted "most likely
+    // a stale credential file", and issue #316 measured a case where that was
+    // false: the token worked when used directly, and the refusal tracked a
+    // DESKTOP-SIDE sign-in switch. Telling a user to sign in again when the
+    // sign-in is fine points them at a fix that cannot work — the same mistake
+    // `account-pool-run.ts` records for `credential-rejected`. What is known is
+    // the status and where the credential came from; the advice is offered as
+    // one possibility among others.
     super(
       `workbuddy: the signed-in credential was rejected by the upstream gateway (http ${status}).`
-      + ' The stored token is no longer accepted — most likely a stale credential file from an earlier'
-      + ' sign-in was selected. Re-sign in to the WorkBuddy desktop app, then pick that account in the'
-      + ' plugin card. Run `dsh-connect-workbuddy doctor` to list every discovered credential.',
+      + (provenance === undefined ? '' : ` Credential used: ${describeProvenance(provenance)}.`)
+      + ' Causes include an expired or revoked sign-in, and a credential file that is no longer the'
+      + ' one the desktop app is using. Re-sign in to the WorkBuddy desktop app, then pick that'
+      + ' account in the plugin card; `dsh-connect-workbuddy doctor` lists every discovered'
+      + ' credential together with its file, domain and expiry.',
     )
     this.name = 'WorkBuddyCredentialRejectedError'
     this.status = status
+    this.provenance = provenance
   }
+}
+
+/** What identifies a credential WITHOUT exposing the token (issue #316). */
+export interface WorkBuddyCredentialProvenance {
+  /** Which auth file the credential was read from. */
+  filePath?: string
+  domain?: string
+  expiresAtMs?: number
+  /** Which source recorded it (`dsh`, `desktop`, …). */
+  source?: string
+}
+
+/**
+ * Build the provenance of a credential for an error message.
+ *
+ * One line, no token, no refresh token, no uid in full: a `uid`/`uin` is a
+ * phone number on the CN side and belongs in no error string a user pastes into
+ * a public issue. The FILE NAME is the thing that identifies which of several
+ * copies was used, which is the question #316 could not answer.
+ */
+export function provenanceOf(credential: {
+  filePath?: string
+  domain?: string
+  expiresAtMs?: number
+  source?: string
+}): WorkBuddyCredentialProvenance {
+  return {
+    ...credential.filePath === undefined ? {} : { filePath: credential.filePath },
+    ...credential.domain === undefined ? {} : { domain: credential.domain },
+    ...credential.expiresAtMs === undefined ? {} : { expiresAtMs: credential.expiresAtMs },
+    ...credential.source === undefined ? {} : { source: credential.source },
+  }
+}
+
+/** `file <path> (domain …，expires …，source …)`, for an error message. */
+function describeProvenance(provenance: WorkBuddyCredentialProvenance): string {
+  const parts: string[] = []
+  if (provenance.domain !== undefined && provenance.domain !== '') parts.push(`domain ${provenance.domain}`)
+  if (provenance.expiresAtMs !== undefined) {
+    parts.push(`expires ${new Date(provenance.expiresAtMs).toISOString()}`)
+  }
+  if (provenance.source !== undefined && provenance.source !== '') parts.push(`source ${provenance.source}`)
+  const where = provenance.filePath === undefined || provenance.filePath === ''
+    ? 'an unknown file'
+    : `file ${provenance.filePath}`
+  return parts.length === 0 ? where : `${where} (${parts.join(', ')})`
 }
 
 /** Whether an error reports that the upstream refused the credential itself. */
@@ -5148,14 +5216,17 @@ export function isCredentialRejectedError(value: unknown): value is WorkBuddyCre
     && (value as { code?: unknown }).code === CREDENTIAL_REJECTED_CODE
 }
 
-async function readEnvelope(response: Response): Promise<Envelope> {
+async function readEnvelope(
+  response: Response,
+  provenance?: WorkBuddyCredentialProvenance,
+): Promise<Envelope> {
   const text = await response.text()
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
     if (isGatewayAuthRejection(response.status, text)) {
-      throw new WorkBuddyCredentialRejectedError(response.status)
+      throw new WorkBuddyCredentialRejectedError(response.status, provenance)
     }
     throw new Error(`workbuddy upstream returned non-JSON (http ${response.status}): ${text.slice(0, 160)}`)
   }
@@ -5249,8 +5320,12 @@ export function upstreamBodyOf(error: unknown): string {
  * written to read: the code, and the same `msg` wording it saw before. Strictly
  * more information than the text-only call, never less.
  */
-function envelopeError(status: number, envelope: Envelope): Error {
-  if (status === 401 || status === 403) return new WorkBuddyCredentialRejectedError(status)
+function envelopeError(
+  status: number,
+  envelope: Envelope,
+  provenance?: WorkBuddyCredentialProvenance,
+): Error {
+  if (status === 401 || status === 403) return new WorkBuddyCredentialRejectedError(status, provenance)
   const kind = classifyUpstreamError(status, `{"code":${envelope.code},"msg":${JSON.stringify(envelope.msg)}}`)
   return new WorkBuddyUpstreamError(
     status,
@@ -5944,8 +6019,8 @@ export class WorkBuddyUpstreamClient {
       headers: refreshHeaders(credential),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
@@ -6034,8 +6109,8 @@ export class WorkBuddyUpstreamClient {
           },
           signal: timeout,
         })
-        const envelope = await readEnvelope(response)
-        if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+        const envelope = await readEnvelope(response, provenanceOf(credential))
+        if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
         const data = typeof envelope.data === 'object' && envelope.data !== null
           ? envelope.data as Record<string, unknown>
           : {}
@@ -6101,8 +6176,8 @@ export class WorkBuddyUpstreamClient {
         },
         signal: timeout,
       })
-      const envelope = await readEnvelope(response)
-      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+      const envelope = await readEnvelope(response, provenanceOf(credential))
+      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
       const data = typeof envelope.data === 'object' && envelope.data !== null
         ? envelope.data as Record<string, unknown>
         : {}
@@ -6162,8 +6237,8 @@ export class WorkBuddyUpstreamClient {
         body: JSON.stringify({ models: batch }),
         signal: signal ?? AbortSignal.timeout(MODEL_BUSY_TIMEOUT_MS),
       })
-      const envelope = await readEnvelope(response)
-      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+      const envelope = await readEnvelope(response, provenanceOf(credential))
+      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
       for (const [id, level] of parseBusyLevels(envelope.data)) levels.set(id, level)
     }
     return levels
@@ -6222,8 +6297,8 @@ export class WorkBuddyUpstreamClient {
         },
         signal: signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS),
       })
-      const envelope = await readEnvelope(response)
-      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+      const envelope = await readEnvelope(response, provenanceOf(credential))
+      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
       const data = typeof envelope.data === 'object' && envelope.data !== null
         ? envelope.data as Record<string, unknown>
         : {}
@@ -6531,8 +6606,8 @@ export class WorkBuddyUpstreamClient {
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
@@ -6600,8 +6675,8 @@ export class WorkBuddyUpstreamClient {
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
@@ -6651,8 +6726,8 @@ export class WorkBuddyUpstreamClient {
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
   }
 
   /** Claim today's check-in reward. The browser route guards this mutation. */
@@ -6663,8 +6738,8 @@ export class WorkBuddyUpstreamClient {
       body: '{}',
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
@@ -6791,8 +6866,8 @@ export class WorkBuddyUpstreamClient {
       body: JSON.stringify({ tier }),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
@@ -6832,8 +6907,8 @@ export class WorkBuddyUpstreamClient {
       body: JSON.stringify({}),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const wrapper = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
@@ -6922,8 +6997,8 @@ export class WorkBuddyUpstreamClient {
       }),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const envelope = await readEnvelope(response, provenanceOf(credential))
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope, provenanceOf(credential))
     const responseWrapper = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
