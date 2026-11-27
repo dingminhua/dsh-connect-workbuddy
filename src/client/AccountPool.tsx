@@ -1275,9 +1275,15 @@ export function AccountPool(props: AccountPoolProps): ReturnType<typeof h> | nul
   // pixels; `stale` gets a whole warning block of its own below. What survives
   // is `free`, the one case the picker cannot express: the pool picked a model
   // the user never chose.
+  // Issue #330: `observed` says the same kind of thing `free` used to — the id
+  // shown was NOT chosen by the user — so it gets the same sentence. The wording
+  // differs because the MEANING changed: the model is not "an auto-picked free
+  // one" any more, it is the one their chats are actually using.
   const targetProvenance = pool.targetModelSource === 'free'
     ? t('row.poolTargetCurrentFree', { model: pool.targetModelId ?? '' })
-    : null
+    : pool.targetModelSource === 'observed'
+      ? t('row.poolTargetCurrentObserved', { model: pool.targetModelId ?? '' })
+      : null
 
   /**
    * The account the next request will start from.

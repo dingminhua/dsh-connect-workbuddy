@@ -173,3 +173,43 @@ describe('issue #330: probe-model precedence', () => {
     })
   })
 })
+
+describe('issue #330: the setting means "the model I am using", not "a model to test with"', () => {
+  // The user's follow-up was explicit: 「设置里选择的那个模型，就改为当前用户选择
+  // 使用的模型」 — the dropdown IS the declaration of which model they are on.
+  // That makes a saved id and a probe target the same fact, so choosing a PAID
+  // model is legitimate here (it is what they use), not a mistake to warn about.
+  const catalog = [
+    { id: 'hy4flash-free', creditMultiplier: 0, contextWindow: 128_000 },
+    { id: 'deepseek-v4.1-flash', creditMultiplier: 1, contextWindow: 128_000 },
+  ] as never
+
+  it('a saved PAID model is used and reported as the user\'s choice', async () => {
+    const { resolveProbeModel } = await import('../src/account-pool.ts')
+    expect(resolveProbeModel(catalog, 'deepseek-v4.1-flash', undefined)).toEqual({
+      modelId: 'deepseek-v4.1-flash',
+      source: 'preferred',
+    })
+  })
+
+  it('auto follows the observed model even when it costs credits', async () => {
+    // This is the case that used to be impossible to express: "follow me" and
+    // "my model costs credits" together. It must NOT be overridden by the free
+    // pick just because the free one is cheaper.
+    const { resolveProbeModel } = await import('../src/account-pool.ts')
+    expect(resolveProbeModel(catalog, '', 'deepseek-v4.1-flash')).toEqual({
+      modelId: 'deepseek-v4.1-flash',
+      source: 'observed',
+    })
+  })
+
+  it('auto before the first chat still probes, so the card is not dead', async () => {
+    // The deliberate fallback: with nothing observed, refusing to probe would
+    // leave a user unable to measure any account until they sent a message.
+    const { resolveProbeModel } = await import('../src/account-pool.ts')
+    expect(resolveProbeModel(catalog, '', undefined)).toEqual({
+      modelId: 'hy4flash-free',
+      source: 'free',
+    })
+  })
+})
