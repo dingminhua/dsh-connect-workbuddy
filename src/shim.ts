@@ -47,6 +47,7 @@ import {
   CONTEXT_OVERFLOW_MARKER,
   isFirstMessageGateBody,
   openingEvidenceOfBody,
+  scannedMessageCount,
   channelFingerprintTrace,
   perturbChannelFingerprints,
   requestEvidenceOf,
@@ -1334,7 +1335,16 @@ function channelEvidenceText(bodyJson: string): string {
     })
     .join('、')
   const hidden = entries.length - shown.length
-  return `请求里被网关扫描的消息开头：${rendered}${hidden > 0 ? `……另有 ${hidden} 条未列出。` : '。'}`
+  // ISSUE #329: say WHICH two numbers these are. "另有 4 条未列出" was read as
+  // "this request carries 8 scanned messages" when the session held 759 — the
+  // excerpt is capped at 8 by the collector and rendered at 4, so the reader
+  // could not tell a complete list from a window onto a long conversation.
+  // That distinction decides whether the list is usable as a coordinate.
+  const total = scannedMessageCount(bodyJson)
+  const scope = total > entries.length
+    ? `（共 ${total} 条被扫描消息，此处列出 ${shown.length} 条：采样上限 ${CHANNEL_EVIDENCE_LIMIT} 条）`
+    : `（共 ${total} 条被扫描消息）`
+  return `请求里被网关扫描的消息开头${scope}：${rendered}${hidden > 0 ? `……另有 ${hidden} 条未列出。` : '。'}`
 }
 
 /**

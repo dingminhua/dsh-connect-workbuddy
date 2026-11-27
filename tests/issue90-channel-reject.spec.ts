@@ -324,7 +324,10 @@ describe('the rendered reply names the line the gate refused', () => {
     expect(type).toBe('channel_reject')
     // 1. The evidence, quoted — this is the whole fix. The reader can now see
     //    WHICH line was refused instead of cycling accounts.
-    expect(message).toContain(`请求里被网关扫描的消息开头：「system：${NOVEL}，共 59 字」（不在插件已知名单里`)
+    // ISSUE #329 added the SCOPE in front of the excerpt: a reader could not
+    // tell "this request has 1 scanned message" from "the excerpt stopped at
+    // 1", and that decides whether the list is usable as a coordinate.
+    expect(message).toContain(`请求里被网关扫描的消息开头（共 1 条被扫描消息）：「system：${NOVEL}，共 59 字」（不在插件已知名单里`)
     // 2. Support's handles, compact.
     expect(message).toContain('code 11128')
     expect(message).toContain('requestId 26d17b97-c53b-461a-bd21-34c61c86f15b')

@@ -3758,6 +3758,41 @@ export interface OpeningEvidence {
  * Capped at {@link SYSTEM_EVIDENCE_LIMIT} entries, and never throws — losing
  * the failure measurement is not an acceptable price for reading an excerpt.
  */
+/**
+ * How many messages the gateway would SCAN in this body (issue #329).
+ *
+ * The excerpt in the failure text is capped at {@link SYSTEM_EVIDENCE_LIMIT},
+ * and the reply then renders only part of that. A reporter read the resulting
+ * "另有 4 条未列出" as "this request has 8 scanned messages" while his session
+ * held 759 assistant records — so he could not tell whether the list was the
+ * WHOLE scan (making it a usable coordinate for finding a mid-text hit) or a
+ * window onto it. It was a window. Pairing the excerpt with this total is what
+ * makes the distinction visible, and it costs one pass over the messages.
+ *
+ * Same role rule as {@link openingEvidenceOfBody}: `system`, `assistant` and
+ * `developer` count (`developer` becomes `system` in `prepareChatBody`).
+ */
+export function scannedMessageCount(bodyJson: string): number {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bodyJson)
+  } catch {
+    return 0
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 0
+  const messages = (parsed as Record<string, unknown>)['messages']
+  if (!Array.isArray(messages)) return 0
+  let count = 0
+  for (const value of messages) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const role = (value as Record<string, unknown>)['role']
+    if (typeof role !== 'string') continue
+    const name = role.trim().toLowerCase()
+    if (name === 'system' || name === 'assistant' || name === 'developer') count += 1
+  }
+  return count
+}
+
 export function openingEvidenceOfBody(bodyJson: string): OpeningEvidence[] {
   let parsed: unknown
   try {
