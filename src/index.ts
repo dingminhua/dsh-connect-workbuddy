@@ -113,7 +113,7 @@ import type {
 } from './account-pool-run.ts'
 import { exclusionOf } from './account-pool.ts'
 import type { WorkBuddyPoolCredits, WorkBuddyPoolExclusion, WorkBuddyPoolMember, WorkBuddyPoolProbe } from './account-pool.ts'
-import { resolveTargetModel } from './account-pool.ts'
+import { resolveProbeModel, resolveTargetModel } from './account-pool.ts'
 import { oauthPoll, oauthStart } from './oauth.ts'
 import { mergeTransferRecords, parseTransferFile, previewTransferFile, transferRecordOf } from './transfer.ts'
 import {
@@ -1867,6 +1867,21 @@ export function apply(ctx: Context, config: Config): void {
    * region long after the shim was constructed.
    */
   const turnCreditsByRegion: Record<string, { total: number, turns: number, unknownTurns: number, last?: number }> = {}
+  /**
+   * The model each region's most recent chat request actually used (issue #330).
+   *
+   * WHY IT IS PUSHED RATHER THAN PULLED. Which model the user is on is HOST
+   * session state; this plugin's config only knows which models are ENABLED.
+   * The one place the truth appears is the request body, so the shim reports it
+   * and this map remembers it per region.
+   *
+   * In memory on purpose, and that is a deliberate limitation: after a host
+   * restart the map is empty until the first chat request, and the probe falls
+   * back to the saved preference. Persisting it would mean a stale model could
+   * outlive the session it was true in — and a probe that tests a model the user
+   * is no longer on is exactly the bug being fixed here.
+   */
+  const lastRequestModelByRegion: Record<string, string> = {}
   for (const region of REGION_KEYS) {
     // `authFile` is volatile on the 0.1.7 line: the raw config value is a live
     // cosmokit reference, and passing it through would hand the store a
@@ -1956,6 +1971,9 @@ export function apply(ctx: Context, config: Config): void {
           .then(attach => { pendingUsage = attach })
           .catch((error: unknown) => ctx.logger.warn('dsh-connect-workbuddy: body report failed', error))
       },
+      // Issue #330: remember which model this region is actually using, so the
+      // availability probe measures THAT one instead of a separate preference.
+      onRequestModel: modelId => { lastRequestModelByRegion[region] = modelId },
       onUpstreamUsage: usage => {
         // Issue #320: count the turn's credits before handing the counts to the
         // body report, so the readout works whether or not reporting is on.
@@ -4379,13 +4397,16 @@ export function apply(ctx: Context, config: Config): void {
    * issue #61), so a row test and a batch test never measure different models.
    * Undefined mirrors the route's 409 states.
    */
-  const regionTargetModel = (region: WorkBuddyRegion): string | undefined => {
-    const target = resolveTargetModel(
+  const regionTargetModel = (region: WorkBuddyRegion): string | undefined =>
+    // ISSUE #330: the model the user is ACTUALLY on wins over an arbitrary free
+    // one, but never over an explicit saved preference. The precedence lives in
+    // `resolveProbeModel` so it can be tested without a live shim, catalog
+    // refresh or credentials — see its doc for why each step is ordered so.
+    resolveProbeModel(
       displayModels(current(), region),
       poolPreferencesOf(current(), region).targetModelId,
-    )
-    return target.modelId
-  }
+      lastRequestModelByRegion[region],
+    ).modelId
 
   /** One region's pool preferences, with the schema's defaults applied. */
   /**

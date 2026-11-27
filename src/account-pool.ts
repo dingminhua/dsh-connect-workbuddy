@@ -729,8 +729,14 @@ export function createLatestWins<Key extends string>(): {
  * has no free model" and "the model you saved is no longer offered" need
  * opposite advice (refresh the catalog / pick another model), and collapsing
  * them would make the card say the wrong one.
+ *
+ * `observed` means "no preference was saved, so this is the model the region's
+ * last chat request actually used" (issue #330). It is distinct from `free` on
+ * purpose: the probe measured the user's real model, not an arbitrary cheap one,
+ * and a surface that says which model a row was tested with should say so.
  */
 export type WorkBuddyPoolTargetSource = 'preferred' | 'free' | 'none' | 'stale'
+  | 'observed'
 
 /** The resolved target model, and where the choice came from. */
 export interface WorkBuddyPoolTarget {
@@ -766,6 +772,43 @@ export interface WorkBuddyPoolTarget {
  * That is the safe direction: no credits are spent while the roster is unknown,
  * and the card offers to switch back to automatic.
  */
+/**
+ * Resolve the model the availability probe should test, given what the user is
+ * ACTUALLY on (issue #330).
+ *
+ * PRECEDENCE, and each step is a deliberate choice:
+ *
+ *   1. An EXPLICIT saved preference wins. It is an instruction — "always test
+ *      with this cheap model" — and silently overriding it would spend the
+ *      user's credits on a model they did not choose.
+ *   2. Otherwise the model from this region's most recent chat request is used
+ *      if the catalog still offers it. This is what makes a green tick mean
+ *      "THE model I am using works" instead of "some model answered".
+ *   3. `undefined` observation (no chat request yet since start-up) falls
+ *      through to {@link resolveTargetModel}, so the previous automatic
+ *      behaviour is untouched for anyone who never sends a message.
+ *
+ * WHY THE OBSERVATION IS VALIDATED against the catalog: a model the roster no
+ * longer offers cannot be tested — the probe would spend a real request asking
+ * for something the upstream does not serve. Falling through reports the
+ * staleness through the saved path instead of hiding it.
+ *
+ * WHY THIS IS A PURE FUNCTION rather than inline in the route: the precedence
+ * above is the whole bug fix, and it must be testable without a live shim,
+ * catalog refresh and credentials. The caller only supplies the three facts.
+ */
+export function resolveProbeModel(
+  catalog: readonly WorkBuddyModelInfo[],
+  savedTargetId: string,
+  observedModelId: string | undefined,
+): WorkBuddyPoolTarget {
+  if (savedTargetId === '' && observedModelId !== undefined) {
+    const offered = catalog.some(model => model.id === observedModelId)
+    if (offered) return { modelId: observedModelId, source: 'observed' }
+  }
+  return resolveTargetModel(catalog, savedTargetId)
+}
+
 export function resolveTargetModel(
   catalog: readonly WorkBuddyModelInfo[],
   preferredId: string | undefined,

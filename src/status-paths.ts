@@ -2156,8 +2156,15 @@ export interface WorkBuddyWebPoolAccount {
    * beside the row it applies to rather than implying one model for the table.
    */
   testModelId?: string
-  /** Where this row's test target came from (see {@link WorkBuddyWebPool.targetModelSource}). */
-  testModelSource?: 'preferred' | 'free' | 'none' | 'stale'
+  /**
+   * Where this row's test target came from (see {@link WorkBuddyWebPool.targetModelSource}).
+   *
+   * Spelled out rather than importing `WorkBuddyPoolTargetSource` because this
+   * module is types-only and must not pull the pool's runtime code into the
+   * client bundle. Keep it in step: `observed` is issue #330's "no preference
+   * saved, so this is the model the region actually used".
+   */
+  testModelSource?: 'preferred' | 'free' | 'none' | 'stale' | 'observed'
   /** This row's saved override that the region no longer offers. */
   staleTestModelId?: string
 }
@@ -2260,8 +2267,12 @@ export interface WorkBuddyWebPool {
    * Where the target came from. `'stale'` means the SAVED id is no longer in
    * the catalog — a distinct state from `'none'` (no free model exists),
    * because the two need opposite advice.
+   *
+   * `'observed'` means no preference was saved, so the target is the model this
+   * region's last chat request actually used (issue #330). The card shows it so
+   * a row's 可用 verdict can be read as being about the model in use.
    */
-  targetModelSource: 'preferred' | 'free' | 'none' | 'stale'
+  targetModelSource: 'preferred' | 'free' | 'none' | 'stale' | 'observed'
   /** The account ids the user has checked into this region's pool. */
   memberAccountIds?: readonly string[]
   /**

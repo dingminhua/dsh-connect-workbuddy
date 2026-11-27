@@ -271,6 +271,24 @@ export interface WorkBuddyShimOptions {
    * Fired without awaiting, and never allowed to fail the request.
    */
   onUpstreamUsage?: (usage: WorkBuddyUsageCounts) => void
+  /**
+   * Called with the model id of every chat request that reaches this shim
+   * (issue #330).
+   *
+   * WHY THE PLUGIN CANNOT JUST ASK. Which model the user is on lives in the
+   * HOST's session state, not in this plugin's config: the card's
+   * `enabledModelIds` is the set of models offered, not the one in use. The only
+   * place the plugin learns the truth is the request body, which is why the shim
+   * reports it — the same fact `modelIdOfBody` already reads for issue #61.
+   *
+   * The pool's availability probe used to run against a SEPARATE saved
+   * preference, so a user could switch models and still see a green tick earned
+   * by a different one. Per-model quota is the reason that matters: the row
+   * would say "可用" for a model that is exhausted.
+   *
+   * Fired without awaiting, and never allowed to fail the request.
+   */
+  onRequestModel?: (modelId: string) => void
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -1588,6 +1606,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const onAccountFailure = options.onAccountFailure
   const onRequestBody = options.onRequestBody
   const onUpstreamUsage = options.onUpstreamUsage
+  const onRequestModel = options.onRequestModel
   const channelPerturbation = options.channelPerturbation ?? 'failure'
   /**
    * Whether the harness's injected `user` blocks are moved above the real prompt.
@@ -1863,6 +1882,18 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // (issue #61). Read ONCE, so every attempt — the first and each failover
     // retry — is remembered against the same model.
     const requestModelId = modelIdOfBody(prepared)
+    // Issue #330: tell the plugin which model the user is actually on, so the
+    // availability probe tests THAT one instead of a separate saved preference.
+    // Undefined means the body carried no usable id; the probe then falls back
+    // to its previous behaviour rather than measuring a guessed model.
+    if (requestModelId !== undefined && onRequestModel !== undefined) {
+      try {
+        onRequestModel(requestModelId)
+      } catch (error: unknown) {
+        // Bookkeeping must never fail a chat request.
+        logger?.warn('dsh-connect-workbuddy: request-model report failed', error)
+      }
+    }
     // Record WHAT goes upstream (issue #59). Handed the prepared body on purpose:
     // it is the one the upstream counts, and reading it must not change it.
     if (onRequestBody !== undefined) {
