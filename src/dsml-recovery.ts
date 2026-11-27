@@ -1779,6 +1779,25 @@ function holdFrom(text: string, spans: readonly IgnoredSpan[], gate?: RecoveryGa
 
   const lastLt = text.lastIndexOf('<')
   if (lastLt !== -1 && looksLikeTagStart(text.slice(lastLt))) hold = Math.min(hold, lastLt)
+  // ISSUE #328, the byte-by-byte case for the THINKING CHANNEL. `<th`, `<thi`,
+  // `<thin`, `<think` and `<think:` are all prefixes of `<think…>`, and if any
+  // of them is emitted as prose the channel can no longer be removed whole —
+  // the user would read their model's scratch pad. This is the ONLY owner of
+  // that decision; {@link DsmlStreamBuffer.scrubThinkChannel} deliberately does
+  // not hold a tail of its own.
+  if (lastLt !== -1) {
+    const tail = text.slice(lastLt)
+    // An UNFINISHED think boundary must not be emitted — neither the opener nor
+    // the CLOSER. Holding only the opener left `</think…` to be released
+    // character by character, so `scrubThinkChannel` never saw a complete close
+    // tag and the whole channel (plus everything after it) was swallowed.
+    //
+    // Shapes covered, all with no `>` yet: `<think`, `<think:ha`, `</think`,
+    // `</think:ha`, plus the bare prefixes `<th`, `<thi`, `<thin`.
+    const unfinishedThink = !tail.includes('>')
+      && (possibleThinkPrefixLength(tail) === tail.length || /^<think[\s:]/u.test(tail))
+    if (unfinishedThink) hold = Math.min(hold, lastLt)
+  }
   // ISSUE #298, the byte-by-byte case. A bare wrapper (`<ask_user_question>`)
   // arrives before the `arg_key` that proves it was protocol, so the marked
   // rule above cannot see it. Holding an UNTERMINATED `<` whose partial name
@@ -1904,8 +1923,83 @@ function normalizeFullwidth(text: string): string {
  * `<tool_calls><invoke>` as an EXAMPLE would otherwise starve the rest of the
  * response until the stream ended, and then lose it.
  */
+/**
+ * How many trailing characters could still grow into a `<think…>` opener.
+ *
+ * `0` when the tail cannot be a partial tag. This is what makes the scrub work
+ * on a real byte stream: without it, `<th` is forwarded as prose one chunk
+ * before the tag that would have removed the whole channel is complete.
+ *
+ * Only a suffix of `<think…>` counts, and the comparison stops at the first
+ * mismatch, so ordinary text ending in `<` or `<t` is held for exactly one
+ * chunk and then released.
+ */
+/**
+ * How many trailing characters could still grow into a `</think…>` closer.
+ *
+ * The mirror of {@link possibleThinkPrefixLength} for the closing side, and
+ * required for the same reason: without it, a byte-by-byte stream discards the
+ * first characters of the closer and the channel never terminates.
+ */
+function possibleThinkClosePrefixLength(text: string): number {
+  const TAG = '</think'
+  for (let length = Math.min(TAG.length, text.length); length > 0; length--) {
+    if (text.endsWith(TAG.slice(0, length))) return length
+  }
+  return 0
+}
+
+function possibleThinkPrefixLength(text: string): number {
+  const TAG = '<think'
+  // INCLUDING the full tag: `<think` with no `>` yet is still unfinished, and
+  // emitting it is exactly what let the channel leak one chunk before the `:`
+  // that would have made the opener recognisable.
+  for (let length = Math.min(TAG.length, text.length); length > 0; length--) {
+    if (text.endsWith(TAG.slice(0, length))) return length
+  }
+  return 0
+}
+
 export class DsmlStreamBuffer {
   private pending = ''
+  /**
+   * Whether the cursor is inside a `<think…>` reasoning channel (issue #328).
+   *
+   * WHY THIS EXISTS AT ALL. Some upstream models inline their chain of thought
+   * directly into `delta.content`, wrapped in a tag that carries a PER-RESPONSE
+   * hash suffix:
+   *
+   *     <think:6124c78e>
+   *     // plan: poll job
+   *     <arg_key:6124c78e>desc</arg_key:6124c78e><arg_value:6124c78e>…</arg_value:6124c78e>
+   *     </think:6124c78e>
+   *
+   * A user reported seeing exactly that as the answer — the scratch `// plan:`
+   * code and a FORGED tool-call draft, rendered as prose. Two things made it
+   * leak rather than merely look odd:
+   *
+   *   - nothing in this module knew what a thinking channel was, so the inner
+   *     `<arg_key:HASH>` / `<arg_value:HASH>` pairs were read as ordinary text;
+   *   - worse, `scanTag` parses `<think:6124c78e>` as name `think` plus
+   *     attributes (the hash is not in `readName`'s character class), so the
+   *     opener looked like a MARKED block opener, `openerSeen` became true, and
+   *     the debris sweep then took its "a block DID open, keep its text
+   *     verbatim" branch — actively PROTECTING the leak.
+   *
+   * So the channel is removed here, BEFORE any gate sees it. That keeps
+   * `openerSeen` honest and takes the inner debris with it.
+   *
+   * NO `withheld` NOTICE. This is not markup the reader was meant to see
+   * (unlike an `unnamed-invoke`, which is a defect being surfaced): it is the
+   * model's private scratch pad, and announcing "something was hidden" on every
+   * turn that thinks would be noise. Treated like fenced code — content that is
+   * simply not the answer.
+   *
+   * State is carried ACROSS chunks on purpose: a channel spans many deltas, and
+   * while inside an unclosed one nothing is emitted, so a stream cut mid-thought
+   * can never leak half of it.
+   */
+  private thinkOpen = false
   private readonly gate: RecoveryGate
   /** The first withholding reason observed in this stream, reported once. */
   private withHeld: Partial<Withheld> = {}
@@ -1975,6 +2069,14 @@ export class DsmlStreamBuffer {
   /** Feed one `delta.content` chunk; returns text and any call it completed. */
   add(chunk: string): BufferOutcome {
     this.pending += chunk
+    const think = this.scrubThinkChannel()
+    if (think.inside) {
+      // Inside a reasoning channel: the channel itself emits nothing, and
+      // `pending` keeps its bytes so the closer can complete on a later chunk.
+      // Any prose that preceded the opener DOES go out — dropping it would
+      // answer the user with silence about something they did say.
+      return { text: think.emitted, prose: hasProse(think.emitted), withheld: false }
+    }
     const parts: string[] = []
     const calls: RecoveredToolCall[] = []
 
@@ -2106,6 +2208,15 @@ export class DsmlStreamBuffer {
 
   /** End of stream: hand back everything still held — minus the debris. */
   flush(): BufferOutcome {
+    // End of stream inside a reasoning channel (issue #328): whatever is left is
+    // half a private thought — and the shape most likely to contain a
+    // half-written tool call. It is DROPPED, not shown, and the state is reset
+    // so a later attempt on the same buffer starts clean.
+    if (this.thinkOpen) {
+      this.pending = ''
+      this.thinkOpen = false
+      return { text: '', prose: false, withheld: false }
+    }
     let text = this.pending
     this.pending = ''
 
@@ -2193,6 +2304,67 @@ export class DsmlStreamBuffer {
    * Exactly one, because the notice it drives is emitted once per response. A
    * reason reported on two outcomes would print the same sentence twice.
    */
+  /**
+   * Remove a `<think…>` reasoning channel from `pending` (issue #328).
+   *
+   * Runs before every gate, so nothing downstream ever sees the channel: the
+   * inner `arg_key`/`arg_value` draft cannot be mistaken for a bare block, and
+   * the opener cannot set `openerSeen`.
+   *
+   * TAG SHAPE. The suffix after `think` is a PER-RESPONSE HASH (`:6124c78e`), so
+   * matching a literal tag would break on the next response. The rule is: the
+   * name `think`, then anything up to `>`, and the name must be followed by
+   * `>`, `:` or whitespace. That last part is what keeps ordinary prose like
+   * `<thinks>` or `<thinking about it>` untouched — only a real tag boundary
+   * counts.
+   *
+   * A TRUNCATED CHANNEL EMITS NOTHING. While `thinkOpen` is true and no closer
+   * has arrived, the buffer is emptied rather than flushed: half a private
+   * thought is still a private thought, and it is also the shape most likely to
+   * contain a half-written tool call.
+   */
+  private scrubThinkChannel(): { inside: boolean; emitted: string } {
+    const OPEN = /<think(?=[>\s:])[^>]*>/u
+    const CLOSE = /<\/think(?=[>\s:])[^>]*>/u
+    let text = this.pending
+    let kept = ''
+    for (;;) {
+      if (this.thinkOpen) {
+        const close = CLOSE.exec(text)
+        if (close === null) {
+          // Still inside the channel: KEEP the text so the closer can be found
+          // when it arrives, and tell `add` to emit nothing this round.
+          //
+          // Clearing it here was the first attempt and it swallowed the answer:
+          // on a byte-by-byte stream each chunk carried one character of
+          // `</think…>`, and discarding it meant the channel never terminated.
+          this.pending = text
+          // `kept` is the prose BEFORE the channel opened; it must still reach
+          // the reader even though the channel never closed.
+          return { inside: true, emitted: kept }
+        }
+        text = text.slice(close.index + close[0].length)
+        this.thinkOpen = false
+        continue
+      }
+      const open = OPEN.exec(text)
+      if (open === null) {
+        // The tail is NOT held here. Holding it here would fight `holdFrom`,
+        // which already withholds a tail that could still become a tag — two
+        // owners of the same bytes released them out of order and the tag
+        // arrived as prose. `holdFrom` is taught about `<think` instead (see
+        // {@link holdFrom}), so there is exactly one owner.
+        kept += text
+        break
+      }
+      kept += text.slice(0, open.index)
+      text = text.slice(open.index + open[0].length)
+      this.thinkOpen = true
+    }
+    this.pending = kept
+    return { inside: this.thinkOpen, emitted: '' }
+  }
+
   private takeWithheld(): { withheld: boolean; withheldReason?: 'unnamed-invoke' | 'stray-markup' } {
     const reason = this.withHeld.reason
     if (reason === undefined) return { withheld: false }
