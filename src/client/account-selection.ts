@@ -152,7 +152,7 @@ function fieldSnapshotOf(
  * the field's live value, preserving the other region.
  */
 async function saveViaHostEndpoint(
-  field: 'accounts' | 'regions' | 'cliBridge' | 'sidebarPanel' | 'pollIntervalMs' | UpstreamSwitchField,
+  field: 'accounts' | 'regions' | 'cliBridge' | 'sidebarPanel' | 'webSearch' | 'pollIntervalMs' | UpstreamSwitchField,
   region: WorkBuddyWebRegion | undefined,
   value: unknown,
 ): Promise<Record<string, unknown> | undefined> {
@@ -461,6 +461,69 @@ export async function writeSidebarPanelEnabled(
   throw hostError instanceof Error
     ? hostError
     : new WorkBuddySettingsWriteError('sidebarPanel', 'neither the Host save endpoint nor the settings scope persisted the value')
+}
+
+/**
+ * Read the opt-in WorkBuddy web-search switch out of a settings snapshot.
+ *
+ * Only an explicit `enabled: true` is ON, matching the schema's `default(false)`:
+ * an upgrade must never start registering a search provider nobody asked for.
+ */
+export function webSearchEnabledOf(configured: unknown): boolean {
+  const field = (configured as Record<string, unknown> | undefined)?.['webSearch']
+  const value = unwrapVolatileDeep(field)
+  return typeof value === 'object' && value !== null && (value as Record<string, unknown>)['enabled'] === true
+}
+
+/**
+ * Write the opt-in WorkBuddy web-search switch, verifying it landed.
+ *
+ * Same two writers and same reasoning as {@link writeSidebarPanelEnabled}. The
+ * `webSearch` field is a whole block (`enabled` / `agentic` / `maxContentChars`),
+ * so the writer preserves the tuned siblings instead of replacing them with a
+ * bare boolean — exactly how `channelRejectContinue` is handled.
+ *
+ * @param scope - the bound settings scope for this plugin's namespace.
+ * @param enabled - the desired state.
+ * @param current - the committed block, so `agentic` / `maxContentChars` survive.
+ * @throws {WorkBuddySettingsWriteError} when neither writer persists the value.
+ */
+export async function writeWebSearchEnabled(
+  scope: WorkBuddyAccountScope,
+  enabled: boolean,
+  current?: unknown,
+): Promise<void> {
+  const stored = unwrapVolatileDeep(
+    current ?? (scope.getSnapshot().value as Record<string, unknown> | undefined)?.['webSearch'],
+  )
+  const next = {
+    ...typeof stored === 'object' && stored !== null ? stored as Record<string, unknown> : {},
+    enabled,
+  }
+  let hostError: unknown
+  try {
+    const authoritative = await saveViaHostEndpoint('webSearch', undefined, next)
+    if (authoritative !== undefined && authoritative['webSearch'] !== undefined) {
+      try { await scope.set('webSearch', authoritative['webSearch']) } catch { /* optional */ }
+      return
+    }
+    // An older Host answers `{ok:true}` with no value. It DID store the field,
+    // but cannot tell us what — fall through to the scope writer so the card
+    // still mirrors the value it just asked for (the same shape as the other
+    // helpers' old-Host path).
+  } catch (error) {
+    hostError = error
+  }
+  let delivered = false
+  try {
+    delivered = (await scope.set('webSearch', next)) !== false
+  } catch {
+    delivered = false
+  }
+  if (delivered && webSearchEnabledOf(scope.getSnapshot().value)) return
+  throw hostError instanceof Error
+    ? hostError
+    : new WorkBuddySettingsWriteError('webSearch', 'neither the Host save endpoint nor the settings scope persisted the value')
 }
 
 /**

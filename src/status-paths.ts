@@ -1533,6 +1533,12 @@ export type WorkBuddyWebUsage =
      */
     sidebarPanelEnabled?: boolean
     /**
+     * Whether the optional WorkBuddy-backed web search provider is switched on.
+     * GLOBAL like `sidebarPanelEnabled`; absent reads as OFF, matching the
+     * schema's `default(false)`.
+     */
+    webSearchEnabled?: boolean
+    /**
      * How often the card should re-read this document, in milliseconds.
      *
      * GLOBAL like `sidebarPanelEnabled`, and carried on the Host's answer for
@@ -1721,6 +1727,12 @@ export type WorkBuddyWebUsage =
      * that cannot answer must not be read as consent.
      */
     sidebarPanelEnabled?: boolean
+    /**
+     * Whether the optional WorkBuddy-backed web search provider is switched on.
+     * GLOBAL like `sidebarPanelEnabled`; absent reads as OFF, matching the
+     * schema's `default(false)`.
+     */
+    webSearchEnabled?: boolean
     /**
      * How often the card should re-read this document, in milliseconds.
      *

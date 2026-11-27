@@ -1,5 +1,62 @@
 # Changelog
 
+## 5.34.0 (2026-11-27)
+
+> 新增可选的 WorkBuddy 联网搜索（issue #332）：给 DSH 的 `web_search` 提供一个用本插件登录态检索的搜索提供方，默认关闭、不依赖任何其它插件。另外修复 issue #316 的一个凭据选择错误。
+
+### 可选的 WorkBuddy 搜索提供方
+
+需求原文（issue #332）：「支持 wb 里的网页搜索，而不是使用 deepseek 的搜索」，配图为 WorkBuddy 桌面端里的「网页搜索 xxx」。
+
+**为什么不改 chat 中转**：WorkBuddy 的搜索不是 chat API 的一个工具，而是桌面 App 自己调用的独立服务。上游 chat 端点会原样透传调用方声明的工具、也确实会返回结构化 `tool_calls`，但搜索的执行者是 DSH 宿主——请求根本不会到 WorkBuddy。所以要换搜索来源，正路是在 DSH 的搜索接缝（`ctx.web`）上注册提供方。
+
+**做法**（全部自写，不复制任何第三方插件代码）：
+
+- 新增 `src/web-search.ts`：用本插件的凭据调用 WorkBuddy 的 `agenttool` 端点。快路径 `/agenttool/v1/search` 约 1 秒返回结构化 `{title,url,snippet,date}`；可选综述路径 `/agenttool/v1/agentic_search` 读 SSE 的 `done.synthesis.content`，自写帧分隔识别（LF/CR/CRLF/混合）、来源提取（markdown 链接优先、裸 URL 兜底、按 URL 去重）、401/会话失效后刷新一次凭据重试。
+- `index.ts` 新增全局配置 `webSearch`（`enabled` / `agentic` / `maxContentChars`），默认关闭。开启后经 `ctx.inject(['web'])` 注册一个 id 为 `dsh-connect-workbuddy-search` 的提供方，跟随 volatile 开关即时注册/注销，不重载插件。
+- 凭据按 `llmProvider` 选区（`workbuddy` → CN、`workbuddy-global` → 国际），取该区当前选中账号；刷新走已有的 `client.refreshToken()`，只在内存进行。
+
+**与宿主搜索方设置的联动**：
+
+- 卡片开关打开时，除注册 provider 外，还经 `ctx.settings.mutate('web', …)` 把宿主的 `searchProvider` 指向本插件——立即生效、写进 profile（与官方网页搜索设置页同一机制），不必用户再去设置页手选；带 `expectedRevision` 防并发覆盖。
+- **关闭 / 卸载时精确恢复**：接管前记下 `describe()` 的 user/base 原值，关闭时 `set` 回原值或 `unset` 回组合默认。这是必需的——残留的 provider id 会让所有路由的 `web_search` 报 `WEB_PROVIDER_CONFIGURED_MISSING`。
+- provider id 独立（`dsh-connect-workbuddy-search`），**不写死 `cordis.patch.yml`**，与那个注册 `workbuddy-agentic` 并整行替换 web 配置的第三方插件不会撞 id、不会叠加 patch。
+- **不做插件联动**，符合 [DESIGN.md §零](docs/DESIGN.md)：不枚举、不检查、不依赖别的插件的注册。这里操作的是宿主自己的设置服务，不是另一个插件。
+
+**测试**：`tests/web-search.spec.ts` 16 项 + `tests/web-search-optin.spec.ts` 7 项 + `tests/web-search-provider-setting.spec.ts` 11 项。覆盖 URL/来源提取、去重与截断、CRLF 综述帧、字符上限、快路径字段映射、区域网关、会话失效刷新重试、非会话失败不重试、abort、opt-in 默认值、宿主提供方写入/恢复/并发 revision；关键分支做过变异验证（改坏后测试变红）。
+
+### 历史桌面快照顶掉有效 vault 凭据（#316 后续）
+
+issue #316 报告者在 5.32.3 上用 provenance 日志抓到了决定性证据：桌面端当前登录账号 B，账号 A 在磁盘上只剩 5 个带时间戳的 `workbuddy-desktop.<stamp>.info` 快照，其中一个（明文、`codebuddy.cn`、宣称 2027 过期）被选中，请求全部 APISIX 401；把快照移出目录（不重登、不动 vault、不重启）后账号 A 立刻回退到 vault 里的 `www.workbuddy.cn` 副本并恢复 200。
+
+**根因**：`syncVault` 的 vault→scan 合并里，vault 副本只有在 `expiresAtMs` 更接近时才替换扫描到的文件。已撤销的备份快照仍宣称远期过期（2027），于是按过期时间比较赢了有效副本。
+
+**修法**：合并条件从「vault 过期更久才替换」改为「扫描到的只是非 live 备份（`fileRank !== 0`）时 vault 副本无条件胜出」。备份的 `expiresAt` 不是可信排序信号；vault 是本插件验证/可刷新的副本。live 文件仍受 `fileRank` 保护、优先级不变，多个备份之间按 issuance 排序的既有行为也不受影响（那条路径没有 vault 副本）。
+
+**测试**：`tests/issue316-stale-snapshot.spec.ts` 3 项，覆盖快照场景、live 不回归、无 vault 时备份排序；做过变异验证（改回旧条件后快照场景变红）。
+
+### 救援阶梯在「先前的 rung 撞 429」后跳过最终 11128（#322）
+
+issue #322 报告者在 5.32.0 上用探针复跑，指出一种形状：账号 A 答 11128 → rung1（system 中性头）重发答 429（阶梯在半途正确停止）→ 故障转移给账号 B，同一个 body 答 11128。此时 B 的 11128 **一次 rung 都没跑**，用户看到的 400 还写着「已用 system 中性头重试过」（那是 A 的、不是这条的）。
+
+**根因**：两个缺陷叠加。① rung 标志在 `chatStream` 返回后无条件置 true——它记的是「花掉了一次请求」，不是「网关再次拒绝了这次变换」；429 让阶梯停止，却把「停止」记成了「完成」。② 故障转移后的复跑门用这四个标志判断，把「某个 rung 在别处花过」等同于「最终这条 11128 已被救过」。注释写的是「no-op 只应发生在同一 11128 上」，实现偏离了它。
+
+**修法**：① rung 标志改为按证据置位（`!current.ok && current.kind === 'channel_reject'`），retryNote 只报真正被网关拒绝过的变换；② 复跑门改为「最终结果是 `channel_reject` 且发生过故障转移（`attemptCount > 1`）」——单账号 11128 的 `attemptCount === 1`，仍走上面的阶梯、不重复花请求（守住 no-op）。
+
+**测试**：`tests/shim-failover.spec.ts` 新增 1 项覆盖该形状（A 11128 → A rung1 429 → B 11128 → B rung1 成功，断言 4 次调用 + 200），做过变异验证（回退修复后变红）；#302/#307/#297 等 65 项 shim 相关测试无回归。
+
+### 发布前三路审查的修复
+
+对上面三块改动做了三路独立审查（凭据合并、救援阶梯、搜索与宿主设置联动），修掉的问题：
+
+- **`web.searchProvider` 重启后关闭会钉死自己（blocker）**：takeover 把自身 id 持久化后，下一次启动 `describe()` 把它当成「用户原值」，关闭时 `set` 回自身、同时注销 provider，导致全路由 `WEB_PROVIDER_CONFIGURED_MISSING`。`restorePlan` 新增 `ownId`：保存值等于自身 id 时视为 absent、走 `unset`。
+- **启动自愈 + 并发回滚**：进程被强杀来不及 dispose 时，下次启动开关为关会主动 `unset` 残留指向；接管改为在 provider 注册成功之后才发起，并用 generation 计数丢弃「await 期间被关掉」的在途写入，避免把宿主钉在已注销 id。
+- **综述 SSE 末帧**：上游 `done` 后直接关流（无尾随空行）时会丢掉最后一帧、误报 `EMPTY_RESULT`；现在流结束冲一次剩余 buffer，`event: error` 也不再静默忽略。
+- **错误文本脱敏**：上游 body 进模型可见错误前去掉邮箱 / `Users` 路径 / 长数字串，补齐 PII 防线。
+- **#322 测试加固**：补一条只靠 gate 修复才能过的场景（先前 rung 真被 11128 拒绝后再故障转移），rung2/3/4 标志与 rung1 一并按证据置位。
+- **#316 测试去脆弱**：硬编码的 2027 过期日改为相对时间，避免 2027-04 起变异检测失效。
+- 同步了多处过时文案（「不改写 searchProvider」「还需手动选中」等）；删掉 web-search-optin 里两条只读源码文本的假测试。
+
 ## 5.33.0 (2026-11-27)
 
 > 一条行为变更：**账号池的「测试」现在测的是你当前在用的模型**，不再是插件自己挑的一个免费模型。

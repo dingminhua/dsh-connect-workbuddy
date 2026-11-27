@@ -189,6 +189,97 @@ describe('pool failover: retrying a failed chat on another account', () => {
     expect(text).toContain('已尝试 2 个账号')
   })
 
+  it('runs the ladder on a failover-end 11128 even when an earlier account\'s rung hit 429 (#322)', async () => {
+    // Shape from issue #322 (ManYue259, 2026-11-26): account A answers 11128,
+    // the rung-1 neutral-head retry on A answers 429 (so the ladder stops there
+    // with `retriedWithSystemHead = true`), failover sends the SAME body to B,
+    // and B answers 11128. The shim used to treat "A's rung was spent" as
+    // "the final refusal was rescued" and sent B's 11128 out with no ladder at
+    // all. The user read a 400 whose retryNote even claimed a neutral head had
+    // been tried — true on A, false on the answer they actually saw.
+    const other = credentialFor('other')
+    const CHANNEL_REJECT: WorkBuddyChatResult = {
+      ok: false, status: 400, kind: 'channel_reject', message: '被网关的渠道校验拦截（code 11128）',
+    }
+    const LADDER: WorkBuddyChatResult = {
+      ok: false, status: 429, kind: 'soft_rate', message: 'rung hit a rate limit',
+    }
+    // Drive responses by PER-ACCOUNT call index: the prepared body may already
+    // carry a neutral head in this fixture, so body inspection cannot tell the
+    // plain attempt from a ladder retry — but call order can.
+    let aCalls = 0
+    let bCalls = 0
+    let calls = 0
+    shim = mount({
+      others: [other],
+      chatStream: async (credential, body) => {
+        calls += 1
+        void body
+        if (credential.uin !== other.uin) {
+          aCalls += 1
+          // A: first answer refuses; the rung-1 retry is rate limited, so the
+          // ladder stops with `retriedWithSystemHead` set on the OLD code.
+          return aCalls === 1 ? CHANNEL_REJECT : LADDER
+        }
+        bCalls += 1
+        // B: the failover answer refuses; the ladder must run again here and
+        // its retry succeeds.
+        return bCalls === 1 ? CHANNEL_REJECT : ok()
+      },
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const response = await chat(shim, JSON.stringify({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: 'hi' }, { role: 'system', content: 'An ordinary instruction that stays on the wire unheaded.' }],
+    }))
+    expect(response.status).toBe(200)
+    // A plain, A rung1, B failover, B rung1 — the last is the rescue that used
+    // to be skipped.
+    expect(calls).toBe(4)
+  })
+
+  it('re-runs the ladder on a failover-end 11128 even after earlier rungs were REFUSED, not rate-limited (#322)', async () => {
+    // Independent of the previous case: here A's rung1 is itself refused with
+    // 11128 (so `retriedWithSystemHead` is genuinely true on the OLD code), and
+    // rung2 then hits 429. Only the GATE fix — not the rung-flag fix — can make
+    // B's final 11128 receive a ladder. Without it the old flag gate is false
+    // and B gets nothing.
+    const other = credentialFor('other')
+    const CHANNEL_REJECT: WorkBuddyChatResult = {
+      ok: false, status: 400, kind: 'channel_reject', message: '被网关的渠道校验拦截（code 11128）',
+    }
+    const RATE: WorkBuddyChatResult = { ok: false, status: 429, kind: 'soft_rate', message: 'rate limited' }
+    let aCalls = 0
+    let bCalls = 0
+    shim = mount({
+      others: [other],
+      chatStream: async credential => {
+        if (credential.uin !== other.uin) {
+          aCalls += 1
+          // A: plain refuses, rung1 refuses, rung2 rate-limited -> ladder stops.
+          return aCalls <= 2 ? CHANNEL_REJECT : RATE
+        }
+        bCalls += 1
+        // B: failover answer refuses; the ladder must run again and its first
+        // retry succeeds.
+        return bCalls === 1 ? CHANNEL_REJECT : ok()
+      },
+      failover: async tried => (tried.includes(SELECTED_ID) ? other : undefined),
+    })
+    await shim.ready
+
+    const response = await chat(shim, JSON.stringify({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: 'hi' }, { role: 'system', content: 'An ordinary instruction that stays on the wire unheaded. It has punctuation, so perturbation can change it.' }],
+    }))
+    expect(response.status).toBe(200)
+    // A plain + rung1 + rung2, B failover + rung1 — B's ladder must have run.
+    expect(aCalls).toBe(3)
+    expect(bCalls).toBeGreaterThanOrEqual(2)
+  })
+
   it('does NOT retry a failure the request itself caused', async () => {
     // A 400 means the BODY was rejected. Every account answers the same way, so
     // walking the pool would burn N round trips to reach the same error.

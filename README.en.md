@@ -77,6 +77,30 @@ It depends on the WorkBuddy client's own endpoints (not a public API), so the pl
 - **Secure loopback shim** — one random port + in-process random secret per region; the real WorkBuddy token is never handed to pi-ai.
 - **Command-line diagnostics** — `status` / `doctor` / `logout`, reporting sign-in and credits per region, without a browser.
 - **CLI route (optional, off by default)** — Disguising requests as a CodeBuddy client to pass the channel check is an arms race, and it has already produced account-level restrictions (issue #98, code 11140). A second route skips that disguise: **let the locally signed-in CodeBuddy CLI run the task itself** — it reads files, runs git, edits code. Turn on `cliBridge.enabled` and the plugin gains a `codebuddy_ask` tool and a `/codebuddy` command, with the result injected back into the session model. While it is off, the plugin behaves **exactly** as before. **It bypasses the client-fingerprint layer, not the account layer**: it uses the same accounts from this plugin's vault, so it is not a get-out-of-jail card after a block. See [CLI route](#cli-route-optional-let-codebuddy-do-the-work).
+- **WorkBuddy web search (optional, off by default)** — make DSH's built-in `web_search` use this plugin's signed-in WorkBuddy account instead of DeepSeek search. Fast structured snippets by default (~1s); an optional synthesis mode returns a cited answer (slower, 10–60s). It **does not touch the host's search-provider setting and depends on no other plugin** — it registers a standalone provider you pick yourself in the web-search dropdown. See [WorkBuddy web search](#workbuddy-web-search-optional).
+
+## WorkBuddy web search (optional)
+
+DSH's `web_search` tool is provided by the host; the actual retrieval goes through a replaceable "search provider". This plugin can register one that searches with **its own sign-in** (issue #332), but it is **off by default and changes none of your settings**:
+
+1. Tick "Use WorkBuddy for web search" in the plugin's **Capabilities** tab (`webSearch.enabled`, default `false`).
+2. Turning it on also points the host's **web search provider** at "WorkBuddy (this plugin's sign-in)" (id `dsh-connect-workbuddy-search`) — effective immediately. Turning it off restores your previous provider, so no dangling id is left behind. You can still pick a different provider any time in **Plugins → Built-in plugin config → Web search & fetch**.
+
+Settings:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `webSearch.enabled` | `false` | Whether to register this search provider and point the host at it (restored on disable) |
+| `webSearch.agentic` | `false` | `false` = fast structured snippets (~1s); `true` = cited synthesis (10–60s, spends credits) |
+| `webSearch.maxContentChars` | `30000` | Cap on synthesis characters, `0` = no cap |
+
+Behaviour and limits:
+
+- **Searches as the current account**: the region follows the requesting model's route (`workbuddy` → CN, `workbuddy-global` → international) and uses that region's currently selected account. An expired token is refreshed in memory through this plugin's existing refresh chain; the desktop app's auth file is never written.
+- **Zero conflicts**: a distinct provider id that does not replace the built-in `deepseek-official` / `deepseek-search-api`, and no hard-coded patch change — the host `searchProvider` is driven by the switch and restored when it is turned off. Even with other search plugins installed each stays independent; turning the switch off (or a normal uninstall) restores the host setting. If the process is force-killed before cleanup, the next start with the switch off retracts any leftover pointer.
+- **Signed out means an error, not a silent fallback**: this provider's `available()` is always true (it does not pre-check sign-in), so a signed-out desktop app fails in the search request itself (e.g. `WB_SEARCH_SESSION_DEAD`) rather than quietly switching to DeepSeek. Turn the switch off (which restores the host setting) or pick another provider in the dropdown to revert.
+- **Search only, not fetch**: `web_fetch` stays on the host's own fetch backend, unrelated to this feature.
+- This uses an internal WorkBuddy desktop endpoint, which may change with app versions. It is an optional enhancement, not a core chat capability.
 
 ## How it works
 

@@ -74,7 +74,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredImageModel, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredImageModel, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, webSearchEnabledOf, writeWebSearchEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
 import { resolveCnGateway } from '../cn-gateway.ts'
 // The watermark-free model id is shared with the tool on purpose: if the picker
 // and the tool disagreed about which id means "no watermark", the card would
@@ -848,6 +848,9 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    */
   const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
   const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
+  /** WorkBuddy web-search opt-in (issue #332); undefined = read committed settings. */
+  const [webSearchOn, setWebSearchOn] = useState<boolean | undefined>(undefined)
+  const [webSearchBusy, setWebSearchBusy] = useState(false)
   /** This card's own successful write of the refresh interval, if any. */
   const [pollIntervalOn, setPollIntervalOn] = useState<number | undefined>(undefined)
   const [pollIntervalBusy, setPollIntervalBusy] = useState(false)
@@ -1630,6 +1633,33 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
       if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setCliBridgeBusy(false)
+    }
+  }
+
+  /**
+   * Whether the optional WorkBuddy web-search provider is switched on (#332).
+   * Host answer first, mirror second, like the CLI/sidebar switches: a stale
+   * browser mirror must not claim a provider is registered when it is not.
+   */
+  const webSearchSwitchedOn = (): boolean => {
+    if (webSearchOn !== undefined) return webSearchOn
+    const fromHost = (statusByRegion[activeRegion] as { webSearchEnabled?: unknown } | undefined)?.webSearchEnabled
+    if (typeof fromHost === 'boolean') return fromHost
+    return webSearchEnabledOf(settingsScope?.getSnapshot().value)
+  }
+
+  /** Flip the global WorkBuddy web-search switch; volatile, no reload. */
+  const toggleWebSearch = async (enabled: boolean): Promise<void> => {
+    if (settingsScope === undefined) return
+    setWebSearchBusy(true)
+    try {
+      await writeWebSearchEnabled(settingsScope, enabled)
+      if (mounted.current) setWebSearchOn(enabled)
+      await refreshUsage(activeRegion)
+    } catch (error: unknown) {
+      if (mounted.current) setAccountError(error instanceof Error ? error.message : t('row.requestFailed'))
+    } finally {
+      if (mounted.current) setWebSearchBusy(false)
     }
   }
 
@@ -3143,6 +3173,27 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     </label>
   )
 
+  /** The WorkBuddy web-search opt-in (issue #332). GLOBAL, own class like the
+   *  other switches so the credit-switch suite's single-switch selector stays
+   *  unambiguous. */
+  const webSearchPreference = (
+    <label className="dsm-workbuddy-pref" title={t('row.webSearchHint')}>
+      <input
+        type="checkbox"
+        className="dsm-workbuddy-web-search-check"
+        checked={webSearchSwitchedOn()}
+        disabled={!canWrite || saving || poolBusy || webSearchBusy}
+        onChange={(event: { target: { checked: boolean } }) => {
+          void toggleWebSearch(event.target.checked)
+        }}
+      />
+      <span className="dsm-workbuddy-pref-copy">
+        <span className="dsm-workbuddy-pref-label">{t('row.webSearchLabel')}</span>
+        <span className="dsm-workbuddy-pref-hint">{t('row.webSearchHint')}</span>
+      </span>
+    </label>
+  )
+
   /**
    * The sidebar-row switch (PR #188).
    *
@@ -3611,6 +3662,7 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
           spends a request). */}
       <span className="dsm-workbuddy-pref-hint">{t('row.modelToolsHint')}</span>
       {cliBridgePreference}
+      {webSearchPreference}
       {/* The picker row is a property of the switch above it, like the seat
           row is a property of the credits switch: hidden while the route is
           off, where it would configure nothing. */}

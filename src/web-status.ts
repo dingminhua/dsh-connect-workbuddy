@@ -313,6 +313,11 @@ export interface WorkBuddyStatusRouteOptions {
    */
   sidebarPanelEnabled?(): boolean
   /**
+   * Whether the optional WorkBuddy-backed web search provider is on (issue #332).
+   * GLOBAL; absent reads as OFF.
+   */
+  webSearchEnabled?(): boolean
+  /**
    * How often the card should re-read this document, in milliseconds.
    *
    * Carried on the Host's answer rather than read from the browser's settings
@@ -845,6 +850,8 @@ const UPSTREAM_SWITCH_FIELDS: ReadonlySet<string> = new Set([
   // 字段；把它加进来是因为它决定一个 GLOBAL 座位（`sidebar.panellist` 行 +
   // `main` 页）存不存在，而这个决定只有用户能下。
   'sidebarPanel',
+  // WorkBuddy-backed web search (issue #332): a whole block written at once.
+  'webSearch',
   // 卡片的刷新频率。一个顶层数字，自己一条路径，没有需要保留的兄弟字段。
   // 它决定插件的上游请求量（每次刷新按池内账号数各读一次积分与签到状态），
   // 所以必须能由用户从卡片上改，而不是只能手改配置文件。
@@ -1388,6 +1395,8 @@ export async function workBuddyWebStatus(
   // claims a sidebar seat every bundle shares, so an absent answer (an older
   // Host that cannot answer) must never read as "the user asked for this".
   const sidebarPanelEnabled = deps.sidebarPanelEnabled?.() === true
+  // GLOBAL like sidebarPanelEnabled; absent reads as OFF (schema default false).
+  const webSearchEnabled = deps.webSearchEnabled?.() === true
   /**
    * The card's refresh cadence, resolved once per document.
    *
@@ -1436,7 +1445,7 @@ export async function workBuddyWebStatus(
     // is only reachable when a sign-in landed between the two calls. A
     // credential just appeared: there is nothing to diagnose, and a list of
     // failed probe paths would contradict what the user is looking at.
-    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, preferredImageModel, cliBridgeEnabled, sidebarPanelEnabled, pollIntervalMs, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
+    return { status: 'signed-out', accounts: [], selectionExplicit, enabled, showCreditsInMainUi, showNewModelsInMainUi, imageToolEnabled, videoToolEnabled, preferredVideoModels, preferredImageModel, cliBridgeEnabled, sidebarPanelEnabled, webSearchEnabled, pollIntervalMs, cliBridgeModel, cliBridgeEffort, cliBridgeRegionOrder, busyLevels }
   }
   let credential
   try {
@@ -1491,6 +1500,7 @@ export async function workBuddyWebStatus(
       preferredImageModel,
       cliBridgeEnabled,
       sidebarPanelEnabled,
+      webSearchEnabled,
       pollIntervalMs,
       cliBridgeModel,
       cliBridgeEffort,
@@ -1532,6 +1542,7 @@ export async function workBuddyWebStatus(
     preferredImageModel,
     cliBridgeEnabled,
     sidebarPanelEnabled,
+    webSearchEnabled,
     pollIntervalMs,
     cliBridgeModel,
     cliBridgeEffort,
@@ -2437,7 +2448,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           // the CLI route off must not look like it reset them.
           if (field !== 'regions' && field !== 'accounts' && field !== 'cliBridge'
             && !(typeof field === 'string' && UPSTREAM_SWITCH_FIELDS.has(field))) {
-            return json(res, 400, { error: 'field must be regions, accounts, cliBridge, usageIdentity, keepPromptLast, extraInjectedPrefixes, sessionTitle, dropForeignThinking, dropAllThinking, channelRejectContinue or sidebarPanel' })
+            return json(res, 400, { error: 'field must be regions, accounts, cliBridge, usageIdentity, keepPromptLast, extraInjectedPrefixes, sessionTitle, dropForeignThinking, dropAllThinking, channelRejectContinue, sidebarPanel or webSearch' })
           }
           const rows = settings.describe()
           const row = rows.find((r: any) => String(r.ns).includes('workbuddy'))

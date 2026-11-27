@@ -92,7 +92,7 @@
 本插件展示的模型来自 WorkBuddy 网关目录、挂在 `workbuddy` / `workbuddy-global` 路由下，
 不满足这个条件 → 搜索仍走 `deepseek-search-api`，不会追加 `web/deepseek-search-llm-request`
 事件。全库 grep：`src/` 下**没有任何** `searchProvider` / `web-search-deepseek` 引用；
-插件不声明也不改写该配置，defaults 由宿主与 profile 决定。
+插件不声明也不改写该配置，defaults 由宿主与 profile 决定。（注：#332 的 WorkBuddy 搜索开关改为在用户显式开启时经 `ctx.settings` 临时写入 `searchProvider`，关闭即恢复；这是对本文立场的有意、opt-in 的突破。）
 
 唯一值得留意的运行期场景是**用户自己在设置页把搜索提供方切成自动选择**：那也是宿主与
 profile 的行为，插件的网关地址设置（`CN 网关主机`）只影响本插件自己的.chat/目录/积分请求，

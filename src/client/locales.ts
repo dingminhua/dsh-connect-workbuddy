@@ -633,6 +633,8 @@ export const en = {
   // 2026-10-25; the media catalog carries no price, the settled usage.credit
   // does). The tool reports the actual charge either way.
   'row.modelToolsHint': 'These three decide what the model may DO on this tab: which commands it can run, and whether it can spend credits generating images or video. Each takes effect on the click.',
+  'row.webSearchLabel': 'Use WorkBuddy for web search',
+  'row.webSearchHint': 'Registers a WorkBuddy-backed provider for DSH\'s web_search, using this plugin\'s signed-in account (fast snippets; enable agentic mode in the plugin config for a cited synthesis). You still have to pick it in DSH\'s web-search settings. Off by default.',
   'row.channelRejectHint': 'One switch, on its own because it is the only one here that spends a real request every time it fires. Read its description before turning it on.',
   'row.sidebarPanelLead': 'Where the card itself appears. This one only affects navigation — it changes no request and spends nothing.',
   'row.upstreamHint': 'These change what the gateway sees, not which provider serves the call. All of them are sampled when the plugin mounts, so reload the plugin (or restart DSH) after changing one.',
@@ -1406,6 +1408,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 单价按区分：国内区约 5.71、国际区约 0.03 积分/张（2026-10-25 实测；目录
   // 里没有价格，只有结算时的 usage.credit），工具本身回报的是实扣值。
   'row.modelToolsHint': '这三项决定模型在这个 tab 上能「做」什么：能跑哪些命令，以及能不能花积分生图、生视频。点一下即生效。',
+  'row.webSearchLabel': '让 DSH 网页搜索走 WorkBuddy',
+  'row.webSearchHint': '给 DSH 的 web_search 注册一个用本插件登录态的搜索提供方（默认约 1 秒的结构化摘要；综述模式在插件配置里开）。开启时会同时把宿主的网页搜索提供方自动切到它，关闭时自动恢复。默认关闭。',
   'row.channelRejectHint': '单独一项，因为这里是唯一「每触发一次就真花一次请求」的开关。开启前请读完它的说明。',
   'row.sidebarPanelLead': '卡片本身出现在哪。这一项只管导航，不改任何请求、不花任何额度。',
   'row.upstreamHint': '这一组改的是网关看到什么，不是由哪个 provider 提供服务。四项都在插件挂载时采样，改完需重载插件或重启 DSH。',

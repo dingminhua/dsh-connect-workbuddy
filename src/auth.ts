@@ -1746,11 +1746,24 @@ export class WorkBuddyCredentialStore {
       // the app's older token here would resurrect it on every restart and
       // refresh again each time. This is the case that closes that loop; a
       // merely "longer-lived" vault copy still does not displace a live read.
+      //
+      // ISSUE #316 (2026-11-27): a NON-live desktop file is a timestamped
+      // BACKUP, and the upstream has revoked those tokens even though their
+      // stored `expiresAt` still advertises a far-future date (2027 on the
+      // reported machine). Comparing expiry here made a dead 2027 snapshot beat
+      // a working vault copy — the account then got an HTML 401 until the
+      // snapshots were moved away. A backup's `expiresAt` is therefore not a
+      // trustworthy ordering signal against a vault entry: the vault is the
+      // plugin's own validated/refreshable copy, so it wins over ANY non-live
+      // desktop file regardless of advertised expiry. Live sign-ins are still
+      // untouched (the `fileRank !== 0` guard), so the normal "app is signed in
+      // and current" path keeps its priority.
       if (existing === undefined) {
         scan.set(id, entry.credential)
       } else if (entry.refreshedFrom !== undefined && entry.refreshedFrom === authFileName(existing.filePath)) {
         scan.set(id, entry.credential)
-      } else if (fileRank(existing.filePath) !== 0 && entry.credential.expiresAtMs > existing.expiresAtMs) {
+      } else if (fileRank(existing.filePath) !== 0) {
+        // The scan found only a backup; the vault's validated copy wins.
         scan.set(id, entry.credential)
       }
     }

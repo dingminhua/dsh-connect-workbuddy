@@ -2017,14 +2017,20 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       if (forced !== undefined) {
         logger?.warn('dsh-connect-workbuddy: the channel gate refused the body; retrying once with the neutral head on the system opening only')
         current = await client.chatStream(credential, forced, controller.signal, sessionConversationId)
-        retriedWithSystemHead = true
+        // ISSUE #322: record "the gate refused THIS transform", not merely
+        // "a request was spent". If this rung answers 429/success the ladder
+        // stops (the later rungs require channel_reject), and marking the rung
+        // as spent here is what made a later account's 11128 look already
+        // rescued. Only a repeated channel_reject means this transform failed
+        // against the gate and should not be retried on the final answer.
+        retriedWithSystemHead = !current.ok && current.kind === 'channel_reject'
       }
       if (!current.ok && current.kind === 'channel_reject' && !controller.signal.aborted) {
         const rescued = perturbChannelFingerprints(forced ?? prepared)
         if (rescued !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the channel gate refused the body again; retrying once with an invisible perturbation of the scanned text')
           current = await client.chatStream(credential, rescued, controller.signal, sessionConversationId)
-          retriedWithPerturbation = true
+          retriedWithPerturbation = !current.ok && current.kind === 'channel_reject'
           // THE PERTURBATION IS WHAT WORKED, so remember it: the next request
           // in this process starts perturbed and skips both doomed attempts.
           // Only set on SUCCESS — a perturbation that is also refused teaches
@@ -2041,7 +2047,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         if (dense !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the channel gate refused the sparse perturbation too; retrying once with a dense word-boundary perturbation')
           current = await client.chatStream(credential, dense, controller.signal, sessionConversationId)
-          retriedWithDensePerturbation = true
+          retriedWithDensePerturbation = !current.ok && current.kind === 'channel_reject'
           // Dense is the strongest form; remembering it is safe only for the
           // `failure` policy, which exists to learn from a successful rescue.
           if (current.ok && channelPerturbation === 'failure') channelNeedsPerturbation = true
@@ -2059,7 +2065,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         if (blind !== undefined) {
           logger?.warn('dsh-connect-workbuddy: the system-only head and both perturbations were refused; retrying once with the neutral head forced in front of every opening (including assistant history)')
           current = await client.chatStream(credential, blind, controller.signal, sessionConversationId)
-          retriedWithBlindHead = true
+          retriedWithBlindHead = !current.ok && current.kind === 'channel_reject'
         }
       }
       // #302: a ladder that entered the `channel_reject` branch but had nothing
@@ -2194,10 +2200,18 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // ISSUE #302 / #307: failover can END on a channel_reject even though it
     // never STARTS from one (channel_reject is not failover-worthy). The ladder
     // above ran on the FIRST account's answer, so this final answer had none.
-    // Run it once more on exactly the result the user will read. The shared
-    // retried* flags make this a no-op when the ladder already spent its rungs,
-    // so a single-account 11128 sends no extra request here.
-    if (!retriedWithSystemHead && !retriedWithPerturbation && !retriedWithDensePerturbation && !retriedWithBlindHead) {
+    // Run it once more on exactly the result the user will read.
+    //
+    // ISSUE #322: the OLD guard used the shared `retried*` flags here — "a rung
+    // was spent on SOME attempt" stood in for "the final 11128 was rescued".
+    // Those are not the same. If account A's rung-1 retry hit 429 (not another
+    // 11128), the ladder correctly stopped there, but the flag was set anyway,
+    // so B's fresh 11128 — the one the user actually reads — got NO ladder at
+    // all. Gate on the shape that actually needs a rescue instead: the final
+    // answer is a channel_reject AND failover happened (a different account
+    // received a request). A single-account 11128 has attemptCount === 1 and
+    // was already laddered above, so it stays a no-op — no extra request.
+    if (!result.ok && result.kind === 'channel_reject' && attemptCount > 1) {
       result = await rescueChannelReject(result)
     }
     // The final attempt's failure — recorded only if the loop did not already

@@ -82,6 +82,19 @@ import type { WorkBuddyAdapter, ForeignThinkingBlock } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { MEDIA_MODEL_TTL_MS, registerWorkBuddyImageTool, type ToolsServiceLike } from './image-tool.ts'
 import { registerWorkBuddyVideoTool } from './video-tool.ts'
+import {
+  createWorkBuddySearchProvider,
+  WORKBUDDY_SEARCH_PROVIDER_ID,
+} from './web-search.ts'
+import {
+  applyProviderSetting,
+  restorePlan,
+  SEARCH_PROVIDER_PATH,
+  takeoverPlan,
+  webEntry,
+  type SettingsPathOp,
+  type WebSettingsService as WebSettingsServiceLike,
+} from './web-search-provider-setting.ts'
 import { IMAGE_TAG_TEXT_TO_IMAGE } from './image-gen.ts'
 import type { WorkBuddyMediaModel } from './image-gen.ts'
 import {
@@ -355,6 +368,21 @@ export {
   regionsFieldIsCorrupt,
   unwrapVolatileDeep,
 }
+
+/** WorkBuddy-backed web search provider (issue #332). */
+export {
+  createWorkBuddySearchProvider,
+  WorkBuddyWebSearchError,
+  WORKBUDDY_SEARCH_PROVIDER_ID,
+  WORKBUDDY_SEARCH_PROVIDER_TITLE,
+} from './web-search.ts'
+export type {
+  WebSearchProviderLike,
+  WebSearchRequestLike,
+  WebSearchResultLike,
+  WebSearchSourceLike,
+  WorkBuddySearchDeps,
+} from './web-search.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-connect-workbuddy'
@@ -714,6 +742,25 @@ export interface Config {
    * client-fingerprint workaround, not an account one — see `cli-bridge/runner`.
    */
   cliBridge?: CliBridgeSettings
+  /**
+   * 让 DSH 内置的 `web_search` 通过本插件登录的 WorkBuddy 账号检索（opt-IN）。
+   *
+   * 注册成一个新的 `ctx.web` 搜索 provider（id `dsh-connect-workbuddy-search`），
+   * **不改写宿主的 `searchProvider` 配置**——用户在宿主的「网页搜索与获取」
+   * 设置页把搜索提供方选成「WorkBuddy（本插件登录态）」才生效。这样与任何
+   * 第三方搜索插件零冲突：id 不同、patch 不碰、开关关着时连 provider 都不注册。
+   *
+   * 默认关闭。开启时按用户当前选中的账号检索（按 `llmProvider` 选区），
+   * token 失效时用本插件已有的刷新链在内存续期，不写任何别人的凭据文件。
+   */
+  webSearch?: {
+    /** 是否注册这个 provider。absent / false 都不注册。 */
+    enabled?: boolean
+    /** 走慢速综述路径（带引用、10–60 秒），默认 false 走约 1 秒的结构化摘要。 */
+    agentic?: boolean
+    /** 综述回传上限字符，0 = 不截断；默认 30000。 */
+    maxContentChars?: number
+  }
   /**
    * Put the WorkBuddy panel in the DSH sidebar (opt-IN, PR #188).
    *
@@ -1303,6 +1350,16 @@ export const Config: z<Config> = z.object({
   cliBridge: asVolatile(
     cliBridgeConfig.default({} as any).description('Optional CodeBuddy CLI route; off by default and independent of the providers'),
   ) as unknown as z<CliBridgeSettings>,
+  // Volatile: the provider registration follows the switch without a full
+  // plugin reload (which would drop in-flight chat requests), and the search
+  // path reads agentic/maxContentChars live on every call.
+  webSearch: asVolatile(
+    z.object({
+      enabled: z.boolean().default(false).description('Register the WorkBuddy-backed web search provider. Off by default; the user still has to select it in the host web-search settings page.'),
+      agentic: z.boolean().default(false).description('Use the slow cited-synthesis search (10-60s) instead of the fast structured snippets (~1s).'),
+      maxContentChars: z.number().step(1).min(0).default(30_000).description('Cap on synthesis characters returned by agentic search; 0 = no cap.'),
+    }).default({} as any).description('Make DSH web_search use the signed-in WorkBuddy account. Registers a new provider id and, when enabled, points the host searchProvider at it (restored on disable).'),
+  ) as unknown as z<{ enabled?: boolean, agentic?: boolean, maxContentChars?: number }>,
   // Volatile for the same reason as the block above: the browser card's switch
   // writes it, and a full plugin reload (which disposes both provider stacks and
   // drops in-flight requests) would be a wildly disproportionate price for
@@ -2249,6 +2306,20 @@ export function apply(ctx: Context, config: Config): void {
   let invalidateCatalog = (): void => {}
 
   /**
+   * Issue #332: the plugin opt-in also points the host's `web.searchProvider`
+   * at our provider. These are declared here (before both the search
+   * registration block and the settings inject) so either can drive the sync.
+   * `webSettings` stays undefined until the optional settings service appears.
+   */
+  let webSettings: (SettingsShapes & {
+    describe?(): readonly { ns: string, revision: number, user?: Record<string, unknown>, base?: Record<string, unknown> }[]
+    mutate?(ns: string, ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<unknown>
+  }) | undefined
+  /** True only while WE own the host's searchProvider — gates restoration. */
+  let hostProviderTakenOver = false
+  let syncWorkBuddySearch = (): void => {}
+
+  /**
    * 渠道门拒绝（`channel_reject` / 11128）之后的自动「继续」。
    *
    * 挂在这里而不是 adapter 里，理由是**它要的是一个新回合**：adapter 只看得到
@@ -2851,6 +2922,170 @@ export function apply(ctx: Context, config: Config): void {
     }),
   })
 
+  /**
+   * WorkBuddy-backed `web_search` provider (issue #332).
+   *
+   * 与 tools 服务一样，`web` 服务可能晚于本插件加载，所以用 `ctx.inject` 等它，
+   * 而不是在 apply 期 `ctx.get()` 采样一次。开关是 volatile 字段，注册/注销跟随
+   * `loader/volatile-update`，不触发整插件重载（那会丢在途聊天请求）。
+   *
+   * 开关打开时除注册 provider 外，还把宿主的 `web.searchProvider` 指向本插件
+   * （用户在卡片上勾一下即可，不必再去设置页手选）；关闭或卸载时精确恢复原值，
+   * 否则残留的 provider id 会让所有路由的 web_search 报 CONFIGURED_MISSING。
+   */
+  {
+    let web: { registerSearchProvider(provider: ReturnType<typeof createWorkBuddySearchProvider>): () => void } | undefined
+    let disposeSearch: (() => void) | undefined
+    /** 接管前的 host 设置快照，只记录一次，用于精确恢复。 */
+    let savedHostSetting: { user?: Record<string, unknown>, base?: Record<string, unknown> } | undefined
+    /** 防止两个 inject 回调并发时重复接管。 */
+    let takeoverInFlight = false
+    const provider = createWorkBuddySearchProvider({
+      resolveCredential: async (llmProvider?: string): Promise<WorkBuddyCredential> => {
+        const live = current()
+        // `workbuddy-global` → global；`workbuddy` → cn；未指定时按 REGION_KEYS
+        // 顺序取第一个已启用且有账号的区。
+        const preferred: WorkBuddyRegion | undefined =
+          llmProvider === WORKBUDDY_GLOBAL_PROVIDER ? 'global'
+            : llmProvider === WORKBUDDY_PROVIDER ? 'cn'
+              : undefined
+        const order: readonly WorkBuddyRegion[] = preferred === undefined
+          ? REGION_KEYS
+          : [preferred, ...REGION_KEYS.filter(region => region !== preferred)]
+        for (const region of order) {
+          if (!regionEnabled(live, region)) continue
+          try { return await stacks[region].store.resolve() } catch { continue }
+        }
+        throw new Error('dsh-connect-workbuddy: no signed-in WorkBuddy account is available for web search')
+      },
+      refreshToken: async (credential: WorkBuddyCredential): Promise<WorkBuddyCredential> => {
+        const outcome = await client.refreshToken(credential)
+        const refreshed: WorkBuddyCredential = {
+          ...credential,
+          accessToken: outcome.accessToken,
+          ...outcome.refreshToken === undefined ? {} : { refreshToken: outcome.refreshToken },
+          ...outcome.expiresInSec === undefined ? {} : { expiresAtMs: Date.now() + outcome.expiresInSec * 1000 },
+          ...outcome.domain === undefined ? {} : { domain: outcome.domain },
+          lastRefreshAtMs: Date.now(),
+          source: 'dsh',
+        }
+        return refreshed
+      },
+      cnBase: () => {
+        const resolved = resolveCnGateway(regionStateOf(current(), 'cn').cnBase)
+        return resolved.ok && resolved.overridden ? resolved.base : ''
+      },
+      agentic: () => unwrapVolatile(current().webSearch)?.agentic === true,
+      maxContentChars: () => unwrapVolatile(current().webSearch)?.maxContentChars ?? 30_000,
+      logger: ctx.logger,
+    })
+    /**
+     * 把宿主的搜索提供方指向本插件。写前先记下原值（只记一次），关掉时用它恢复。
+     * `settings` 是可选服务：没来或不支持 describe/mutate 的宿主跳过，仅注册
+     * provider（用户仍可在设置页手选），不影响其余能力。
+     */
+    const asWebSettings = (): WebSettingsServiceLike | undefined => {
+      // 懒读取优先：和 writeDeviceSdkEnabled 一样直接问宿主，避免依赖
+      // inject 回调是否执行过（settings 服务可能晚到或根本不注入）。
+      const captured = ctx.get('settings') as unknown as SettingsShapes | undefined
+      const raw = captured?.describe !== undefined ? captured : webSettings
+      if (raw?.describe === undefined || raw.mutate === undefined) return undefined
+      // 必须返回原对象：解构方法会丢掉 `this`，mutate 内部的
+      // `this.ownerContext.configEditor` 会因此变成 undefined。
+      return raw as unknown as WebSettingsServiceLike
+    }
+    /**
+     * 每次开/关递增，用来丢弃在途的异步接管：若 await mutate 期间开关被关掉，
+     * 这次接管的写入必须回滚，不能把宿主钉死在一个已注销的 provider 上。
+     */
+    let searchGeneration = 0
+    const takeOverHostProvider = async (generation: number): Promise<void> => {
+      // 只在 provider 真正注册成功后接管，避免「宿主已指向我们、provider 却没注册」
+      // 的窗口让所有 web_search 报 CONFIGURED_MISSING。
+      if (disposeSearch === undefined) return
+      const settings = asWebSettings()
+      if (settings === undefined || takeoverInFlight || hostProviderTakenOver) return
+      takeoverInFlight = true
+      try {
+        const entry = webEntry(settings)
+        if (entry === undefined) return
+        savedHostSetting = {
+          ...entry.user === undefined ? {} : { user: entry.user },
+          ...entry.base === undefined ? {} : { base: entry.base },
+        }
+        const applied = await applyProviderSetting(settings, takeoverPlan(WORKBUDDY_SEARCH_PROVIDER_ID))
+        if (generation !== searchGeneration) {
+          // 在途期间开关被关掉：刚写进去的值要撤销，不能留下失效 id。
+          if (applied) await applyProviderSetting(settings, restorePlan(savedHostSetting, WORKBUDDY_SEARCH_PROVIDER_ID))
+          return
+        }
+        if (applied) hostProviderTakenOver = true
+      } catch (error: unknown) {
+        ctx.logger.warn('dsh-connect-workbuddy: could not point web.searchProvider at the WorkBuddy search provider; select it manually in the host web-search settings', error)
+      } finally {
+        takeoverInFlight = false
+      }
+    }
+    /** 关掉开关 / 卸载时恢复宿主原来的搜索提供方。 */
+    const restoreHostProvider = async (): Promise<void> => {
+      const settings = asWebSettings()
+      if (settings === undefined) return
+      try {
+        if (hostProviderTakenOver) {
+          await applyProviderSetting(settings, restorePlan(savedHostSetting, WORKBUDDY_SEARCH_PROVIDER_ID))
+        } else {
+          // 启动自愈：上一轮进程退出时 dispose 没跑，宿主可能仍指向我们的 id
+          // （mutate 已落盘）。开关当前是关的，就主动 unset 收回。
+          const entry = webEntry(settings)
+          const currentValue = entry?.user?.[SEARCH_PROVIDER_PATH[0]]
+          if (currentValue === WORKBUDDY_SEARCH_PROVIDER_ID) {
+            await applyProviderSetting(settings, { kind: 'unset' })
+          }
+        }
+        hostProviderTakenOver = false
+        savedHostSetting = undefined
+      } catch (error: unknown) {
+        ctx.logger.warn('dsh-connect-workbuddy: could not restore web.searchProvider after disabling WorkBuddy search', error)
+      }
+    }
+    const syncSearch = (): void => {
+      searchGeneration += 1
+      const generation = searchGeneration
+      const wanted = unwrapVolatile(current().webSearch)?.enabled === true
+      if (wanted) {
+        if (disposeSearch === undefined && web !== undefined) {
+          try {
+            disposeSearch = web.registerSearchProvider(provider)
+          } catch (error: unknown) {
+            ctx.logger.warn('dsh-connect-workbuddy: could not register the WorkBuddy search provider', error)
+          }
+        }
+        if (!hostProviderTakenOver) void takeOverHostProvider(generation)
+        return
+      }
+      if (disposeSearch !== undefined) {
+        disposeSearch()
+        disposeSearch = undefined
+      }
+      // 关掉时恢复 / 启动自愈，无论 provider 是否已注册（settings 可能后到）。
+      void restoreHostProvider()
+    }
+    ctx.inject(['web'], (webCtx) => {
+      web = (webCtx as unknown as { web?: typeof web }).web
+      if (web === undefined) return
+      syncSearch()
+      webCtx.effect(() => () => {
+        disposeSearch?.()
+        disposeSearch = undefined
+        web = undefined
+        void restoreHostProvider()
+      })
+    })
+    // volatile 开关改动后跟随注册/注销，不重载插件。
+    syncWorkBuddySearch = syncSearch
+    syncWorkBuddySearch()
+  }
+
   // Optional CLI route (`codebuddy_ask` + `/codebuddy`).
   //
   // Mounted the SAME way as the image tool above, and for the same reason: both
@@ -3266,6 +3501,12 @@ export function apply(ctx: Context, config: Config): void {
      * asked for" rather than as consent. Volatile, hence the unwrap.
      */
     sidebarPanelEnabled: () => unwrapVolatile(current().sidebarPanel) === true,
+    /**
+     * Whether the optional WorkBuddy-backed web search provider is on (#332).
+     * GLOBAL, `=== true` like the siblings: an absent value must read as OFF so
+     * an upgrade never registers a search provider nobody asked for.
+     */
+    webSearchEnabled: () => unwrapVolatile(current().webSearch)?.enabled === true,
     /**
      * The card's refresh cadence, read live so a change takes effect on the
      * next poll rather than on a plugin reload.
@@ -4883,6 +5124,9 @@ export function apply(ctx: Context, config: Config): void {
      * 抛出。
      */
     update?: (ns: string, patch: Record<string, unknown>) => Promise<unknown>
+    /** 0.2.x: volatile 字段的路径级写入 + 带 revision 的并发保护（issue #332）。 */
+    describe?(): readonly { ns: string, revision: number, user?: Record<string, unknown>, base?: Record<string, unknown> }[]
+    mutate?(ns: string, ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<unknown>
   }
 
   // `inject` rather than a direct read: `settings` is an optional service, and
@@ -4893,6 +5137,11 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['settings'], (sctx) => {
     const settings = sctx.settings as unknown as SettingsShapes
     ctx.effect(() => settings.configure({ auto: true }, ctx.fiber))
+    // The search provider switch needs the same service to point the host's
+    // `web.searchProvider` at us. Captured live; the callback may run after the
+    // search registration block below has already been evaluated.
+    webSettings = settings
+    syncWorkBuddySearch()
   })
 
   /**
@@ -4938,6 +5187,8 @@ export function apply(ctx: Context, config: Config): void {
       // 总开关同样是 volatile：不重挂，所以预热链要在这里跟随，否则关着启动的
       // 进程打开开关后永远没有定时器（只有一次请求才偶尔取到 token）。
       syncDeviceSdk()
+      // 搜索 provider 的开关也是 volatile：开/关立即注册/注销，不重载插件。
+      syncWorkBuddySearch()
     })
 
   // Initial wiring: selections, per-region catalogs from the saved state.
