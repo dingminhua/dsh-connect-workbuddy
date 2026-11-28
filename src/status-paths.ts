@@ -60,6 +60,22 @@ export const WORKBUDDY_BENEFIT_CLAIM_PATH = '/plugins/dsh-connect-workbuddy/bene
 /** Plugin-owned live model refresh endpoint. */
 export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/models/refresh'
 /**
+ * Plugin-owned PRICE refresh endpoint: re-reads the upstream's multipliers and
+ * promotion badges for the models the saved directory already has.
+ *
+ * A SEPARATE route from {@link WORKBUDDY_MODELS_REFRESH_PATH}, not a parameter on
+ * it, because the two make DIFFERENT promises. That one answers "what does the
+ * upstream offer now" and may therefore add and withdraw rows; this one answers
+ * "what do my existing models cost now" and must never change availability. One
+ * route answering both would leave the card unable to tell which of the two it
+ * got, and a scheduled job pointed at the wrong one would rewrite the user's
+ * roster on a timer.
+ *
+ * The scheduled runner calls the same Host function; this route exists for the
+ * card's "refresh now" button and for a person testing the feature.
+ */
+export const WORKBUDDY_MULTIPLIERS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/models/multipliers'
+/**
  * Plugin-owned MEDIA model list endpoint (image + video, read from the region's
  * `/v3/config`).
  *
@@ -1063,6 +1079,62 @@ export function regionNewModelsShownOf(value: unknown, region: WorkBuddyWebRegio
 }
 
 /**
+ * Build the next `regions` settings value for the scheduled price refresh.
+ *
+ * Same merge rule as everything else here: ONLY the target region's two fields
+ * change, so the directory, the model selection, the credit switches and the
+ * sibling region all survive the write.
+ *
+ * `undefined` means "leave this field alone" rather than "write absent", because
+ * the two controls are separate clicks: toggling the switch must not also
+ * rewrite the interval, and vice versa.
+ */
+export function nextRegionMultiplierRefresh(
+  value: unknown,
+  region: WorkBuddyWebRegion,
+  patch: { autoRefreshMultipliers?: boolean, multiplierRefreshHours?: number },
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    ...patch.autoRefreshMultipliers === undefined
+      ? {}
+      : { autoRefreshMultipliers: patch.autoRefreshMultipliers },
+    ...patch.multiplierRefreshHours === undefined
+      ? {}
+      : { multiplierRefreshHours: patch.multiplierRefreshHours },
+  })
+}
+
+/**
+ * Whether this region runs the scheduled price refresh: OFF only when the user
+ * explicitly turned it off.
+ *
+ * OPT-OUT (`!== false`), matching the schema's `default(true)`, and matching
+ * `regionCreditsShownOf`. The asymmetry with the spending switches next to it is
+ * deliberate: this feature reads a public price list with a GET that costs
+ * nothing, and its whole value is that it runs before the user notices a stale
+ * number. Defaulting it off would mean nobody who never opened the card ever got
+ * it, which is the population that most needs the prices kept current.
+ */
+export function regionMultiplierRefreshOf(value: unknown, region: WorkBuddyWebRegion): boolean {
+  return regionSlotOf(value, region)['autoRefreshMultipliers'] !== false
+}
+
+/**
+ * Read the stored interval in hours, or `undefined` when nothing is stored.
+ *
+ * `undefined` rather than a default on purpose: the caller knows what the
+ * offered set is (`WORKBUDDY_MULTIPLIER_REFRESH_HOURS`), and this module is
+ * the node-free bridge — it must not own a policy value the Host also declares.
+ * A non-numeric stored value is treated as "nothing stored" for the same
+ * reason: it is a hand edit, not a choice.
+ */
+export function regionMultiplierRefreshHoursOf(value: unknown, region: WorkBuddyWebRegion): number | undefined {
+  const raw = regionSlotOf(value, region)['multiplierRefreshHours']
+  return typeof raw === 'number' ? raw : undefined
+}
+
+/**
  * Build the next `regions` settings value for the image-tool opt-in.
  *
  * Same merge rule: ONLY the target region's flag changes, so the directory,
@@ -1794,6 +1866,30 @@ export type WorkBuddyWebUsage =
      * level in it. Absent means "not measured right now" — never "normal".
      */
     busyLevels?: Readonly<Record<string, WorkBuddyBusyLevel>>
+    /**
+     * Whether this region re-reads the upstream prices on a timer (opt-out).
+     *
+     * On the Host's answer rather than the browser settings mirror for the same
+     * measured reason as `showCreditsInMainUi`: on affected deployments that
+     * mirror never picks up this plugin's writes, so a checkbox reading it kept
+     * rendering the old state after a write that had landed.
+     */
+    autoRefreshMultipliers?: boolean
+    /**
+     * How often that refresh runs, in hours: 1, 3, 6, 12 or 24.
+     *
+     * Sent rather than resolved so the dropdown can show the stored choice;
+     * absent reads as the 6-hour default.
+     */
+    multiplierRefreshHours?: number
+    /**
+     * What the last price refresh did, when the feature is on and has run.
+     *
+     * ABSENT means "nothing to report" (never ran since this process started, or
+     * the switch is off), which is different from a run that changed nothing —
+     * the card renders those two differently.
+     */
+    multiplierRefresh?: WorkBuddyWebMultiplierRefresh
     /** WHERE this region's readout sits (issue #62); absent means `composer`. */
     creditPosition?: WorkBuddyCreditPosition
     source?: 'desktop' | 'dsh'
@@ -2222,6 +2318,36 @@ export interface WorkBuddyWebGrowthToday {
   /** Accounts in scope today — the real pool member count. */
   total: number
 }
+
+/**
+ * What the background PRICE refresh last did for one region.
+ *
+ * COUNTS AND A TIMESTAMP rather than a sentence, for the same reason as the two
+ * summaries above: both locales render it, and the card decides where it goes.
+ *
+ * `changed` is the number of saved rows this attempt actually rewrote — `0` is a
+ * real, useful answer ("the prices were already current"), and the card says so
+ * rather than leaving the user wondering whether the job ran at all.
+ *
+ * `degraded` marks a PARTIAL upstream answer (issue #288): one product document
+ * was refused and the other replied, so rows the refused document published were
+ * not repriced. The refresh still applies what it could — a partial price table
+ * beats a stale one — but the card must not call that "refreshed".
+ *
+ * Absent from the usage document altogether means "never ran since this process
+ * started", which is different from `changed: 0`.
+ */
+export interface WorkBuddyWebMultiplierRefresh {
+  /** When the last attempt finished, in epoch ms. */
+  lastAttemptAtMs: number
+  /** Saved rows this attempt repriced (multiplier and/or promotions). */
+  changed: number
+  /** The upstream answer was partial; some rows could not be repriced. */
+  degraded: boolean
+  /** Why the last attempt failed, when it did. */
+  lastError?: string
+}
+
 export interface WorkBuddyWebPool {
   enabled: boolean
   /**

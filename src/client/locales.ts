@@ -158,6 +158,25 @@ export const en = {
   // a static "expand or collapse" would make the reader work out which applies.
   'row.modelsRefresh': 'Refresh from WorkBuddy',
   'row.modelsRefreshing': 'Refreshing models…',
+  // THE PRICE REFRESH. Worded around PRICES, not models, because that is the
+  // whole difference from the button beside it: this one adds and withdraws
+  // nothing, it only re-reads what the saved rows cost.
+  'row.multiplierRefresh': 'Refresh prices',
+  'row.multiplierRefreshing': 'Refreshing prices…',
+  'row.multiplierRefreshHint': 'Re-read this region\'s credit multipliers and promotion badges and apply them to the models you already have. One read-only request, no credits spent, and no model is added or removed.',
+  'row.multiplierRefreshLabel': 'Refresh prices automatically',
+  'row.multiplierRefreshEvery': 'every',
+  'row.multiplierRefreshHours': 'every {count} h',
+  'row.multiplierRefreshIntervalAria': 'How often the automatic price refresh runs',
+  'row.multiplierRefreshNote': 'Runs once at startup and then on this schedule. Read-only and free; it never adds or removes a model, so your list and selection stay as saved. A model the upstream no longer prices keeps its last known multiplier.',
+  // The last run, in three distinct wordings: "changed nothing" is an ANSWER,
+  // not an absence, and saying so is what stops a user pressing the button
+  // again to find out whether it worked.
+  'row.multiplierRefreshChanged': 'Last refreshed {at}: {count} model(s) repriced.',
+  'row.multiplierRefreshUnchanged': 'Last refreshed {at}: prices were already current.',
+  'row.multiplierRefreshPartial': 'Last refreshed {at}: the upstream answered with a partial directory, so some models kept their previous price. The next run will retry.',
+  'row.multiplierRefreshFailed': 'Price refresh failed: {message}',
+  'row.multiplierRefreshLastFailed': 'Last refreshed {at} failed: {message}',
   // THE DIRECTORY IS A PARTIAL ANSWER (issue #288). One of the two product
   // documents the international region reads was refused — a rate limit, a
   // transport error — and the other one answered, so the list on screen is
@@ -964,6 +983,23 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   // 而不是区块的标签——写成固定的「展开或收起」会让读者自己去想该按哪个。
   'row.modelsRefresh': '从 WorkBuddy 刷新',
   'row.modelsRefreshing': '正在刷新模型…',
+  // 「刷新倍率」。文案围绕**价格**而不是「模型」，因为这正是它与左边那个按钮的
+  // 全部区别：它不增删任何模型，只重新读一次已保存的行现在卖多少钱。
+  'row.multiplierRefresh': '刷新倍率',
+  'row.multiplierRefreshing': '正在刷新倍率…',
+  'row.multiplierRefreshHint': '重新读取本区域的积分倍率与促销徽章，套用到你已有的模型上。只发一次只读请求，不花积分，也不会新增或删除任何模型。',
+  'row.multiplierRefreshLabel': '自动刷新倍率',
+  'row.multiplierRefreshEvery': '每',
+  'row.multiplierRefreshHours': '{count} 小时',
+  'row.multiplierRefreshIntervalAria': '自动刷新倍率的间隔',
+  'row.multiplierRefreshNote': '启动时刷新一次，之后按这个间隔运行。只读且免费；它从不增删模型，所以列表与选择保持你保存的样子。上游不再报价的模型保留上一次的倍率。',
+  // 上次结果，三种措辞刻意不同：「没有变化」是一个**答案**而不是缺失，说出来才能
+  // 让用户不必再按一次按钮去确认它到底跑没跑。
+  'row.multiplierRefreshChanged': '上次刷新：{at}，{count} 个模型改价。',
+  'row.multiplierRefreshUnchanged': '上次刷新：{at}，倍率已是最新。',
+  'row.multiplierRefreshPartial': '上次刷新：{at}，上游返回的是残缺目录，部分模型保留了原价，下次会重试。',
+  'row.multiplierRefreshFailed': '刷新倍率失败：{message}',
+  'row.multiplierRefreshLastFailed': '上次刷新（{at}）失败：{message}',
   // 目录是「残缺回答」（issue #288）。国际区读的两份产品文档里有一份被拒（限流、
   // 网络错误），另一份答了，于是屏幕上的列表少了上游确实在提供的行。没有这行提示
   // 时，限流看起来和「上游只给这一个模型」一模一样，用户无从分辨自己在看哪一种。

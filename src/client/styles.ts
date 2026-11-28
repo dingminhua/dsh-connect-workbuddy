@@ -700,6 +700,18 @@ export const WORKBUDDY_CARD_CSS = `
    the header reads as one group of equal actions. */
 .dsm-workbuddy-models-sweep{white-space:nowrap}
 .dsm-workbuddy-models-sweep-summary{margin:6px 0 0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The scheduled price refresh: a switch row plus its interval picker, under the
+   header buttons. Its own block rather than a fourth header button because it is
+   a MODE (it changes what happens while nobody is looking), not an action, and
+   mixing the two in one row made the header read as four equivalent buttons. */
+.dsm-workbuddy-multiplier-schedule{margin:8px 0 0;padding:0 2px;display:flex;flex-direction:column;gap:6px}
+.dsm-workbuddy-multiplier-interval{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* The status line. Neutral by default: "changed nothing" is a normal answer and
+   must not be coloured like a warning. Amber for a partial read (the list is
+   short rather than wrong) and red for a failure. */
+.dsm-workbuddy-multiplier-status{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-workbuddy-multiplier-status-warn{color:var(--dsw-alias-state-warn-primary,#d9822b)}
+.dsm-workbuddy-multiplier-status-bad{color:var(--dsw-alias-label-warning,#d9822b)}
 /* The degraded-directory notice (issue #288). AMBER, not red: nothing failed —
    one product document was refused and the other one answered, so the list is
    short rather than wrong. Red would read as "the plugin is broken", and the
