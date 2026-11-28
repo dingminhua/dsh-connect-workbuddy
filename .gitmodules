@@ -1,0 +1,9 @@
+[submodule ".workbuddy/skills/Humanizer-zh"]
+	path = .workbuddy/skills/Humanizer-zh
+	url = https://github.com/op7418/Humanizer-zh.git
+[submodule ".agents/skills/Humanizer-zh"]
+	path = .agents/skills/Humanizer-zh
+	url = https://github.com/op7418/Humanizer-zh.git
+[submodule ".dsh/skills/Humanizer-zh"]
+	path = .dsh/skills/Humanizer-zh
+	url = https://github.com/op7418/Humanizer-zh.git
