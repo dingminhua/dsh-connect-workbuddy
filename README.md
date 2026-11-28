@@ -36,7 +36,7 @@
 
 ## 快速开始
 
-前置：已安装并登录 WorkBuddy 桌面 App；DSH 版本需 `0.1.7-rc.1` 及以上（详见[受支持的宿主范围](docs/README/07-安装.md#受支持的宿主范围)）。
+前置：已安装并登录 WorkBuddy 桌面 App；DSH 版本需 `0.1.7-rc.1` 及以上（详见[安装与版本要求](docs/README/07-安装.md)）。
 
 ```sh
 # 安装
@@ -63,6 +63,8 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行确�
 | 命令行诊断 | `status` / `doctor` / `logout`，无需浏览器确认状态 | [命令行](docs/README/11-命令行.md) |
 
 更多能力（模型可用性测试、排队位次、福利领取、扫码登录、凭据导入导出、渠道校验兜底等）见[功能特性全文](docs/README/02-功能特性.md)。
+
+**图标样式**：在设置页「能力」tab 最下方选择，默认是本插件图标，另一个皮肤跟随主题文字颜色；选择立即应用到侧边栏、页头和面板，保存在当前浏览器（其他浏览器需单独设置）。
 
 ## 文档索引
 
@@ -97,8 +99,8 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行确�
 - [市场收录与展示](docs/README/13-市场收录.md) — 注册表条目、截图与包元数据
 - [隐私与脱敏](docs/README/14-隐私与脱敏.md) — 无遥测承诺与仓库脱敏规则
 - [致谢](docs/README/18-致谢.md) — 参照项目与许可证
-- [第三方开源依赖](docs/README/19-第三方依赖.md) — 合规说明
-- [许可证](docs/README/20-许可证.md) — MIT，Copyright (c) 2026 LaoDing
+
+第三方依赖合规说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，许可证见下方。
 
 ## 免责声明
 
