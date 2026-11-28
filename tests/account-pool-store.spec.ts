@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  mergePoolProbe,
   readPoolProbes,
   workbuddyPoolStorePath,
   writePoolProbes,
@@ -339,5 +340,32 @@ describe('readPoolProbes', () => {
     process.env['DSH_HOME'] = join(home, 'a-file-not-a-directory')
     await writeFile(process.env['DSH_HOME'], 'x', 'utf8')
     await expect(writePoolProbes('cn', { alpha: { outcome: 'ok', atMs: 1 } })).resolves.toBeUndefined()
+  })
+})
+
+describe('mergePoolProbe: a transport blip must not downgrade a conclusive verdict (#339)', () => {
+  const transport = { outcome: 'unavailable' as const, atMs: 100, retryAtMs: 160_000, source: 'test-batch' as const }
+
+  for (const conclusive of ['out-of-credit', 'credential-rejected', 'account-restricted'] as const) {
+    it(`keeps ${conclusive} with its reset time over a 60s transport record`, () => {
+      const prior = { outcome: conclusive, atMs: 1, retryAtMs: 1_800_000_000_000, message: 'conclusive' }
+      expect(mergePoolProbe(prior, transport)).toBe(prior)
+    })
+  }
+
+  it('still lets a transport record overwrite a stale ok/rate-limited row', () => {
+    // The guard is narrow: only CONCLUSIVE verdicts are protected. An `ok` or a
+    // `rate-limited` row can legitimately be superseded by a real network failure.
+    expect(mergePoolProbe({ outcome: 'ok', atMs: 1 }, transport)).toEqual(transport)
+    expect(mergePoolProbe({ outcome: 'rate-limited', atMs: 1 }, transport)).toEqual(transport)
+  })
+
+  it('does not protect against a non-transport unavailable (5xx has no retryAtMs)', () => {
+    const prior = { outcome: 'out-of-credit' as const, atMs: 1, retryAtMs: 1_800_000_000_000 }
+    const fivexx = { outcome: 'unavailable' as const, atMs: 100, source: 'live-request' as const }
+    // The guard is keyed on the transport shape (unavailable + retryAtMs), so a
+    // 5xx still supersedes the conclusion — its own retryAtMs inheritance is a
+    // separate, pre-existing behaviour. Assert only that the guard did not fire.
+    expect(mergePoolProbe(prior, fivexx)?.outcome).toBe('unavailable')
   })
 })

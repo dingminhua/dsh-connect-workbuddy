@@ -20,7 +20,7 @@
  */
 
 import type { WorkBuddyCredential } from './auth.ts'
-import type { WorkBuddyPoolProbe } from './account-pool.ts'
+import { TRANSPORT_COOLDOWN_MS, type WorkBuddyPoolProbe } from './account-pool.ts'
 import type { WorkBuddyProbeResult } from './probe.ts'
 import type { WorkBuddyCheckinStatus } from './upstream.ts'
 
@@ -290,6 +290,13 @@ export function probeUpdatesOf(
   const updates: Record<string, WorkBuddyPoolProbe> = {}
   for (const row of rows) {
     if (isTransportFailure(row.result)) continue
+    // ISSUE #339: a genuine transport failure (the only `status: 0` shape that
+    // survives isTransportFailure now) needs an EXPLICIT short cooldown — without
+    // one, exclusionOf falls back to POOL_UNKNOWN_COOLDOWN_MS (30 min) and one
+    // network blip benches the account. Same window as #337's live path.
+    const retryAtMs = row.result.status === 0
+      ? Date.now() + TRANSPORT_COOLDOWN_MS
+      : row.result.retryAtMs
     updates[row.accountId] = {
       outcome: row.result.outcome,
       atMs,
@@ -306,7 +313,7 @@ export function probeUpdatesOf(
       // A member whose sign-in later disappears can then still be named in the
       // card, instead of degrading to a bare id and a subjectless count.
       ...row.accountName === '' ? {} : { accountName: row.accountName },
-      ...row.result.retryAtMs === undefined ? {} : { retryAtMs: row.result.retryAtMs },
+      ...retryAtMs === undefined ? {} : { retryAtMs },
       ...row.result.message === undefined ? {} : { message: row.result.message },
     }
   }
@@ -320,29 +327,36 @@ export function probeUpdatesOf(
  *
  * 1. `credential-rejected` with the pool's own "no stored credential" message —
  *    we could not even read the credential, so the request never left.
- * 2. `status: 0` — the request never produced an HTTP response at all. That is
- *    what a probe timeout looks like (`transport error: no response within
- *    30000ms`), and equally a DNS failure, a reset connection, or a throw from
- *    the identity work that runs BEFORE the request is sent (`wireIdentity`).
- *    Issue #195 is the third of those: `probeModel`'s own `catch` returned
+ * 2. `status: 0` results that are NOT a real network failure — a probe timeout
+ *    (`transport error: no response within 30000ms`), a cancel/abort, or a throw
+ *    from the identity work that runs BEFORE the request is sent (`wireIdentity`).
+ *    Issue #195 is the last of those: `probeModel`'s own `catch` returned
  *    `unavailable` with NO `status` at all, so it slipped past this test and
  *    benched a healthy account for half an hour.
  *
- * WHY (2) MATTERS — it is the difference between a working pool and a 30-minute
- * outage. A `status: 0` result carries no `retryAtMs` (nothing upstream said
- * when to come back), so `exclusionOf` falls back to
- * {@link POOL_UNKNOWN_COOLDOWN_MS} — 30 minutes. Persisting a timeout therefore
- * benches a perfectly healthy account for half an hour, and since nothing
- * re-probes an excluded member, the pool stays empty until the cooldown lapses
- * on its own. The user sees "池中已无可用账号" and a 502 for a fault that was
- * never the account's.
+ * ISSUE #339: a REAL network failure (`transport error: … fetch failed`) is no
+ * longer dropped here — it is a legitimate measurement of the manual "test"
+ * button, and is recorded with an explicit {@link TRANSPORT_COOLDOWN_MS} window
+ * by `probeUpdatesOf`. The regex is the one #337 uses for live requests, so the
+ * timeout/cancel/local-error shapes stay dropped: persisting THOSE would bench a
+ * healthy account for 30 minutes (`POOL_UNKNOWN_COOLDOWN_MS`), since a `status: 0`
+ * result carries no upstream `retryAtMs` and nothing re-probes an excluded member.
  *
  * The distinction has to stay honest in the other direction too: `status >= 500`
  * is NOT a transport failure. The gateway answered, and its answer is a
  * statement about this account's standing with it, so those rows are still kept.
  */
 function isTransportFailure(result: WorkBuddyProbeResult): boolean {
-  if (result.status === 0) return true
+  if (result.status === 0) {
+    // ISSUE #339: #337 taught recordAccountFailure to record a REAL network
+    // failure (with a 60s cooldown) while still dropping timeouts/cancels/local
+    // identity errors. The manual "test" path must apply the same distinction:
+    // a genuine `fetch failed` is exactly what the user asked the test to
+    // measure, while a timeout (`no response within …`) or a local error must
+    // stay dropped — persisting those would bench a healthy account for 30 min
+    // (#193/#195). The regex is the SAME one #337 uses for live requests.
+    return !/transport error:.*fetch failed/iu.test(result.message ?? '')
+  }
   return result.outcome === 'credential-rejected'
     && result.message?.startsWith('no stored credential') === true
 }

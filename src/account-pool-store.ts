@@ -261,6 +261,18 @@ export function mergePoolProbe(
     const { retryAtMs: _dropped, ...rest } = merged
     return rest
   }
+  // ISSUE #339: a genuine transport failure is an `unavailable` row carrying an
+  // explicit short `retryAtMs` (60s). Because a timed update replaces the whole
+  // record, writing it over a CONCLUSIVE earlier verdict would throw away what
+  // that verdict knew: `out-of-credit` carries the upstream's monthly reset
+  // time, and `credential-rejected`/`account-restricted` mean "re-auth, waiting
+  // won't help". A momentary network blip during a manual "test" must not
+  // downgrade those to a 60s `unavailable` and put a spent/dead account back into
+  // rotation (#337's live path guards the same hazard at its write site).
+  const conclusive = existing.outcome === 'out-of-credit'
+    || existing.outcome === 'credential-rejected'
+    || existing.outcome === 'account-restricted'
+  if (conclusive && update.outcome === 'unavailable' && update.retryAtMs !== undefined) return existing
   if (update.retryAtMs !== undefined) return merged
   // A stored time that has already PASSED is not worth inheriting: carrying it
   // forward would date the record to a moment in the past and make the row read

@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.34.3 (2026-11-29)
+
+### 探测路径也记录真实传输失败（#339）
+
+#337 只修了**实时请求**的 `recordAccountFailure`；手动「测试」走的探测路径仍被 `isTransportFailure` 一律丢弃所有 `status: 0`，于是 DNS 失败 / 连接被拒 / 连接重置时，账号池保留两天前的 `ok`，卡片显示「可用」而实际连不上。
+
+修法：`isTransportFailure` 改用与 #337 相同的判别（`/transport error:.*fetch failed/iu`），只有真实网络失败才记账；超时（`no response within …`）、取消、本地身份错误仍丢弃（否则会触发 30 分钟封号，#193/#195）。`probeUpdatesOf` 对保留下来的传输失败显式给 60s 冷却 `TRANSPORT_COOLDOWN_MS`，与实时路径取舍一致。
+
+### 传输错误保留 cause 短码（#340）
+
+两处 `transport error:` 的 catch 只写 `String(error)`，丢掉 `error.cause`——Node 的 fetch 对所有网络失败都抛同一个 `TypeError: fetch failed`，DNS / 拒连 / 重置 / 代理掐断在卡片和日志里完全同形、无法定位。新增 `describeFetchError()`：沿一层 cause 取 `code`（如 `[ECONNRESET]`）拼在 `fetch failed` 之后；无 code 时退化为 cause 构造函数名。只拼短码是因为卡片原因行有 72 字上限，完整 cause 会被截断反而更难读。拼接位置在 `fetch failed` 之后，不改变 #337 的判别式。
+
+**测试**：`tests/account-pool-run.spec.ts` 更新 status 0 用例（超时丢弃、fetch failed 记录 + 60s）；新增 `tests/issue340-fetch-error-cause.spec.ts` 5 项覆盖 cause code / 无 code 退化 / 无 cause 不变 / 两处 catch 的接线（mock fetch reject 断言 message/body 带 `[ENOTFOUND]`）。两处均做变异验证（回退后变红）。全量 `pnpm run check` 3987 项通过。
+
+**发布前双路复核补充**：① `mergePoolProbe` 新增窄保护——60s 传输失败不得覆盖已有的 `out-of-credit` / `credential-rejected` / `account-restricted` 结论（否则丢掉上游月度刷新时刻、把失效 token 短暂放回轮换），与 #337 实时路径的同类 guard 对齐；`tests/account-pool-store.spec.ts` 加 5 项并变异验证。② #340 的"接线测试"原先缺失（摘掉 describeFetchError 调用全量仍绿），现已补上。③ 删掉一条凑数的 72 字上限断言、修正一条名不副实的测试名。
+
 ## 5.34.2 (2026-11-28)
 
 ### 传输层失败不再让账号池反复选同一个账号（#337）

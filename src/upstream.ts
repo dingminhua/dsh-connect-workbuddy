@@ -5399,6 +5399,34 @@ export function upstreamBodyOf(error: unknown): string {
 }
 
 /**
+ * Describe a `fetch` rejection for the transport-failure message (issue #340).
+ *
+ * Node's `fetch` throws the SAME `TypeError: fetch failed` for every network
+ * failure — DNS, connection refused, reset, proxy cut — and keeps the real
+ * reason (`ENOTFOUND` / `ECONNREFUSED` / `ECONNRESET` / …) in `error.cause`.
+ * `String(error)` alone therefore made all four indistinguishable in the card,
+ * the pool record, and the issue report. Append ONLY the short cause code:
+ * the card's reason line has a 72-char limit, so a full cause message would be
+ * truncated and read worse than no detail at all.
+ *
+ * Only one cause level is read: fetch's cause is the Node socket/DNS error;
+ * below that is the system errno. A cause without a `code` degrades to its
+ * constructor name (still more information than the bare `fetch failed`).
+ * The appended `[CODE]` comes AFTER `fetch failed`, so #337's
+ * `/transport error:.*fetch failed/iu` discrimination still matches.
+ */
+export function describeFetchError(error: unknown): string {
+  const text = String(error)
+  const cause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined
+  const code = cause instanceof Error
+    ? (cause as NodeJS.ErrnoException).code
+    : undefined
+  if (typeof code === 'string' && code !== '') return `${text} [${code}]`
+  const name = cause instanceof Error ? cause.constructor.name : undefined
+  return name === undefined || name === 'Error' ? text : `${text} [${name}]`
+}
+
+/**
  * Fail an envelope whose business code is non-zero, classified like HTTP errors.
  *
  * A JSON body on a 401/403 is still a credential refusal: the edge answered in
@@ -6011,7 +6039,7 @@ export class WorkBuddyUpstreamClient {
         ...signal === undefined ? {} : { signal },
       })
     } catch (error: unknown) {
-      return { ok: false, status: 0, kind: 'server', message: `transport error: ${String(error)}` }
+      return { ok: false, status: 0, kind: 'server', message: `transport error: ${describeFetchError(error)}` }
     }
     if (response.ok) return { ok: true, response }
     const text = (await response.text()).slice(0, ERROR_BODY_LIMIT)
@@ -6100,7 +6128,7 @@ export class WorkBuddyUpstreamClient {
     } catch (error: unknown) {
       // status 0 is the transport-failure convention the shim already maps to
       // its `server` class; reusing it keeps one meaning for one number.
-      return { ok: false, status: 0, retryAfter: null, body: `transport error: ${String(error)}` }
+      return { ok: false, status: 0, retryAfter: null, body: `transport error: ${describeFetchError(error)}` }
     } finally {
       clearTimeout(timer)
     }

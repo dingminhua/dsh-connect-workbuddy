@@ -378,10 +378,15 @@ describe('probeUpdatesOf', () => {
       }),
       row('gamma', { modelId: 'hy3', outcome: 'ok' }),
     ])
-    // Neither transport failure may be written: persisting either one benches a
-    // healthy account for half an hour over an event that said nothing about it.
-    expect(updates['alpha']).toBeUndefined()
-    expect(updates['beta']).toBeUndefined()
+    // A TIMEOUT says nothing about the account — dropped, so a healthy account
+    // is not benched for half an hour (#193/#195). But a REAL `fetch failed` is
+    // exactly what the manual "test" button must measure (#339): it is kept with
+    // an explicit 60s cooldown, not the 30-minute fallback.
+    expect(updates['alpha'], 'a timeout was persisted').toBeUndefined()
+    expect(updates['beta']?.outcome).toBe('unavailable')
+    expect(updates['beta']?.source).toBe('test-batch')
+    expect(updates['beta']?.retryAtMs).toBeGreaterThan(Date.now() + 59_000)
+    expect(updates['beta']?.retryAtMs).toBeLessThanOrEqual(Date.now() + 60_000)
     // The account that actually answered is still measured.
     expect(updates['gamma']?.source).toBe('test-batch')
   })
