@@ -19,6 +19,7 @@ import * as WorkBuddy from '../src/index.ts'
 import { WORKBUDDY_POOL_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 import { WorkBuddyUpstreamClient } from '../src/upstream.ts'
 import { readPoolProbes, writePoolProbes } from '../src/account-pool-store.ts'
+import { exclusionOf } from '../src/account-pool.ts'
 import * as Shim from '../src/shim.ts'
 
 /** Mounted context; disposed after each test. */
@@ -1738,6 +1739,60 @@ describe('a live failure becomes a measurement the next request reads', () => {
     expect(recorder, 'the refresh point is looked up for outcomes that cannot have one')
       .toContain(`outcome === ''`)
   })
+
+  it('records a genuine transport failure with a 60s cooldown (#337)', async () => {
+    // A `fetch failed` used to be dropped by recordAccountFailure, so the pool
+    // kept picking the same account, failing over, and injecting a "switched
+    // account" notice on every turn. Now it is measured with a SHORT cooldown —
+    // enough to stop the immediate re-pick, not the 30-minute generic fallback.
+    // No discoverAccountId() here: that helper mounts the plugin once more, and
+    // its async `prepareAccount` can write an `ok` probe into THIS test's root
+    // after the helper disposes — a cross-test leak that made the full suite
+    // flaky. onAccountFailure writes whatever id we hand it, so a fixed id is
+    // enough to exercise recordAccountFailure.
+    const accountId = 'account-under-test'
+    const shim = vi.spyOn(Shim, 'createWorkBuddyShim')
+    const start = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start)
+    try {
+      await mount({ regions: { cn: { enabled: true, pool: { enabled: true, memberAccountIds: [accountId] } } } })
+      const onFailure = shim.mock.calls[0]?.[0].onAccountFailure
+      expect(onFailure).toBeTypeOf('function')
+      // A user/host abort and a local identity error are NOT the account's fault.
+      onFailure?.(accountId, { status: 0, kind: 'server', message: 'cancelled before send' })
+      onFailure?.(accountId, { status: 0, kind: 'server', message: 'transport error: Error: ENOENT no such file' })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect((await readPoolProbes('cn'))[accountId], 'cancel/local errors were recorded').toBeUndefined()
+      // A genuine fetch failure IS recorded with a short cooldown.
+      onFailure?.(accountId, { status: 0, kind: 'server', message: 'transport error: TypeError: fetch failed' })
+      // The callback writes asynchronously (`void recordAccountFailure(...)`).
+      await waitFor(async () => (await readPoolProbes('cn'))[accountId] !== undefined, 'the transport failure to be recorded')
+      const probe = (await readPoolProbes('cn'))[accountId]
+      expect(probe?.outcome).toBe('unavailable')
+      expect(probe?.source).toBe('live-request')
+      expect(probe?.retryAtMs).toBe(start + 60_000)
+      // Before the cooldown the account is excluded; after it, it is a candidate again.
+      expect(exclusionOf(probe, start + 30_000)).toBe('unavailable')
+      expect(exclusionOf(probe, start + 60_001)).toBeUndefined()
+
+      // A transport blip must NOT downgrade a conclusive earlier verdict: an
+      // out-of-credit row carries the upstream's monthly reset time, and turning
+      // it into a 60s `unavailable` would drop that and re-rotate a spent account.
+      const resetAt = start + 10 * 86_400_000
+      await writePoolProbes('cn', {
+        [accountId]: { outcome: 'out-of-credit', atMs: start, retryAtMs: resetAt, source: 'live-request' },
+      })
+      onFailure?.(accountId, { status: 0, kind: 'server', message: 'transport error: TypeError: fetch failed' })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const kept = (await readPoolProbes('cn'))[accountId]
+      expect(kept?.outcome, 'a transport blip downgraded out-of-credit').toBe('out-of-credit')
+      expect(kept?.retryAtMs, 'the monthly reset time was lost').toBe(resetAt)
+    } finally {
+      clock.mockRestore()
+      shim.mockRestore()
+    }
+  })
+
 })
 
 

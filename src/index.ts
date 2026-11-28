@@ -132,6 +132,7 @@ import { mergeTransferRecords, parseTransferFile, previewTransferFile, transferR
 import {
   effectiveMembersOf,
   rankPool,
+  TRANSPORT_COOLDOWN_MS,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes, reconcilePoolCredits } from './account-pool-store.ts'
 import {
@@ -4455,13 +4456,38 @@ export function apply(ctx: Context, config: Config): void {
   ): Promise<void> => {
     if (!poolPreferencesOf(current(), region).enabled) return
     if (failure.kind === 'client') return
-    // A request that never reached an HTTP response says nothing about the
-    // account: it is the transport, not the model. Persisting it would bench a
-    // healthy account for POOL_UNKNOWN_COOLDOWN_MS (30 minutes), because a
-    // transport failure carries no `retryAtMs` — the same defect that let one
-    // probe timeout empty the pool. `status: 0` is this codebase's convention
-    // for "never landed" (see `probeChat` and `chatStream`).
-    if (failure.status === 0) return
+    // ISSUE #337: a request that never reached the upstream (`status: 0`) used
+    // to be dropped here entirely. A pool then kept picking the same account,
+    // failing over on every turn, and injecting a "switched account" notice —
+    // because the failure was never measured, so ranking always put it first.
+    //
+    // But not every `status: 0` is a network failure worth recording:
+    // - `cancelled before send` is the user/host aborting, not the account;
+    // - a wireIdentity/local-config error also surfaces as `transport error:`
+    //   through the same catch. Neither should bench a healthy account.
+    // Only a genuine `fetch failed` is recorded, with an explicit SHORT cooldown
+    // (not the generic 30-minute fallback, which would bench on a momentary
+    // blip). See {@link TRANSPORT_COOLDOWN_MS}.
+    const transport = failure.status === 0
+    if (transport) {
+      const message = failure.message
+      // `cancelled before send` carries no `transport error:` prefix, so the
+      // prefix+substring test below already excludes it; kept as an explicit
+      // guard so the intent survives a future change to upstream's wording.
+      if (message === 'cancelled before send') return
+      if (!/transport error:.*fetch failed/iu.test(message)) return
+      // A momentary network blip must not DOWNGRADE a conclusive earlier verdict:
+      // an out-of-credit row carries the upstream's monthly reset time, and a
+      // credential-rejected / restricted row means "re-auth, waiting won't help".
+      // Turning either into a 60s `unavailable` would drop that reset time and
+      // briefly put a dead token back into rotation. mergePoolProbe replaces the
+      // whole record when the update carries retryAtMs, which ours does.
+      const existing = (await readPoolProbes(region))[accountId]
+      if (existing !== undefined
+        && (existing.outcome === 'out-of-credit'
+          || existing.outcome === 'credential-rejected'
+          || existing.outcome === 'account-restricted')) return
+    }
     // Only accounts this pool covers. Membership is the explicit "yes, spend
     // this account's credits" tick, and a measurement steers routing.
     const members = poolPreferencesOf(current(), region).memberAccountIds
@@ -4476,13 +4502,20 @@ export function apply(ctx: Context, config: Config): void {
         .then(credential => credential === undefined ? undefined : quotaRefreshOf(region, credential))
         .catch(() => undefined)
       : undefined
-    const { retryAtMs } = cooldownOf({
+    const cooled = cooldownOf({
       outcome,
       retryAfter: null,
       nowMs: Date.now(),
       body: failure.message,
       ...quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs },
     })
+    // A transport failure has no upstream `retryAtMs`, so `cooldownOf` returns
+    // none and ranking would fall back to POOL_UNKNOWN_COOLDOWN_MS (30 min).
+    // Give it the explicit short window instead — enough to stop the next
+    // request re-picking this account, short enough to heal quickly.
+    const retryAtMs = transport
+      ? Date.now() + TRANSPORT_COOLDOWN_MS
+      : cooled.retryAtMs
     const message = failure.message === '' ? '' : redactUpstreamText(failure.message)
     await writePoolProbes(region, {
       [accountId]: {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.34.2 (2026-11-28)
+
+### 传输层失败不再让账号池反复选同一个账号（#337）
+
+issue #337 报告者给出完整闭环：`recordAccountFailure` 对 `status: 0`（传输层失败）直接 return，账号池学不到「这个账号刚失败过」，于是每个请求都选同一个账号 → 首次 `fetch failed` → 换号成功 → 注入 failover 提示，下一轮重来。
+
+**修法**：只有 `transport error:` 前缀 + `fetch failed` 的真实网络失败才记录（用户取消、wireIdentity 本地错误都不记），并显式给 60s 短冷却 `TRANSPORT_COOLDOWN_MS`（`src/account-pool.ts`），绕开默认 30 分钟兜底——纯删掉那行会一次网络抖动封号 30 分钟。发布前双路复核又补了一道保护：已有 `out-of-credit` / `credential-rejected` / `account-restricted` 结论的账号不被传输失败降级（否则会丢掉上游月度刷新时刻、让死 token 短暂回轮换）。
+
+**取舍**：判别是文本耦合（依赖 undici 把网络失败统一包成 `TypeError: fetch failed`），未来换 fetch 实现可能静默失效；`cancelled before send` 因不含前缀已被排除，显式判断保留作意图声明。60s 是缓解不是根治，轮间隔 >60s 的会话仍可能再遇同一账号。两项都已在 issue 里向报告者说明。
+
+**测试**：`tests/pool-e2e.spec.ts` 直接驱动 shim 的 `onAccountFailure`，断言真实传输失败写入 `unavailable + 60s`、取消/本地错误不写入、冷却前后判定、确定性结论不被降级；三组变异（删判别、冷却改 30min、恢复原 return）+ 降级保护变异全部变红。双路独立复核确认可发版。
+
 ## 5.34.1 (2026-11-28)
 
 ### 自动兑换成长奖励请求缺幂等键（#335）

@@ -236,6 +236,25 @@ export interface WorkBuddyPoolRanked {
 export const POOL_UNKNOWN_COOLDOWN_MS = 30 * 60_000
 
 /**
+ * How long a genuine TRANSPORT failure briefly benches an account (issue #337).
+ *
+ * A request that never reached the upstream (`status: 0`, `kind: server`,
+ * message `transport error: … fetch failed`) used to be dropped by
+ * `recordAccountFailure` entirely, so a pool kept picking the same account,
+ * failing over, and injecting a "switched account" notice on every turn. But
+ * naively recording it would bench the account for {@link POOL_UNKNOWN_COOLDOWN_MS}
+ * (30 minutes), because a transport failure carries no `retryAtMs` — far too
+ * long for a momentary network blip, and it could empty the pool.
+ *
+ * 60 seconds is the balance: enough to stop the immediate re-pick on the next
+ * request, short enough that a healthy account comes back quickly. This is a
+ * MITIGATION, not a cure — a conversation whose turns are more than a minute
+ * apart can still meet the same account again — so it is deliberately a small
+ * explicit value that overrides the generic 30-minute fallback.
+ */
+export const TRANSPORT_COOLDOWN_MS = 60_000
+
+/**
  * How long a MODEL-scoped throttle benches its account.
  *
  * Short on purpose, and THIS is the fix for issue #56.
