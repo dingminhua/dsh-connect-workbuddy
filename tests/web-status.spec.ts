@@ -646,6 +646,10 @@ describe('registerWorkBuddyStatusRoute', () => {
       // The one claim route (issue #79): POST + loopback, one account per call.
       '/plugins/dsh-connect-workbuddy/benefit/claim',
       '/plugins/dsh-connect-workbuddy/models/refresh',
+      // The PRICE refresh: same upstream document, different promise. It
+      // reprices the models already saved and never changes availability, which
+      // is what makes it safe to run on a timer — see `withLiveMultipliers`.
+      '/plugins/dsh-connect-workbuddy/models/multipliers',
       // The read-only media roster (image/video models) the capability panel
       // shows. Separate from models/refresh because that route answers with the
       // CHAT catalog, from which the adapter has already dropped every media
@@ -1509,6 +1513,7 @@ describe('registerWorkBuddyStatusRoute', () => {
       ['checkin', '/plugins/dsh-connect-workbuddy/checkin', 'POST'],
       ['benefit/claim', '/plugins/dsh-connect-workbuddy/benefit/claim', 'POST'],
       ['models/refresh', '/plugins/dsh-connect-workbuddy/models/refresh', 'POST'],
+      ['models/multipliers', '/plugins/dsh-connect-workbuddy/models/multipliers', 'POST'],
       ['media-models', '/plugins/dsh-connect-workbuddy/media-models', 'POST'],
       ['probe', '/plugins/dsh-connect-workbuddy/probe', 'POST'],
       ['tps', '/plugins/dsh-connect-workbuddy/tps', 'POST'],
@@ -2563,7 +2568,7 @@ describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
 
   it('registers every route on the first mount', async () => {
     const mounted = await mount()
-    expect(mounted.paths).toHaveLength(16)
+    expect(mounted.paths).toHaveLength(17)
     await mounted.dispose()
   })
 
@@ -2574,7 +2579,7 @@ describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
     await ctx.plugin(fake)
     const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
     registerWorkBuddyStatusRoute(ctx, deps())
-    expect(fake.paths()).toHaveLength(16)
+    expect(fake.paths()).toHaveLength(17)
     await ctx.fiber.dispose()
     expect(fake.paths()).toEqual([])
   })
@@ -2599,7 +2604,7 @@ describe('registerWorkBuddyStatusRoute re-mount (issue #86)', () => {
     await reloaded.fiber.dispose()
 
     expect(second).toEqual(first)
-    expect(second).toHaveLength(16)
+    expect(second).toHaveLength(17)
   })
 
 /**

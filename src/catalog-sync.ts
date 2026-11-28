@@ -154,6 +154,96 @@ export function overlayLiveCapabilities(
 }
 
 /**
+ * Whether two promotion lists are the same offer.
+ *
+ * Compared by CONTENT rather than by identity: the live roster is rebuilt on
+ * every read, so its `promos` array is a new object each time even when the
+ * upstream publishes byte-identical badges. An identity check would make every
+ * scheduled refresh look like a change and write the whole directory back for
+ * nothing.
+ *
+ * `undefined` and `[]` are deliberately DIFFERENT answers: an absent list means
+ * "the upstream publishes no badge for this model", while an empty array would
+ * be a list it published and left empty. Only the JSON shape crosses the
+ * settings file, so both stay distinguishable there.
+ */
+function samePromos(
+  left: WorkBuddyModelInfo['promos'],
+  right: WorkBuddyModelInfo['promos'],
+): boolean {
+  if (left === right) return true
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+/**
+ * Overlay ONLY the live PRICE fields onto a saved directory.
+ *
+ * THE DERIVATIVE OF A MODEL REFRESH. `mergeRoster` answers "what does the
+ * upstream offer now" and therefore adds and withdraws rows; this answers "what
+ * do the models I already have cost now" and therefore touches nothing but the
+ * fields that carry a price:
+ *
+ *   - a model the saved directory does not have is IGNORED (a scheduled price
+ *     refresh must never add availability — that is the card's explicit
+ *     refresh, and the user asked for the two to stay separate);
+ *   - a model the live roster does not have keeps its saved values, so an
+ *     upstream read that came back PARTIAL (issue #288) costs a stale price
+ *     rather than a wiped one;
+ *   - the user's selection fields are not part of the directory at all, so
+ *     `enabledModelIds` / `imageModelIds` / `contextBudgets` cannot move.
+ *
+ * WHY THIS EXISTS, in one sentence: the account pool picks its test target with
+ * `creditMultiplier === 0` (`src/account-pool.ts`), so a stale multiplier is not
+ * a wrong label on a screen — it makes the pool spend real credits probing a
+ * model it believed was free.
+ *
+ * `creditMultiplier` is overwritten only when the live entry HAS one. An
+ * upstream that answers the roster without a `credits` string is telling us
+ * nothing about the price, and replacing a known rate with "unknown" would be a
+ * regression dressed as a refresh.
+ *
+ * `promos` IS REPLACED UNCONDITIONALLY, including by absence, for the reason
+ * `overlayLiveCapabilities` documents at length: a badge is a function of the
+ * clock, a saved badge keeps advertising a window the upstream withdrew, and
+ * "no promotion" is an answer rather than a gap.
+ *
+ * Returns the SAME array when nothing changed, so the caller can skip both the
+ * in-memory write and the settings write by identity alone.
+ */
+export function withLiveMultipliers(
+  saved: readonly WorkBuddyModelInfo[],
+  live: readonly WorkBuddyModelInfo[],
+): readonly WorkBuddyModelInfo[] {
+  const liveById = new Map(live.map(model => [model.id, model]))
+  let changed = false
+  const next = saved.map((model) => {
+    const fresh = liveById.get(model.id)
+    if (fresh === undefined) return model
+    const priceChanged = fresh.creditMultiplier !== undefined
+      && fresh.creditMultiplier !== model.creditMultiplier
+    const promosChanged = !samePromos(model.promos, fresh.promos)
+    if (!priceChanged && !promosChanged) return model
+    changed = true
+    // The key is DELETED rather than set to `undefined`, for the same reason
+    // `overlayLiveCapabilities` deletes it: an explicit `undefined` survives
+    // `structuredClone` and the settings write's strict JSON codec then rejects
+    // the whole save.
+    const { promos: _stalePromos, ...withoutPromos } = model as WorkBuddyModelInfo & {
+      promos?: WorkBuddyModelInfo['promos']
+    }
+    // Only drop the saved list when the live answer HAS none; a replaced list is
+    // written over it by the spread below.
+    const base = promosChanged && fresh.promos === undefined ? withoutPromos : model
+    return {
+      ...base,
+      ...priceChanged ? { creditMultiplier: fresh.creditMultiplier } : {},
+      ...promosChanged && fresh.promos !== undefined ? { promos: fresh.promos } : {},
+    } as WorkBuddyModelInfo
+  })
+  return changed ? next : saved
+}
+
+/**
  * The roster the runtime and the card should serve: the live roster, with the
  * saved directory's own models kept when the upstream no longer lists them.
  *

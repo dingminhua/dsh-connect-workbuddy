@@ -39,7 +39,15 @@ import {
   repairedCatalog,
   resolveRoster,
   rosterOfRead,
+  withLiveMultipliers,
 } from './catalog-sync.ts'
+import {
+  emptyMultiplierRefreshState,
+  isMultiplierRefreshDue,
+  multiplierRefreshHoursOf,
+  nextMultiplierRefreshDelayMs,
+  type MultiplierRefreshState,
+} from './multiplier-schedule.ts'
 import {
   clearRegionAccountSelection,
   healRegionsField,
@@ -309,6 +317,7 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_MULTIPLIERS_REFRESH_PATH,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_TPS_PATH,
   WORKBUDDY_REGION_PARAM,
@@ -336,6 +345,7 @@ import {
   type WorkBuddyWebCredits,
   type WorkBuddyWebGrowthToday,
   type WorkBuddyWebModel,
+  type WorkBuddyWebMultiplierRefresh,
   type WorkBuddyWebPackage,
   type WorkBuddyWebPoolExclusion,
   type WorkBuddyWebRegion,
@@ -352,6 +362,7 @@ export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_MULTIPLIERS_REFRESH_PATH,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_TPS_PATH,
   WORKBUDDY_REGION_PARAM,
@@ -430,6 +441,16 @@ export interface WorkBuddyRegionState {
    * row (see `syncRegionRegistration`).
    */
   enabled?: boolean
+  /**
+   * Whether this region re-reads the upstream prices on a timer (opt-OUT).
+   *
+   * Absent means ON. See `regionStateConfig`'s declaration for why this one is
+   * opt-out while every other background job here is opt-in: it is a free GET
+   * that changes nothing but the numbers already on screen.
+   */
+  autoRefreshMultipliers?: boolean
+  /** How often that refresh runs, in hours. Absent means 6. */
+  multiplierRefreshHours?: number
   /**
    * Whether this region's credit balance shows at the DSH sidebar foot.
    *
@@ -1055,6 +1076,41 @@ const regionStateConfig = z.object({
    * `×` in the sidebar, which is reachable exactly where the feature renders.
    */
   showCreditsInMainUi: z.boolean().default(true).description('Show this region\'s remaining credits at the DSH sidebar foot (opt-out; the line carries its own hide button)'),
+  /**
+   * Whether this region re-reads the upstream PRICES on a timer (opt-OUT).
+   *
+   * ON BY DEFAULT, and unlike every other background feature in this file that
+   * is the right default: this one sends a read-only GET that spends no credits,
+   * and its entire value is that it acts before the user notices a stale number.
+   * A user who never opens the card is exactly the one whose multipliers would
+   * otherwise stay frozen at whatever the last full refresh saw.
+   *
+   * WHY A STALE MULTIPLIER MATTERS is not cosmetic: the account pool picks its
+   * test target with `creditMultiplier === 0` (`src/account-pool.ts`), so a model
+   * that stopped being free is still treated as free and gets probed with real
+   * credits.
+   *
+   * It refreshes ONLY prices and promotions — never availability. See
+   * `withLiveMultipliers` for why that separation is load-bearing.
+   */
+  autoRefreshMultipliers: z.boolean().default(true).description("Re-read this region's model credit multipliers and promotion badges every few hours (opt-out). Read-only and free — it sends no chat request — and it never adds or removes a model, so the model list and your selection stay exactly as saved."),
+  /**
+   * How often that refresh runs, in HOURS, from a closed set.
+   *
+   * A closed set for the same reason as `pollIntervalMs`: this value decides
+   * upstream request volume, so the offered set IS the validation and the card's
+   * dropdown offers exactly these values. A hand-edited `0` would turn a
+   * background convenience into a poll.
+   */
+  multiplierRefreshHours: z.union([
+    z.const(1),
+    z.const(3),
+    z.const(6),
+    z.const(12),
+    z.const(24),
+  ])
+    .default(6)
+    .description('How often the automatic price refresh runs: 1, 3, 6 (default), 12 or 24 hours. It also runs once right after the harness starts. Ignored while autoRefreshMultipliers is off.'),
   /**
    * Whether the composer pill carries its "· N 新模型" segment (opt-IN, default
    * off).
@@ -2605,6 +2661,82 @@ export function apply(ctx: Context, config: Config): void {
     // class of bug being fixed here.
     await repairRegionCatalog(region, read.models, { strict: true })
   }
+
+  /**
+   * Re-read the upstream PRICES and apply them to what this region already has.
+   *
+   * THE DERIVATIVE OF A REFRESH, and the ONE implementation behind both callers:
+   * the card's "refresh now" button and the background timer. One entry point
+   * means the two cannot drift into answering different things.
+   *
+   * WHAT IT DOES NOT DO, and why that is the whole point: it never runs
+   * `repairRegionCatalog`, never merges a roster, and never writes the user's
+   * selection. {@link withLiveMultipliers} intersects the saved directory with
+   * the live answer and touches only `creditMultiplier` / `promos`, so a
+   * scheduled run cannot add a model to the picker, withdraw one the user is
+   * running, or clear a tick.
+   *
+   * A DEGRADED READ IS STILL APPLIED, deliberately. When one product document is
+   * refused (issue #288) the surviving one still publishes current prices for
+   * every row it carries, and applying those is strictly better than keeping stale
+   * ones. The models the refused document owned simply keep their saved values —
+   * `withLiveMultipliers` skips ids the answer does not mention — and the answer
+   * reports `degraded` so the card can say the refresh was partial instead of
+   * claiming a complete one.
+   *
+   * THE RUNTIME CATALOG IS REPRICED TOO, and only when it holds a LIVE roster.
+   * Re-deriving it from the saved directory would be wrong here: the runtime
+   * roster may legitimately hold rows the saved directory does not (a model the
+   * user never saved), and rebuilding it would withdraw them. Repricing it in
+   * place changes exactly the same two fields and no rows.
+   *
+   * @returns how many SAVED rows changed, and whether the answer was partial.
+   */
+  const refreshMultipliersFor = async (
+    region: WorkBuddyRegion,
+    signal?: AbortSignal,
+  ): Promise<{ readonly changed: number, readonly degraded: boolean }> => {
+    const read = await discoverModels(region, signal)
+    if (read.models.length === 0) return { changed: 0, degraded: read.degraded !== undefined }
+    let changed = 0
+    const saved = regionStateOf(current(), region).lastCatalog ?? []
+    const repriced = withLiveMultipliers(saved, read.models)
+    if (repriced !== saved) {
+      changed = repriced.reduce(
+        (count, model, index) => count + (model === saved[index] ? 0 : 1),
+        0,
+      )
+      // Only the DIRECTORY, through the one writer that knows the slot merge.
+      // Not `strict`: a scheduled refresh that could not persist has still
+      // repriced the running process, which is most of its value — and throwing
+      // here would turn a settings-file problem into a failed background tick.
+      try {
+        await writeRegionCatalog(hostSettings(), settingsNs, region, repriced)
+      } catch (error: unknown) {
+        ctx.logger.warn(
+          `dsh-connect-workbuddy: could not save the ${region} repriced model directory`,
+          error,
+        )
+      }
+    }
+    const catalog = stacks[region].catalog
+    if (catalog.hasLiveRoster()) {
+      const runtime = catalog.current()
+      if (runtime.length > 0) {
+        const runtimeRepriced = withLiveMultipliers(runtime, read.models)
+        if (runtimeRepriced !== runtime) {
+          // `origin: 'derived'` — NOT `'upstream'`. This is a reprice of the
+          // roster already on screen, not a new upstream answer: it must not
+          // claim the roster is complete (a saved-only row is still in it) and
+          // must not clear a degradation an earlier read established. `derived`
+          // leaves both facts exactly as they were.
+          catalog.set(runtimeRepriced, 'derived')
+          invalidateCatalog()
+        }
+      }
+    }
+    return { changed, degraded: read.degraded !== undefined }
+  }
   /**
    * The region's MEDIA models, cached briefly for the card's read-only roster.
    *
@@ -3424,6 +3556,57 @@ export function apply(ctx: Context, config: Config): void {
     // card — which renders `displayModels()` — kept showing the saved
     // directory's prices while the reply carried the upstream's.
     persistModels: persistRefreshedModels,
+    /**
+     * The card's "refresh prices now" action, and the SAME function the
+     * background timer calls — one implementation, two entry points, so a manual
+     * press and a scheduled tick cannot answer differently.
+     *
+     * Reports what happened rather than throwing away the outcome: `changed` is
+     * how many saved rows were repriced (`0` — "the prices were already current"
+     * — is a real answer the card shows), and `degraded` marks a PARTIAL upstream
+     * answer (issue #288), where the rows the refused document published kept
+     * their saved values.
+     */
+    refreshMultipliers: async (region: WorkBuddyRegion) => {
+      const result = await refreshMultipliersFor(region)
+      // Record the manual run in the same state the timer maintains, so the
+      // card's "last refreshed" line reflects the press instead of claiming the
+      // last scheduled time.
+      multiplierState[region] = {
+        lastAttemptAtMs: Date.now(),
+        changed: result.changed,
+        degraded: result.degraded,
+      }
+      return result
+    },
+    /**
+     * What the last price refresh did, for the card's status line.
+     *
+     * Answers from the runner's own memory, so the card never has to guess, and
+     * `undefined` when the switch is off or nothing has run yet — which the card
+     * renders as no status line rather than as "0 rows changed".
+     */
+    multiplierRefreshState: (region: WorkBuddyRegion) => {
+      if (!multiplierRefreshEnabled(region)) return undefined
+      const state = multiplierState[region]
+      if (state === undefined || state.lastAttemptAtMs === undefined) return undefined
+      return {
+        lastAttemptAtMs: state.lastAttemptAtMs,
+        changed: state.changed,
+        degraded: state.degraded,
+        ...state.lastError === undefined ? {} : { lastError: state.lastError },
+      }
+    },
+    /**
+     * The SAVED price-refresh choices, on the Host's answer.
+     *
+     * The card renders these controls, and this namespace's browser settings
+     * mirror goes stale on affected deployments — the same measured reason the
+     * credit switches travel here (see `showCreditsInMainUi`).
+     */
+    autoRefreshMultipliers: (region: WorkBuddyRegion) =>
+      regionStateOf(current(), region).autoRefreshMultipliers !== false,
+    multiplierRefreshHours: (region: WorkBuddyRegion) => multiplierRefreshHours(region),
     /**
      * Whether this region's directory is a PARTIAL answer (issue #288).
      *
@@ -4937,6 +5120,163 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => { stopAutoCheckin() })
 
   /* ---------------------------------------------------------------------- *
+   * Scheduled PRICE refresh: multipliers + promotion badges, per region.
+   *
+   * Same timer shape as auto check-in (a re-arming one-shot, because the delay
+   * changes with the user's interval and with the outcome of each tick), but a
+   * much simpler payload: the tick does ONE read-only GET and applies it to the
+   * rows already saved. Nothing spends credits, nothing adds or withdraws a
+   * model, and nothing writes the user's selection.
+   *
+   * WHY IT RUNS IMMEDIATELY AT STARTUP. `lastAttemptAtMs` starts absent, and
+   * `isMultiplierRefreshDue` answers "due" for that state — so the first tick
+   * fires at once. That is not redundant with the startup catalog read: the
+   * startup read is a FULL directory refresh whose result is the runtime
+   * catalog, while this is the narrow "reprice what is saved" answer whose
+   * outcome the card reports. The user asked for the prices to be current the
+   * moment the harness is, not six hours later.
+   *
+   * The state is IN MEMORY ONLY (`MultiplierRefreshState`): a restart
+   * necessarily re-reads anyway, so a persisted timestamp would only let a new
+   * process skip its own first refresh.
+   * ---------------------------------------------------------------------- */
+  const multiplierTimers: Partial<Record<WorkBuddyRegion, ReturnType<typeof setTimeout>>> = {}
+  const multiplierState: Partial<Record<WorkBuddyRegion, MultiplierRefreshState>> = {}
+  const multiplierRunning: Partial<Record<WorkBuddyRegion, boolean>> = {}
+  /**
+   * The interval the CURRENT timer was armed with.
+   *
+   * Needed because the tick reads the interval only when it runs: without this a
+   * user who went from 24h to 1h would keep waiting out the old 24 hours.
+   * Tracked per region because the two regions can hold different values.
+   */
+  const multiplierArmedHours: Partial<Record<WorkBuddyRegion, number>> = {}
+
+  /** Whether the user asked for the scheduled price refresh on this region. */
+  function multiplierRefreshEnabled(region: WorkBuddyRegion): boolean {
+    return regionStateOf(current(), region).autoRefreshMultipliers !== false
+  }
+
+  /** The interval the user chose, coerced onto the offered set. */
+  function multiplierRefreshHours(region: WorkBuddyRegion): number {
+    return multiplierRefreshHoursOf(regionStateOf(current(), region).multiplierRefreshHours)
+  }
+
+  /**
+   * One tick: decide, run, record, re-arm.
+   *
+   * Never throws — a background feature that could take down `apply` or a later
+   * tick over a disk or network error would be worse than not having it.
+   */
+  async function multiplierRefreshTick(region: WorkBuddyRegion): Promise<void> {
+    if (multiplierRunning[region] === true) return
+    multiplierRunning[region] = true
+    try {
+      // Read the switch EVERY tick, not once at `apply`: turning it off must
+      // stop the next tick, and the settings object is live.
+      if (!multiplierRefreshEnabled(region)) return
+      const hours = multiplierRefreshHours(region)
+      const state = multiplierState[region] ?? emptyMultiplierRefreshState()
+      if (!isMultiplierRefreshDue(state, hours, Date.now())) {
+        armMultiplierTimer(region, nextMultiplierRefreshDelayMs(state, hours, Date.now()))
+        return
+      }
+      // A switched-off region advertises nothing to price, and its route is
+      // withdrawn — the read would be pure waste.
+      if (!regionEnabled(current(), region)) {
+        armMultiplierTimer(region, nextMultiplierRefreshDelayMs(state, hours, Date.now()))
+        return
+      }
+      // The first tick is armed at `apply`, which runs BEFORE the shim's
+      // listeners hold their port and before the credential store has scanned.
+      // Waiting here rather than failing means the startup refresh warms up
+      // instead of recording an error the card would show for six hours.
+      await stacks[region].shim.ready
+      let next: MultiplierRefreshState
+      try {
+        const result = await refreshMultipliersFor(region)
+        next = { lastAttemptAtMs: Date.now(), changed: result.changed, degraded: result.degraded }
+      } catch (error: unknown) {
+        // A FAILED ATTEMPT STILL COUNTS AS AN ATTEMPT, so the next one is a full
+        // interval away instead of a spin. The reason rides along for the card.
+        next = {
+          lastAttemptAtMs: Date.now(),
+          changed: 0,
+          degraded: false,
+          lastError: error instanceof Error ? error.message : String(error),
+        }
+      }
+      multiplierState[region] = next
+      armMultiplierTimer(region, nextMultiplierRefreshDelayMs(next, hours, Date.now()))
+    } catch (error: unknown) {
+      // A throw here is OUR fault (a settings read), not the upstream's: log it
+      // and re-arm on the default interval so one bad tick cannot stop the
+      // feature.
+      ctx.logger.warn(`dsh-connect-workbuddy: multiplier refresh tick failed (${region})`, error)
+      armMultiplierTimer(region, multiplierRefreshHoursOf(undefined) * 60 * 60_000)
+    } finally {
+      multiplierRunning[region] = false
+    }
+  }
+
+  /** Arm the next tick, replacing any pending one. */
+  function armMultiplierTimer(region: WorkBuddyRegion, delayMs: number): void {
+    const existing = multiplierTimers[region]
+    if (existing !== undefined) clearTimeout(existing)
+    const timer = setTimeout(() => { void multiplierRefreshTick(region) }, delayMs)
+    // A pending refresh must not hold the host process open.
+    timer.unref?.()
+    multiplierTimers[region] = timer
+    multiplierArmedHours[region] = multiplierRefreshHours(region)
+  }
+
+  /**
+   * Arm or disarm every region to match the saved switches.
+   *
+   * Called once at `apply` and again on every settings change, so flipping the
+   * switch or changing the interval takes effect without a restart. Disarming
+   * CLEARS the timer rather than leaving it to notice.
+   *
+   * AN INTERVAL CHANGE RE-ARMS. The tick reads the interval only when it runs,
+   * so a timer armed for 24 hours would honour the OLD value until it fired —
+   * switching from 24h to 1h would appear to do nothing for a day. Re-arming on
+   * the new interval is what makes the dropdown's effect immediate.
+   */
+  function syncMultiplierRefresh(): void {
+    for (const region of REGION_KEYS) {
+      if (multiplierRefreshEnabled(region)) {
+        const hours = multiplierRefreshHours(region)
+        if (multiplierTimers[region] === undefined) {
+          armMultiplierTimer(region, 0)
+          continue
+        }
+        if (multiplierArmedHours[region] !== hours) {
+          const state = multiplierState[region] ?? emptyMultiplierRefreshState()
+          armMultiplierTimer(region, nextMultiplierRefreshDelayMs(state, hours, Date.now()))
+        }
+        continue
+      }
+      stopMultiplierTimer(region)
+    }
+  }
+
+  /** Clear one region's pending tick, if any. */
+  function stopMultiplierTimer(region: WorkBuddyRegion): void {
+    const timer = multiplierTimers[region]
+    if (timer !== undefined) clearTimeout(timer)
+    delete multiplierTimers[region]
+    delete multiplierArmedHours[region]
+  }
+
+  /** Stop every timer; called on unload. */
+  function stopMultiplierRefresh(): void {
+    for (const region of REGION_KEYS) stopMultiplierTimer(region)
+  }
+
+  syncMultiplierRefresh()
+  ctx.effect(() => () => { stopMultiplierRefresh() })
+
+  /* ---------------------------------------------------------------------- *
    * Background growth tasks (issue #286): streak redeem + active-today.
    *
    * Same timer shape as auto-check-in, but keyed by (capability, region) so the
@@ -5184,6 +5524,9 @@ export function apply(ctx: Context, config: Config): void {
       // The two growth switches (issue #286) are volatile siblings; re-arm or
       // disarm their timers on the same update so a toggle takes effect at once.
       refreshGrowthSchedules()
+      // The price-refresh switch and its interval are volatile siblings of the
+      // same slot: turning either one changes when the next tick is armed.
+      syncMultiplierRefresh()
       // 总开关同样是 volatile：不重挂，所以预热链要在这里跟随，否则关着启动的
       // 进程打开开关后永远没有定时器（只有一次请求才偶尔取到 token）。
       syncDeviceSdk()

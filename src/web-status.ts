@@ -64,6 +64,7 @@ import {
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MEDIA_MODELS_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_MULTIPLIERS_REFRESH_PATH,
   WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_BENEFIT_CLAIM_PATH,
   WORKBUDDY_CLI_LIVE_PATH,
@@ -88,6 +89,7 @@ import type {
   WorkBuddyWebAccountCredit,
   WorkBuddyWebAutoCheckinToday,
   WorkBuddyWebGrowthToday,
+  WorkBuddyWebMultiplierRefresh,
   WorkBuddyWebCredits,
   WorkBuddyWebPool,
   WorkBuddyWebPoolAccount,
@@ -106,6 +108,7 @@ export {
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MEDIA_MODELS_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_MULTIPLIERS_REFRESH_PATH,
   WORKBUDDY_OAUTH_PATH,
   WORKBUDDY_POOL_PATH,
   WORKBUDDY_PROBE_PATH,
@@ -183,6 +186,39 @@ export interface WorkBuddyStatusRouteOptions {
    * the user sees a real error instead of a stale list that looks refreshed.
    */
   persistModels?(region: WorkBuddyRegion, read: WorkBuddyCatalogRead): Promise<void>
+  /**
+   * Re-read the upstream PRICES for this region and apply them to the models it
+   * already has, answering how many saved rows changed and whether the read was
+   * partial.
+   *
+   * THE NARROW SIBLING OF {@link persistModels}, and the difference is the whole
+   * contract: that one answers "what does the upstream offer now" and may add
+   * and withdraw rows, this one answers "what do my models cost now" and must
+   * never change availability. A scheduled job pointed at the other one would
+   * rewrite the user's roster on a timer.
+   *
+   * Optional: absent means the route answers 503 rather than half-performing,
+   * the same contract as {@link persistModels}.
+   */
+  refreshMultipliers?(region: WorkBuddyRegion): Promise<{ readonly changed: number, readonly degraded: boolean }>
+  /**
+   * What the last price refresh did for this region, when the feature is on.
+   *
+   * Optional so a Host built before the feature keeps serving: its absence then
+   * reads as "nothing to report", which the card renders as no status line —
+   * never as "ran and changed nothing".
+   */
+  multiplierRefreshState?(region: WorkBuddyRegion): WorkBuddyWebMultiplierRefresh | undefined
+  /**
+   * Whether this region runs the scheduled price refresh (opt-out).
+   *
+   * Carried on the Host's answer for the same measured reason as
+   * {@link showCreditsInMainUi}: the card renders the switch and this
+   * namespace's browser settings mirror goes stale on affected deployments.
+   */
+  autoRefreshMultipliers?(region: WorkBuddyRegion): boolean
+  /** The chosen interval, in hours. Absent reads as the 6-hour default. */
+  multiplierRefreshHours?(region: WorkBuddyRegion): number
   /**
    * Whether the requested region's model directory is a PARTIAL answer
    * (issue #288) — one product document was refused and the other one
@@ -1830,6 +1866,21 @@ async function workBuddyWebPool(
       const today = pool.growthActivityToday?.(region)
       return today === undefined ? {} : { growthActivityToday: today }
     })(),
+    // The price-refresh controls and the last run's outcome. On the Host's
+    // answer rather than the browser mirror for the same measured reason the
+    // credit switches are: that mirror goes stale for this namespace on affected
+    // deployments, and a checkbox rendering a stale value would let the user
+    // believe a background job was off when it was running.
+    ...deps.autoRefreshMultipliers === undefined
+      ? {}
+      : { autoRefreshMultipliers: deps.autoRefreshMultipliers(region) },
+    ...deps.multiplierRefreshHours === undefined
+      ? {}
+      : { multiplierRefreshHours: deps.multiplierRefreshHours(region) },
+    ...(() => {
+      const state = deps.multiplierRefreshState?.(region)
+      return state === undefined ? {} : { multiplierRefresh: state }
+    })(),
     ...target.modelId === undefined ? {} : { targetModelId: target.modelId },
     ...target.staleModelId === undefined ? {} : { staleTargetModelId: target.staleModelId },
     targetModelSource: target.source,
@@ -2135,6 +2186,26 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           ? {}
           : { degraded: toWebCatalogDegradation(read.degraded) },
       })
+    })
+    endpointRegion({
+      path: WORKBUDDY_MULTIPLIERS_REFRESH_PATH,
+      method: 'POST',
+      // Same contract as the full refresh above, and for the same reason: a
+      // press that cannot be recorded is not a refresh. `refreshMultipliers` is
+      // the dep that owns both the read AND the write, so it is the only thing
+      // this route needs to exist.
+      ready: res => deps.refreshMultipliers === undefined
+        ? (json(res, 503, { error: 'multiplier refresh unavailable' }), false)
+        : true,
+    }, async (_req, res, region) => {
+      // POST rather than GET even though it only reads the upstream: it WRITES
+      // the repriced directory, so a GET would be a cacheable request with a
+      // side effect.
+      const result = await deps.refreshMultipliers!(region)
+      // `changed` is answered, not inferred: 0 is the useful "already current"
+      // answer, and the card shows it as such. `degraded` rides along so a
+      // partial read is reported as partial instead of as a full refresh.
+      json(res, 200, { changed: result.changed, degraded: result.degraded })
     })
     endpointRegion({
       path: WORKBUDDY_MEDIA_MODELS_PATH,

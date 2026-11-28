@@ -1106,6 +1106,34 @@ export async function writeRegionCreditPosition(
 }
 
 /**
+ * Write one region's scheduled price-refresh settings, verifying they landed.
+ *
+ * Sibling of {@link writeRegionCreditsShown}: same whole-slot merge, same landed
+ * check, same reason for both. Two fields share one writer because the card
+ * commits them from one control group, and splitting the write would mean two
+ * round trips that could leave the switch and its interval disagreeing.
+ *
+ * `undefined` omits a field from the write rather than clearing it, so changing
+ * the interval cannot silently reset the switch (or the other way round).
+ */
+export async function writeRegionMultiplierRefresh(
+  scope: WorkBuddyAccountScope,
+  region: WorkBuddyWebRegion,
+  patch: { autoRefreshMultipliers?: boolean, multiplierRefreshHours?: number },
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    if (stored === null || stored === undefined) return false
+    if (patch.autoRefreshMultipliers !== undefined
+      && stored['autoRefreshMultipliers'] !== patch.autoRefreshMultipliers) return false
+    if (patch.multiplierRefreshHours !== undefined
+      && stored['multiplierRefreshHours'] !== patch.multiplierRefreshHours) return false
+    return true
+  })
+}
+
+/**
  * Write one region's account-pool PREFERENCES, verifying they landed.
  *
  * Routed through {@link writeField} like every other settings write, so it gets

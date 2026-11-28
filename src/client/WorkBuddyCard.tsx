@@ -34,6 +34,7 @@ import {
   nextRegionCreditPosition,
   nextRegionCreditsShown,
   nextRegionNewModelsShown,
+  nextRegionMultiplierRefresh,
   nextRegionEnabled,
   nextRegionImageToolEnabled,
   nextRegionPreferredVideoModels,
@@ -41,6 +42,8 @@ import {
   regionCnBaseOf,
   regionCreditsShownOf,
   regionNewModelsShownOf,
+  regionMultiplierRefreshOf,
+  regionMultiplierRefreshHoursOf,
   regionEnabledOf,
   regionImageToolEnabledOf,
   nextRegionPreferredImageModel,
@@ -53,6 +56,7 @@ import {
   WORKBUDDY_DEVICE_SDK_PATH,
   WORKBUDDY_MEDIA_MODELS_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_MULTIPLIERS_REFRESH_PATH,
   WORKBUDDY_GITHUB_URL,
   WORKBUDDY_PROBE_PATH,
   WORKBUDDY_TPS_PATH,
@@ -63,6 +67,7 @@ import {
   withWorkBuddyRegionFastDetail,
   WORKBUDDY_POLL_INTERVALS_MS,
 } from '../status-paths.ts'
+import { WORKBUDDY_MULTIPLIER_REFRESH_HOURS } from '../multiplier-schedule.ts'
 import type {
   WorkBuddyCreditPosition,
   WorkBuddyWebCatalogDegradation,
@@ -74,7 +79,7 @@ import type {
   WorkBuddyWebSearchPath,
   WorkBuddyWebUsage,
 } from '../status-paths.ts'
-import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredImageModel, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, webSearchEnabledOf, writeWebSearchEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
+import { channelRejectContinueOf, cliBridgeEffortOf, cliBridgeEnabledOf, cliBridgeModelOf, cliBridgeRegionOrderOf, extraInjectedPrefixesOf, isFileContentionWriteError, sessionTitleOf, sidebarPanelEnabledOf, upstreamSwitchOf, writeAccountSlot, writeCliBridgeEnabled, writeCliBridgeEffort, writeCliBridgeModel, writeCliBridgeRegionOrder, writeRegionCnBase, writeRegionCreditPosition, writeRegionCreditsShown, writeRegionMultiplierRefresh, writeRegionNewModelsShown, writeRegionEnabled, writeRegionImageToolEnabled, writeRegionPreferredImageModel, writeRegionPreferredVideoModels, writeRegionVideoToolEnabled, writeRegionModels, writeSidebarPanelEnabled, webSearchEnabledOf, writeWebSearchEnabled, writePollIntervalMs, pollIntervalMsOf, writeUpstreamSwitch } from './account-selection.ts'
 import { resolveCnGateway } from '../cn-gateway.ts'
 // The watermark-free model id is shared with the tool on purpose: if the picker
 // and the tool disagreed about which id means "no watermark", the card would
@@ -767,6 +772,15 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
   const [saving, setSaving] = useState(false)
   /** Save failure surfaced next to the buttons; cleared by the next attempt. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
+  /**
+   * The price refresh's own busy/error pair, shared by its two entry points.
+   *
+   * Deliberately separate from `busy`, which the full directory refresh owns:
+   * the two actions make different promises, and one being in flight must not
+   * make the other's button look like it is doing something.
+   */
+  const [multiplierBusy, setMultiplierBusy] = useState(false)
+  const [multiplierError, setMultiplierError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
   /**
    * The region's MEDIA model roster (read-only), keyed by region.
@@ -1575,6 +1589,48 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     }
   }
 
+  /**
+   * Commit the scheduled price-refresh settings for one region.
+   *
+   * One handler for both controls (the switch and the interval) because they
+   * live in one slot and one write keeps them from disagreeing — the same
+   * reason `writeRegionMultiplierRefresh` takes both fields.
+   *
+   * `patch` carries ONLY the field the user just touched, so flipping the
+   * switch cannot overwrite an interval picked a moment earlier: `undefined`
+   * omits the key from the write and the Host's merge keeps what the slot
+   * already holds.
+   *
+   * Re-reads the Host afterwards for the same measured reason `toggleCredits`
+   * does: the controls render the Host's answer, and the browser settings
+   * mirror is stale for this namespace on affected deployments.
+   */
+  const changeMultiplierRefresh = async (
+    item: WorkBuddyWebRegion,
+    patch: { autoRefreshMultipliers?: boolean, multiplierRefreshHours?: number },
+  ): Promise<void> => {
+    if (settingsScope === undefined) return
+    setMultiplierBusy(true)
+    setMultiplierError(undefined)
+    try {
+      const regions = nextRegionMultiplierRefresh(settingsScope.getSnapshot().value, item, patch) as Record<string, unknown>
+      const slot = regions[item]
+      await writeRegionMultiplierRefresh(
+        settingsScope,
+        item,
+        patch,
+        typeof slot === 'object' && slot !== null ? slot as Record<string, unknown> : {},
+      )
+      await refreshUsage(item)
+    } catch (error: unknown) {
+      if (mounted.current) {
+        setMultiplierError(error instanceof Error ? error.message : t('row.requestFailed'))
+      }
+    } finally {
+      if (mounted.current) setMultiplierBusy(false)
+    }
+  }
+
   const toggleCredits = async (item: WorkBuddyWebRegion, shown: boolean): Promise<void> => {
     if (settingsScope === undefined) return
     setTogglingCredits(item)
@@ -2216,6 +2272,47 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
     }
   }
 
+  /**
+   * Re-read the upstream PRICES for the open region — the manual half of the
+   * scheduled refresh.
+   *
+   * Deliberately NOT a variant of `refreshModels`: that one replaces the DRAFT
+   * with a fresh roster (adding and withdrawing rows, re-seeding the image
+   * boxes, reshaping the selection). This one changes nothing about
+   * availability — the Host rewrites only the multipliers and promotion badges
+   * of the rows it already has — so no model appears or disappears.
+   *
+   * WHAT HAPPENS TO A DIRTY DRAFT. Nothing: the draft keeps the prices it was
+   * opened with, because a reprice must not silently edit rows the user is in
+   * the middle of editing. The next refresh of the card reads the repriced
+   * directory, and the status line says what this run changed.
+   */
+  const refreshMultipliers = async (): Promise<void> => {
+    setMultiplierBusy(true)
+    setMultiplierError(undefined)
+    try {
+      const response = await fetch(resolveRequestUrl(withWorkBuddyRegion(WORKBUDDY_MULTIPLIERS_REFRESH_PATH, activeRegion)), {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+        credentials: 'same-origin',
+      })
+      const body = await response.json() as { changed?: number, degraded?: boolean, error?: string }
+      if (!response.ok || typeof body.changed !== 'number') {
+        throw new Error(body.error ?? `HTTP ${response.status}`)
+      }
+      // Re-read the Host so the status line and the price labels both show what
+      // was just written. Same load-bearing re-read the credit toggles perform:
+      // the card renders the Host's answer, not its own guess.
+      await refreshUsage(activeRegion)
+    } catch (error: unknown) {
+      if (mounted.current) {
+        setMultiplierError(error instanceof Error ? error.message : t('row.requestFailed'))
+      }
+    } finally {
+      if (mounted.current) setMultiplierBusy(false)
+    }
+  }
+
   void settingsRevision
   // The card renders the last-refreshed directory (`status.models`), never a
   // stale saved snapshot. Enabled flags come from the user's stored selection,
@@ -2299,6 +2396,64 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
    * A bound scope is therefore all that is required to accept an edit.
    */
   const canWrite = settingsScope !== undefined
+
+  /**
+   * The scheduled price-refresh controls, read off the HOST'S answer.
+   *
+   * Host first, settings mirror second, for the same measured reason as the
+   * credit switches: this namespace's mirror goes stale on affected
+   * deployments, so a control reading only the mirror kept rendering the old
+   * state after a write that had landed.
+   *
+   * `!== false` for the switch (opt-OUT, matching the schema default) and the
+   * 6-hour default for the interval, so a Host built before this field existed
+   * renders exactly what a fresh profile gets.
+   */
+  const autoRefreshMultipliers = 'autoRefreshMultipliers' in status
+    ? status.autoRefreshMultipliers !== false
+    : regionMultiplierRefreshOf(settingsScope?.getSnapshot().value, activeRegion)
+  const multiplierRefreshHoursValue = (() => {
+    const raw = 'multiplierRefreshHours' in status ? status.multiplierRefreshHours : undefined
+    if (typeof raw === 'number' && WORKBUDDY_MULTIPLIER_REFRESH_HOURS.includes(raw)) return raw
+    const fromSettings = regionMultiplierRefreshHoursOf(settingsScope?.getSnapshot().value, activeRegion)
+    return fromSettings !== undefined && WORKBUDDY_MULTIPLIER_REFRESH_HOURS.includes(fromSettings)
+      ? fromSettings
+      : 6
+  })()
+  const multiplierRefreshState = 'multiplierRefresh' in status ? status.multiplierRefresh : undefined
+  /**
+   * The one-line report under the controls.
+   *
+   * Three DIFFERENT states, deliberately worded differently, because they mean
+   * different things and the user acts on them differently:
+   *   - never run → say nothing at all (a line claiming "0 changed" before the
+   *     first tick is a claim nothing made);
+   *   - failed → the reason, so it can be acted on;
+   *   - ran → when, and how many rows moved, flagged when the read was partial.
+   */
+  const multiplierStatusLine = (() => {
+    if (multiplierError !== undefined) {
+      return { tone: 'bad' as const, text: t('row.multiplierRefreshFailed', { message: multiplierError }) }
+    }
+    if (multiplierRefreshState === undefined) return undefined
+    const at = formatShortClock(multiplierRefreshState.lastAttemptAtMs)
+    if (multiplierRefreshState.lastError !== undefined) {
+      return {
+        tone: 'bad' as const,
+        text: t('row.multiplierRefreshLastFailed', { at, message: multiplierRefreshState.lastError }),
+      }
+    }
+    if (multiplierRefreshState.degraded) {
+      return { tone: 'warn' as const, text: t('row.multiplierRefreshPartial', { at }) }
+    }
+    return {
+      tone: 'ok' as const,
+      text: multiplierRefreshState.changed === 0
+        ? t('row.multiplierRefreshUnchanged', { at })
+        : t('row.multiplierRefreshChanged', { at, count: multiplierRefreshState.changed }),
+    }
+  })()
+
 
   const editDraft = (edit: (current: WorkBuddyDraft) => WorkBuddyDraft): void => {
     setDrafts(prev => ({
@@ -4202,8 +4357,93 @@ function WorkBuddyCardBody({ t, settingsScope, view, surface, backToConversation
                                 ? t('row.tpsSweepEnabled')
                                 : t('row.tpsTesting', { done: tpsSweeping.done, total: tpsSweeping.total })}
                             </button>
+                            {/* THE PRICE REFRESH (the derivative of the button on
+                                the left). Separate control rather than a variant
+                                of it, because the two make different promises:
+                                "Refresh from WorkBuddy" replaces the draft with a
+                                fresh roster and may add or withdraw rows, while
+                                this one only re-reads the prices of the rows
+                                already saved — so it is safe to leave on a timer
+                                and safe to press mid-edit. Free: one read-only
+                                GET, no chat request, no credits. */}
+                            <button
+                              type="button"
+                              className="dsm-btn dsm-btn-outline"
+                              disabled={multiplierBusy}
+                              title={t('row.multiplierRefreshHint')}
+                              onClick={() => { void refreshMultipliers() }}
+                            >
+                              {multiplierBusy ? t('row.multiplierRefreshing') : t('row.multiplierRefresh')}
+                            </button>
                           </div>
                         </div>
+                      {/* THE SCHEDULE, under the buttons.
+                          A switch and an interval rather than a single toggle:
+                          "keep my prices current" is one decision, but how often
+                          is a second one that depends on how long this harness
+                          stays up — and it decides upstream request volume, so it
+                          is a closed set the card cannot widen by hand. */}
+                      <div className="dsm-workbuddy-multiplier-schedule">
+                        <div className="dsm-workbuddy-pool-switchrow">
+                          <label className="sw">
+                            <input
+                              type="checkbox"
+                              checked={autoRefreshMultipliers}
+                              disabled={!canWrite || multiplierBusy}
+                              onChange={(event: { currentTarget: { checked: boolean } }) => {
+                                // Capture synchronously: React nulls
+                                // `currentTarget` before a queued updater runs.
+                                const next = event.currentTarget.checked
+                                void changeMultiplierRefresh(activeRegion, { autoRefreshMultipliers: next })
+                              }}
+                            />
+                            <span className="sw-track" />
+                          </label>
+                          <b className="dsm-workbuddy-pool-modebar-label">{t('row.multiplierRefreshLabel')}</b>
+                          {autoRefreshMultipliers
+                            ? (
+                                <label className="dsm-workbuddy-multiplier-interval">
+                                  <span>{t('row.multiplierRefreshEvery')}</span>
+                                  <select
+                                    className="dsm-workbuddy-credit-position"
+                                    value={String(multiplierRefreshHoursValue)}
+                                    disabled={!canWrite || multiplierBusy}
+                                    aria-label={t('row.multiplierRefreshIntervalAria')}
+                                    onChange={(event: { currentTarget: { value: string } }) => {
+                                      const next = Number(event.currentTarget.value)
+                                      if (!WORKBUDDY_MULTIPLIER_REFRESH_HOURS.includes(next)) return
+                                      void changeMultiplierRefresh(activeRegion, { multiplierRefreshHours: next })
+                                    }}
+                                  >
+                                    {WORKBUDDY_MULTIPLIER_REFRESH_HOURS.map(hours => (
+                                      <option key={hours} value={String(hours)}>
+                                        {t('row.multiplierRefreshHours', { count: hours })}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              )
+                            : null}
+                        </div>
+                        <p className="dsm-workbuddy-pool-note">{t('row.multiplierRefreshNote')}</p>
+                        {/* The last run, and ONLY when there is one to report.
+                            Three different states, worded differently on purpose:
+                            never run shows nothing at all, a failure shows why,
+                            and a run shows when plus how many rows moved. */}
+                        {multiplierStatusLine === undefined ? null
+                          : (
+                              <p
+                                className={multiplierStatusLine.tone === 'bad'
+                                  ? 'dsm-workbuddy-multiplier-status dsm-workbuddy-multiplier-status-bad'
+                                  : multiplierStatusLine.tone === 'warn'
+                                    ? 'dsm-workbuddy-multiplier-status dsm-workbuddy-multiplier-status-warn'
+                                    : 'dsm-workbuddy-multiplier-status'}
+                                role={multiplierStatusLine.tone === 'bad' ? 'alert' : 'status'}
+                              >
+                                {multiplierStatusLine.text}
+                              </p>
+                            )}
+                      </div>
                       {probeError === undefined ? null
                         : <p className="dsm-workbuddy-model-probe-result dsm-workbuddy-model-probe-result-bad" role="alert">
                             {t('row.probeError', { message: probeError })}
