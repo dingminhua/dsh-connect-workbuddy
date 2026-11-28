@@ -62,6 +62,40 @@ export interface HostSettingsService {
 }
 
 /**
+ * The `regions` field's writes, serialized.
+ *
+ * EVERY WRITER OF THIS FIELD IS A READ-MODIFY-WRITE: `describe()` the authoritative
+ * value, merge one region into it, `mutate()` the whole field back. Two of them
+ * running at once both read the pre-write value, so whichever lands second
+ * silently undoes the first — a lost update, with no error anywhere. That window
+ * was always there (the startup repair and the account-removal cleanup can
+ * overlap), but the scheduled price refresh made it easy to hit: it is armed at
+ * `apply` with a zero delay, so its `describe()` lands in the same tick as the
+ * startup repair's, on both regions.
+ *
+ * Chaining is the fix rather than `expectedRevision`: the CAS would need a retry
+ * loop around a merge that is already cheap, and these writes are rare (once a
+ * boot, once an interval). Serializing them costs nothing and removes the window
+ * entirely.
+ *
+ * Nothing is rejected down the chain: a failed write must not become the next
+ * one's failure, so the chain carries a swallowed copy while the real rejection
+ * still reaches the caller.
+ */
+let regionWrites: Promise<unknown> = Promise.resolve()
+
+/**
+ * Run one `regions`-field write after every write already queued.
+ *
+ * @param write The read-modify-write to serialize; its rejection is the caller's.
+ */
+async function serializeRegionWrite<T>(write: () => Promise<T>): Promise<T> {
+  const run = regionWrites.then(write)
+  regionWrites = run.catch(() => undefined)
+  return await run
+}
+
+/**
  * Merge one region's repaired directory into the `regions` FIELD.
  *
  * `current` may be EITHER the resolved settings section (what `describe()`
@@ -106,12 +140,14 @@ export async function writeRegionCatalog(
   catalog: readonly WorkBuddyModelInfo[],
 ): Promise<boolean> {
   if (service === undefined) return false
-  const row = service.describe().find(entry => entry.ns === ns)
-  if (row === undefined) return false
-  const current = unwrapVolatileDeep(row.value ?? {}) as Record<string, unknown>
-  const next = mergeRegionCatalog(current, region, catalog)
-  await service.mutate(ns, [{ op: 'set', path: ['regions'], value: next }], undefined)
-  return true
+  return await serializeRegionWrite(async () => {
+    const row = service.describe().find(entry => entry.ns === ns)
+    if (row === undefined) return false
+    const current = unwrapVolatileDeep(row.value ?? {}) as Record<string, unknown>
+    const next = mergeRegionCatalog(current, region, catalog)
+    await service.mutate(ns, [{ op: 'set', path: ['regions'], value: next }], undefined)
+    return true
+  })
 }
 
 /**
@@ -139,14 +175,16 @@ export async function healRegionsField(
   ns: string,
 ): Promise<boolean> {
   if (service === undefined) return false
-  const row = service.describe().find(entry => entry.ns === ns)
-  if (row === undefined) return false
-  const section = row.value ?? {}
-  // Ask the FIELD, not the section: the section legitimately carries `accounts`
-  // and `cliBridge` beside `regions`, so the question would always be "dirty".
-  if (!regionsFieldIsCorrupt((section as Record<string, unknown>)['regions'])) return false
-  await service.mutate(ns, [{ op: 'set', path: ['regions'], value: regionsMapOf(section) }], undefined)
-  return true
+  return await serializeRegionWrite(async () => {
+    const row = service.describe().find(entry => entry.ns === ns)
+    if (row === undefined) return false
+    const section = row.value ?? {}
+    // Ask the FIELD, not the section: the section legitimately carries `accounts`
+    // and `cliBridge` beside `regions`, so the question would always be "dirty".
+    if (!regionsFieldIsCorrupt((section as Record<string, unknown>)['regions'])) return false
+    await service.mutate(ns, [{ op: 'set', path: ['regions'], value: regionsMapOf(section) }], undefined)
+    return true
+  })
 }
 
 /**

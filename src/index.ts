@@ -5171,9 +5171,26 @@ export function apply(ctx: Context, config: Config): void {
   async function multiplierRefreshTick(region: WorkBuddyRegion): Promise<void> {
     if (multiplierRunning[region] === true) return
     multiplierRunning[region] = true
+    // THIS TIMER HAS ALREADY FIRED, so its handle is dead. Dropping it here —
+    // before any branch can return — is what keeps every exit path honest, and it
+    // is load-bearing rather than tidy: `syncMultiplierRefresh` treats a present
+    // handle as "a tick is already scheduled" and skips arming. A branch that
+    // returned without clearing it left a ghost behind, and the next switch-on
+    // then saw `multiplierTimers[region] !== undefined` and armed nothing at all —
+    // the timer never fired again for the rest of the session.
+    delete multiplierTimers[region]
+    delete multiplierArmedHours[region]
     try {
       // Read the switch EVERY tick, not once at `apply`: turning it off must
       // stop the next tick, and the settings object is live.
+      //
+      // NEITHER DISARMING BRANCH RE-ARMS. `syncMultiplierRefresh` is the only
+      // thing that seeds a timer, and every switch that can reach these branches
+      // is volatile, so it runs again the moment the user changes one — which is
+      // the only event that could make another tick worth having. Re-arming here
+      // instead is what produced the 0 ms spin: the due-delay helper answers 0
+      // for a never-run state, so a region that was off before its FIRST tick
+      // kept resetting a zero-length timer.
       if (!multiplierRefreshEnabled(region)) return
       const hours = multiplierRefreshHours(region)
       const state = multiplierState[region] ?? emptyMultiplierRefreshState()
@@ -5182,11 +5199,9 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       // A switched-off region advertises nothing to price, and its route is
-      // withdrawn — the read would be pure waste.
-      if (!regionEnabled(current(), region)) {
-        armMultiplierTimer(region, nextMultiplierRefreshDelayMs(state, hours, Date.now()))
-        return
-      }
+      // withdrawn — the read would be pure waste. Nothing to re-arm either: see
+      // the note above.
+      if (!regionEnabled(current(), region)) return
       // The first tick is armed at `apply`, which runs BEFORE the shim's
       // listeners hold their port and before the credential store has scanned.
       // Waiting here rather than failing means the startup refresh warms up
@@ -5207,7 +5222,13 @@ export function apply(ctx: Context, config: Config): void {
         }
       }
       multiplierState[region] = next
-      armMultiplierTimer(region, nextMultiplierRefreshDelayMs(next, hours, Date.now()))
+      // RE-READ THE INTERVAL rather than reusing the one read at the top: this
+      // tick awaited a network read, and the user can change the interval while
+      // it is in flight. `armMultiplierTimer` records whatever it armed with, so
+      // arming on a stale value would make the next `syncMultiplierRefresh`
+      // believe the new interval was already in effect and leave it unapplied.
+      if (!multiplierRefreshEnabled(region)) return
+      armMultiplierTimer(region, nextMultiplierRefreshDelayMs(next, multiplierRefreshHours(region), Date.now()))
     } catch (error: unknown) {
       // A throw here is OUR fault (a settings read), not the upstream's: log it
       // and re-arm on the default interval so one bad tick cannot stop the

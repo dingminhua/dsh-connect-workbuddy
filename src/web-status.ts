@@ -1656,6 +1656,31 @@ export async function workBuddyWebStatus(
       ...rosterSeen.versionNote === undefined ? {} : { rosterSeenVersionNote: rosterSeen.versionNote },
     },
     ...figures,
+    // The price-refresh controls and the last run's outcome. On the Host's
+    // answer rather than the browser mirror for the same measured reason the
+    // credit switches are: that mirror goes stale for this namespace on affected
+    // deployments, and a checkbox rendering a stale value would let the user
+    // believe a background job was off when it was running.
+    //
+    // THESE BELONG TO THE REGION DOCUMENT, NOT THE POOL BLOCK. They shipped
+    // inside `workBuddyWebPool()`'s return value, which lands under
+    // `status.pool.*` — while the card reads them off the document's top level
+    // (`'autoRefreshMultipliers' in status`). Nothing type-checked that, because
+    // a spread contributes no excess-property check: the card simply never saw
+    // them, so the status line could not render and the switch fell back to the
+    // stale mirror this very placement was meant to avoid. They are also
+    // independent of the pool: a Host without `deps.pool` still has a price
+    // refresh, so hanging them off the pool would hide the controls there.
+    ...deps.autoRefreshMultipliers === undefined
+      ? {}
+      : { autoRefreshMultipliers: deps.autoRefreshMultipliers(region) },
+    ...deps.multiplierRefreshHours === undefined
+      ? {}
+      : { multiplierRefreshHours: deps.multiplierRefreshHours(region) },
+    ...(() => {
+      const state = deps.multiplierRefreshState?.(region)
+      return state === undefined ? {} : { multiplierRefresh: state }
+    })(),
     // The pool is assembled last and never allowed to fail the document: it is
     // an enhancement, and a credits read that failed inside it must not take
     // the whole status route down with it (the card would then show nothing at
@@ -1865,21 +1890,6 @@ async function workBuddyWebPool(
     ...(() => {
       const today = pool.growthActivityToday?.(region)
       return today === undefined ? {} : { growthActivityToday: today }
-    })(),
-    // The price-refresh controls and the last run's outcome. On the Host's
-    // answer rather than the browser mirror for the same measured reason the
-    // credit switches are: that mirror goes stale for this namespace on affected
-    // deployments, and a checkbox rendering a stale value would let the user
-    // believe a background job was off when it was running.
-    ...deps.autoRefreshMultipliers === undefined
-      ? {}
-      : { autoRefreshMultipliers: deps.autoRefreshMultipliers(region) },
-    ...deps.multiplierRefreshHours === undefined
-      ? {}
-      : { multiplierRefreshHours: deps.multiplierRefreshHours(region) },
-    ...(() => {
-      const state = deps.multiplierRefreshState?.(region)
-      return state === undefined ? {} : { multiplierRefresh: state }
     })(),
     ...target.modelId === undefined ? {} : { targetModelId: target.modelId },
     ...target.staleModelId === undefined ? {} : { staleTargetModelId: target.staleModelId },

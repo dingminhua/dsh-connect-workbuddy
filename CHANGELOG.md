@@ -1,5 +1,35 @@
 # Changelog
 
+## 5.35.0 (未发布)
+
+### 自动刷新模型积分倍率（默认开启）
+
+「刷新倍率」是「从 WorkBuddy 刷新」的衍生功能：**只重新读一次已保存的那些模型现在卖多少钱与当前生效的活动徽章，不新增、不删除任何模型，也不动用户的勾选**。正因为它只改价，才能挂在定时器上——模型面板头部多一个「刷新倍率」按钮，下面是开关与间隔下拉（1 / 3 / 6 / 12 / 24 小时，默认 6），**启动时立刻跑一次**，之后按间隔运行。
+
+**为什么不复用 `persistRefreshedModels`**：那条路径走 `repairRegionCatalog` → `repairedCatalog` → `mergeRoster`，会把上游新增的模型写进目录。本功能的正向要求恰恰相反。所以新增 `withLiveMultipliers(saved, live)`（`src/catalog-sync.ts`）：按 id 求**交集**，只动 `creditMultiplier`（仅当上游给了值）与 `promos`（无条件，含清空）；上游没报价的模型保留原值；用户没保存过的模型一律忽略；没有变化时返回**同一个数组**，调用方据引用即可跳过内存写与磁盘写。
+
+这个分离不是洁癖：这是全插件唯一**按定时器运行**的目录写者，一旦它继承了 `mergeRoster` 的语义，后台任务就会开始增删模型选择器里的行。
+
+**为什么这件事有钱在上面**：账号池挑「免费模型」的判据是 `creditMultiplier === 0`（`src/account-pool.ts`）。倍率过期会让池子把**已转收费的模型当免费模型**去跑真实体积的探测——真花积分。
+
+**默认开启（opt-out）与仓库里其它后台功能相反**，这里是对的：只读、免费，且它的价值就在于用户没注意时价格已经是新的；从不打开卡片的用户恰恰最需要它。周期是**封闭集合**，理由同 `WORKBUDDY_POLL_INTERVALS_MS`：它决定上游请求量（6 小时约 8 GET/天/区域），手改一个 `0` 会把后台便利变成轮询。
+
+**降级目录照常只更新能读到的部分**，但状态行会明确标注「部分刷新」——否则用户看到一半模型没更新会以为功能坏了。
+
+**手动按钮只把改动的那两个键写给宿主**：卡片手上的设置镜像可能落后一整个间隔，整块回传会把定时器刚写下的新价冲回旧价（`web-status.ts` 的 `__save` 第二层合并是「发出去的字段赢」）。
+
+**修掉的三个真实缺陷**（都在本功能的实现过程中被抓出来）：
+
+1. **关闭区域会导致 0ms 定时器自旋**：tick 里「该区域已关闭」分支用 `nextMultiplierRefreshDelayMs` 重新武装，而该函数对「从未运行」的状态答 `0`——一个在**首次 tick 之前**就被关掉的区域正是这个状态。于是 tick → arm(0) → tick 无限循环，每轮还读一次配置。`enabled: false` 是文档认可的持久化状态，本功能默认开，所以这会在启动即自旋到进程退出。修法：两个「不该跑」的分支都**不再重新武装**——`syncMultiplierRefresh` 是唯一的播种者，而所有能进入这两个分支的开关都是 volatile，用户一改就会重挂。
+2. **tick 里死掉的句柄没清**：`syncMultiplierRefresh` 把「句柄存在」当作「已排好下一次」而跳过武装，所以任何不清句柄的返回路径都会留下一个幽灵——下次打开开关时看见 `multiplierTimers[region] !== undefined` 就什么都不武装，定时器再也不触发。现在 tick 一进来就清掉已触发的句柄。
+3. **`regions` 字段的写者是读-改-写**：两个并发写都 `describe()` 出写入前的值，后落地的那个静默覆盖前一个，没有任何报错。这个窗口一直存在（启动修复与移除账号的清理会重叠），但本功能让它变得容易撞上：它被 `apply` 以 0 延迟武装，`describe()` 与启动修复落在同一个 tick 里，两个区域各一次。新增 `serializeRegionWrite` 串行化这个字段的全部写者（`writeRegionCatalog` / `healRegionsField`），比 `expectedRevision` 的 CAS 重试更简单——这些写很稀疏（一次启动、一个间隔一次）。
+
+**顺带修掉**：`nextMultiplierRefreshDelayMs` 原本只钳下限，时钟回拨会把下次刷新推到一个周期之外——比提前一次运行更糟。现在上下界都钳。三个新字段（`autoRefreshMultipliers` / `multiplierRefreshHours` / `multiplierRefresh`）曾误放在 `pool` 块里，而卡片从文档顶层读，TypeScript 因为展开属性不参与多余属性检查没能拦住——现在移到区域文档的顶层，并补了断言字段位置的测试。英文文案 `every {count} h` 与旁边的 `every` 标签会渲染成 "every every 6 h"，改为 `{count} h`。
+
+**新文件**：`src/multiplier-schedule.ts`（纯规则，无 timer 无 clock：`isMultiplierRefreshDue` / `nextMultiplierRefreshDelayMs` / `WORKBUDDY_MULTIPLIER_REFRESH_HOURS`）。
+
+**测试**：`tests/multiplier-schedule.spec.ts`（20 项）、`tests/multiplier-schedule-spin.spec.ts`（关闭区域不自旋）；`tests/web-status.spec.ts` 补字段位置断言、`tests/client-account-selection.spec.ts` 补「只发改动的键」、`tests/catalog-write.spec.ts` 补并发写串行化。全部做过变异验证：放行新增模型 / 去同数组守卫 / 缺省倍率被覆盖 / 启动不立即刷 / 去延迟上界 / `promos` 按引用 / 字段放回 pool / 发出整块 slot / 去掉写序列化，九处改坏都让测试变红。
+
 ## 5.34.1 (2026-11-28)
 
 ### 自动兑换成长奖励请求缺幂等键（#335）

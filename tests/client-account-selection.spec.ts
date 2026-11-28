@@ -5,6 +5,7 @@ import {
   WorkBuddySettingsWriteError,
   writeAccountSlot,
   writeRegionEnabled,
+  writeRegionMultiplierRefresh,
   writeRegionModels,
   writeRegionNewModelsShown,
   writePoolPreferences,
@@ -612,5 +613,109 @@ describe('writeUpstreamSwitch verification, on the fallback path', () => {
     const { scope } = scopeWith({}, { locked: true })
     await expect(withoutHost(() => writeUpstreamSwitch(scope, 'dropAllThinking', true)))
       .rejects.toBeInstanceOf(WorkBuddySettingsWriteError)
+  })
+})
+
+/**
+ * The price-refresh write posts ONLY the keys the user touched.
+ *
+ * THE BUG THIS PINS. The region slot handed to this writer is built from the
+ * browser's SETTINGS MIRROR, which is documented as stale for this namespace —
+ * and the scheduled price refresh makes that concrete: the Host repriced
+ * `lastCatalog` in the background, so the mirror's copy can be a full interval
+ * old. Posting the whole slot made the Host's second-level merge adopt that old
+ * directory ("a field the client does send still wins"), rolling every price
+ * back until the next scheduled run. The pool picks its probe target with
+ * `creditMultiplier === 0`, so a rollback is not cosmetic: it can send the pool
+ * after a model that has started charging.
+ *
+ * WHAT IS ASSERTED IS THE REQUEST BODY, not the resulting document. Both shapes
+ * produce the same stored slot on a host with no concurrent writes, so a
+ * document-only check would pass either way and prove nothing.
+ */
+describe('writeRegionMultiplierRefresh', () => {
+  /** Capturing Host endpoint: records the posted body and merges it like the Host. */
+  function hostEndpoint(stored: Record<string, unknown>): {
+    posts: { field: string, value: Record<string, unknown> }[]
+    restore: () => void
+  } {
+    const posts: { field: string, value: Record<string, unknown> }[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: never, init: { body?: string }) => {
+      const body = JSON.parse(init.body ?? '{}') as { field: string, value: Record<string, unknown> }
+      posts.push(body)
+      // Level 1 = field keys, level 2 = the slot's own keys, exactly as the
+      // `__save` route merges. This is what makes an omitted key survive.
+      const merged: Record<string, unknown> = { ...stored }
+      for (const [region, slot] of Object.entries(body.value)) {
+        const prior = merged[region]
+        merged[region] = typeof prior === 'object' && prior !== null && typeof slot === 'object' && slot !== null
+          ? { ...(prior as Record<string, unknown>), ...(slot as Record<string, unknown>) }
+          : slot
+      }
+      return new Response(JSON.stringify({ ok: true, value: merged }), { status: 200 })
+    }) as typeof fetch
+    return { posts, restore: () => { globalThis.fetch = realFetch } }
+  }
+
+  it('omits the untouched keys so the Host keeps what it wrote', async () => {
+    // The Host's authoritative slot: repriced by the background timer, which the
+    // browser mirror does not know about.
+    const host = hostEndpoint({
+      regions: { cn: { enabled: true, autoRefreshMultipliers: true, lastCatalog: [{ id: 'glm-5.3', creditMultiplier: 0.41 }] } },
+    })
+    try {
+      // The card's slot: same region, but with the STALE directory it read when
+      // the page loaded.
+      const { scope } = scopeWith({ regions: { cn: { enabled: true, lastCatalog: [{ id: 'glm-5.3', creditMultiplier: 0.69 }] } } })
+      await writeRegionMultiplierRefresh(
+        scope,
+        'cn',
+        { autoRefreshMultipliers: false },
+        { enabled: true, lastCatalog: [{ id: 'glm-5.3', creditMultiplier: 0.69 }] },
+      )
+      expect(host.posts).toHaveLength(1)
+      expect(host.posts[0]?.value).toEqual({ cn: { autoRefreshMultipliers: false } })
+      // The point: the body carries no `lastCatalog`, so the Host's fresh one is
+      // not overwritten by the mirror's stale one.
+      expect('lastCatalog' in ((host.posts[0]?.value['cn'] ?? {}) as object)).toBe(false)
+    } finally {
+      host.restore()
+    }
+  })
+
+  it('omits the switch when only the interval changed', async () => {
+    // The two controls are separate clicks. Sending both would let a stale
+    // mirror's switch value ride along with an interval change.
+    const host = hostEndpoint({ regions: { cn: { enabled: true } } })
+    try {
+      const { scope } = scopeWith({ regions: { cn: { autoRefreshMultipliers: true } } })
+      await writeRegionMultiplierRefresh(scope, 'cn', { multiplierRefreshHours: 12 }, { autoRefreshMultipliers: true })
+      expect(host.posts[0]?.value).toEqual({ cn: { multiplierRefreshHours: 12 } })
+    } finally {
+      host.restore()
+    }
+  })
+
+  it('still falls back to the complete slot when the Host endpoint is gone', async () => {
+    // The scope path REPLACES the whole field, so it needs a complete slot — the
+    // omitted-keys optimization above must not leak into it. Without `enabled`
+    // in the fallback payload the region would come back switched off.
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (() => Promise.reject(new Error('no host endpoint'))) as typeof fetch
+    try {
+      const { scope, document } = scopeWith({ regions: { cn: { enabled: true, lastCatalog: [{ id: 'glm-5.3' }] } } })
+      await writeRegionMultiplierRefresh(
+        scope,
+        'cn',
+        { multiplierRefreshHours: 3 },
+        { enabled: true, lastCatalog: [{ id: 'glm-5.3' }], multiplierRefreshHours: 3 },
+      )
+      expect(document()['regions']).toEqual({
+        cn: { enabled: true, lastCatalog: [{ id: 'glm-5.3' }], multiplierRefreshHours: 3 },
+      })
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 })

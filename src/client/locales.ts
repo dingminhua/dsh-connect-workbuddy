@@ -166,7 +166,9 @@ export const en = {
   'row.multiplierRefreshHint': 'Re-read this region\'s credit multipliers and promotion badges and apply them to the models you already have. One read-only request, no credits spent, and no model is added or removed.',
   'row.multiplierRefreshLabel': 'Refresh prices automatically',
   'row.multiplierRefreshEvery': 'every',
-  'row.multiplierRefreshHours': 'every {count} h',
+  // `row.multiplierRefreshEvery` renders BESIDE the select, so this option text
+  // must not repeat the word: the label and the option concatenate.
+  'row.multiplierRefreshHours': '{count} h',
   'row.multiplierRefreshIntervalAria': 'How often the automatic price refresh runs',
   'row.multiplierRefreshNote': 'Runs once at startup and then on this schedule. Read-only and free; it never adds or removes a model, so your list and selection stay as saved. A model the upstream no longer prices keeps its last known multiplier.',
   // The last run, in three distinct wordings: "changed nothing" is an ANSWER,

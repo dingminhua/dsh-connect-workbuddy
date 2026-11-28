@@ -753,6 +753,17 @@ export async function writeCliBridgeRegionOrder(
  * absent key are different states, and a truncated model catalog must not pass
  * a shallow "is anything there?" check.
  *
+ * `hostValue` overrides ONLY what the Host save endpoint is sent, and it exists
+ * for callers that change one or two keys of a region slot. The endpoint merges
+ * two levels (sibling regions, then the slot's own keys), so sending the subset
+ * PRESERVES everything it omits — the authoritative value. Sending the whole slot
+ * instead would also work, except that the slot was built from the browser's
+ * settings mirror, which is documented as stale for this namespace: whatever the
+ * Host wrote since the page loaded (on this feature, a repriced `lastCatalog`)
+ * would be sent back as if the user had typed it, undoing it. The scope path
+ * still gets the full `value`, because it REPLACES the field and needs a complete
+ * slot.
+ *
  * @throws {WorkBuddySettingsWriteError} when neither path persists the value.
  */
 async function writeField(
@@ -761,11 +772,12 @@ async function writeField(
   region: WorkBuddyWebRegion,
   value: unknown,
   landed: (readBack: unknown) => boolean,
+  hostValue?: unknown,
 ): Promise<void> {
   // 1. Authoritative, server-side merge: cannot drop the sibling region.
   let hostError: unknown
   try {
-    const authoritative = await saveViaHostEndpoint(field, region, value)
+    const authoritative = await saveViaHostEndpoint(field, region, hostValue ?? value)
     // 2. Refresh the browser mirror with the value the HOST actually stored,
     //    never with a re-merge of the client's own (possibly stale) mirror —
     //    on a scope that stores whatever it is handed, writing the stale merge
@@ -1115,6 +1127,16 @@ export async function writeRegionCreditPosition(
  *
  * `undefined` omits a field from the write rather than clearing it, so changing
  * the interval cannot silently reset the switch (or the other way round).
+ *
+ * ONLY THE TOUCHED KEYS ARE SENT to the Host. The region slot is built from the
+ * browser's settings mirror, which for this namespace is documented as stale —
+ * and this feature makes that concrete: the background refresh repriced
+ * `lastCatalog` on the Host, so the mirror's copy can be up to one interval old.
+ * Posting the whole slot (as the other writers do) would send that stale
+ * directory back and the Host's second-level merge would let it win, rolling the
+ * prices back until the next scheduled run. The pool picks its probe target with
+ * `creditMultiplier === 0`, so a rollback is not cosmetic: it can send the pool
+ * after a model that has started charging.
  */
 export async function writeRegionMultiplierRefresh(
   scope: WorkBuddyAccountScope,
@@ -1130,7 +1152,7 @@ export async function writeRegionMultiplierRefresh(
     if (patch.multiplierRefreshHours !== undefined
       && stored['multiplierRefreshHours'] !== patch.multiplierRefreshHours) return false
     return true
-  })
+  }, patch)
 }
 
 /**

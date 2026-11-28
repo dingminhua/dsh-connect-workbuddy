@@ -251,3 +251,71 @@ describe('healRegionsField: the boot-time clean-up needs no upstream', () => {
     await expect(healRegionsField(service, 'workbuddy')).resolves.toBe(true)
   })
 })
+
+/**
+ * Concurrent `regions` writes must not lose one another.
+ *
+ * Every writer here is a read-modify-write: `describe()` the authoritative field,
+ * merge ONE region into it, `mutate()` the whole field back. Two running at once
+ * both read the pre-write value, so the second overwrites the first — silently,
+ * with both calls resolving. The window predates the scheduled price refresh, but
+ * that feature made it reachable: it is armed at `apply` with a zero delay, so its
+ * write lands in the same turn as the startup repair's, for both regions.
+ *
+ * THE FIX IS NOT A RETRY. Serially re-running would need the caller to redo a
+ * merge whose inputs it no longer holds; queuing the writes removes the window
+ * instead. The service below makes the race deterministic by resolving
+ * `describe()` only after a tick, so unserialized writes WOULD interleave here.
+ */
+describe('writeRegionCatalog: concurrent writes are serialized', () => {
+  it('lets two overlapping region writes both land', async () => {
+    let field: Record<string, unknown> = { cn: { enabled: true }, global: { enabled: true } }
+    // Resolves only when the test says so, which is what makes the race
+    // deterministic: BOTH writes have already called `describe()` (and so hold
+    // the same pre-write value) before either `mutate()` lands.
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const service: HostSettingsService = {
+      describe: () => [{ ns: 'workbuddy', value: { regions: structuredClone(field) } }],
+      mutate: async (_ns, ops) => {
+        await gate
+        field = structuredClone(ops[0]?.value) as Record<string, unknown>
+      },
+    } as HostSettingsService
+
+    const cnRepair: WorkBuddyModelInfo[] = [{ id: 'glm-5.3', name: 'GLM', contextWindow: 1, maxTokens: 1 }]
+    const globalRepair: WorkBuddyModelInfo[] = [{ id: 'hy3', name: 'Hy3', contextWindow: 1, maxTokens: 1 }]
+    const both = Promise.all([
+      writeRegionCatalog(service, 'workbuddy', 'cn', cnRepair),
+      writeRegionCatalog(service, 'workbuddy', 'global', globalRepair),
+    ])
+    // Let the synchronous head of each write run (its `describe()`), then open
+    // the gate. Serialized, only ONE of them has reached `mutate()` by now.
+    await Promise.resolve()
+    release()
+    await both
+
+    // The lost update this pins: unserialized, the second value was built from
+    // the pre-write field, so ONE of the two repairs vanished.
+    expect((field['cn'] as Record<string, unknown>)['lastCatalog']).toEqual(cnRepair)
+    expect((field['global'] as Record<string, unknown>)['lastCatalog']).toEqual(globalRepair)
+  })
+
+  it('keeps the queue running after a write rejects', async () => {
+    // A failed write must not wedge every later one. Without the swallowed copy
+    // on the chain, the next caller's `.then()` would inherit this rejection.
+    let attempts = 0
+    const service: HostSettingsService = {
+      describe: () => [{ ns: 'workbuddy', value: { regions: { cn: { enabled: true } } } }],
+      mutate: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('locked file')
+      },
+    } as HostSettingsService
+
+    await expect(writeRegionCatalog(service, 'workbuddy', 'cn', repair)).rejects.toThrow('locked file')
+    // The next write still runs and succeeds.
+    await expect(writeRegionCatalog(service, 'workbuddy', 'cn', repair)).resolves.toBe(true)
+    expect(attempts).toBe(2)
+  })
+})

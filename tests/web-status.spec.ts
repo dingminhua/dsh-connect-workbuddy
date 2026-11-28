@@ -600,6 +600,58 @@ describe('workBuddyWebStatus region routing', () => {
   })
 })
 
+/**
+ * The scheduled price refresh's three fields must sit on the DOCUMENT, not
+ * inside the pool block.
+ *
+ * They shipped under `pool.*` while the card read them off the top level, and
+ * nothing type-checked that: a spread contributes no excess-property check, so
+ * the compiler stayed quiet and the card's status line simply never rendered
+ * while its switch fell back to the settings mirror these fields exist to
+ * replace. Asserting the KEY'S LOCATION is the point — a test that only checked
+ * the values would have passed either way.
+ */
+describe('scheduled price refresh on the status document', () => {
+  const priceDeps = {
+    autoRefreshMultipliers: () => true,
+    multiplierRefreshHours: () => 3,
+    multiplierRefreshState: () => ({ lastAttemptAtMs: 1_700_000_000_000, changed: 2, degraded: false }),
+  }
+
+  it('carries the switch, the interval and the last run at the TOP level', async () => {
+    const status = await workBuddyWebStatus(deps(priceDeps), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.autoRefreshMultipliers).toBe(true)
+    expect(status.multiplierRefreshHours).toBe(3)
+    expect(status.multiplierRefresh).toEqual({
+      lastAttemptAtMs: 1_700_000_000_000,
+      changed: 2,
+      degraded: false,
+    })
+  })
+
+  it('answers them even on a Host that builds no pool block', async () => {
+    // The price refresh is not a pool feature: `deps.pool` is optional and an
+    // older Host omits it. Hanging these fields off the pool would hide the
+    // controls there — hence the top level, checked here with no `pool` dep.
+    const status = await workBuddyWebStatus(deps(priceDeps), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.pool).toBeUndefined()
+    expect('autoRefreshMultipliers' in status).toBe(true)
+  })
+
+  it('omits them entirely when the Host predates the feature', async () => {
+    // Absent means "this Host cannot answer", which is how the card knows to
+    // hide the controls. A false / 0 default would instead render an off switch
+    // over a feature that may well be running.
+    const status = await workBuddyWebStatus(deps(), 'cn')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect('autoRefreshMultipliers' in status).toBe(false)
+    expect('multiplierRefreshHours' in status).toBe(false)
+    expect('multiplierRefresh' in status).toBe(false)
+  })
+})
+
 describe('registerWorkBuddyStatusRoute', () => {
   /** A captured route entry: the path, its HTTP handler, and its admission rule. */
   interface CapturedEntry {
