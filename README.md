@@ -50,6 +50,12 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行确�
 
 安装、更新或卸载后需重启对应的 DSH 进程。配置入口在**设置面板左侧导航的「WorkBuddy」**。刚发布的版本请写精确版本号，原因与两种绕过路径见[更新](docs/README/08-更新.md)。
 
+### 受支持的宿主范围
+
+本插件要求 DSH `0.1.7-rc.1` 及以上，上界为 `<0.3.0-0`（`0.3.0` 线明确拒绝）。
+随包门禁逐条核对 `dsh-*` peer 范围，任一条不满足就会跳过整个组合包。
+完整版本判定表与预发布说明见[安装 · 受支持的宿主范围](docs/README/07-安装.md)。
+
 ## 功能一览
 
 | 功能 | 说明 | 详细文档 |
@@ -102,6 +108,13 @@ dsh plugin --profile desktop exec dsh-connect-workbuddy doctor   # 第一行确�
 - [致谢](docs/README/18-致谢.md) — 参照项目与许可证
 
 第三方依赖合规说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，许可证见下方。
+
+## 平台支持
+
+Windows、macOS、Linux 都是受支持目标，**Windows 是一等目标平台**：CI 在 `windows-latest`
+跑完整套件，凭据路径、进程心跳、App 定位、设置写入四处都有 Windows 专属分支与测试。
+各平台差异与已知限制见[平台支持](docs/README/09-平台支持.md)，平台约束登记处见
+[`docs/WINDOWS.md`](docs/WINDOWS.md)。
 
 ## 免责声明
 
