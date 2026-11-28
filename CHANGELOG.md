@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.34.1 (2026-11-28)
+
+### 自动兑换成长奖励请求缺幂等键（#335）
+
+issue #335 报告者在真机上用同一账号、同一时刻、只差一个字段的对照定位到：\`POST /activity/growth/redeem\` 的请求体缺 \`client_token\`，上游在参数校验阶段就回 400 \`invalid redemption request\`，根本没走到业务判断——所以连签档位一直是 \`available\`，而卡片却把失败记成绿色「已兑换」。
+
+**修法**：\`redeemGrowthTier\` 每次调用生成一个全新的 \`client_token: randomUUID()\`（与官方成长中心前端一致，幂等键复用的话第二次会被上游当重放）。同时修正响应字段：真实返回是 \`credit_granted\` / \`energy_granted\`（另有 cards/chances），旧代码读的 \`credit\` / \`energy\` 因请求一直 400 从未被真机验证，现已优先读 \`*_granted\` 并兼容旧字段名。
+
+**未改的部分**：\`foldGrowthAttempt\` 仍把 failed/skipped 与成功一起记入 \`doneAccountIds\`（绿戳只代表「碰过」）。这是此前明确的产品决策——用户要稳定的「已兑换 X/Y」、不要「待重试」噪声。报告者指出的「绿戳掩盖失败」是真实危害，但改它属于产品语义变更，已在 issue 里与报告者说明并征询；\`redeemGrowthAll\` 本身已把失败行的 message 留在返回里，根因修复后正常不再有 failed。
+
+**测试**：\`tests/upstream-growth.spec.ts\` 新增/改写用例，断言每次调用都带非空且互不相同的 token、字段读 \`*_granted\`，并保留旧字段兼容；做过变异验证（去掉 token 后变红）。
+
 ## 5.34.0 (2026-11-27)
 
 > 新增可选的 WorkBuddy 联网搜索（issue #332）：给 DSH 的 `web_search` 提供一个用本插件登录态检索的搜索提供方，默认关闭、不依赖任何其它插件。另外修复 issue #316 的一个凭据选择错误。

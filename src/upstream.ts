@@ -6958,10 +6958,17 @@ export class WorkBuddyUpstreamClient {
     credential: WorkBuddyCredential,
     tier: string,
   ): Promise<WorkBuddyGrowthRedeemResult> {
+    // ISSUE #335: the growth redeem endpoint requires an idempotency key. Without
+    // `client_token` the gateway rejects at parameter validation with 400
+    // `invalid redemption request` BEFORE any business check — so every redeem
+    // failed while the card still showed a green "already redeemed" stamp. A
+    // fresh UUID per call matches the official growth-center front end, which
+    // generates one for every claim; reusing a token would make the gateway
+    // treat the second call as a replay of the first.
     const response = await fetch(`${billingBase(credential, this.cnBaseOf())}/activity/growth/redeem`, {
       method: 'POST',
       headers: billingHeaders(credential, await this.wireIdentity(credential)),
-      body: JSON.stringify({ tier }),
+      body: JSON.stringify({ tier, client_token: randomUUID() }),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
     const envelope = await readEnvelope(response, provenanceOf(credential))
@@ -6970,10 +6977,17 @@ export class WorkBuddyUpstreamClient {
       ? envelope.data as Record<string, unknown>
       : {}
     const num = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    // ISSUE #335: the real response credits are `credit_granted` / `energy_granted`
+    // (plus `cards_granted` / `chances_granted`), not `credit` / `energy`. The old
+    // keys were never exercised because the token-less request always 400'd.
+    // Prefer the upstream names, keep the old ones as a fallback so a gateway
+    // variant using them is still read.
+    const credit = num('credit_granted') || num('credit')
+    const hasEnergy = typeof data['energy_granted'] === 'number' || typeof data['energy'] === 'number'
     return {
       tier,
-      credit: num('credit'),
-      ...typeof data['energy'] === 'number' ? { energy: data['energy'] as number } : {},
+      credit,
+      ...hasEnergy ? { energy: num('energy_granted') || num('energy') } : {},
       ...data['already_claimed'] === true ? { alreadyClaimed: true } : {},
     }
   }

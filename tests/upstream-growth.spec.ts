@@ -91,21 +91,37 @@ describe('fetchGrowthStreak', () => {
 })
 
 describe('redeemGrowthTier', () => {
-  it('POSTs the tier to the redeem endpoint and reduces the result', async () => {
+  it('POSTs the tier WITH a fresh client_token and reduces the real credit_granted fields (#335)', async () => {
     let method = ''
-    let body = ''
+    const bodies: Record<string, unknown>[] = []
     let url = ''
     vi.stubGlobal('fetch', async (u: string, init: RequestInit) => {
       url = u
       method = init.method ?? ''
-      body = String(init.body ?? '')
-      return envelope({ credit: 50, energy: 3 })
+      bodies.push(JSON.parse(String(init.body ?? '')) as Record<string, unknown>)
+      return envelope({ credit_granted: 50, energy_granted: 3, cards_granted: 1 })
     })
-    const result = await new WorkBuddyUpstreamClient().redeemGrowthTier(credential(), '14d')
+    const client = new WorkBuddyUpstreamClient()
+    const result = await client.redeemGrowthTier(credential(), '14d')
+    // A second call must get a DIFFERENT token: a replayed idempotency key makes
+    // the gateway treat it as the first claim rather than a new one.
+    await client.redeemGrowthTier(credential(), '28d')
     expect(method).toBe('POST')
-    expect(JSON.parse(body)).toEqual({ tier: '14d' })
     expect(url).toContain('/activity/growth/redeem')
+    expect(bodies).toHaveLength(2)
+    for (const [index, body] of bodies.entries()) {
+      expect(body['tier']).toBe(index === 0 ? '14d' : '28d')
+      expect(typeof body['client_token']).toBe('string')
+      expect(String(body['client_token']).length).toBeGreaterThan(0)
+    }
+    expect(bodies[0]?.['client_token']).not.toBe(bodies[1]?.['client_token'])
     expect(result).toEqual({ tier: '14d', credit: 50, energy: 3 })
+  })
+
+  it('still reads the legacy credit/energy field names', async () => {
+    vi.stubGlobal('fetch', async () => envelope({ credit: 20, energy: 2 }))
+    const result = await new WorkBuddyUpstreamClient().redeemGrowthTier(credential(), '7d')
+    expect(result).toEqual({ tier: '7d', credit: 20, energy: 2 })
   })
 
   it('surfaces already_claimed without inventing a reward', async () => {
